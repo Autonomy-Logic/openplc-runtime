@@ -3,6 +3,9 @@
 
 #include <Python.h>
 
+// Forward declaration
+struct plugin_instance_s;
+
 // Python plugin bridge structure
 typedef struct {
     PyObject *pModule;
@@ -11,11 +14,6 @@ typedef struct {
     PyObject *pFuncStopLoop;
     PyObject *pFuncCycleRun;
     PyObject *pFuncCleanup;
-} python_plugin_t;
-
-int python_plugin_init(plugin_instance_t *plugin);
-void python_plugin_cycle(plugin_instance_t *plugin);
-void python_plugin_cleanup(plugin_instance_t *plugin);
-
+} python_binds_t;
 
 #endif // __PYTHON_PLUGIN_BRIDGE_H
