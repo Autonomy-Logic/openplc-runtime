@@ -1,0 +1,6 @@
+# Plugin configuration file
+# Format: name,path,enabled,type,plugin_related_config_path
+# Example plugins
+example_plugin1,./plugins/example1.so,1
+example_plugin2,./plugins/example2.so,0
+python_plugin,./plugins/python_bridge.so,1

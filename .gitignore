@@ -1,10 +1,12 @@
 # Ignore all files in the build output directory
 /build*/
 /core/generated/
+/memory-bank
 # .vscode/
 .*/
 venv/
 __pycache__/
+.clinerules
 
 install_log.txt
 

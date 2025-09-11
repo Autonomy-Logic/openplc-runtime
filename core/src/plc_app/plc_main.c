@@ -15,6 +15,7 @@
 #include "utils/utils.h"
 #include "utils/watchdog.h"
 #include "scan_cycle_manager.h"
+#include "../drivers/plugin_driver.h"
 
 extern atomic_long plc_heartbeat;
 extern PLCState plc_state;
@@ -154,6 +155,19 @@ int main()
         return -1;
     }
 
+    // Initialize plugin driver system
+    plugin_driver_t *plugin_driver = plugin_driver_create();
+    if (plugin_driver) {
+        // Load plugin configuration
+        if (plugin_driver_load_config(plugin_driver, "../plugins.conf") == 0) {
+            // Start plugins
+            plugin_driver_start(plugin_driver);
+            log_info("[PLUGIN]: Plugin driver system initialized");
+        } else {
+            log_error("[PLUGIN]: Failed to load plugin configuration");
+        }
+    }
+
     // Load user application code
     plc_program = plugin_manager_create("./libplc.so");
     load_plc_program(plc_program);
@@ -179,5 +193,12 @@ int main()
     pthread_join(stats_thread, NULL);
     pthread_join(plc_thread, NULL);
     plugin_manager_destroy(plc_program);
+    
+    // Cleanup plugin driver system
+    if (plugin_driver) {
+        plugin_driver_stop(plugin_driver);
+        plugin_driver_destroy(plugin_driver);
+    }
+    
     return 0;
 }
