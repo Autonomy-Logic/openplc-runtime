@@ -9,13 +9,13 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../drivers/plugin_driver.h"
 #include "image_tables.h"
-#include "utils/log.h"
 #include "plcapp_manager.h"
+#include "scan_cycle_manager.h"
+#include "utils/log.h"
 #include "utils/utils.h"
 #include "utils/watchdog.h"
-#include "scan_cycle_manager.h"
-#include "../drivers/plugin_driver.h"
 
 extern atomic_long plc_heartbeat;
 extern PLCState plc_state;
@@ -25,39 +25,35 @@ struct timespec timer_start;
 pthread_t plc_thread;
 PluginManager *plc_program = NULL;
 
-
-void handle_sigint(int sig) 
+void handle_sigint(int sig)
 {
     (void)sig;
     keep_running = 0;
 }
 
-void *print_stats_thread(void *arg) 
+void *print_stats_thread(void *arg)
 {
     (void)arg;
-    while (keep_running) 
+    while (keep_running)
     {
-        if (bool_output[0][0]) 
+        if (bool_output[0][0])
         {
             log_debug("bool_output[0][0]: %d", *bool_output[0][0]);
-        } 
-        else 
+        }
+        else
         {
             log_debug("bool_output[0][0] is NULL");
         }
 
         log_info("Scan Count: %lu", plc_timing_stats.scan_count);
         log_info("Scan Time - Min: %ld us, Max: %ld us, Avg: %ld us",
-                 plc_timing_stats.scan_time_min,
-                 plc_timing_stats.scan_time_max,
+                 plc_timing_stats.scan_time_min, plc_timing_stats.scan_time_max,
                  plc_timing_stats.scan_time_avg);
         log_info("Cycle Time - Min: %lu us, Max: %lu us, Avg: %ld us",
-                 plc_timing_stats.cycle_time_min,
-                 plc_timing_stats.cycle_time_max,
+                 plc_timing_stats.cycle_time_min, plc_timing_stats.cycle_time_max,
                  plc_timing_stats.cycle_time_avg);
         log_info("Cycle Latency - Min: %ld us, Max: %ld us, Avg: %ld us",
-                 plc_timing_stats.cycle_latency_min,
-                 plc_timing_stats.cycle_latency_max,
+                 plc_timing_stats.cycle_latency_min, plc_timing_stats.cycle_latency_max,
                  plc_timing_stats.cycle_latency_avg);
         log_info("Overruns: %lu", plc_timing_stats.overruns);
 
@@ -67,7 +63,7 @@ void *print_stats_thread(void *arg)
     return NULL;
 }
 
-void *plc_cycle_thread(void *arg) 
+void *plc_cycle_thread(void *arg)
 {
     PluginManager *pm = (PluginManager *)arg;
 
@@ -112,13 +108,13 @@ void *plc_cycle_thread(void *arg)
 
 int load_plc_program(PluginManager *pm)
 {
-    if (plugin_manager_load(pm)) 
+    if (plugin_manager_load(pm))
     {
         log_info("Loading PLC application");
         plc_state = PLC_STATE_INIT;
         log_info("PLC State: INIT");
 
-        if (pthread_create(&plc_thread, NULL, plc_cycle_thread, pm) != 0) 
+        if (pthread_create(&plc_thread, NULL, plc_cycle_thread, pm) != 0)
         {
             log_error("Failed to create PLC cycle thread");
             plc_state = PLC_STATE_ERROR;
@@ -126,8 +122,8 @@ int load_plc_program(PluginManager *pm)
             return -1;
         }
         return 0;
-    } 
-    else 
+    }
+    else
     {
         log_error("Failed to load PLC application");
         plc_state = PLC_STATE_ERROR;
@@ -136,8 +132,7 @@ int load_plc_program(PluginManager *pm)
     }
 }
 
-
-int main() 
+int main()
 {
     log_set_level(LOG_LEVEL_DEBUG);
 
@@ -157,14 +152,18 @@ int main()
 
     // Initialize plugin driver system
     plugin_driver_t *plugin_driver = plugin_driver_create();
-    if (plugin_driver) {
+    if (plugin_driver)
+    {
         // Load plugin configuration
-        if (plugin_driver_load_config(plugin_driver, "../plugins.conf") == 0) {
+        if (plugin_driver_load_config(plugin_driver, "../plugins.conf") == 0)
+        {
             // Start plugins
             plugin_driver_init(plugin_driver);
             plugin_driver_start(plugin_driver);
             log_info("[PLUGIN]: Plugin driver system initialized");
-        } else {
+        }
+        else
+        {
             log_error("[PLUGIN]: Failed to load plugin configuration");
         }
     }
@@ -175,13 +174,13 @@ int main()
 
     // Launch status printing thread
     pthread_t stats_thread;
-    if (pthread_create(&stats_thread, NULL, print_stats_thread, NULL) != 0) 
+    if (pthread_create(&stats_thread, NULL, print_stats_thread, NULL) != 0)
     {
         log_error("Failed to create stats thread");
         return -1;
     }
 
-    while (keep_running) 
+    while (keep_running)
     {
         // Handle UNIX socket here in the future
         sleep(1);
@@ -194,12 +193,13 @@ int main()
     pthread_join(stats_thread, NULL);
     pthread_join(plc_thread, NULL);
     plugin_manager_destroy(plc_program);
-    
+
     // Cleanup plugin driver system
-    if (plugin_driver) {
+    if (plugin_driver)
+    {
         plugin_driver_stop(plugin_driver);
         plugin_driver_destroy(plugin_driver);
     }
-    
+
     return 0;
 }

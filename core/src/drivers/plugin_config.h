@@ -4,7 +4,8 @@
 #define MAX_PLUGIN_NAME_LEN 64
 #define MAX_PLUGIN_PATH_LEN 256
 
-typedef struct {
+typedef struct
+{
     char name[MAX_PLUGIN_NAME_LEN];
     char path[MAX_PLUGIN_PATH_LEN];
     int enabled;

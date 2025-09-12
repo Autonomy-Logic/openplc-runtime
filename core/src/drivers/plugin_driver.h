@@ -1,21 +1,22 @@
 #ifndef PLUGIN_DRIVER_H
 #define PLUGIN_DRIVER_H
 
-#define PY_SSIZE_T_CLEAN 
+#define PY_SSIZE_T_CLEAN
 #include <Python.h>
 
-#include <pthread.h>
 #include "../lib/iec_types.h"
 #include "../plc_app/plcapp_manager.h"
 #include "plugin_config.h"
 #include "python_plugin_bridge.h"
+#include <pthread.h>
 
 // Maximum number of plugins
 #define MAX_PLUGINS 16
 
-typedef enum {
+typedef enum
+{
     PLUGIN_TYPE_PYTHON,
-    PLUGIN_TYPE_NATIVE  
+    PLUGIN_TYPE_NATIVE
 } plugin_type_t;
 
 typedef int (*plugin_init_func_t)(void *);
@@ -24,7 +25,8 @@ typedef void (*plugin_stop_loop_func_t)();
 typedef void (*plugin_run_cycle_func_t)();
 typedef void (*plugin_cleanup_func_t)();
 
-typedef struct {
+typedef struct
+{
     plugin_init_func_t init;
     plugin_start_loop_func_t start;
     plugin_stop_loop_func_t stop;
@@ -33,7 +35,8 @@ typedef struct {
 } plugin_funct_bundle_t;
 
 // Runtime buffer access structure for plugins
-typedef struct {
+typedef struct
+{
     // Buffer pointers
     IEC_BOOL *(*bool_input)[8];
     IEC_BOOL *(*bool_output)[8];
@@ -48,19 +51,20 @@ typedef struct {
     IEC_UINT **int_memory;
     IEC_UDINT **dint_memory;
     IEC_ULINT **lint_memory;
-    
+
     // Mutex functions
     int (*mutex_take)(pthread_mutex_t *mutex);
     int (*mutex_give)(pthread_mutex_t *mutex);
     pthread_mutex_t *buffer_mutex;
-    
+
     // Buffer size information
     int buffer_size;
     int bits_per_buffer;
 } plugin_runtime_args_t;
 
 // Plugin instance structure
-typedef struct plugin_instance_s {
+typedef struct plugin_instance_s
+{
     PluginManager *manager;
     python_binds_t *python_plugin;
     pthread_t thread;
@@ -69,14 +73,15 @@ typedef struct plugin_instance_s {
 } plugin_instance_t;
 
 // Driver structure
-typedef struct {
+typedef struct
+{
     plugin_instance_t plugins[MAX_PLUGINS];
     int plugin_count;
     pthread_mutex_t buffer_mutex;
 } plugin_driver_t;
 
 // Driver management functions
-plugin_driver_t* plugin_driver_create(void);
+plugin_driver_t *plugin_driver_create(void);
 int plugin_driver_load_config(plugin_driver_t *driver, const char *config_file);
 int plugin_driver_init(plugin_driver_t *driver);
 int plugin_driver_start(plugin_driver_t *driver);
@@ -87,7 +92,7 @@ void plugin_driver_destroy(plugin_driver_t *driver);
 int python_plugin_get_symbols(plugin_instance_t *plugin);
 
 // Runtime arguments generation
-void* generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *driver);
+void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *driver);
 void free_structured_args(plugin_runtime_args_t *args);
 
 #endif // PLUGIN_DRIVER_H
