@@ -153,24 +153,14 @@ int plugin_driver_init(plugin_driver_t *driver) {
         plugin_instance_t *plugin = &driver->plugins[i];
         if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin && plugin->python_plugin->pFuncInit) {
             // Generate structured args for Python plugin
-            plugin_runtime_args_t *args = generate_structured_args(PLUGIN_TYPE_PYTHON);
+            PyObject *args = generate_structured_args_with_driver(PLUGIN_TYPE_PYTHON, driver);
             if (!args) {
                 fprintf(stderr, "Failed to generate runtime args for plugin: %s\n", plugin->config.name);
                 return -1;
             }
-            // Set the buffer mutex
-            args->buffer_mutex = &driver->buffer_mutex;
-
-            // Call the Python init function
-            PyObject *py_args = create_python_runtime_args_capsule(args);
-            if (!py_args) {
-                fprintf(stderr, "Failed to create Python capsule for plugin: %s\n", plugin->config.name);
-                free_structured_args(args);
-                return -1;
-            }
-
-            PyObject *result = PyObject_CallFunctionObjArgs(plugin->python_plugin->pFuncInit, py_args, NULL);
-            Py_DECREF(py_args);
+            // Call the Python init function with proper capsule
+            PyObject *result = PyObject_CallFunctionObjArgs(plugin->python_plugin->pFuncInit, args, NULL);
+            Py_DECREF(args);
 
             if (!result) {
                 PyErr_Print();
@@ -250,12 +240,13 @@ void plugin_driver_destroy(plugin_driver_t *driver) {
  * mutex functions, and metadata needed by external plugins.
  * 
  * @param type Type of plugin (PLUGIN_TYPE_PYTHON or PLUGIN_TYPE_NATIVE)
+ * @param driver Pointer to plugin driver (for buffer mutex)
  * @return Pointer to allocated structure/capsule, or NULL on error
  * 
  * For PLUGIN_TYPE_NATIVE: Returns plugin_runtime_args_t*
  * For PLUGIN_TYPE_PYTHON: Returns PyObject* (PyCapsule containing plugin_runtime_args_t*)
  */
-void* generate_structured_args(plugin_type_t type) {
+void* generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *driver) {
     plugin_runtime_args_t *args = malloc(sizeof(plugin_runtime_args_t));
     if (!args) {
         return NULL;
@@ -279,8 +270,8 @@ void* generate_structured_args(plugin_type_t type) {
     // Initialize mutex functions
     args->mutex_take = plugin_mutex_take;
     args->mutex_give = plugin_mutex_give;
-    // Note: buffer_mutex should be passed as parameter in future versions
-    args->buffer_mutex = NULL; // Will be set by caller
+    // Set buffer mutex from driver
+    args->buffer_mutex = driver ? &driver->buffer_mutex : NULL;
     
     // Initialize buffer size info
     args->buffer_size = BUFFER_SIZE;

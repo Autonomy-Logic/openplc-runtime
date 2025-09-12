@@ -162,6 +162,7 @@ int main()
         if (plugin_driver_load_config(plugin_driver, "../plugins.conf") == 0) {
             // Start plugins
             plugin_driver_init(plugin_driver);
+            plugin_driver_start(plugin_driver);
             log_info("[PLUGIN]: Plugin driver system initialized");
         } else {
             log_error("[PLUGIN]: Failed to load plugin configuration");

@@ -87,7 +87,7 @@ void plugin_driver_destroy(plugin_driver_t *driver);
 int python_plugin_get_symbols(plugin_instance_t *plugin);
 
 // Runtime arguments generation
-void* generate_structured_args(plugin_type_t type);
+void* generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *driver);
 void free_structured_args(plugin_runtime_args_t *args);
 
 #endif // PLUGIN_DRIVER_H
