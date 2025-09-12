@@ -19,8 +19,6 @@ add_compile_options(-Wall -Werror  -Wextra -fstack-protector-strong
     -D_FORTIFY_SOURCE=2 -O2 -Wformat
     -Werror=format-security -fPIC -fPIE)
 
-# Add drivers subdirectory
-add_subdirectory(drivers)
 
 # Step 3: Build the executable and link against the shared library
 add_executable(plc_main
