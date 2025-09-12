@@ -1,9 +1,11 @@
+#define PY_SSIZE_T_CLEAN 
+#include <Python.h>
+
 #include "plugin_driver.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <Python.h>
 #include "../plc_app/image_tables.h"
 #include "plugin_config.h"
 
@@ -145,6 +147,39 @@ int plugin_driver_init(plugin_driver_t *driver) {
     if (!driver) {
         return -1;
     }
+
+    // #chamdo a função init de cada plugin aqui
+    for (int i = 0; i < driver->plugin_count; i++) {
+        plugin_instance_t *plugin = &driver->plugins[i];
+        if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin && plugin->python_plugin->pFuncInit) {
+            // Generate structured args for Python plugin
+            plugin_runtime_args_t *args = generate_structured_args(PLUGIN_TYPE_PYTHON);
+            if (!args) {
+                fprintf(stderr, "Failed to generate runtime args for plugin: %s\n", plugin->config.name);
+                return -1;
+            }
+            // Set the buffer mutex
+            args->buffer_mutex = &driver->buffer_mutex;
+
+            // Call the Python init function
+            PyObject *py_args = create_python_runtime_args_capsule(args);
+            if (!py_args) {
+                fprintf(stderr, "Failed to create Python capsule for plugin: %s\n", plugin->config.name);
+                free_structured_args(args);
+                return -1;
+            }
+
+            PyObject *result = PyObject_CallFunctionObjArgs(plugin->python_plugin->pFuncInit, py_args, NULL);
+            Py_DECREF(py_args);
+
+            if (!result) {
+                PyErr_Print();
+                fprintf(stderr, "Python init function failed for plugin: %s\n", plugin->config.name);
+                return -1;
+            }
+            Py_DECREF(result);
+        }
+    }
     
     return 0;
 }
@@ -158,10 +193,14 @@ int plugin_driver_start(plugin_driver_t *driver) {
     
     for (int i = 0; i < driver->plugin_count; i++) {
         plugin_instance_t *plugin = &driver->plugins[i];
-        
-        if (pthread_create(&plugin->thread, NULL, plugin_thread_function, plugin) != 0) { // TODO: Here should be called the start_loop function from plugin
-            fprintf(stderr, "Failed to create thread for plugin: %s\n", plugin->config.name);
-            return -1;
+        if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin && plugin->python_plugin->pFuncStartLoop) {
+            PyObject *res = PyObject_CallFunctionObjArgs(plugin->python_plugin->pFuncStartLoop, NULL);
+            if (!res) {
+                PyErr_Print();
+                fprintf(stderr, "Python start loop function failed for plugin: %s\n", plugin->config.name);
+                return -1;
+            }
+            Py_DECREF(res);
         }
     }
     

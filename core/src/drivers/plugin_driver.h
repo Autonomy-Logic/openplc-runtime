@@ -1,12 +1,14 @@
 #ifndef PLUGIN_DRIVER_H
 #define PLUGIN_DRIVER_H
 
+#define PY_SSIZE_T_CLEAN 
+#include <Python.h>
+
 #include <pthread.h>
 #include "../lib/iec_types.h"
 #include "../plc_app/plcapp_manager.h"
 #include "plugin_config.h"
 #include "python_plugin_bridge.h"
-#include <Python.h>
 
 // Maximum number of plugins
 #define MAX_PLUGINS 16

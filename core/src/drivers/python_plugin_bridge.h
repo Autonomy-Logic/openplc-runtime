@@ -1,6 +1,7 @@
 #ifndef __PYTHON_PLUGIN_BRIDGE_H
 #define __PYTHON_PLUGIN_BRIDGE_H
 
+#define PY_SSIZE_T_CLEAN 
 #include <Python.h>
 
 // Forward declaration
