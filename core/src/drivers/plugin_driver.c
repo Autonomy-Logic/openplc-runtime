@@ -316,11 +316,23 @@ void plugin_driver_destroy(plugin_driver_t *driver)
  */
 void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *driver)
 {
+    printf("[PLUGIN]: Generating structured args for plugin type %d\n", type);
+
+    if (!driver)
+    {
+        fprintf(stderr, "[PLUGIN]: Error - driver is NULL\n");
+        return NULL;
+    }
+
     plugin_runtime_args_t *args = malloc(sizeof(plugin_runtime_args_t));
     if (!args)
     {
+        fprintf(stderr, "[PLUGIN]: Error - failed to allocate memory for runtime args\n");
         return NULL;
     }
+
+    printf("[PLUGIN]: Allocated runtime args structure (size: %zu bytes)\n",
+           sizeof(plugin_runtime_args_t));
 
     // Initialize all buffer pointers
     args->bool_input  = bool_input;
@@ -341,23 +353,57 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
     args->mutex_take = plugin_mutex_take;
     args->mutex_give = plugin_mutex_give;
     // Set buffer mutex from driver
-    args->buffer_mutex = driver ? &driver->buffer_mutex : NULL;
+    args->buffer_mutex = &driver->buffer_mutex;
 
     // Initialize buffer size info
     args->buffer_size     = BUFFER_SIZE;
     args->bits_per_buffer = 8;
 
+    printf("[PLUGIN]: Runtime args initialized:\n");
+    printf("[PLUGIN]:   buffer_size = %d\n", args->buffer_size);
+    printf("[PLUGIN]:   bits_per_buffer = %d\n", args->bits_per_buffer);
+    printf("[PLUGIN]:   buffer_mutex = %p\n", (void *)args->buffer_mutex);
+    printf("[PLUGIN]:   bool_input = %p\n", (void *)args->bool_input);
+    printf("[PLUGIN]:   mutex_take = %p\n", (void *)args->mutex_take);
+    printf("[PLUGIN]:   mutex_give = %p\n", (void *)args->mutex_give);
+
+    // Validate critical pointers
+    if (!args->buffer_mutex)
+    {
+        fprintf(stderr, "[PLUGIN]: Error - buffer_mutex is NULL\n");
+        free(args);
+        return NULL;
+    }
+
+    if (!args->mutex_take || !args->mutex_give)
+    {
+        fprintf(stderr, "[PLUGIN]: Error - mutex function pointers are NULL\n");
+        free(args);
+        return NULL;
+    }
+
     switch (type)
     {
     case PLUGIN_TYPE_NATIVE:
+        printf("[PLUGIN]: Returning native plugin args\n");
         // For native plugins, return the structure directly
         return args;
 
     case PLUGIN_TYPE_PYTHON:
+        printf("[PLUGIN]: Creating Python capsule for args\n");
         // For Python plugins, wrap in a PyCapsule
-        return create_python_runtime_args_capsule(args);
+        PyObject *capsule = create_python_runtime_args_capsule(args);
+        if (!capsule)
+        {
+            fprintf(stderr, "[PLUGIN]: Error - failed to create Python capsule\n");
+            free(args);
+            return NULL;
+        }
+        printf("[PLUGIN]: Python capsule created successfully\n");
+        return capsule;
 
     default:
+        fprintf(stderr, "[PLUGIN]: Error - unknown plugin type: %d\n", type);
         // Unknown type, clean up and return NULL
         free(args);
         return NULL;

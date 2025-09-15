@@ -8,52 +8,19 @@ import time
 import ctypes
 from ctypes import *
 
+# Import the correct type definitions
+from python_plugin_types import (
+    PluginRuntimeArgs, 
+    safe_extract_runtime_args_from_capsule,
+    SafeBufferAccess,
+    PluginStructureValidator
+)
+
 # Global variable to track initialization
 _initialized = False
 _runtime_args = None
-
-# Define the runtime arguments structure matching the C structure
-class PluginRuntimeArgs(ctypes.Structure):
-    """Python ctypes structure matching plugin_runtime_args_t"""
-    _fields_ = [
-        # Buffer arrays (using POINTER type for arrays)
-        ("bool_input", POINTER(POINTER(ctypes.c_bool * 8))),   # bool_input[BUFFER_SIZE][8] 
-        ("bool_output", POINTER(POINTER(ctypes.c_bool * 8))),  # bool_output[BUFFER_SIZE][8]
-        ("byte_input", POINTER(POINTER(ctypes.c_ubyte))),      # byte_input[BUFFER_SIZE]
-        ("byte_output", POINTER(POINTER(ctypes.c_ubyte))),     # byte_output[BUFFER_SIZE]
-        ("int_input", POINTER(POINTER(ctypes.c_uint16))),      # int_input[BUFFER_SIZE]
-        ("int_output", POINTER(POINTER(ctypes.c_uint16))),     # int_output[BUFFER_SIZE]
-        ("dint_input", POINTER(POINTER(ctypes.c_uint32))),     # dint_input[BUFFER_SIZE]
-        ("dint_output", POINTER(POINTER(ctypes.c_uint32))),    # dint_output[BUFFER_SIZE]
-        ("lint_input", POINTER(POINTER(ctypes.c_uint64))),     # lint_input[BUFFER_SIZE]
-        ("lint_output", POINTER(POINTER(ctypes.c_uint64))),    # lint_output[BUFFER_SIZE]
-        ("int_memory", POINTER(POINTER(ctypes.c_uint16))),     # int_memory[BUFFER_SIZE]
-        ("dint_memory", POINTER(POINTER(ctypes.c_uint32))),    # dint_memory[BUFFER_SIZE]
-        ("lint_memory", POINTER(POINTER(ctypes.c_uint64))),    # lint_memory[BUFFER_SIZE]
-        
-        # Mutex function pointers
-        ("mutex_take", CFUNCTYPE(c_int, c_void_p)),           # int (*mutex_take)(pthread_mutex_t*)
-        ("mutex_give", CFUNCTYPE(c_int, c_void_p)),           # int (*mutex_give)(pthread_mutex_t*)
-        ("buffer_mutex", c_void_p),                           # pthread_mutex_t *buffer_mutex
-        
-        # Buffer size information
-        ("buffer_size", c_int),                               # int buffer_size
-        ("bits_per_buffer", c_int),                           # int bits_per_buffer
-    ]
-
-def extract_runtime_args_from_capsule(capsule):
-    """Extract runtime arguments from PyCapsule"""
-    if not hasattr(capsule, '__class__') or capsule.__class__.__name__ != 'PyCapsule':
-        raise TypeError("Expected PyCapsule object")
-    
-    # Get the pointer from the capsule
-    ptr = ctypes.pythonapi.PyCapsule_GetPointer(capsule, b"openplc_runtime_args")
-    if not ptr:
-        raise ValueError("Failed to extract pointer from capsule")
-    
-    # Cast the pointer to our structure type
-    args_ptr = ctypes.cast(ptr, POINTER(PluginRuntimeArgs))
-    return args_ptr.contents
+_safe_buffer_access = None
+_runtime_args_capsule = None
 
 def init(runtime_args_capsule):
     """
@@ -63,26 +30,50 @@ def init(runtime_args_capsule):
     Args:
         runtime_args_capsule: PyCapsule containing plugin_runtime_args_t structure
     """
-    global _initialized, _runtime_args
+    global _initialized, _runtime_args, _safe_buffer_access, _runtime_args_capsule
+    _runtime_args_capsule = runtime_args_capsule
     
     print("Python plugin 'example_plugin' initializing...")
     
     try:
-        # Extract runtime args from capsule
-        # runtime_args = extract_runtime_args_from_capsule(runtime_args_capsule)
-        # print(f"✓ Runtime arguments extracted successfully")
-        # print(f"  Buffer size: {runtime_args.buffer_size}")
-        # print(f"  Bits per buffer: {runtime_args.bits_per_buffer}")
+        # Print structure validation info for debugging
+        print("Validating plugin structure alignment...")
+        PluginStructureValidator.print_structure_info()
         
-        # # Store runtime args for later use
-        # _runtime_args = runtime_args
-        # _initialized = True
+        # Extract runtime args from capsule using safe method
+        runtime_args, error_msg = safe_extract_runtime_args_from_capsule(runtime_args_capsule)
+        if runtime_args is None:
+            print(f"✗ Failed to extract runtime args: {error_msg}")
+            return False
+        
+        print(f"✓ Runtime arguments extracted successfully")
+        
+        # Safely access buffer size using validation
+        buffer_size, size_error = runtime_args.safe_access_buffer_size()
+        if buffer_size == -1:
+            print(f"✗ Failed to access buffer size: {size_error}")
+            return False
+        
+        print(f"  Buffer size: {buffer_size}")
+        print(f"  Bits per buffer: {runtime_args.bits_per_buffer}")
+        print(f"  Structure details: {runtime_args}")
+        
+        # Create safe buffer access wrapper
+        _safe_buffer_access = SafeBufferAccess(runtime_args)
+        if not _safe_buffer_access.is_valid:
+            print(f"✗ Failed to create safe buffer access: {_safe_buffer_access.error_msg}")
+            return False
+        
+        # Store runtime args for later use
+        _runtime_args = runtime_args
         
         print("✓ Plugin initialized successfully")
         return True
         
     except Exception as e:
         print(f"✗ Plugin initialization failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def start_loop():
@@ -90,7 +81,17 @@ def start_loop():
     Called when the plugin loop should start
     Optional function - not all plugins need this
     """
+
+    current_args, error_msg = safe_extract_runtime_args_from_capsule(_runtime_args_capsule)
+
+    global _runtime_args
     print("Plugin start_loop called")
+    while True:
+        time.sleep(0.1)
+        print("Plugin running...")
+        print(f"Output[0][0]: {(bool(current_args.bool_output[0][0])) if current_args else 'N/A'}")
+        # print(f"safe read output[0][0]: {_safe_buffer_access.safe_read_bool_output(0,0)}" if _safe_buffer_access else "N/A")
+        print(f"Output buffer address: 0x{ctypes.addressof(current_args.bool_output.contents) if current_args else 0:x}")
     pass
 
 def stop_loop():
@@ -100,30 +101,6 @@ def stop_loop():
     """
     print("Plugin stop_loop called")
     pass
-
-def run_cycle():
-    """
-    Main plugin cycle function
-    Called periodically by the plugin system
-    Optional function - some plugins may only need init
-    """
-    global _initialized, _runtime_args
-    
-    if not _initialized or not _runtime_args:
-        return
-    
-    # Example: Toggle a digital output every cycle
-    try:
-        if _runtime_args.mutex_take(_runtime_args.buffer_mutex) == 0:
-            # Toggle bool_output[0][0] 
-            current_value = _runtime_args.bool_output[0][0]
-            _runtime_args.bool_output[0][0] = not current_value
-            print(f"Toggled output 0.0 to {not current_value}")
-    except Exception as e:
-        print(f"Error in run_cycle: {e}")
-    finally:
-        if _runtime_args.buffer_mutex:
-            _runtime_args.mutex_give(_runtime_args.buffer_mutex)
 
 def cleanup():
     """
