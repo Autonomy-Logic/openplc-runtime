@@ -29,25 +29,18 @@ void *plugin_thread_function(void *arg)
 {
     plugin_instance_t *plugin = (plugin_instance_t *)arg;
 
-    // Load the plugin
-    if (!plugin_manager_load(plugin->manager))
+    PyObject *res = PyObject_CallFunctionObjArgs(plugin->python_plugin->pFuncStartLoop, NULL);
+    if (!res)
     {
-        fprintf(stderr, "Failed to load plugin: %s\n", plugin->config.path);
-        return NULL;
+        PyErr_Print();
+        fprintf(stderr, "Python start loop function failed for plugin: %s\n", plugin->config.name);
+        // return -1;
     }
-
-    // TODO: Here you would generate structured args and call plugin init
-    // Example:
-    // plugin_runtime_args_t *args = generate_structured_args(driver, plugin->config.type);
-    // if (args) {
-    //     // Get init symbol from plugin
-    //     typedef int (*plugin_init_func_t)(plugin_runtime_args_t *args);
-    //     plugin_init_func_t init_func = dlsym(plugin_handle, "init");
-    //     if (init_func) {
-    //         init_func(args);
-    //     }
-    //     free_structured_args(args);
-    // }
+    else
+    {
+        printf("[PLUGIN]: Plugin %s started successfully.\n", plugin->config.name);
+    }
+    Py_DECREF(res);
 
     plugin->running = 1;
 
@@ -202,6 +195,10 @@ int plugin_driver_init(plugin_driver_t *driver)
             }
             Py_DECREF(result);
         }
+        else if (plugin->config.type == PLUGIN_TYPE_NATIVE && plugin->manager)
+        {
+            // TODO: Implement native plugin initialization
+        }
     }
 
     return 0;
@@ -218,19 +215,37 @@ int plugin_driver_start(plugin_driver_t *driver)
     for (int i = 0; i < driver->plugin_count; i++)
     {
         plugin_instance_t *plugin = &driver->plugins[i];
-        if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin &&
-            plugin->python_plugin->pFuncStartLoop)
+        switch (plugin->config.type)
         {
-            PyObject *res =
-                PyObject_CallFunctionObjArgs(plugin->python_plugin->pFuncStartLoop, NULL);
-            if (!res)
+        case PLUGIN_TYPE_PYTHON:
+        {
+            // Python plugins run asynchronously in their own threads
+            if (plugin->python_plugin && plugin->python_plugin->pFuncStartLoop)
             {
-                PyErr_Print();
-                fprintf(stderr, "Python start loop function failed for plugin: %s\n",
-                        plugin->config.name);
-                return -1;
+                // Create a thread to run the plugin thread function
+                if (pthread_create(&plugin->thread, NULL, plugin_thread_function, plugin) != 0)
+                {
+                    fprintf(stderr, "Failed to create thread for plugin: %s\n",
+                            plugin->config.name);
+                    return -1;
+                }
             }
-            Py_DECREF(res);
+            else
+            {
+                fprintf(stderr, "Python plugin %s does not have a start_loop function.\n",
+                        plugin->config.name);
+            }
+        }
+        break;
+
+        case PLUGIN_TYPE_NATIVE:
+        {
+            // TODO: Implement native plugin start logic
+        }
+        break;
+
+        default:
+            break;
         }
     }
 
@@ -239,6 +254,7 @@ int plugin_driver_start(plugin_driver_t *driver)
 
 int plugin_driver_stop(plugin_driver_t *driver)
 {
+    printf("[PLUGIN]: Stopping all plugins...\n");
     if (!driver)
     {
         return -1;
@@ -255,7 +271,11 @@ int plugin_driver_stop(plugin_driver_t *driver)
     {
         if (driver->plugins[i].thread)
         {
-            pthread_join(driver->plugins[i].thread, NULL);
+            printf("[PLUGIN]: Plugin %s thread canceling.\n", driver->plugins[i].config.name);
+            pthread_cancel(driver->plugins[i].thread);
+            driver->plugins[i].thread = 0;
+            printf("[PLUGIN]: Plugin %s thread canceled.\n", driver->plugins[i].config.name);
+            // pthread_join(driver->plugins[i].thread, NULL);
         }
         if (driver->plugins[i].manager)
         {
@@ -457,14 +477,6 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
         py_binds->pFuncStopLoop = NULL;
     }
 
-    py_binds->pFuncCycleRun = PyObject_GetAttrString(py_binds->pModule, "run_cycle");
-    if (!py_binds->pFuncCycleRun || !PyCallable_Check(py_binds->pFuncCycleRun))
-    {
-        // run_cycle is optional
-        Py_XDECREF(py_binds->pFuncCycleRun);
-        py_binds->pFuncCycleRun = NULL;
-    }
-
     py_binds->pFuncCleanup = PyObject_GetAttrString(py_binds->pModule, "cleanup");
     if (!py_binds->pFuncCleanup || !PyCallable_Check(py_binds->pFuncCleanup))
     {
@@ -480,7 +492,6 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
     printf("  - init: %s\n", py_binds->pFuncInit ? "✓" : "✗");
     printf("  - start_loop: %s\n", py_binds->pFuncStartLoop ? "✓" : "✗");
     printf("  - stop_loop: %s\n", py_binds->pFuncStopLoop ? "✓" : "✗");
-    printf("  - run_cycle: %s\n", py_binds->pFuncCycleRun ? "✓" : "✗");
     printf("  - cleanup: %s\n", py_binds->pFuncCleanup ? "✓" : "✗");
 
     return 0;
@@ -505,7 +516,6 @@ void python_plugin_cleanup(plugin_instance_t *plugin)
         Py_XDECREF(plugin->python_plugin->pFuncInit);
         Py_XDECREF(plugin->python_plugin->pFuncStartLoop);
         Py_XDECREF(plugin->python_plugin->pFuncStopLoop);
-        Py_XDECREF(plugin->python_plugin->pFuncCycleRun);
         Py_XDECREF(plugin->python_plugin->pFuncCleanup);
         Py_XDECREF(plugin->python_plugin->pModule);
 
