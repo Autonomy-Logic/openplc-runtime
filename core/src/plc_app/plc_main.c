@@ -197,7 +197,6 @@ int main()
     // Cleanup plugin driver system
     if (plugin_driver)
     {
-        plugin_driver_stop(plugin_driver);
         plugin_driver_destroy(plugin_driver);
     }
 
