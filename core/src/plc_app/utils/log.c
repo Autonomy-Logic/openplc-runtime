@@ -7,10 +7,15 @@
 #include <sys/un.h>
 #include <errno.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <stdatomic.h>
+#include <signal.h>
 
 static LogLevel current_level = LOG_LEVEL_INFO;
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 int socket_fd = -1;
+
+extern volatile sig_atomic_t keep_running;
 
 void log_set_level(LogLevel level) { current_level = level; }
 
@@ -19,7 +24,7 @@ void *log_thread_management(void *arg)
 {
     char *unix_socket_path = (char *)arg;
 
-    while(1)
+    while(keep_running)
     {
         if (socket_fd < 0) 
         {
