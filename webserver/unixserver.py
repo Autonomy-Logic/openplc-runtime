@@ -57,11 +57,6 @@ class UnixLogServer:
             with client_sock.makefile('r') as f:
                 for line in f:
                     self.log_buffer.append(line.strip())
-            """data = client_sock.recv(1024)
-            if not data:
-                break
-            message = data.decode()
-            logger.info("Received log message: %s", message)"""
         except Exception as e:
             logger.error("Error handling client: %s", e)
         finally:
