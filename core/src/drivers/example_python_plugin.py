@@ -20,7 +20,6 @@ from python_plugin_types import (
 _initialized = False
 _runtime_args = None
 _safe_buffer_access = None
-_runtime_args_capsule = None
 
 def init(runtime_args_capsule):
     """
@@ -31,7 +30,6 @@ def init(runtime_args_capsule):
         runtime_args_capsule: PyCapsule containing plugin_runtime_args_t structure
     """
     global _initialized, _runtime_args, _safe_buffer_access, _runtime_args_capsule
-    _runtime_args_capsule = runtime_args_capsule
     
     print("Python plugin 'example_plugin' initializing...")
     
@@ -82,14 +80,12 @@ def start_loop():
     Optional function - not all plugins need this
     """
 
-    current_args, error_msg = safe_extract_runtime_args_from_capsule(_runtime_args_capsule)
-
     global _runtime_args
     print("Plugin start_loop called")
     while True:
         time.sleep(0.1)
-        addr = ctypes.addressof(current_args.bool_output[0][0])
-        internal_safe_buffer_access = SafeBufferAccess(current_args)
+        addr = ctypes.addressof(_runtime_args.bool_output[0][0])
+        internal_safe_buffer_access = SafeBufferAccess(_runtime_args)
         value, msg = internal_safe_buffer_access.safe_read_bool_output(0,0)
         print(f"Value at address 0x{addr:x}: {value} ({msg})")
     pass
