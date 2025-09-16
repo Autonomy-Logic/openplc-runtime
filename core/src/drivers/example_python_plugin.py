@@ -88,10 +88,10 @@ def start_loop():
     print("Plugin start_loop called")
     while True:
         time.sleep(0.1)
-        print("Plugin running...")
-        print(f"Output[0][0]: {(bool(current_args.bool_output[0][0])) if current_args else 'N/A'}")
-        # print(f"safe read output[0][0]: {_safe_buffer_access.safe_read_bool_output(0,0)}" if _safe_buffer_access else "N/A")
-        print(f"Output buffer address: 0x{ctypes.addressof(current_args.bool_output.contents) if current_args else 0:x}")
+        addr = ctypes.addressof(current_args.bool_output[0][0])
+        internal_safe_buffer_access = SafeBufferAccess(current_args)
+        value, msg = internal_safe_buffer_access.safe_read_bool_output(0,0)
+        print(f"Value at address 0x{addr:x}: {value} ({msg})")
     pass
 
 def stop_loop():

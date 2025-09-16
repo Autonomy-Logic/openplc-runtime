@@ -221,8 +221,8 @@ class SafeBufferAccess:
                 if bit_idx < 0 or bit_idx >= self.args.bits_per_buffer:
                     return False, f"Invalid bit index: {bit_idx}"
                 
-                # Access the value
-                value = bool(self.args.bool_output[buffer_idx][bit_idx])
+                # Access the value - read from the actual value, not the pointer
+                value = bool(self.args.bool_output[buffer_idx][bit_idx].contents.value)
                 return value, "Success"
                 
             finally:
@@ -252,8 +252,8 @@ class SafeBufferAccess:
                 if bit_idx < 0 or bit_idx >= self.args.bits_per_buffer:
                     return False, f"Invalid bit index: {bit_idx}"
                 
-                # Set the value
-                self.args.bool_output[buffer_idx][bit_idx] = 1 if value else 0
+                # Set the value - access the actual value, not the pointer
+                self.args.bool_output[buffer_idx][bit_idx].contents.value = 1 if value else 0
                 return True, "Success"
                 
             finally:
