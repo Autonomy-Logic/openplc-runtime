@@ -68,6 +68,12 @@ void *print_stats_thread(void *arg)
 int main() 
 {
     log_set_level(LOG_LEVEL_DEBUG);
+    
+    if (log_init(LOG_SOCKET_PATH) < 0)
+    {
+        fprintf(stderr, "Failed to initialize logging system\n");
+        return -1;
+    }
 
     // Handle SIGINT for graceful shutdown
     struct sigaction sa;
