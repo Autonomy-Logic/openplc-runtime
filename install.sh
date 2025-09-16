@@ -15,8 +15,17 @@ install_dependencies() {
     && rm -rf /var/lib/apt/lists/*
 }
 
+build_plc_app(){
+    mkdir build
+    cd build
+    cmake ..
+    make
+    cd ..
+}
+
 if [ "$1" = "docker" ]; then
     install_dependencies
+    build_plc_app
     python3 -m venv "$VENV_DIR"
     "$VENV_DIR/bin/python3" -m pip install --upgrade pip
     "$VENV_DIR/bin/python3" -m pip install -r requirements.txt
@@ -28,6 +37,7 @@ if [ "$1" = "linux" ]; then
     chmod +x install.sh
     chmod +x scripts/*
     install_dependencies
+    build_plc_app
     python3 -m venv "$VENV_DIR"
     "$VENV_DIR/bin/python3" -m pip install --upgrade pip
     "$VENV_DIR/bin/python3" -m pip install -r requirements.txt
