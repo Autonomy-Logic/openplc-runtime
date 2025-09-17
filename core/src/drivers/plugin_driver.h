@@ -67,7 +67,7 @@ typedef struct plugin_instance_s
 {
     PluginManager *manager;
     python_binds_t *python_plugin;
-    pthread_t thread;
+    // pthread_t thread;
     int running;
     plugin_config_t config;
 } plugin_instance_t;

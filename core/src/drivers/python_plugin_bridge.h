@@ -12,8 +12,8 @@ typedef struct
 {
     PyObject *pModule;
     PyObject *pFuncInit; // Driver Init function
-    PyObject *pFuncStartLoop;
-    PyObject *pFuncStopLoop;
+    PyObject *pFuncStart;
+    PyObject *pFuncStop;
     PyObject *pFuncCleanup;
 } python_binds_t;
 
