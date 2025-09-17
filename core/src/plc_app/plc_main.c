@@ -186,6 +186,12 @@ int main()
         sleep(1);
     }
 
+    // Cleanup plugin driver system
+    if (plugin_driver)
+    {
+        plugin_driver_destroy(plugin_driver);
+    }
+
     // Join threads and cleanup
     plc_state = PLC_STATE_STOPPED;
     log_info("PLC State: STOPPED");
@@ -193,12 +199,6 @@ int main()
     pthread_join(stats_thread, NULL);
     pthread_join(plc_thread, NULL);
     plugin_manager_destroy(plc_program);
-
-    // Cleanup plugin driver system
-    if (plugin_driver)
-    {
-        plugin_driver_destroy(plugin_driver);
-    }
 
     return 0;
 }

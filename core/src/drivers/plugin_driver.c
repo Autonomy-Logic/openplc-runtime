@@ -23,7 +23,8 @@ extern IEC_ULINT *lint_output[BUFFER_SIZE];
 extern IEC_UINT *int_memory[BUFFER_SIZE];
 extern IEC_UDINT *dint_memory[BUFFER_SIZE];
 extern IEC_ULINT *lint_memory[BUFFER_SIZE];
-PyThreadState *main_tstate = NULL;
+static PyThreadState *main_tstate = NULL;
+static PyGILState_STATE gstate;
 
 // Prototypes
 static void python_plugin_cleanup(plugin_instance_t *plugin);
@@ -187,8 +188,8 @@ int plugin_driver_start(plugin_driver_t *driver)
         return -1;
     }
 
-    main_tstate        = PyEval_SaveThread();
-    PyGILState_STATE g = PyGILState_Ensure();
+    main_tstate = PyEval_SaveThread();
+    gstate      = PyGILState_Ensure();
 
     for (int i = 0; i < driver->plugin_count; i++)
     {
@@ -234,7 +235,7 @@ int plugin_driver_start(plugin_driver_t *driver)
             break;
         }
     }
-    PyGILState_Release(g);
+    PyGILState_Release(gstate);
     return 0;
 }
 
@@ -249,13 +250,14 @@ int plugin_driver_stop(plugin_driver_t *driver)
     // Signal all plugins to stop
     for (int i = 0; i < driver->plugin_count; i++)
     {
+        printf("[PLUGIN]: Stopping plugin %d/%d: %s\n", i + 1, driver->plugin_count,
+               driver->plugins[i].config.name);
         if (driver->plugins[i].python_plugin && driver->plugins[i].python_plugin->pFuncStop &&
             driver->plugins[i].running)
         {
             plugin_instance_t *plugin = &driver->plugins[i];
 
-            PyObject *res =
-                PyObject_CallFunctionObjArgs(driver->plugins[i].python_plugin->pFuncStop, NULL);
+            PyObject *res = PyObject_CallNoArgs(driver->plugins[i].python_plugin->pFuncStop);
             if (!res)
             {
                 PyErr_Print();
@@ -270,6 +272,7 @@ int plugin_driver_stop(plugin_driver_t *driver)
             plugin->running = 0;
         }
 
+        printf("[PLUGIN]: Plugin %s stopped...\n", driver->plugins[i].config.name);
         // Plugin manager only handles destruction, not stopping
         // TODO: Implement native plugin stop logic if needed
     }
@@ -283,6 +286,8 @@ void plugin_driver_destroy(plugin_driver_t *driver)
     {
         return;
     }
+
+    gstate = PyGILState_Ensure();
 
     plugin_driver_stop(driver);
 
@@ -299,6 +304,8 @@ void plugin_driver_destroy(plugin_driver_t *driver)
             python_plugin_cleanup(plugin);
         }
     }
+
+    PyGILState_Release(gstate);
     PyEval_RestoreThread(main_tstate);
     Py_FinalizeEx();
     pthread_mutex_destroy(&driver->buffer_mutex);
