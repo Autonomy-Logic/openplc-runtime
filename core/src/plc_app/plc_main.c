@@ -23,7 +23,8 @@ extern plc_timing_stats_t plc_timing_stats;
 volatile sig_atomic_t keep_running = 1;
 struct timespec timer_start;
 pthread_t plc_thread;
-PluginManager *plc_program = NULL;
+PluginManager *plc_program     = NULL;
+plugin_driver_t *plugin_driver = NULL;
 
 void handle_sigint(int sig)
 {
@@ -85,6 +86,7 @@ void *plc_cycle_thread(void *arg)
     while (plc_state == PLC_STATE_RUNNING)
     {
         scan_cycle_time_start();
+        plugin_mutex_take(&plugin_driver->buffer_mutex);
 
         // Execute the PLC cycle
         ext_config_run__(tick__++);
@@ -93,6 +95,7 @@ void *plc_cycle_thread(void *arg)
         // Update Watchdog Heartbeat
         atomic_store(&plc_heartbeat, time(NULL));
 
+        plugin_mutex_give(&plugin_driver->buffer_mutex);
         scan_cycle_time_end();
 
         // Calculate next start time
@@ -151,7 +154,7 @@ int main()
     }
 
     // Initialize plugin driver system
-    plugin_driver_t *plugin_driver = plugin_driver_create();
+    plugin_driver = plugin_driver_create();
     if (plugin_driver)
     {
         // Load plugin configuration

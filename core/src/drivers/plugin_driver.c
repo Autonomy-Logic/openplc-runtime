@@ -49,12 +49,12 @@ plugin_driver_t *plugin_driver_create(void)
 }
 
 // Mutex helper functions for plugins
-static int plugin_mutex_take(pthread_mutex_t *mutex)
+int plugin_mutex_take(pthread_mutex_t *mutex)
 {
     return pthread_mutex_lock(mutex);
 }
 
-static int plugin_mutex_give(pthread_mutex_t *mutex)
+int plugin_mutex_give(pthread_mutex_t *mutex)
 {
     return pthread_mutex_unlock(mutex);
 }
