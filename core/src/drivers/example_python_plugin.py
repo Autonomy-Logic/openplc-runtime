@@ -7,6 +7,7 @@ This demonstrates the expected functions that should be present in a Python plug
 import time
 import ctypes
 from ctypes import *
+import threading
 
 # Import the correct type definitions
 from python_plugin_types import (
@@ -20,6 +21,8 @@ from python_plugin_types import (
 _initialized = False
 _runtime_args = None
 _safe_buffer_access = None
+_mainthread = None
+_stop = threading.Event()
 
 def init(runtime_args_capsule):
     """
@@ -29,7 +32,7 @@ def init(runtime_args_capsule):
     Args:
         runtime_args_capsule: PyCapsule containing plugin_runtime_args_t structure
     """
-    global _initialized, _runtime_args, _safe_buffer_access, _runtime_args_capsule
+    global _initialized, _runtime_args, _safe_buffer_access
     
     print("Python plugin 'example_plugin' initializing...")
     
@@ -79,16 +82,19 @@ def start_loop():
     Called when the plugin loop should start
     Optional function - not all plugins need this
     """
+    def loop():
+        global _runtime_args, _stop
+        print("Plugin start_loop called")
+        while not _stop.is_set():
+            time.sleep(0.1)
+            addr = ctypes.addressof(_runtime_args.bool_output[0][0])
+            value, msg = _safe_buffer_access.safe_read_bool_output(0,0)
+            print(f"Value at address 0x{addr:x}: {value} ({msg})")
 
-    global _runtime_args
-    print("Plugin start_loop called")
-    while True:
-        time.sleep(0.1)
-        addr = ctypes.addressof(_runtime_args.bool_output[0][0])
-        internal_safe_buffer_access = SafeBufferAccess(_runtime_args)
-        value, msg = internal_safe_buffer_access.safe_read_bool_output(0,0)
-        print(f"Value at address 0x{addr:x}: {value} ({msg})")
-    pass
+    global _mainthread
+    _mainthread = threading.Thread(target=loop, daemon=True)
+    _mainthread.start()
+    return 0
 
 def stop_loop():
     """
@@ -96,7 +102,14 @@ def stop_loop():
     Optional function - not all plugins need this
     """
     print("Plugin stop_loop called")
-    pass
+    global _mainthread
+    if _mainthread is not None:
+        print("Stopping main thread...")
+        # In a real implementation, you would signal the thread to stop gracefully
+        _stop.set()
+        _mainthread.join()
+        _mainthread = None
+        print("✓ Main thread stopped")
 
 def cleanup():
     """
