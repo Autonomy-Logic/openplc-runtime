@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from typing import Callable
 import time
+import zipfile
+import sys
 
 import flask
 import flask_login
@@ -40,6 +42,84 @@ BASE_DIR = Path(__file__).parent
 CERT_FILE = (BASE_DIR / "certOPENPLC.pem").resolve()
 KEY_FILE = (BASE_DIR / "keyOPENPLC.pem").resolve()
 HOSTNAME = "localhost"
+
+MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB per file
+MAX_TOTAL_SIZE = 50 * 1024 * 1024  # 50 MB total
+DISALLOWED_EXT = {".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr"}
+
+
+def analyze_zip(zip_path):
+    if not zipfile.is_zipfile(zip_path):
+        logger.warning("Not a valid ZIP file.")
+        return False, []
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        total_size = 0
+        safe = True
+        valid_files = []
+
+        for info in zf.infolist():
+            filename = info.filename
+            uncompressed_size = info.file_size
+            compressed_size = info.compress_size
+            ext = os.path.splitext(filename)[1].lower()
+
+            # Check for path traversal or absolute paths
+            if filename.startswith("/") or ".." in filename or ":" in filename:
+                logger.warning(f"Dangerous path: {filename}")
+                safe = False
+
+            # Check uncompressed size
+            if uncompressed_size > MAX_FILE_SIZE:
+                logger.warning(f"File too large: {filename} ({uncompressed_size} bytes)")
+                safe = False
+
+            # Check compression ratio (ZIP bomb detection)
+            if compressed_size > 0 and uncompressed_size / compressed_size > 1000:
+                logger.warning(f"Suspicious compression ratio in {filename}")
+                safe = False
+
+            # Check disallowed extensions
+            if ext in DISALLOWED_EXT:
+                logger.warning(f"Disallowed extension: {filename}")
+                safe = False
+
+            total_size += uncompressed_size
+            valid_files.append(info)
+
+        # Check total size
+        if total_size > MAX_TOTAL_SIZE:
+            logger.warning(f"Total uncompressed size too large: {total_size} bytes")
+            safe = False
+
+        if safe:
+            logger.info("ZIP file looks safe to extract (based on static checks).")
+        else:
+            logger.warning("ZIP file failed safety checks.")
+
+        return safe, valid_files
+
+
+def safe_extract(zip_path, dest_dir, valid_files):
+    """Extract files safely to a target directory."""
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for info in valid_files:
+            out_path = os.path.join(dest_dir, info.filename)
+
+            # Normalize path
+            out_path = os.path.abspath(out_path)
+
+            # Ensure extraction stays inside destination
+            if not out_path.startswith(os.path.abspath(dest_dir)):
+                logger.warning(f"⚠️ Skipping suspicious path: {info.filename}")
+                continue
+
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            with zf.open(info) as src, open(out_path, "wb") as dst:
+                dst.write(src.read())
+
+            logger.info(f"Extracted: {out_path}")
+
 
 def create_connection(db_file):
     """ Create a connection to the database file """
@@ -132,45 +212,49 @@ def handle_upload_file(data: dict) -> dict:
     if "file" not in flask.request.files:
         return {"UploadFileFail": "No file part in the request"}
     
-    st_file = flask.request.files["file"]
-    
-    if st_file.content_length > 32 * 1024 * 1024:  # 32 MB limit
+    zip_file = flask.request.files["file"]
+
+    if zip_file.content_length > 32 * 1024 * 1024:  # 32 MB limit
         return {"UploadFileFail": "File is too large"}
 
-    # Database operations
-    database = "openplc.db"
-    conn = create_connection(database)
-    if conn is None:
-        return {"UploadFileFail": "Error connecting to the database"}
-    
-    logger.info("%s connected", database)
-    
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM Programs WHERE Name = 'webserver_program'")
-        row = cur.fetchone()
-        
-        if not row or len(row) < 4:
-            return {"UploadFileFail": "Program record not found or invalid"}
-        
-        filename = str(row[3])
-        st_file.save(f"st_files/{filename}")
-        cur.close()
-        
-    except Exception as e:
-        return {"UploadFileFail": f"Database operation failed: {e}"}
-    finally:
-        if conn:
-            conn.close()
+    safe, valid_files = analyze_zip(zip_file)
 
-    if openplc_runtime.status() == "Compiling":
-        return {"RuntimeStatus": "Compiling"}
+    return {"UploadFile": valid_files}
 
-    try:
-        openplc_runtime.compile_program(filename)
-        return {"CompilationStatus": "Starting program compilation"}
-    except Exception as e:
-        return {"CompilationStatusFail": f"Compilation failed: {e}"}
+    # # Database operations
+    # database = "openplc.db"
+    # conn = create_connection(database)
+    # if conn is None:
+    #     return {"UploadFileFail": "Error connecting to the database"}
+    
+    # logger.info("%s connected", database)
+    
+    # try:
+    #     cur = conn.cursor()
+    #     cur.execute("SELECT * FROM Programs WHERE Name = 'webserver_program'")
+    #     row = cur.fetchone()
+        
+    #     if not row or len(row) < 4:
+    #         return {"UploadFileFail": "Program record not found or invalid"}
+        
+    #     filename = str(row[3])
+    #     st_file.save(f"st_files/{filename}")
+    #     cur.close()
+        
+    # except Exception as e:
+    #     return {"UploadFileFail": f"Database operation failed: {e}"}
+    # finally:
+    #     if conn:
+    #         conn.close()
+
+    # if openplc_runtime.status() == "Compiling":
+    #     return {"RuntimeStatus": "Compiling"}
+
+    # try:
+    #     openplc_runtime.compile_program(filename)
+    #     return {"CompilationStatus": "Starting program compilation"}
+    # except Exception as e:
+    #     return {"CompilationStatusFail": f"Compilation failed: {e}"}
 
 
 POST_HANDLERS: dict[str, Callable[[dict], dict]] = {

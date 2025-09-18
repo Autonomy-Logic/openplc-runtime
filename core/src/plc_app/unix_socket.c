@@ -39,61 +39,55 @@ static ssize_t read_line(int fd, char *buffer, size_t max_length)
     return total_read;
 }
 
-void handle_unix_socket_commands(char *command, char *response, size_t response_size)
+void handle_unix_socket_commands(const char *command, char *response, size_t response_size)
 {
-    switch(command){
-        case strcmp(command, "PING"):
-            log_debug("Received PING command");
-            strncpy(response, "PING:OK\n", response_size);
-            break;
-
-        case strcmp(command, "STATUS"):
-            log_debug("Received STATUS command");
-            PLCState current_state = plc_get_state();
-
-            if(current_state == PLC_STATE_INIT)
-                strncpy(response, "STATUS:INIT\n", response_size);
-            else if(current_state == PLC_STATE_RUNNING)
-                strncpy(response, "STATUS:RUNNING\n", response_size);
-            else if (current_state == PLC_STATE_STOPPED)
-                strncpy(response, "STATUS:STOPPED\n", response_size);
-            else if (current_state == PLC_STATE_ERROR)
-                strncpy(response, "STATUS:ERROR\n", response_size);
-            break;
-
-        case strcmp(command, "STOP"):
-            log_debug("Received STOP command");
-            if (plc_set_state(PLC_STATE_STOPPED) == true) 
-                strncpy(response, "STOP:OK\n", response_size);
-            else 
-                strncpy(response, "STOP:ERROR\n", response_size);
-            break;
-
-        case strcmp(command, "START"):
-            log_debug("Received START command");
-            PLCState current_state = plc_get_state();
-            if (current_state == PLC_STATE_STOPPED || current_state == PLC_STATE_ERROR) 
-            {
-                if (plc_set_state(PLC_STATE_RUNNING) == true) 
-                {
-                    strncpy(response, "START:OK\n", response_size);
-                } 
-                else 
-                {
-                    strncpy(response, "START:ERROR\n", response_size);
-                }
-            } 
-            else 
-            {
-                strncpy(response, "START:ERROR_ALREADY_RUNNING\n", response_size);
-                log_error("Received START command but PLC is already RUNNING");
-            }
-            break;
-
-        case default:
-            log_error("Unknown command received: %s", command);
-            strncpy(response, "COMMAND:ERROR\n", response_size);
+    if (strcmp(command, "PING") == 0) {
+        log_debug("Received PING command");
+        strncpy(response, "PING:OK\n", response_size);
     }
+    else if (strcmp(command, "STATUS") == 0) {
+        log_debug("Received STATUS command");
+        PLCState current_state = plc_get_state();
+
+        if (current_state == PLC_STATE_INIT)
+            strncpy(response, "STATUS:INIT\n", response_size);
+        else if (current_state == PLC_STATE_RUNNING)
+            strncpy(response, "STATUS:RUNNING\n", response_size);
+        else if (current_state == PLC_STATE_STOPPED)
+            strncpy(response, "STATUS:STOPPED\n", response_size);
+        else if (current_state == PLC_STATE_ERROR)
+            strncpy(response, "STATUS:ERROR\n", response_size);
+        else
+            strncpy(response, "STATUS:UNKNOWN\n", response_size);
+    }
+    else if (strcmp(command, "STOP") == 0) {
+        log_debug("Received STOP command");
+        if (plc_set_state(PLC_STATE_STOPPED))
+            strncpy(response, "STOP:OK\n", response_size);
+        else
+            strncpy(response, "STOP:ERROR\n", response_size);
+    }
+    else if (strcmp(command, "START") == 0) {
+        log_debug("Received START command");
+        PLCState current_state = plc_get_state();
+        if (current_state == PLC_STATE_STOPPED || current_state == PLC_STATE_ERROR) {
+            if (plc_set_state(PLC_STATE_RUNNING)) {
+                strncpy(response, "START:OK\n", response_size);
+            } else {
+                strncpy(response, "START:ERROR\n", response_size);
+            }
+        } else {
+            strncpy(response, "START:ERROR_ALREADY_RUNNING\n", response_size);
+            log_error("Received START command but PLC is already RUNNING");
+        }
+    }
+    else {
+        log_error("Unknown command received: %s", command);
+        strncpy(response, "COMMAND:ERROR\n", response_size);
+    }
+
+    // Always ensure null termination
+    response[response_size - 1] = '\0';
 }
 
 void *unix_socket_thread(void *arg) 
