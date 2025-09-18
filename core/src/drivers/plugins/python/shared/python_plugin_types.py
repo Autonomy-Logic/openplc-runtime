@@ -201,6 +201,45 @@ class SafeBufferAccess:
         self.args = runtime_args
         self.is_valid, self.error_msg = runtime_args.validate_pointers()
     
+    def read_bool_input(self, buffer_idx, bit_idx, thread_safe=True):
+        """
+        Safely read a boolean input with optional mutex handling
+        Args:
+            buffer_idx: Buffer index
+            bit_idx: Bit index within buffer
+            thread_safe: If True, uses mutex for thread-safe access
+        Returns: (bool, str) - (value, error_message)
+        """
+        if not self.is_valid:
+            return False, f"Invalid runtime args: {self.error_msg}"
+        
+        try:
+            # Take mutex only if thread_safe is True
+            mutex_acquired = False
+            if thread_safe:
+                if self.args.mutex_take(self.args.buffer_mutex) != 0:
+                    return False, "Failed to acquire mutex"
+                mutex_acquired = True
+            
+            try:
+                # Validate indices
+                if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                    return False, f"Invalid buffer index: {buffer_idx}"
+                if bit_idx < 0 or bit_idx >= self.args.bits_per_buffer:
+                    return False, f"Invalid bit index: {bit_idx}"
+                
+                # Access the value - read from the actual value, not the pointer
+                value = bool(self.args.bool_input[buffer_idx][bit_idx].contents.value)
+                return value, "Success"
+                
+            finally:
+                # Release mutex only if it was acquired
+                if mutex_acquired:
+                    self.args.mutex_give(self.args.buffer_mutex)
+                
+        except Exception as e:
+            return False, f"Exception during buffer access: {e}"
+
     def read_bool_output(self, buffer_idx, bit_idx, thread_safe=True):
         """
         Safely read a boolean output with optional mutex handling
@@ -736,6 +775,240 @@ class SafeBufferAccess:
         except Exception as e:
             return 0, f"Exception during buffer access: {e}"
     
+    # Memory buffer access functions (IEC_UINT - 16-bit)
+    def read_int_memory(self, buffer_idx, thread_safe=True):
+        """
+        Safely read an int memory with optional mutex handling
+        Args:
+            buffer_idx: Buffer index
+            thread_safe: If True, uses mutex for thread-safe access
+        Returns: (int, str) - (value, error_message)
+        """
+        if not self.is_valid:
+            return 0, f"Invalid runtime args: {self.error_msg}"
+        
+        try:
+            # Take mutex only if thread_safe is True
+            mutex_acquired = False
+            if thread_safe:
+                if self.args.mutex_take(self.args.buffer_mutex) != 0:
+                    return 0, "Failed to acquire mutex"
+                mutex_acquired = True
+            
+            try:
+                # Validate index
+                if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                    return 0, f"Invalid buffer index: {buffer_idx}"
+                
+                # Access the value
+                value = self.args.int_memory[buffer_idx].contents.value
+                return value, "Success"
+                
+            finally:
+                # Release mutex only if it was acquired
+                if mutex_acquired:
+                    self.args.mutex_give(self.args.buffer_mutex)
+                
+        except Exception as e:
+            return 0, f"Exception during buffer access: {e}"
+    
+    def write_int_memory(self, buffer_idx, value, thread_safe=True):
+        """
+        Safely write an int memory with optional mutex handling
+        Args:
+            buffer_idx: Buffer index
+            value: Int value to write (0-65535)
+            thread_safe: If True, uses mutex for thread-safe access
+        Returns: (bool, str) - (success, error_message)
+        """
+        if not self.is_valid:
+            return False, f"Invalid runtime args: {self.error_msg}"
+        
+        try:
+            # Validate value range
+            if not (0 <= value <= 65535):
+                return False, f"Invalid int value: {value} (must be 0-65535)"
+            
+            # Take mutex only if thread_safe is True
+            mutex_acquired = False
+            if thread_safe:
+                if self.args.mutex_take(self.args.buffer_mutex) != 0:
+                    return False, "Failed to acquire mutex"
+                mutex_acquired = True
+            
+            try:
+                # Validate index
+                if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                    return False, f"Invalid buffer index: {buffer_idx}"
+                
+                # Set the value
+                self.args.int_memory[buffer_idx].contents.value = value
+                return True, "Success"
+                
+            finally:
+                # Release mutex only if it was acquired
+                if mutex_acquired:
+                    self.args.mutex_give(self.args.buffer_mutex)
+                
+        except Exception as e:
+            return False, f"Exception during buffer access: {e}"
+    
+    # Memory buffer access functions (IEC_UDINT - 32-bit)
+    def read_dint_memory(self, buffer_idx, thread_safe=True):
+        """
+        Safely read a dint memory with optional mutex handling
+        Args:
+            buffer_idx: Buffer index
+            thread_safe: If True, uses mutex for thread-safe access
+        Returns: (int, str) - (value, error_message)
+        """
+        if not self.is_valid:
+            return 0, f"Invalid runtime args: {self.error_msg}"
+        
+        try:
+            # Take mutex only if thread_safe is True
+            mutex_acquired = False
+            if thread_safe:
+                if self.args.mutex_take(self.args.buffer_mutex) != 0:
+                    return 0, "Failed to acquire mutex"
+                mutex_acquired = True
+            
+            try:
+                # Validate index
+                if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                    return 0, f"Invalid buffer index: {buffer_idx}"
+                
+                # Access the value
+                value = self.args.dint_memory[buffer_idx].contents.value
+                return value, "Success"
+                
+            finally:
+                # Release mutex only if it was acquired
+                if mutex_acquired:
+                    self.args.mutex_give(self.args.buffer_mutex)
+                
+        except Exception as e:
+            return 0, f"Exception during buffer access: {e}"
+    
+    def write_dint_memory(self, buffer_idx, value, thread_safe=True):
+        """
+        Safely write a dint memory with optional mutex handling
+        Args:
+            buffer_idx: Buffer index
+            value: Dint value to write (0-4294967295)
+            thread_safe: If True, uses mutex for thread-safe access
+        Returns: (bool, str) - (success, error_message)
+        """
+        if not self.is_valid:
+            return False, f"Invalid runtime args: {self.error_msg}"
+        
+        try:
+            # Validate value range
+            if not (0 <= value <= 4294967295):
+                return False, f"Invalid dint value: {value} (must be 0-4294967295)"
+            
+            # Take mutex only if thread_safe is True
+            mutex_acquired = False
+            if thread_safe:
+                if self.args.mutex_take(self.args.buffer_mutex) != 0:
+                    return False, "Failed to acquire mutex"
+                mutex_acquired = True
+            
+            try:
+                # Validate index
+                if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                    return False, f"Invalid buffer index: {buffer_idx}"
+                
+                # Set the value
+                self.args.dint_memory[buffer_idx].contents.value = value
+                return True, "Success"
+                
+            finally:
+                # Release mutex only if it was acquired
+                if mutex_acquired:
+                    self.args.mutex_give(self.args.buffer_mutex)
+                
+        except Exception as e:
+            return False, f"Exception during buffer access: {e}"
+    
+    # Memory buffer access functions (IEC_ULINT - 64-bit)
+    def read_lint_memory(self, buffer_idx, thread_safe=True):
+        """
+        Safely read a lint memory with optional mutex handling
+        Args:
+            buffer_idx: Buffer index
+            thread_safe: If True, uses mutex for thread-safe access
+        Returns: (int, str) - (value, error_message)
+        """
+        if not self.is_valid:
+            return 0, f"Invalid runtime args: {self.error_msg}"
+        
+        try:
+            # Take mutex only if thread_safe is True
+            mutex_acquired = False
+            if thread_safe:
+                if self.args.mutex_take(self.args.buffer_mutex) != 0:
+                    return 0, "Failed to acquire mutex"
+                mutex_acquired = True
+            
+            try:
+                # Validate index
+                if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                    return 0, f"Invalid buffer index: {buffer_idx}"
+                
+                # Access the value
+                value = self.args.lint_memory[buffer_idx].contents.value
+                return value, "Success"
+                
+            finally:
+                # Release mutex only if it was acquired
+                if mutex_acquired:
+                    self.args.mutex_give(self.args.buffer_mutex)
+                
+        except Exception as e:
+            return 0, f"Exception during buffer access: {e}"
+    
+    def write_lint_memory(self, buffer_idx, value, thread_safe=True):
+        """
+        Safely write a lint memory with optional mutex handling
+        Args:
+            buffer_idx: Buffer index
+            value: Lint value to write (0-18446744073709551615)
+            thread_safe: If True, uses mutex for thread-safe access
+        Returns: (bool, str) - (success, error_message)
+        """
+        if not self.is_valid:
+            return False, f"Invalid runtime args: {self.error_msg}"
+        
+        try:
+            # Validate value range
+            if not (0 <= value <= 18446744073709551615):
+                return False, f"Invalid lint value: {value} (must be 0-18446744073709551615)"
+            
+            # Take mutex only if thread_safe is True
+            mutex_acquired = False
+            if thread_safe:
+                if self.args.mutex_take(self.args.buffer_mutex) != 0:
+                    return False, "Failed to acquire mutex"
+                mutex_acquired = True
+            
+            try:
+                # Validate index
+                if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                    return False, f"Invalid buffer index: {buffer_idx}"
+                
+                # Set the value
+                self.args.lint_memory[buffer_idx].contents.value = value
+                return True, "Success"
+                
+            finally:
+                # Release mutex only if it was acquired
+                if mutex_acquired:
+                    self.args.mutex_give(self.args.buffer_mutex)
+                
+        except Exception as e:
+            return False, f"Exception during buffer access: {e}"
+    
     # Mutex API functions for manual control
     def acquire_mutex(self):
         """
@@ -766,6 +1039,413 @@ class SafeBufferAccess:
             return True, "Mutex released successfully"
         except Exception as e:
             return False, f"Exception during mutex release: {e}"
+    
+    # Batch operations for optimized mutex usage
+    def batch_read_values(self, operations):
+        """
+        Perform multiple read operations with a single mutex acquisition
+        Args:
+            operations: List of tuples describing read operations
+                       Format: [('buffer_type', buffer_idx, bit_idx), ...]
+                       buffer_type can be: 'bool_input', 'bool_output', 'byte_input', 'byte_output',
+                                         'int_input', 'int_output', 'dint_input', 'dint_output',
+                                         'lint_input', 'lint_output', 'int_memory', 'dint_memory', 'lint_memory'
+                       bit_idx is only required for bool operations
+        Returns: (list, str) - (results, error_message)
+                results format: [(success, value, error_msg), ...]
+        """
+        if not self.is_valid:
+            return [], f"Invalid runtime args: {self.error_msg}"
+        
+        if not operations:
+            return [], "No operations provided"
+        
+        results = []
+        
+        try:
+            # Acquire mutex once for all operations
+            if self.args.mutex_take(self.args.buffer_mutex) != 0:
+                return [], "Failed to acquire mutex"
+            
+            try:
+                for operation in operations:
+                    try:
+                        if len(operation) < 2:
+                            results.append((False, None, "Invalid operation format"))
+                            continue
+                        
+                        buffer_type = operation[0]
+                        buffer_idx = operation[1]
+                        
+                        # Handle boolean operations (require bit_idx)
+                        if buffer_type in ['bool_input', 'bool_output']:
+                            if len(operation) < 3:
+                                results.append((False, None, "Boolean operations require bit_idx"))
+                                continue
+                            bit_idx = operation[2]
+                            
+                            # Validate indices
+                            if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                                results.append((False, None, f"Invalid buffer index: {buffer_idx}"))
+                                continue
+                            if bit_idx < 0 or bit_idx >= self.args.bits_per_buffer:
+                                results.append((False, None, f"Invalid bit index: {bit_idx}"))
+                                continue
+                            
+                            if buffer_type == 'bool_input':
+                                value = bool(self.args.bool_input[buffer_idx][bit_idx].contents.value)
+                            else:  # bool_output
+                                value = bool(self.args.bool_output[buffer_idx][bit_idx].contents.value)
+                            
+                            results.append((True, value, "Success"))
+                        
+                        # Handle other buffer types
+                        else:
+                            # Validate buffer index
+                            if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                                results.append((False, None, f"Invalid buffer index: {buffer_idx}"))
+                                continue
+                            
+                            if buffer_type == 'byte_input':
+                                value = self.args.byte_input[buffer_idx].contents.value
+                            elif buffer_type == 'byte_output':
+                                value = self.args.byte_output[buffer_idx].contents.value
+                            elif buffer_type == 'int_input':
+                                value = self.args.int_input[buffer_idx].contents.value
+                            elif buffer_type == 'int_output':
+                                value = self.args.int_output[buffer_idx].contents.value
+                            elif buffer_type == 'dint_input':
+                                value = self.args.dint_input[buffer_idx].contents.value
+                            elif buffer_type == 'dint_output':
+                                value = self.args.dint_output[buffer_idx].contents.value
+                            elif buffer_type == 'lint_input':
+                                value = self.args.lint_input[buffer_idx].contents.value
+                            elif buffer_type == 'lint_output':
+                                value = self.args.lint_output[buffer_idx].contents.value
+                            elif buffer_type == 'int_memory':
+                                value = self.args.int_memory[buffer_idx].contents.value
+                            elif buffer_type == 'dint_memory':
+                                value = self.args.dint_memory[buffer_idx].contents.value
+                            elif buffer_type == 'lint_memory':
+                                value = self.args.lint_memory[buffer_idx].contents.value
+                            else:
+                                results.append((False, None, f"Unknown buffer type: {buffer_type}"))
+                                continue
+                            
+                            results.append((True, value, "Success"))
+                    
+                    except Exception as e:
+                        results.append((False, None, f"Exception during operation: {e}"))
+                
+                return results, "Batch read completed"
+                
+            finally:
+                # Always release mutex
+                self.args.mutex_give(self.args.buffer_mutex)
+                
+        except Exception as e:
+            return [], f"Exception during batch read: {e}"
+    
+    def batch_write_values(self, operations):
+        """
+        Perform multiple write operations with a single mutex acquisition
+        Args:
+            operations: List of tuples describing write operations
+                       Format: [('buffer_type', buffer_idx, value, bit_idx), ...]
+                       buffer_type can be: 'bool_output', 'byte_output', 'int_output', 'dint_output',
+                                         'lint_output', 'int_memory', 'dint_memory', 'lint_memory'
+                       bit_idx is only required for bool operations (last parameter)
+        Returns: (list, str) - (results, error_message)
+                results format: [(success, error_msg), ...]
+        """
+        if not self.is_valid:
+            return [], f"Invalid runtime args: {self.error_msg}"
+        
+        if not operations:
+            return [], "No operations provided"
+        
+        results = []
+        
+        try:
+            # Acquire mutex once for all operations
+            if self.args.mutex_take(self.args.buffer_mutex) != 0:
+                return [], "Failed to acquire mutex"
+            
+            try:
+                for operation in operations:
+                    try:
+                        if len(operation) < 3:
+                            results.append((False, "Invalid operation format"))
+                            continue
+                        
+                        buffer_type = operation[0]
+                        buffer_idx = operation[1]
+                        value = operation[2]
+                        
+                        # Handle boolean operations (require bit_idx)
+                        if buffer_type == 'bool_output':
+                            if len(operation) < 4:
+                                results.append((False, "Boolean operations require bit_idx"))
+                                continue
+                            bit_idx = operation[3]
+                            
+                            # Validate indices
+                            if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                                results.append((False, f"Invalid buffer index: {buffer_idx}"))
+                                continue
+                            if bit_idx < 0 or bit_idx >= self.args.bits_per_buffer:
+                                results.append((False, f"Invalid bit index: {bit_idx}"))
+                                continue
+                            
+                            self.args.bool_output[buffer_idx][bit_idx].contents.value = 1 if value else 0
+                            results.append((True, "Success"))
+                        
+                        # Handle other buffer types
+                        else:
+                            # Validate buffer index
+                            if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                                results.append((False, f"Invalid buffer index: {buffer_idx}"))
+                                continue
+                            
+                            # Validate value ranges and write
+                            if buffer_type == 'byte_output':
+                                if not (0 <= value <= 255):
+                                    results.append((False, f"Invalid byte value: {value} (must be 0-255)"))
+                                    continue
+                                self.args.byte_output[buffer_idx].contents.value = value
+                            elif buffer_type == 'int_output':
+                                if not (0 <= value <= 65535):
+                                    results.append((False, f"Invalid int value: {value} (must be 0-65535)"))
+                                    continue
+                                self.args.int_output[buffer_idx].contents.value = value
+                            elif buffer_type == 'dint_output':
+                                if not (0 <= value <= 4294967295):
+                                    results.append((False, f"Invalid dint value: {value} (must be 0-4294967295)"))
+                                    continue
+                                self.args.dint_output[buffer_idx].contents.value = value
+                            elif buffer_type == 'lint_output':
+                                if not (0 <= value <= 18446744073709551615):
+                                    results.append((False, f"Invalid lint value: {value} (must be 0-18446744073709551615)"))
+                                    continue
+                                self.args.lint_output[buffer_idx].contents.value = value
+                            elif buffer_type == 'int_memory':
+                                if not (0 <= value <= 65535):
+                                    results.append((False, f"Invalid int value: {value} (must be 0-65535)"))
+                                    continue
+                                self.args.int_memory[buffer_idx].contents.value = value
+                            elif buffer_type == 'dint_memory':
+                                if not (0 <= value <= 4294967295):
+                                    results.append((False, f"Invalid dint value: {value} (must be 0-4294967295)"))
+                                    continue
+                                self.args.dint_memory[buffer_idx].contents.value = value
+                            elif buffer_type == 'lint_memory':
+                                if not (0 <= value <= 18446744073709551615):
+                                    results.append((False, f"Invalid lint value: {value} (must be 0-18446744073709551615)"))
+                                    continue
+                                self.args.lint_memory[buffer_idx].contents.value = value
+                            else:
+                                results.append((False, f"Unknown buffer type: {buffer_type}"))
+                                continue
+                            
+                            results.append((True, "Success"))
+                    
+                    except Exception as e:
+                        results.append((False, f"Exception during operation: {e}"))
+                
+                return results, "Batch write completed"
+                
+            finally:
+                # Always release mutex
+                self.args.mutex_give(self.args.buffer_mutex)
+                
+        except Exception as e:
+            return [], f"Exception during batch write: {e}"
+    
+    def batch_mixed_operations(self, read_operations, write_operations):
+        """
+        Perform mixed read and write operations with a single mutex acquisition
+        Args:
+            read_operations: List of read operation tuples (same format as batch_read_values)
+            write_operations: List of write operation tuples (same format as batch_write_values)
+        Returns: (dict, str) - (results, error_message)
+                results format: {'reads': [(success, value, error_msg), ...], 'writes': [(success, error_msg), ...]}
+        """
+        if not self.is_valid:
+            return {}, f"Invalid runtime args: {self.error_msg}"
+        
+        if not read_operations and not write_operations:
+            return {}, "No operations provided"
+        
+        read_results = []
+        write_results = []
+        
+        try:
+            # Acquire mutex once for all operations
+            if self.args.mutex_take(self.args.buffer_mutex) != 0:
+                return {}, "Failed to acquire mutex"
+            
+            try:
+                # Perform read operations first (typically safer)
+                if read_operations:
+                    for operation in read_operations:
+                        try:
+                            if len(operation) < 2:
+                                read_results.append((False, None, "Invalid operation format"))
+                                continue
+                            
+                            buffer_type = operation[0]
+                            buffer_idx = operation[1]
+                            
+                            # Handle boolean operations (require bit_idx)
+                            if buffer_type in ['bool_input', 'bool_output']:
+                                if len(operation) < 3:
+                                    read_results.append((False, None, "Boolean operations require bit_idx"))
+                                    continue
+                                bit_idx = operation[2]
+                                
+                                # Validate indices
+                                if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                                    read_results.append((False, None, f"Invalid buffer index: {buffer_idx}"))
+                                    continue
+                                if bit_idx < 0 or bit_idx >= self.args.bits_per_buffer:
+                                    read_results.append((False, None, f"Invalid bit index: {bit_idx}"))
+                                    continue
+                                
+                                if buffer_type == 'bool_input':
+                                    value = bool(self.args.bool_input[buffer_idx][bit_idx].contents.value)
+                                else:  # bool_output
+                                    value = bool(self.args.bool_output[buffer_idx][bit_idx].contents.value)
+                                
+                                read_results.append((True, value, "Success"))
+                            
+                            # Handle other buffer types
+                            else:
+                                # Validate buffer index
+                                if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                                    read_results.append((False, None, f"Invalid buffer index: {buffer_idx}"))
+                                    continue
+                                
+                                if buffer_type == 'byte_input':
+                                    value = self.args.byte_input[buffer_idx].contents.value
+                                elif buffer_type == 'byte_output':
+                                    value = self.args.byte_output[buffer_idx].contents.value
+                                elif buffer_type == 'int_input':
+                                    value = self.args.int_input[buffer_idx].contents.value
+                                elif buffer_type == 'int_output':
+                                    value = self.args.int_output[buffer_idx].contents.value
+                                elif buffer_type == 'dint_input':
+                                    value = self.args.dint_input[buffer_idx].contents.value
+                                elif buffer_type == 'dint_output':
+                                    value = self.args.dint_output[buffer_idx].contents.value
+                                elif buffer_type == 'lint_input':
+                                    value = self.args.lint_input[buffer_idx].contents.value
+                                elif buffer_type == 'lint_output':
+                                    value = self.args.lint_output[buffer_idx].contents.value
+                                elif buffer_type == 'int_memory':
+                                    value = self.args.int_memory[buffer_idx].contents.value
+                                elif buffer_type == 'dint_memory':
+                                    value = self.args.dint_memory[buffer_idx].contents.value
+                                elif buffer_type == 'lint_memory':
+                                    value = self.args.lint_memory[buffer_idx].contents.value
+                                else:
+                                    read_results.append((False, None, f"Unknown buffer type: {buffer_type}"))
+                                    continue
+                                
+                                read_results.append((True, value, "Success"))
+                        
+                        except Exception as e:
+                            read_results.append((False, None, f"Exception during read operation: {e}"))
+                
+                # Perform write operations
+                if write_operations:
+                    for operation in write_operations:
+                        try:
+                            if len(operation) < 3:
+                                write_results.append((False, "Invalid operation format"))
+                                continue
+                            
+                            buffer_type = operation[0]
+                            buffer_idx = operation[1]
+                            value = operation[2]
+                            
+                            # Handle boolean operations (require bit_idx)
+                            if buffer_type == 'bool_output':
+                                if len(operation) < 4:
+                                    write_results.append((False, "Boolean operations require bit_idx"))
+                                    continue
+                                bit_idx = operation[3]
+                                
+                                # Validate indices
+                                if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                                    write_results.append((False, f"Invalid buffer index: {buffer_idx}"))
+                                    continue
+                                if bit_idx < 0 or bit_idx >= self.args.bits_per_buffer:
+                                    write_results.append((False, f"Invalid bit index: {bit_idx}"))
+                                    continue
+                                
+                                self.args.bool_output[buffer_idx][bit_idx].contents.value = 1 if value else 0
+                                write_results.append((True, "Success"))
+                            
+                            # Handle other buffer types
+                            else:
+                                # Validate buffer index
+                                if buffer_idx < 0 or buffer_idx >= self.args.buffer_size:
+                                    write_results.append((False, f"Invalid buffer index: {buffer_idx}"))
+                                    continue
+                                
+                                # Validate value ranges and write
+                                if buffer_type == 'byte_output':
+                                    if not (0 <= value <= 255):
+                                        write_results.append((False, f"Invalid byte value: {value} (must be 0-255)"))
+                                        continue
+                                    self.args.byte_output[buffer_idx].contents.value = value
+                                elif buffer_type == 'int_output':
+                                    if not (0 <= value <= 65535):
+                                        write_results.append((False, f"Invalid int value: {value} (must be 0-65535)"))
+                                        continue
+                                    self.args.int_output[buffer_idx].contents.value = value
+                                elif buffer_type == 'dint_output':
+                                    if not (0 <= value <= 4294967295):
+                                        write_results.append((False, f"Invalid dint value: {value} (must be 0-4294967295)"))
+                                        continue
+                                    self.args.dint_output[buffer_idx].contents.value = value
+                                elif buffer_type == 'lint_output':
+                                    if not (0 <= value <= 18446744073709551615):
+                                        write_results.append((False, f"Invalid lint value: {value} (must be 0-18446744073709551615)"))
+                                        continue
+                                    self.args.lint_output[buffer_idx].contents.value = value
+                                elif buffer_type == 'int_memory':
+                                    if not (0 <= value <= 65535):
+                                        write_results.append((False, f"Invalid int value: {value} (must be 0-65535)"))
+                                        continue
+                                    self.args.int_memory[buffer_idx].contents.value = value
+                                elif buffer_type == 'dint_memory':
+                                    if not (0 <= value <= 4294967295):
+                                        write_results.append((False, f"Invalid dint value: {value} (must be 0-4294967295)"))
+                                        continue
+                                    self.args.dint_memory[buffer_idx].contents.value = value
+                                elif buffer_type == 'lint_memory':
+                                    if not (0 <= value <= 18446744073709551615):
+                                        write_results.append((False, f"Invalid lint value: {value} (must be 0-18446744073709551615)"))
+                                        continue
+                                    self.args.lint_memory[buffer_idx].contents.value = value
+                                else:
+                                    write_results.append((False, f"Unknown buffer type: {buffer_type}"))
+                                    continue
+                                
+                                write_results.append((True, "Success"))
+                        
+                        except Exception as e:
+                            write_results.append((False, f"Exception during write operation: {e}"))
+                
+                return {'reads': read_results, 'writes': write_results}, "Batch mixed operations completed"
+                
+            finally:
+                # Always release mutex
+                self.args.mutex_give(self.args.buffer_mutex)
+                
+        except Exception as e:
+            return {}, f"Exception during batch mixed operations: {e}"
 
 def safe_extract_runtime_args_from_capsule(capsule):
     """
@@ -812,7 +1492,7 @@ if __name__ == "__main__":
     print("=" * 50)
     
     # Test structure validation
-    PluginStructureValidator.print_structure_info()
+    # PluginStructureValidator.print_structure_info()
     
     print(f"\nIEC Type Sizes:")
     print(f"  IEC_BOOL: {ctypes.sizeof(IEC_BOOL)} bytes")
