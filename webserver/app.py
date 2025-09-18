@@ -10,6 +10,10 @@ import time
 import zipfile
 import sys
 import shutil
+from dataclasses import dataclass, field
+from enum import Enum, auto
+import subprocess
+import threading
 
 import flask
 import flask_login
@@ -49,7 +53,31 @@ MAX_TOTAL_SIZE = 50 * 1024 * 1024  # 50 MB total
 DISALLOWED_EXT = {".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr"}
 
 
+class BuildStatus(Enum):
+    IDLE = auto()
+    UNZIPPING = auto()
+    COMPILING = auto()
+    SUCCESS = auto()
+    FAILED = auto()
+
+@dataclass
+class BuildProcess:
+    status: BuildStatus = BuildStatus.IDLE
+    logs: list[str] = field(default_factory=list)
+    exit_code: int | None = None
+
+    def log(self, msg: str):
+        logger.info(msg)
+        self.logs.append(msg)
+
+
+build_state = BuildProcess()  # global-ish singleton for status
+
+
 def analyze_zip(zip_path) -> (bool, list):
+    """Analyze the ZIP file for safety before extraction."""
+    build_state.status = BuildStatus.UNZIPPING
+
     if not zipfile.is_zipfile(zip_path):
         logger.warning("Not a valid ZIP file.")
         return False, []
@@ -103,6 +131,8 @@ def analyze_zip(zip_path) -> (bool, list):
 
 def safe_extract(zip_path, dest_dir, valid_files):
     """Extract files safely to a target directory."""
+
+    build_state.status = BuildStatus.UNZIPPING
     with zipfile.ZipFile(zip_path, "r") as zf:
         for info in valid_files:
             filename = info.filename
@@ -118,7 +148,7 @@ def safe_extract(zip_path, dest_dir, valid_files):
 
             # Ensure extraction stays inside destination
             if not out_path.startswith(os.path.abspath(dest_dir)):
-                print(f"⚠️ Skipping suspicious path: {filename}")
+                print(f"Skipping suspicious path: {filename}")
                 continue
 
             # Create parent directories if needed
@@ -129,6 +159,41 @@ def safe_extract(zip_path, dest_dir, valid_files):
                 dst.write(src.read())
 
             logger.info(f"Extracted: {out_path}")
+
+def run_compile(script_path: str, cwd: str):
+    """Run compile script asynchronously and update status/logs."""
+    build_state.status = BuildStatus.COMPILING
+    build_state.log(f"[INFO] Starting compilation: {script_path}\n")
+
+    process = subprocess.Popen(
+        ["bash", script_path],
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1
+    )
+
+    def stream_output(pipe, prefix):
+        for line in iter(pipe.readline, ''):
+            msg = f"{prefix}{line}"
+            build_state.log(msg)
+        pipe.close()
+
+    threading.Thread(target=stream_output, args=(process.stdout, "[OUT] "), daemon=True).start()
+    threading.Thread(target=stream_output, args=(process.stderr, "[ERR] "), daemon=True).start()
+
+    def wait_and_finish():
+        exit_code = process.wait()
+        build_state.exit_code = exit_code
+        if exit_code == 0:
+            build_state.status = BuildStatus.SUCCESS
+            build_state.log("[INFO] Compilation succeeded\n")
+        else:
+            build_state.status = BuildStatus.FAILED
+            build_state.log(f"[INFO] Compilation failed (exit={exit_code})\n")
+
+    threading.Thread(target=wait_and_finish, daemon=True).start()
 
 
 def create_connection(db_file):
@@ -157,32 +222,11 @@ def handle_runtime_logs(data: dict) -> dict:
 
 
 def handle_compilation_status(data: dict) -> dict:
-    try:
-        logs = openplc_runtime.compilation_status()
-        _logs = logs
-    except Exception as e:
-        logger.error("Error retrieving compilation logs: %s", e)
-        _logs = str(e)
-
-    status = _logs
-    if not isinstance(status, str):
-        _status = "No compilation in progress"
-        _error = ""
-    elif "Compilation finished successfully!" in status:
-        _status = "Success"
-        _error = "No error"
-    elif "Compilation finished with errors!" in status:
-        _status = "Error"
-        _error = openplc_runtime.get_compilation_error()
-    else:
-        _status = "Compiling"
-        _error = openplc_runtime.get_compilation_error()
-    
-    logger.debug(
-        "Compilation status: %s, logs: %s", _status, _logs, extra={"error": _error}
-    )
-
-    return {"status": _status, "logs": _logs, "error": _error}
+    return {
+        "status": build_state.status.name,
+        "logs": build_state.logs[-20:],  # last 20 lines
+        "exit_code": build_state.exit_code
+    }
 
 
 def handle_status(data: dict) -> dict:
@@ -241,8 +285,9 @@ def handle_upload_file(data: dict) -> dict:
     # os.makedirs(extract_dir, exist_ok=True)
     # extract files
     safe_extract(zip_file, extract_dir, valid_files)
+    run_compile("compile.sh", cwd="extract_dir")
 
-    return {"UploadFile": safe}
+    return {"status": build_state.status.name}
 
     # # Database operations
     # database = "openplc.db"
