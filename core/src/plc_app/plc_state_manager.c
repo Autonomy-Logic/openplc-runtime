@@ -1,13 +1,14 @@
 #include <pthread.h>
 #include <stdatomic.h>
 
-#include "plc_state_manager.h"
-#include "utils/log.h"
-#include "scan_cycle_manager.h"
+#include "../drivers/plugin_driver.h"
 #include "image_tables.h"
+#include "plc_state_manager.h"
+#include "scan_cycle_manager.h"
+#include "utils/log.h"
 #include "utils/utils.h"
 
-static PLCState plc_state = PLC_STATE_STOPPED;
+static PLCState plc_state          = PLC_STATE_STOPPED;
 static pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 struct timespec timer_start;
@@ -16,8 +17,9 @@ PluginManager *plc_program = NULL;
 
 extern plc_timing_stats_t plc_timing_stats;
 extern atomic_long plc_heartbeat;
+extern plugin_driver_t *plugin_driver;
 
-void *plc_cycle_thread(void *arg) 
+void *plc_cycle_thread(void *arg)
 {
     PluginManager *pm = (PluginManager *)arg;
 
@@ -42,6 +44,7 @@ void *plc_cycle_thread(void *arg)
     while (plc_state == PLC_STATE_RUNNING)
     {
         scan_cycle_time_start();
+        plugin_mutex_take(&plugin_driver->buffer_mutex);
 
         // Execute the PLC cycle
         ext_config_run__(tick__++);
@@ -50,6 +53,7 @@ void *plc_cycle_thread(void *arg)
         // Update Watchdog Heartbeat
         atomic_store(&plc_heartbeat, time(NULL));
 
+        plugin_mutex_give(&plugin_driver->buffer_mutex);
         scan_cycle_time_end();
 
         // Calculate next start time
@@ -73,11 +77,11 @@ int load_plc_program(PluginManager *pm)
         plc_state = PLC_STATE_ERROR;
         pthread_mutex_unlock(&state_mutex);
         log_info("PLC State: ERROR");
-        
+
         return -1;
     }
 
-    if (plugin_manager_load(pm)) 
+    if (plugin_manager_load(pm))
     {
         log_info("Loading PLC application");
 
@@ -86,7 +90,7 @@ int load_plc_program(PluginManager *pm)
         pthread_mutex_unlock(&state_mutex);
         log_info("PLC State: INIT");
 
-        if (pthread_create(&plc_thread, NULL, plc_cycle_thread, pm) != 0) 
+        if (pthread_create(&plc_thread, NULL, plc_cycle_thread, pm) != 0)
         {
             log_error("Failed to create PLC cycle thread");
 
@@ -98,8 +102,8 @@ int load_plc_program(PluginManager *pm)
             return -1;
         }
         return 0;
-    } 
-    else 
+    }
+    else
     {
         log_error("Failed to load PLC application");
 
@@ -132,8 +136,8 @@ int unload_plc_program(PluginManager *pm)
 
         log_info("PLC State: STOPPED");
         return 0;
-    } 
-    else 
+    }
+    else
     {
         log_error("No PLC program loaded or mismatched plugin manager");
         return -1;
@@ -146,7 +150,7 @@ int plc_state_manager_init(void)
     plc_state = PLC_STATE_STOPPED;
 
     plc_program = plugin_manager_create(libplc_file);
-    if (plc_program == NULL) 
+    if (plc_program == NULL)
     {
         log_error("Failed to create PluginManager");
         pthread_mutex_unlock(&state_mutex);
@@ -169,7 +173,7 @@ PLCState plc_get_state(void)
 bool plc_set_state(PLCState new_state)
 {
     pthread_mutex_lock(&state_mutex);
-    if (plc_state == new_state) 
+    if (plc_state == new_state)
     {
         pthread_mutex_unlock(&state_mutex);
         return false;
@@ -183,7 +187,7 @@ bool plc_set_state(PLCState new_state)
         if (plc_program == NULL)
         {
             plc_program = plugin_manager_create(libplc_file);
-            if (plc_program == NULL) 
+            if (plc_program == NULL)
             {
                 log_error("Failed to create PluginManager");
                 return false;
@@ -209,7 +213,7 @@ bool plc_set_state(PLCState new_state)
 
 void plc_state_manager_cleanup(void)
 {
-    if (plc_program) 
+    if (plc_program)
     {
         unload_plc_program(plc_program);
     }
