@@ -165,9 +165,12 @@ def run_compile(script_path: str, cwd: str):
     build_state.status = BuildStatus.COMPILING
     build_state.log(f"[INFO] Starting compilation: {script_path}\n")
 
+    # os.chdir(cwd)
+
     process = subprocess.Popen(
         ["bash", script_path],
-        cwd=cwd,
+        # ["ls"],
+        # cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -285,7 +288,7 @@ def handle_upload_file(data: dict) -> dict:
     # os.makedirs(extract_dir, exist_ok=True)
     # extract files
     safe_extract(zip_file, extract_dir, valid_files)
-    run_compile("compile.sh", cwd="extract_dir")
+    run_compile("./scripts/compile.sh", cwd=extract_dir)
 
     return {"status": build_state.status.name}
 

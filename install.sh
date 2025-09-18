@@ -16,8 +16,9 @@ install_dependencies() {
 }
 
 build_plc_app(){
+    rm -rf build
     mkdir build
-    cd build
+    cd build || exit 1
     cmake ..
     make
     cd ..
