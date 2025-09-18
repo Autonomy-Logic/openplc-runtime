@@ -214,10 +214,28 @@ def handle_upload_file(data: dict) -> dict:
     
     zip_file = flask.request.files["file"]
 
-    if zip_file.content_length > 32 * 1024 * 1024:  # 32 MB limit
+    if zip_file.content_length > MAX_FILE_SIZE:
         return {"UploadFileFail": "File is too large"}
 
     safe, valid_files = analyze_zip(zip_file)
+
+    if not safe:
+        return {"UploadFileFail": "Uploaded ZIP file failed safety checks"}
+
+    # delete directory generated 
+    extract_dir = "core/generated"
+    if os.path.exists(extract_dir):
+        for root, dirs, files in os.walk(extract_dir, topdown=False):
+            for name in files:
+                os.remove(os.path.join(root, name))
+            for name in dirs:
+                os.rmdir(os.path.join(root, name))
+        os.rmdir(extract_dir)
+    
+    # recreate directory
+    os.makedirs(extract_dir, exist_ok=True)
+    # extract files
+    safe_extract(zip_file, extract_dir, valid_files)
 
     return {"UploadFile": valid_files}
 
