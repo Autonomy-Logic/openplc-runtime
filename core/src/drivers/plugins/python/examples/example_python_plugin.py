@@ -4,13 +4,18 @@ Example plugin for testing the updated python_plugin_get_symbols function
 This demonstrates the expected functions that should be present in a Python plugin
 """
 
+from concurrent.futures import thread
 import time
 import ctypes
 from ctypes import *
 import threading
 
+
+# Add the parent directory to Python path to find shared module
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 # Import the correct type definitions
-from python_plugin_types import (
+from shared.python_plugin_types import (
     PluginRuntimeArgs, 
     safe_extract_runtime_args_from_capsule,
     SafeBufferAccess,
@@ -88,7 +93,7 @@ def start_loop():
         while not _stop.is_set():
             time.sleep(0.1)
             addr = ctypes.addressof(_runtime_args.bool_output[0][0])
-            value, msg = _safe_buffer_access.safe_read_bool_output(0,0)
+            value, msg = _safe_buffer_access.read_bool_output(0,0, thread_safe=True)
             print(f"Value at address 0x{addr:x}: {value} ({msg})")
 
     global _mainthread

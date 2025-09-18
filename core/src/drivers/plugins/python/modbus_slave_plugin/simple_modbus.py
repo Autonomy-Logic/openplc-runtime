@@ -2,6 +2,8 @@ import asyncio
 import ctypes
 import threading
 import time
+import sys
+import os
 from pymodbus.server import StartAsyncTcpServer, ServerStop
 from pymodbus.datastore import (
     ModbusSparseDataBlock,
@@ -9,8 +11,11 @@ from pymodbus.datastore import (
     ModbusServerContext,
 )
 
+# Add the parent directory to Python path to find shared module
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 # Import the correct type definitions
-from python_plugin_types import (
+from shared.python_plugin_types import (
     PluginRuntimeArgs, 
     safe_extract_runtime_args_from_capsule,
     SafeBufferAccess,
@@ -51,7 +56,7 @@ class OpenPLCModbusDataBlock(ModbusSparseDataBlock):
                 # Map coil address to buffer and bit indices
                 # For now, use buffer_index and coil_addr as bit_idx
                 if coil_addr < 8:  # 8 boolean values per buffer
-                    value, error_msg = self.safe_buffer_access.safe_read_bool_output(self.buffer_index, coil_addr)
+                    value, error_msg = self.safe_buffer_access.read_bool_output(self.buffer_index, coil_addr)
                     if error_msg == "Success":
                         values.append(1 if value else 0)
                         print(f"[MODBUS] Read coil {coil_addr}: {value}")
@@ -81,7 +86,7 @@ class OpenPLCModbusDataBlock(ModbusSparseDataBlock):
                 # Map coil address to buffer and bit indices
                 # For now, use buffer_index and coil_addr as bit_idx
                 if coil_addr < 8:  # 8 boolean values per buffer
-                    success, error_msg = self.safe_buffer_access.safe_write_bool_output(self.buffer_index, coil_addr, bool(value))
+                    success, error_msg = self.safe_buffer_access.write_bool_output(self.buffer_index, coil_addr, bool(value))
                     if error_msg == "Success":
                         print(f"[MODBUS] Set coil {coil_addr}: {bool(value)}")
                     else:
