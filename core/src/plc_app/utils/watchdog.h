@@ -1,12 +1,6 @@
 #ifndef WATCHDOG_H
 #define WATCHDOG_H
 
-/**
- * @brief Watchdog thread function
- *
- * @return void*
- */
-void *watchdog_thread(void *);
 
 /**
  * @brief Initialize the watchdog

@@ -1,0 +1,16 @@
+{
+    "files.associations": {
+        "sched.h": "c",
+        "scan_cycle_manager.h": "c",
+        "dlfcn.h": "c",
+        "utils.h": "c",
+        "plc_state_manager.h": "c"
+    },
+    "editor.rulers": [
+        80
+    ],
+    "[c]": {
+        "editor.defaultFormatter": "xaver.clang-format"
+    },
+    "editor.formatOnSave": true
+}

@@ -10,13 +10,6 @@
 extern unsigned long long *ext_common_ticktime__;
 extern unsigned long tick__;
 
-// enum to determine plc state
-typedef enum {
-    PLC_STATE_INIT,
-    PLC_STATE_RUNNING,
-    PLC_STATE_STOPPED,
-    PLC_STATE_ERROR
-} PLCState;
 
 /**
  * @brief Normalize a timespec structure

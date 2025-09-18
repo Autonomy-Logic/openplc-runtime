@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import Callable, Optional
 
@@ -13,7 +14,7 @@ from flask_jwt_extended import (
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import logger
+logger = logging.getLogger(__name__)
 
 env = os.getenv("FLASK_ENV", "development")
 
@@ -45,10 +46,6 @@ class User(db.Model):  # type: ignore[name-defined]
     id: int = db.Column(db.Integer, primary_key=True)
     username: str = db.Column(db.Text, nullable=False, unique=True)
     password_hash: str = db.Column(db.Text, nullable=False)
-    # TODO implement roles
-    # For now, we will just use "user" and "admin"
-    # In the future, we can implement more roles like "guest", "editor", etc
-    # and use them to control access to different parts of the API
     role: str = db.Column(db.String(20), default="user")
 
     # Use PBKDF2 with SHA256 and 600,000 iterations for password hashing
@@ -59,7 +56,7 @@ class User(db.Model):  # type: ignore[name-defined]
         self.password_hash = generate_password_hash(
             password, method=self.derivation_method
         )
-        logger.debug(f"Password set for user {self.username} | {self.password_hash}")
+        logger.debug("Password set for user %s | %s", self.username, self.password_hash)
         return self.password_hash
 
     def check_password(self, password: str) -> bool:
@@ -99,7 +96,7 @@ def create_user():
     try:
         users_exist = User.query.first() is not None
     except Exception as e:
-        logger.error(f"Error checking for users: {e}")
+        logger.error("Error checking for users: %s", e)
         return jsonify({"msg": "User creation error"}), 401
 
     # if there are no users, we don't need to verify JWT
@@ -133,7 +130,7 @@ def get_user_info(user_id):
     try:
         user = User.query.get(user_id)
     except Exception as e:
-        logger.error(f"Error retrieving user: {e}")
+        logger.error("Error retrieving user: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
 
     if not user:
@@ -154,7 +151,7 @@ def get_users_info():
         try:
             users_exist = User.query.first() is not None
         except Exception as e:
-            logger.error(f"Error checking for users: {e}")
+            logger.error("Error checking for users: %s", e)
             return jsonify({"msg": "User retrieval error"}), 500
 
         if not users_exist:
@@ -164,7 +161,7 @@ def get_users_info():
     try:
         users = User.query.all()
     except Exception as e:
-        logger.error(f"Error retrieving users: {e}")
+        logger.error("Error retrieving users: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
 
     return jsonify([user.to_dict() for user in users]), 200
@@ -184,7 +181,7 @@ def change_password(user_id):
     try:
         user = User.query.get(user_id)
     except Exception as e:
-        logger.error(f"Error retrieving user: {e}")
+        logger.error("Error retrieving user: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
 
     if not user:
@@ -209,7 +206,7 @@ def delete_user(user_id):
     try:
         user = User.query.get(user_id)
     except Exception as e:
-        logger.error(f"Error retrieving user: {e}")
+        logger.error("Error retrieving user: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
 
     if not user:
@@ -229,9 +226,9 @@ def login():
 
     try:
         user = User.query.filter_by(username=username).one_or_none()
-        logger.debug(f"User found: {user}")
+        logger.debug("User found: %s", user)
     except Exception as e:
-        logger.error(f"Error retrieving user: {e}")
+        logger.error("Error retrieving user: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
 
     if not user or not user.check_password(password):
@@ -255,7 +252,7 @@ def revoke_jwt():
         # Add the JWT ID to the blacklist
         jwt_blacklist.add(jti)
     except Exception as e:
-        logger.error(f"Error revoking JWT: {e}")
+        logger.error("Error revoking JWT: %s", e)
 
 
 @restapi_bp.route("/<command>", methods=["GET"])
@@ -270,7 +267,7 @@ def restapi_plc_get(command):
         return jsonify(result), 200
 
     except Exception as e:
-        logger.error(f"Error in restapi_plc_get: {e}")
+        logger.error("Error in restapi_plc_get: %s", e)
         return jsonify({"error": str(e)}), 500
 
 
@@ -281,11 +278,10 @@ def restapi_plc_post(command):
         return jsonify({"error": "No handler registered"}), 500
 
     try:
-        # TODO validate file and limit size
         data = request.get_json(silent=True) or {}
 
         result = _handler_callback_post(command, data)
         return jsonify(result), 200
     except Exception as e:
-        logger.error(f"Error in restapi_plc_post: {e}")
+        logger.error("Error in restapi_plc_post: %s", e)
         return jsonify({"error": str(e)}), 500

@@ -1,6 +1,8 @@
 #ifndef SCAN_CYCLE_MANAGER_H
 #define SCAN_CYCLE_MANAGER_H
 
+#include <stdint.h>
+
 typedef struct
 {
     int64_t scan_time_min;

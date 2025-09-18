@@ -1,6 +1,10 @@
 Flask
 Flask-Login
 Flask-JWT-Extended
-cryptography
 flask_sqlalchemy
+PyJWT
+cryptography
 python-dotenv
+pytest
+pytest-flask
+pre-commit

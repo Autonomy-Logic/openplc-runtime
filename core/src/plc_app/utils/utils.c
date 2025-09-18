@@ -7,8 +7,6 @@
 unsigned long long *ext_common_ticktime__ = NULL;
 unsigned long tick__ = 0;
 
-PLCState plc_state = PLC_STATE_INIT;
-
 void normalize_timespec(struct timespec *ts) 
 {
     while (ts->tv_nsec >= 1e9) 

@@ -7,8 +7,13 @@
 venv/
 __pycache__/
 .clinerules
-
-install_log.txt
+# Temporary files
+*.txt
+*.log
+*.env
+*.pem
+*.db
+*.socket
 
 # Ignore all object files and shared libraries
 *.o

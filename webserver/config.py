@@ -32,7 +32,7 @@ def is_valid_env(var_name, value):
 def generate_env_file():
     jwt = secrets.token_hex(32)
     pepper = secrets.token_hex(32)
-    uri = "sqlite:///{DB_PATH}"
+    uri = f"sqlite:///{DB_PATH}"
 
     with open(ENV_PATH, "w") as f:
         f.write("FLASK_ENV=development\n")

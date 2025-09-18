@@ -8,6 +8,7 @@
 #include "watchdog.h"
 #include "log.h"
 #include "utils.h"
+#include "../plc_state_manager.h"
 
 atomic_long plc_heartbeat;
 extern PLCState plc_state;
@@ -21,7 +22,7 @@ void *watchdog_thread(void *arg)
     {
         sleep(2); // Watch every 2 seconds
 
-        if (plc_state != PLC_STATE_RUNNING) 
+        if (plc_get_state() != PLC_STATE_RUNNING) 
         {
             continue; // Only monitor when PLC is running
         }

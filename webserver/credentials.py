@@ -1,12 +1,15 @@
 import datetime
 import ipaddress
 import os
+import logging
 
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+
+logger = logging.getLogger(__name__)
 
 
 class CertGen:
@@ -37,7 +40,7 @@ class CertGen:
         )
 
     def generate_self_signed_cert(self, cert_file="cert.pem", key_file="key.pem"):
-        print(f"Generating self-signed certificate for {self.hostname}...")
+        logger.debug("Generating self-signed certificate for %s...", self.hostname)
 
         self.generate_key()
 
@@ -69,14 +72,13 @@ class CertGen:
                     serialization.NoEncryption(),
                 )
             )
-        print(f"Certificate saved to {cert_file}")
-        print(f"Private key saved to {key_file}")
+        logger.debug("Certificate saved to %s", cert_file)
+        logger.debug("Private key saved to %s", key_file)
 
-    # TODO add a function to update the certificate on the client before expiration
     def is_certificate_valid(self, cert_file):
         """Check if the certificate is valid."""
         if not os.path.exists(cert_file):
-            print(f"Certificate file not found: {cert_file}")
+            logger.warning("Certificate file not found: %s", cert_file)
             return False
 
         try:
@@ -84,20 +86,19 @@ class CertGen:
                 cert_data = f.read()
             cert = x509.load_pem_x509_certificate(cert_data, default_backend())
 
-            now = datetime.datetime.utcnow()
+            # Create a UTC-aware datetime object
+            now = datetime.datetime.now(datetime.timezone.utc)
 
             if now < cert.not_valid_before_utc:
-                print(
-                    f"Certificate is not yet valid. Valid from: {cert.not_valid_before}"
-                )
+                logger.warning("Certificate is not yet valid. Valid from: %s", cert.not_valid_before_utc)
                 return False
             if now > cert.not_valid_after_utc:
-                print(f"Certificate has expired. Expired on: {cert.not_valid_after}")
+                logger.warning("Certificate has expired. Expired on: %s", cert.not_valid_after_utc)
                 return False
 
-            print(f"Certificate is valid. Expires on: {cert.not_valid_after_utc}")
+            logger.info("Certificate is valid. Expires on: %s", cert.not_valid_after_utc)
             return True
 
         except Exception as e:
-            print(f"Error loading or parsing certificate: {e}")
+            logger.error("Error loading or parsing certificate: %s", e)
             return False

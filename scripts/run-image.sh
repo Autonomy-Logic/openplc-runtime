@@ -5,4 +5,5 @@ docker run --rm -it \
     --cap-add=sys_nice \
     --ulimit rtprio=99 \
     --ulimit memlock=-1 \
-    build-env bash
+    -p 8443:8443 \
+    build-env

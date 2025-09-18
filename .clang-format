@@ -2,7 +2,7 @@ BasedOnStyle: LLVM
 IndentWidth: 4
 UseTab: Never
 ColumnLimit: 100
-BreakBeforeBraces: Allman  # (ou Attach, Linux, etc.)
+BreakBeforeBraces: Allman   # (ou Attach, Linux, etc.)
 AllowShortFunctionsOnASingleLine: Empty
 SpaceBeforeParens: ControlStatements
 AlignConsecutiveAssignments: true

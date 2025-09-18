@@ -22,4 +22,15 @@ if [ "$1" = "docker" ]; then
     "$VENV_DIR/bin/python3" -m pip install -r requirements.txt
 fi
 
+if [ "$1" = "linux" ]; then
+    mkdir -p /var/run/runtime
+    chmod 775 /var/run/runtime
+    chmod +x install.sh
+    chmod +x scripts/*
+    install_dependencies
+    python3 -m venv "$VENV_DIR"
+    "$VENV_DIR/bin/python3" -m pip install --upgrade pip
+    "$VENV_DIR/bin/python3" -m pip install -r requirements.txt
+fi
+
 echo "Dependencies installed."
