@@ -86,8 +86,9 @@ int main()
     plugin_driver = plugin_driver_create();
     if (plugin_driver)
     {
+        log_info("[PLUGIN]: Plugin driver system created");
         // Load plugin configuration
-        if (plugin_driver_load_config(plugin_driver, "../plugins.conf") == 0)
+        if (plugin_driver_load_config(plugin_driver, "./plugins.conf") == 0)
         {
             // Start plugins
             plugin_driver_init(plugin_driver);
