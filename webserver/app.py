@@ -9,6 +9,7 @@ from typing import Callable
 import time
 import zipfile
 import sys
+import shutil
 
 import flask
 import flask_login
@@ -48,7 +49,7 @@ MAX_TOTAL_SIZE = 50 * 1024 * 1024  # 50 MB total
 DISALLOWED_EXT = {".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr"}
 
 
-def analyze_zip(zip_path):
+def analyze_zip(zip_path) -> (bool, list):
     if not zipfile.is_zipfile(zip_path):
         logger.warning("Not a valid ZIP file.")
         return False, []
@@ -104,17 +105,26 @@ def safe_extract(zip_path, dest_dir, valid_files):
     """Extract files safely to a target directory."""
     with zipfile.ZipFile(zip_path, "r") as zf:
         for info in valid_files:
-            out_path = os.path.join(dest_dir, info.filename)
+            filename = info.filename
 
-            # Normalize path
+            # Skip directory entries
+            if filename.endswith("/"):
+                dir_path = os.path.join(dest_dir, filename)
+                os.makedirs(dir_path, exist_ok=True)
+                continue
+
+            out_path = os.path.join(dest_dir, filename)
             out_path = os.path.abspath(out_path)
 
             # Ensure extraction stays inside destination
             if not out_path.startswith(os.path.abspath(dest_dir)):
-                logger.warning(f"⚠️ Skipping suspicious path: {info.filename}")
+                print(f"⚠️ Skipping suspicious path: {filename}")
                 continue
 
+            # Create parent directories if needed
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+            # Extract file
             with zf.open(info) as src, open(out_path, "wb") as dst:
                 dst.write(src.read())
 
@@ -225,19 +235,14 @@ def handle_upload_file(data: dict) -> dict:
     # delete directory generated 
     extract_dir = "core/generated"
     if os.path.exists(extract_dir):
-        for root, dirs, files in os.walk(extract_dir, topdown=False):
-            for name in files:
-                os.remove(os.path.join(root, name))
-            for name in dirs:
-                os.rmdir(os.path.join(root, name))
-        os.rmdir(extract_dir)
-    
+        shutil.rmtree(extract_dir)
+
     # recreate directory
-    os.makedirs(extract_dir, exist_ok=True)
+    # os.makedirs(extract_dir, exist_ok=True)
     # extract files
     safe_extract(zip_file, extract_dir, valid_files)
 
-    return {"UploadFile": valid_files}
+    return {"UploadFile": safe}
 
     # # Database operations
     # database = "openplc.db"
