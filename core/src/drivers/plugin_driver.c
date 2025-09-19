@@ -213,7 +213,9 @@ int plugin_driver_start(plugin_driver_t *driver)
                 {
                     printf("[PLUGIN]: Plugin %s started successfully.\n", plugin->config.name);
                 }
-                Py_DECREF(res);
+                Py_DECREF(
+                    res); // There's no problem in calling DECREF here because it only
+                          // handles the returned object from start_loop, not the function itself
 
                 plugin->running = 1;
             }

@@ -1,5 +1,6 @@
 import asyncio
 import ctypes
+from operator import add
 import threading
 import time
 import sys
@@ -22,75 +23,266 @@ from shared.python_plugin_types import (
     PluginStructureValidator
 )
 
-class OpenPLCModbusDataBlock(ModbusSparseDataBlock):
-    """Custom Modbus data block that mirrors OpenPLC bool_output using SafeBufferAccess"""
+class OpenPLCCoilsDataBlock(ModbusSparseDataBlock):
+    """Custom Modbus coils data block that mirrors OpenPLC bool_output using SafeBufferAccess"""
     
-    def __init__(self, runtime_args, buffer_index=0, num_coils=64):
+    def __init__(self, runtime_args, num_coils=64):
         self.runtime_args = runtime_args
-        self.buffer_index = buffer_index
         self.num_coils = num_coils
         
         # Create safe buffer access wrapper
         self.safe_buffer_access = SafeBufferAccess(runtime_args)
         if not self.safe_buffer_access.is_valid:
-            print(f"[MODBUS] Warning: Failed to create safe buffer access: {self.safe_buffer_access.error_msg}")
+            print(f"[MODBUS] Warning: Failed to create safe buffer access for coils: {self.safe_buffer_access.error_msg}")
         
         # Initialize with zeros
         super().__init__([0] * num_coils)
     
     def getValues(self, address, count=1):
+        address = address - 1  # Modbus addresses are 0-based
+
         """Get coil values from OpenPLC bool_output using SafeBufferAccess"""
-        print(f"[MODBUS] getValues called: address={address}, count={count}")
-        address = address - 1
+        print(f"[MODBUS] Coils getValues called: address={address}, count={count}")
         
         if not self.safe_buffer_access.is_valid:
             print(f"[MODBUS] Error: Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
             return [0] * count
         
+        # Ensure thread-safe access
+        self.safe_buffer_access.acquire_mutex()
+
         values = []
         for i in range(count):
             coil_addr = address + i
             
-            # Use SafeBufferAccess to safely read the boolean value
             if coil_addr < self.num_coils:
                 # Map coil address to buffer and bit indices
-                # For now, use buffer_index and coil_addr as bit_idx
-                if coil_addr < 8:  # 8 boolean values per buffer
-                    value, error_msg = self.safe_buffer_access.read_bool_output(self.buffer_index, coil_addr)
-                    if error_msg == "Success":
-                        values.append(1 if value else 0)
-                        print(f"[MODBUS] Read coil {coil_addr}: {value}")
-                    else:
-                        print(f"[MODBUS] Error reading coil {coil_addr}: {error_msg}")
-                        values.append(0)
+                buffer_idx = coil_addr // 8  # 8 bits per buffer
+                bit_idx = coil_addr % 8      # bit within buffer
+
+                value, error_msg = self.safe_buffer_access.read_bool_output(buffer_idx, bit_idx, thread_safe=False)
+                if error_msg == "Success":
+                    values.append(1 if value else 0)
+                    print(f"[MODBUS] Read coil {coil_addr} (buf:{buffer_idx}, bit:{bit_idx}): {value}")
                 else:
+                    print(f"[MODBUS] Error reading coil {coil_addr}: {error_msg}")
                     values.append(0)
             else:
                 values.append(0)
         
+        # Release mutex after access
+        self.safe_buffer_access.release_mutex()
+
         return values
     
     def setValues(self, address, values):
+        address = address - 1  # Modbus addresses are 0-based
         """Set coil values to OpenPLC bool_output using SafeBufferAccess"""
-        print(f"[MODBUS] setValues called: address={address}, values={values}")
+        print(f"[MODBUS] Coils setValues called: address={address}, values={values}")
         
         if not self.safe_buffer_access.is_valid:
             print(f"[MODBUS] Error: Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
             return
         
+        # Ensure thread-safe access
+        self.safe_buffer_access.acquire_mutex()
+        
         for i, value in enumerate(values):
             coil_addr = address + i
             
-            # Use SafeBufferAccess to safely write the boolean value
             if coil_addr < self.num_coils:
                 # Map coil address to buffer and bit indices
-                # For now, use buffer_index and coil_addr as bit_idx
-                if coil_addr < 8:  # 8 boolean values per buffer
-                    success, error_msg = self.safe_buffer_access.write_bool_output(self.buffer_index, coil_addr, bool(value))
-                    if error_msg == "Success":
-                        print(f"[MODBUS] Set coil {coil_addr}: {bool(value)}")
-                    else:
-                        print(f"[MODBUS] Error setting coil {coil_addr}: {error_msg}")
+                buffer_idx = coil_addr // 8  # 8 bits per buffer
+                bit_idx = coil_addr % 8      # bit within buffer
+                
+                success, error_msg = self.safe_buffer_access.write_bool_output(buffer_idx, bit_idx, bool(value), thread_safe=False)
+                if error_msg == "Success":
+                    print(f"[MODBUS] Set coil {coil_addr} (buf:{buffer_idx}, bit:{bit_idx}): {bool(value)}")
+                else:
+                    print(f"[MODBUS] Error setting coil {coil_addr}: {error_msg}")
+        
+        # Release mutex after access
+        self.safe_buffer_access.release_mutex()
+
+
+class OpenPLCDiscreteInputsDataBlock(ModbusSparseDataBlock):
+    """Custom Modbus discrete inputs data block that mirrors OpenPLC bool_input using SafeBufferAccess"""
+    
+    def __init__(self, runtime_args, num_inputs=64):
+        self.runtime_args = runtime_args
+        self.num_inputs = num_inputs
+        
+        # Create safe buffer access wrapper
+        self.safe_buffer_access = SafeBufferAccess(runtime_args)
+        if not self.safe_buffer_access.is_valid:
+            print(f"[MODBUS] Warning: Failed to create safe buffer access for discrete inputs: {self.safe_buffer_access.error_msg}")
+        
+        # Initialize with zeros
+        super().__init__([0] * num_inputs)
+    
+    def getValues(self, address, count=1):
+        address = address - 1  # Modbus addresses are 0-based
+        """Get discrete input values from OpenPLC bool_input using SafeBufferAccess"""
+        print(f"[MODBUS] Discrete Inputs getValues called: address={address}, count={count}")
+        
+        if not self.safe_buffer_access.is_valid:
+            print(f"[MODBUS] Error: Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
+            return [0] * count
+        
+        # Ensure thread-safe access
+        self.safe_buffer_access.acquire_mutex()
+        
+        values = []
+        for i in range(count):
+            input_addr = address + i
+            
+            if input_addr < self.num_inputs:
+                # Map input address to buffer and bit indices
+                buffer_idx = input_addr // 8  # 8 bits per buffer
+                bit_idx = input_addr % 8      # bit within buffer
+                
+                value, error_msg = self.safe_buffer_access.read_bool_input(buffer_idx, bit_idx, thread_safe=False)
+                if error_msg == "Success":
+                    values.append(1 if value else 0)
+                    print(f"[MODBUS] Read discrete input {input_addr} (buf:{buffer_idx}, bit:{bit_idx}): {value}")
+                else:
+                    print(f"[MODBUS] Error reading discrete input {input_addr}: {error_msg}")
+                    values.append(0)
+            else:
+                values.append(0)
+        
+        # Release mutex after access
+        self.safe_buffer_access.release_mutex()
+
+        return values
+    
+    def setValues(self, address, values):
+        """Discrete inputs are read-only, this method should not be called"""
+        print(f"[MODBUS] Warning: Attempt to write to read-only discrete inputs at address {address}")
+
+
+class OpenPLCInputRegistersDataBlock(ModbusSparseDataBlock):
+    """Custom Modbus input registers data block that mirrors OpenPLC analog inputs using SafeBufferAccess"""
+    
+    def __init__(self, runtime_args, num_registers=32):
+        self.runtime_args = runtime_args
+        self.num_registers = num_registers
+        
+        # Create safe buffer access wrapper
+        self.safe_buffer_access = SafeBufferAccess(runtime_args)
+        if not self.safe_buffer_access.is_valid:
+            print(f"[MODBUS] Warning: Failed to create safe buffer access for input registers: {self.safe_buffer_access.error_msg}")
+        
+        # Initialize with zeros
+        super().__init__([0] * num_registers)
+    
+    def getValues(self, address, count=1):
+        address = address - 1  # Modbus addresses are 0-based
+        """Get input register values from OpenPLC int_input using SafeBufferAccess"""
+        print(f"[MODBUS] Input Registers getValues called: address={address}, count={count}")
+        
+        if not self.safe_buffer_access.is_valid:
+            print(f"[MODBUS] Error: Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
+            return [0] * count
+        
+        # Ensure buffer mutext
+        self.safe_buffer_access.acquire_mutex()
+
+        values = []
+        for i in range(count):
+            reg_addr = address + i
+            
+            if reg_addr < self.num_registers:
+                value, error_msg = self.safe_buffer_access.read_int_input(reg_addr, thread_safe=False)
+                if error_msg == "Success":
+                    values.append(value)
+                    print(f"[MODBUS] Read input register {reg_addr}: {value}")
+                else:
+                    print(f"[MODBUS] Error reading input register {reg_addr}: {error_msg}")
+                    values.append(0)
+            else:
+                values.append(0)
+        
+        # Release mutex after access
+        self.safe_buffer_access.release_mutex()
+
+        return values
+    
+    def setValues(self, address, values):
+        """Input registers are read-only, this method should not be called"""
+        print(f"[MODBUS] Warning: Attempt to write to read-only input registers at address {address}")
+
+
+class OpenPLCHoldingRegistersDataBlock(ModbusSparseDataBlock):
+    """Custom Modbus holding registers data block that mirrors OpenPLC analog outputs using SafeBufferAccess"""
+    
+    def __init__(self, runtime_args, num_registers=32):
+        self.runtime_args = runtime_args
+        self.num_registers = num_registers
+        
+        # Create safe buffer access wrapper
+        self.safe_buffer_access = SafeBufferAccess(runtime_args)
+        if not self.safe_buffer_access.is_valid:
+            print(f"[MODBUS] Warning: Failed to create safe buffer access for holding registers: {self.safe_buffer_access.error_msg}")
+        
+        # Initialize with zeros
+        super().__init__([0] * num_registers)
+    
+    def getValues(self, address, count=1):
+        address = address - 1  # Modbus addresses are 0-based
+        """Get holding register values from OpenPLC int_output using SafeBufferAccess"""
+        print(f"[MODBUS] Holding Registers getValues called: address={address}, count={count}")
+        
+        if not self.safe_buffer_access.is_valid:
+            print(f"[MODBUS] Error: Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
+            return [0] * count
+        
+        # Ensure buffer mutex
+        self.safe_buffer_access.acquire_mutex() 
+
+        values = []
+        for i in range(count):
+            reg_addr = address + i
+            
+            if reg_addr < self.num_registers:
+                value, error_msg = self.safe_buffer_access.read_int_output(reg_addr, thread_safe=False)
+                if error_msg == "Success":
+                    values.append(value)
+                    print(f"[MODBUS] Read holding register {reg_addr}: {value}")
+                else:
+                    print(f"[MODBUS] Error reading holding register {reg_addr}: {error_msg}")
+                    values.append(0)
+            else:
+                values.append(0)
+        
+        # Release mutex after access
+        self.safe_buffer_access.release_mutex()
+        return values
+    
+    def setValues(self, address, values):
+        address = address - 1  # Modbus addresses are 0-based
+        """Set holding register values to OpenPLC int_output using SafeBufferAccess"""
+        print(f"[MODBUS] Holding Registers setValues called: address={address}, values={values}")
+        
+        if not self.safe_buffer_access.is_valid:
+            print(f"[MODBUS] Error: Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
+            return
+        
+        # Ensure buffer mutex
+        self.safe_buffer_access.acquire_mutex()
+        
+        for i, value in enumerate(values):
+            reg_addr = address + i
+            
+            if reg_addr < self.num_registers:
+                success, error_msg = self.safe_buffer_access.write_int_output(reg_addr, value, thread_safe=False)
+                if error_msg == "Success":
+                    print(f"[MODBUS] Set holding register {reg_addr}: {value}")
+                else:
+                    print(f"[MODBUS] Error setting holding register {reg_addr}: {error_msg}")
+
+        # Release mutex after access
+        self.safe_buffer_access.release_mutex()
 
 # Global variables for plugin lifecycle
 server_task = None
@@ -138,17 +330,25 @@ def init(args_capsule, host="172.29.65.104", port=5020):
         print(f"[MODBUS]   Bits per buffer: {runtime_args.bits_per_buffer}")
         print(f"[MODBUS]   Structure details: {runtime_args}")
         
-        # Create OpenPLC-connected coils data block
-        coils_block = OpenPLCModbusDataBlock(runtime_args, buffer_index=0, num_coils=64)
-        
-        # Standard data blocks for other Modbus types
-        di = ModbusSparseDataBlock([0] * 64)   # Discrete Inputs
-        ir = ModbusSparseDataBlock([0] * 32)   # Input Registers (16-bit)
-        hr = ModbusSparseDataBlock([0] * 32)   # Holding Registers (16-bit)
+        # Create OpenPLC-connected data blocks for all Modbus types
+        coils_block = OpenPLCCoilsDataBlock(runtime_args, num_coils=64)
+        discrete_inputs_block = OpenPLCDiscreteInputsDataBlock(runtime_args, num_inputs=64)
+        input_registers_block = OpenPLCInputRegistersDataBlock(runtime_args, num_registers=32)
+        holding_registers_block = OpenPLCHoldingRegistersDataBlock(runtime_args, num_registers=32)
 
-        # Create device context with OpenPLC-connected coils
-        print(f"[MODBUS] coils_block created with {coils_block} coils")
-        device = ModbusDeviceContext(di=di, co=coils_block, ir=ir, hr=hr)
+        # Create device context with all OpenPLC-connected data blocks
+        print(f"[MODBUS] Created data blocks:")
+        print(f"[MODBUS]   - Coils (bool_output): {coils_block.num_coils} coils")
+        print(f"[MODBUS]   - Discrete Inputs (bool_input): {discrete_inputs_block.num_inputs} inputs")
+        print(f"[MODBUS]   - Input Registers (int_input): {input_registers_block.num_registers} registers")
+        print(f"[MODBUS]   - Holding Registers (int_output): {holding_registers_block.num_registers} registers")
+        
+        device = ModbusDeviceContext(
+            di=discrete_inputs_block,      # Discrete Inputs -> bool_input
+            co=coils_block,                # Coils -> bool_output
+            ir=input_registers_block,      # Input Registers -> int_input
+            hr=holding_registers_block     # Holding Registers -> int_output
+        )
         server_context = ModbusServerContext(devices={1: device}, single=False)
         
         print(f"[MODBUS] ✓ Plugin initialized successfully - Host: {host}, Port: {port}")
