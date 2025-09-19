@@ -123,11 +123,13 @@ static void log_write(LogLevel level, const char *fmt, va_list args)
     pthread_mutex_lock(&log_mutex);
     if (socket_fd >= 0) 
     {
-        if (write(socket_fd, log_msg, strlen(log_msg)) == -1)
+        if (send(socket_fd, log_msg, strlen(log_msg), MSG_NOSIGNAL) == -1)
         {
             // On error, close the socket to trigger reconnection
+            printf("Error on writing to socket: %s\n", strerror(errno));
             close(socket_fd);
             socket_fd = -1;
+            printf("Triggering reconnection...\n");
         }
     }
 
