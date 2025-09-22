@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 import subprocess
 import threading
+from contextlib import contextmanager
 
 import flask
 import flask_login
@@ -73,6 +74,25 @@ class BuildProcess:
 
 build_state = BuildProcess()  # global-ish singleton for status
 
+
+@contextmanager
+def create_connection(db_file: str):
+    """Context manager for SQLite database connection."""
+    conn = None
+    try:
+        conn = sqlite3.connect(db_file)
+        logger.info("Connected to database: %s", db_file)
+        yield conn
+        conn.commit()   # commit only if everything inside succeeded
+    except sqlite3.Error as e:
+        if conn:
+            conn.rollback()  # rollback if there was an error
+        logger.error("Database error: %s", e)
+        raise
+    finally:
+        if conn:
+            conn.close()
+            logger.info("Connection to %s closed", db_file)
 
 def analyze_zip(zip_path) -> (bool, list):
     """Analyze the ZIP file for safety before extraction."""
@@ -165,12 +185,8 @@ def run_compile(script_path: str, cwd: str):
     build_state.status = BuildStatus.COMPILING
     build_state.log(f"[INFO] Starting compilation: {script_path}\n")
 
-    # os.chdir(cwd)
-
     process = subprocess.Popen(
         ["bash", script_path],
-        # ["ls"],
-        # cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -199,17 +215,6 @@ def run_compile(script_path: str, cwd: str):
     threading.Thread(target=wait_and_finish, daemon=True).start()
 
 
-def create_connection(db_file):
-    """ Create a connection to the database file """
-    try:
-        conn = sqlite3.connect(db_file)
-        return conn
-    except sqlite3.Error as e:
-        logger.error("Error creating database connection: %s", e)
-
-    return None
-
-
 def handle_start_plc(data: dict) -> dict:
     response = client.start_plc()
     return {"status": response}
@@ -230,7 +235,6 @@ def handle_compilation_status(data: dict) -> dict:
         "logs": build_state.logs[-20:],  # last 20 lines
         "exit_code": build_state.exit_code
     }
-
 
 def handle_status(data: dict) -> dict:
     return {"current_status": "operational", "details": data}
@@ -265,7 +269,6 @@ def restapi_callback_get(argument: str, data: dict) -> dict:
 def handle_upload_file(data: dict) -> dict:
     filename = None
 
-    # Validate file presence
     if "file" not in flask.request.files:
         return {"UploadFileFail": "No file part in the request"}
     
@@ -275,57 +278,43 @@ def handle_upload_file(data: dict) -> dict:
         return {"UploadFileFail": "File is too large"}
 
     safe, valid_files = analyze_zip(zip_file)
-
     if not safe:
         return {"UploadFileFail": "Uploaded ZIP file failed safety checks"}
 
-    # delete directory generated 
     extract_dir = "core/generated"
     if os.path.exists(extract_dir):
         shutil.rmtree(extract_dir)
 
-    # recreate directory
-    # os.makedirs(extract_dir, exist_ok=True)
-    # extract files
     safe_extract(zip_file, extract_dir, valid_files)
     run_compile("./scripts/compile.sh", cwd=extract_dir)
 
-    return {"status": build_state.status.name}
+    if build_state.status == BuildStatus.SUCCESS:
+        database = "restapi.db"
+        try:
+            with create_connection(database) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM Programs WHERE Name = 'webserver_program'")
+                row = cur.fetchone()
+                
+                if not row or len(row) < 4:
+                    return {"UploadFileFail": "Program record not found or invalid"}
+                
+                filename = str(row[3])
+                # st_file.save(f"st_files/{filename}")
+                cur.close()
 
-    # # Database operations
-    # database = "openplc.db"
-    # conn = create_connection(database)
-    # if conn is None:
-    #     return {"UploadFileFail": "Error connecting to the database"}
-    
-    # logger.info("%s connected", database)
-    
-    # try:
-    #     cur = conn.cursor()
-    #     cur.execute("SELECT * FROM Programs WHERE Name = 'webserver_program'")
-    #     row = cur.fetchone()
-        
-    #     if not row or len(row) < 4:
-    #         return {"UploadFileFail": "Program record not found or invalid"}
-        
-    #     filename = str(row[3])
-    #     st_file.save(f"st_files/{filename}")
-    #     cur.close()
-        
-    # except Exception as e:
-    #     return {"UploadFileFail": f"Database operation failed: {e}"}
-    # finally:
-    #     if conn:
-    #         conn.close()
+        except sqlite3.DatabaseError as e:
+            return {"UploadFileFail": f"Database operation failed: {e}"}
 
     # if openplc_runtime.status() == "Compiling":
     #     return {"RuntimeStatus": "Compiling"}
 
-    # try:
-    #     openplc_runtime.compile_program(filename)
-    #     return {"CompilationStatus": "Starting program compilation"}
-    # except Exception as e:
-    #     return {"CompilationStatusFail": f"Compilation failed: {e}"}
+    try:
+        # openplc_runtime.compile_program(filename)
+        return {"CompilationStatus": "Starting program compilation"}
+    except Exception as e:
+        return {"CompilationStatusFail": f"Compilation failed: {e}"}
+    return {"status": build_state.status.name}
 
 
 POST_HANDLERS: dict[str, Callable[[dict], dict]] = {
