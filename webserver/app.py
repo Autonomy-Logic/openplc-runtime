@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from typing import Callable
 import time
+import uuid
 import zipfile
 import sys
 import shutil
@@ -76,7 +77,7 @@ build_state = BuildProcess()  # global-ish singleton for status
 
 
 @contextmanager
-def create_connection(db_file: str):
+def create_connection(db_file: str) -> sqlite3.Connection:
     """Context manager for SQLite database connection."""
     conn = None
     try:
@@ -151,7 +152,6 @@ def analyze_zip(zip_path) -> (bool, list):
 
 def safe_extract(zip_path, dest_dir, valid_files):
     """Extract files safely to a target directory."""
-
     build_state.status = BuildStatus.UNZIPPING
     with zipfile.ZipFile(zip_path, "r") as zf:
         for info in valid_files:
@@ -180,13 +180,13 @@ def safe_extract(zip_path, dest_dir, valid_files):
 
             logger.info(f"Extracted: {out_path}")
 
-def run_compile(script_path: str, cwd: str):
+def run_compile(script_path: str, cwd: str, output_name):
     """Run compile script asynchronously and update status/logs."""
     build_state.status = BuildStatus.COMPILING
     build_state.log(f"[INFO] Starting compilation: {script_path}\n")
 
     process = subprocess.Popen(
-        ["bash", script_path],
+        [script_path, output_name],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -286,34 +286,29 @@ def handle_upload_file(data: dict) -> dict:
         shutil.rmtree(extract_dir)
 
     safe_extract(zip_file, extract_dir, valid_files)
-    run_compile("./scripts/compile.sh", cwd=extract_dir)
+    # openplc_runtime.compile_program(filename)
+    output_name = f"program_{uuid.uuid4().hex}.so"
+    run_compile("./scripts/compile.sh", cwd=extract_dir, output_name=output_name)
+    compiled_file = os.path.join(extract_dir, "build", output_name)
+
+    if build_state.status == BuildStatus.FAILED:
+        return {"CompilationStatusFail": f"Compilation failed:\n{build_state.logs[-1]}"}
+    elif build_state.status == BuildStatus.COMPILING:
+        return {"CompilationStatus": "Starting program compilation"}
 
     if build_state.status == BuildStatus.SUCCESS:
         database = "restapi.db"
         try:
             with create_connection(database) as conn:
                 cur = conn.cursor()
-                cur.execute("SELECT * FROM Programs WHERE Name = 'webserver_program'")
-                row = cur.fetchone()
-                
-                if not row or len(row) < 4:
-                    return {"UploadFileFail": "Program record not found or invalid"}
-                
-                filename = str(row[3])
-                # st_file.save(f"st_files/{filename}")
-                cur.close()
+                cur.execute(
+                    "INSERT INTO CompiledPrograms (Name, FilePath) VALUES (?, ?)",
+                    ("webserver_program", compiled_file)
+                )
 
         except sqlite3.DatabaseError as e:
             return {"UploadFileFail": f"Database operation failed: {e}"}
 
-    # if openplc_runtime.status() == "Compiling":
-    #     return {"RuntimeStatus": "Compiling"}
-
-    try:
-        # openplc_runtime.compile_program(filename)
-        return {"CompilationStatus": "Starting program compilation"}
-    except Exception as e:
-        return {"CompilationStatusFail": f"Compilation failed: {e}"}
     return {"status": build_state.status.name}
 
 
