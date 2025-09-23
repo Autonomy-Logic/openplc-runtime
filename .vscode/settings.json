@@ -4,7 +4,8 @@
         "scan_cycle_manager.h": "c",
         "dlfcn.h": "c",
         "utils.h": "c",
-        "plc_state_manager.h": "c"
+        "plc_state_manager.h": "c",
+        "unix_socket.h": "c"
     },
     "editor.rulers": [
         80

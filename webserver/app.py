@@ -20,6 +20,7 @@ from restapi import (
     restapi_bp,
 )
 from unixclient import SyncUnixClient
+from unixserver import UnixLogServer
 
 app = flask.Flask(__name__)
 app.secret_key = str(os.urandom(16))
@@ -31,6 +32,9 @@ logger = logging.getLogger(__name__)
 openplc_runtime = openplc.runtime()
 client = SyncUnixClient("/run/runtime/plc_runtime.socket")
 client.connect()
+
+log_server = UnixLogServer("/run/runtime/log_runtime.socket")
+log_server.start()
 
 BASE_DIR = Path(__file__).parent
 CERT_FILE = (BASE_DIR / "certOPENPLC.pem").resolve()
@@ -59,8 +63,7 @@ def handle_stop_plc(data: dict) -> dict:
 
 
 def handle_runtime_logs(data: dict) -> dict:
-    logs = openplc_runtime.logs()
-    return {"runtime-logs": logs}
+    return {"runtime-logs": list(log_server.log_buffer)}
 
 
 def handle_compilation_status(data: dict) -> dict:
