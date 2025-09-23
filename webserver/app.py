@@ -2,6 +2,7 @@ import logging
 import os
 import ssl
 from pathlib import Path
+import threading
 from typing import Callable
 import shutil
 from typing import Final
@@ -122,18 +123,14 @@ def handle_upload_file(data: dict) -> dict:
 
     safe_extract(zip_file, extract_dir, valid_files)
     try:
-        run_compile(client=client, cwd=extract_dir)
+        task_compile = threading.Thread(target=run_compile, args=(client,), 
+                                     kwargs={"cwd": extract_dir}, daemon=True)
+        task_compile.start()
     except RuntimeError as e:
-        return {"CompilationStatus": f"Failed compilation:\n{str(e)}"}
-
-    # while build_state.status == BuildStatus.COMPILING:
-    if build_state.status == BuildStatus.SUCCESS:
-        return {"CompilationStatus": build_state.status.name}
-    elif build_state.status == BuildStatus.FAILED:
         return {"CompilationStatus":
                 f"Compilation failed:\n{build_state.logs[-1]}"}
 
-    return {"UploadFileFail": "Unknown error during file upload"}
+    return {"CompilationStatus": build_state.status.name}
 
 
 POST_HANDLERS: dict[str, Callable[[dict], dict]] = {
