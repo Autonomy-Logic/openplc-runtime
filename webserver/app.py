@@ -13,7 +13,6 @@ import threading
 
 import flask
 import flask_login
-import openplc
 from credentials import CertGen
 from restapi import (
     app_restapi,
@@ -32,7 +31,6 @@ login_manager.init_app(app)
 
 logger = logging.getLogger(__name__)
 
-openplc_runtime = openplc.runtime()
 client = SyncUnixClient("/run/runtime/plc_runtime.socket")
 client.connect()
 
@@ -332,8 +330,6 @@ def run_https():
         logger.error("SSL credentials FAIL! %s", e)
     except KeyboardInterrupt:
         logger.info("HTTP server stopped by KeyboardInterrupt")
-    finally:
-        openplc_runtime.stop_runtime()
 
 
 if __name__ == "__main__":
