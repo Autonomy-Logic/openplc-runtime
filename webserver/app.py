@@ -35,7 +35,6 @@ login_manager.init_app(app)
 
 logger = logging.getLogger(__name__)
 
-openplc_runtime = openplc.runtime()
 runtime_manager = RuntimeManager(
     runtime_path="./build/plc_main",
     plc_socket="/run/runtime/plc_runtime.socket",
@@ -194,7 +193,6 @@ def run_https():
     except KeyboardInterrupt:
         logger.info("HTTP server stopped by KeyboardInterrupt")
     finally:
-        openplc_runtime.stop_runtime()
         runtime_manager.stop()
         logger.info("Runtime manager stopped")
 
