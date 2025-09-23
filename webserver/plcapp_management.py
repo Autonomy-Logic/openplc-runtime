@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE: Final[int] = 10 * 1024 * 1024   # 10 MB per file
 MAX_TOTAL_SIZE: Final[int] = 50 * 1024 * 1024  # 50 MB total
-DISALLOWED_EXT = {".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr"}
+DISALLOWED_EXT = (".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr")
 
 class BuildStatus(Enum):
     IDLE = auto()
@@ -36,7 +36,7 @@ class BuildProcess:
 build_state = BuildProcess()  # global-ish singleton for status
 
 
-def analyze_zip(zip_path) -> (bool, list):
+def analyze_zip(zip_path) -> tuple[bool, list]:
     """Analyze the ZIP file for safety before extraction."""
     build_state.status = BuildStatus.UNZIPPING
 
@@ -147,7 +147,7 @@ def run_compile(client: SyncUnixClient, cwd: str = "core/generated"):
         else:
             build_state.status = BuildStatus.FAILED
             build_state.log(f"[INFO] Compilation failed (exit={exit_code})\n")
-            return {"CompilationStatusFail": f"Compilation failed (exit={exit_code})"}
+            raise RuntimeError(f"Compilation failed (exit={exit_code})")
     
     process = subprocess.Popen(
         ["bash", script_path],

@@ -18,9 +18,14 @@ from restapi import (
 )
 from unixclient import SyncUnixClient
 from unixserver import UnixLogServer
-from plcapp_management import (build_state, BuildStatus,
-                               analyze_zip, run_compile, safe_extract,
-                               MAX_FILE_SIZE, MAX_TOTAL_SIZE, DISALLOWED_EXT)
+from plcapp_management import (
+    build_state,
+    BuildStatus,
+    analyze_zip,
+    run_compile,
+    safe_extract,
+    MAX_FILE_SIZE
+)
 
 app = flask.Flask(__name__)
 app.secret_key = str(os.urandom(16))
@@ -116,7 +121,10 @@ def handle_upload_file(data: dict) -> dict:
         shutil.rmtree(extract_dir)
 
     safe_extract(zip_file, extract_dir, valid_files)
-    run_compile(client=client, cwd=extract_dir)
+    try:
+        run_compile(client=client, cwd=extract_dir)
+    except RuntimeError as e:
+        return {"CompilationStatus": f"Failed compilation:\n{str(e)}"}
 
     # while build_state.status == BuildStatus.COMPILING:
     if build_state.status == BuildStatus.SUCCESS:
