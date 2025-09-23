@@ -13,8 +13,3 @@ gcc $FLAGS -I "$libPATH" -c "$srcPATH/glueVars.c" -o glueVars.o
 
 # Link shared library
 gcc $FLAGS -shared -o libplc.so Config0.o Res0.o debug.o glueVars.o
-
-# Move result
-mkdir -p build
-mv libplc.so build/
-rm *.o

@@ -1,15 +1,10 @@
 import logging
 import os
 import ssl
-import threading
 from pathlib import Path
 from typing import Callable
-import zipfile
 import shutil
-from dataclasses import dataclass, field
-from enum import Enum, auto
-import subprocess
-import threading
+from typing import Final
 
 import flask
 import flask_login
@@ -23,6 +18,9 @@ from restapi import (
 )
 from unixclient import SyncUnixClient
 from unixserver import UnixLogServer
+from plcapp_management import (build_state, BuildStatus,
+                               analyze_zip, run_compile, safe_extract,
+                               MAX_FILE_SIZE, MAX_TOTAL_SIZE, DISALLOWED_EXT)
 
 app = flask.Flask(__name__)
 app.secret_key = str(os.urandom(16))
@@ -37,155 +35,10 @@ client.connect()
 log_server = UnixLogServer("/run/runtime/log_runtime.socket")
 log_server.start()
 
-BASE_DIR = Path(__file__).parent
-CERT_FILE = (BASE_DIR / "certOPENPLC.pem").resolve()
-KEY_FILE = (BASE_DIR / "keyOPENPLC.pem").resolve()
-HOSTNAME = "localhost"
-
-MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB per file
-MAX_TOTAL_SIZE = 50 * 1024 * 1024  # 50 MB total
-DISALLOWED_EXT = {".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr"}
-
-
-class BuildStatus(Enum):
-    IDLE = auto()
-    UNZIPPING = auto()
-    COMPILING = auto()
-    SUCCESS = auto()
-    FAILED = auto()
-
-@dataclass
-class BuildProcess:
-    status: BuildStatus = BuildStatus.IDLE
-    logs: list[str] = field(default_factory=list)
-    exit_code: int | None = None
-
-    def log(self, msg: str):
-        logger.info(msg)
-        self.logs.append(msg)
-
-
-build_state = BuildProcess()  # global-ish singleton for status
-
-
-def analyze_zip(zip_path) -> (bool, list):
-    """Analyze the ZIP file for safety before extraction."""
-    build_state.status = BuildStatus.UNZIPPING
-
-    if not zipfile.is_zipfile(zip_path):
-        logger.warning("Not a valid ZIP file.")
-        return False, []
-
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        total_size = 0
-        safe = True
-        valid_files = []
-
-        for info in zf.infolist():
-            filename = info.filename
-            uncompressed_size = info.file_size
-            compressed_size = info.compress_size
-            ext = os.path.splitext(filename)[1].lower()
-
-            # Check for path traversal or absolute paths
-            if filename.startswith("/") or ".." in filename or ":" in filename:
-                logger.warning(f"Dangerous path: {filename}")
-                safe = False
-
-            # Check uncompressed size
-            if uncompressed_size > MAX_FILE_SIZE:
-                logger.warning(f"File too large: {filename} ({uncompressed_size} bytes)")
-                safe = False
-
-            # Check compression ratio (ZIP bomb detection)
-            if compressed_size > 0 and uncompressed_size / compressed_size > 1000:
-                logger.warning(f"Suspicious compression ratio in {filename}")
-                safe = False
-
-            # Check disallowed extensions
-            if ext in DISALLOWED_EXT:
-                logger.warning(f"Disallowed extension: {filename}")
-                safe = False
-
-            total_size += uncompressed_size
-            valid_files.append(info)
-
-        # Check total size
-        if total_size > MAX_TOTAL_SIZE:
-            logger.warning(f"Total uncompressed size too large: {total_size} bytes")
-            safe = False
-
-        if safe:
-            logger.info("ZIP file looks safe to extract (based on static checks).")
-        else:
-            logger.warning("ZIP file failed safety checks.")
-
-        return safe, valid_files
-
-
-def safe_extract(zip_path, dest_dir, valid_files):
-    """Extract files safely to a target directory."""
-    build_state.status = BuildStatus.UNZIPPING
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        for info in valid_files:
-            filename = info.filename
-
-            # Skip directory entries
-            if filename.endswith("/"):
-                dir_path = os.path.join(dest_dir, filename)
-                os.makedirs(dir_path, exist_ok=True)
-                continue
-
-            out_path = os.path.join(dest_dir, filename)
-            out_path = os.path.abspath(out_path)
-
-            # Ensure extraction stays inside destination
-            if not out_path.startswith(os.path.abspath(dest_dir)):
-                print(f"Skipping suspicious path: {filename}")
-                continue
-
-            # Create parent directories if needed
-            os.makedirs(os.path.dirname(out_path), exist_ok=True)
-
-            # Extract file
-            with zf.open(info) as src, open(out_path, "wb") as dst:
-                dst.write(src.read())
-
-            logger.info(f"Extracted: {out_path}")
-
-def run_compile(script_path: str, cwd: str):
-    """Run compile script asynchronously and update status/logs."""
-    build_state.status = BuildStatus.COMPILING
-    build_state.log(f"[INFO] Starting compilation: {script_path}\n")
-    
-    process = subprocess.Popen(
-        ["bash", script_path],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1
-    )
-
-    def stream_output(pipe, prefix):
-        for line in iter(pipe.readline, ''):
-            msg = f"{prefix}{line}"
-            build_state.log(msg)
-        pipe.close()
-
-    threading.Thread(target=stream_output, args=(process.stdout, "[OUT] "), daemon=True).start()
-    threading.Thread(target=stream_output, args=(process.stderr, "[ERR] "), daemon=True).start()
-
-    def wait_and_finish():
-        exit_code = process.wait()
-        build_state.exit_code = exit_code
-        if exit_code == 0:
-            build_state.status = BuildStatus.SUCCESS
-            build_state.log("[INFO] Compilation succeeded\n")
-        else:
-            build_state.status = BuildStatus.FAILED
-            build_state.log(f"[INFO] Compilation failed (exit={exit_code})\n")
-
-    threading.Thread(target=wait_and_finish, daemon=True).start()
+BASE_DIR: Final[Path] = Path(__file__).parent
+CERT_FILE: Final[Path] = (BASE_DIR / "certOPENPLC.pem").resolve()
+KEY_FILE: Final[Path] = (BASE_DIR / "keyOPENPLC.pem").resolve()
+HOSTNAME: Final[str] = "localhost"
 
 
 def handle_start_plc(data: dict) -> dict:
@@ -242,8 +95,6 @@ def restapi_callback_get(argument: str, data: dict) -> dict:
 def handle_upload_file(data: dict) -> dict:
     if build_state.status == BuildStatus.COMPILING:
         return {"CompilationStatus": "Program is compiling, please wait"}
-
-    filename = None
     
     if "file" not in flask.request.files:
         return {"UploadFileFail": "No file part in the request"}
@@ -262,16 +113,16 @@ def handle_upload_file(data: dict) -> dict:
         shutil.rmtree(extract_dir)
 
     safe_extract(zip_file, extract_dir, valid_files)
-    run_compile("./scripts/compile.sh", cwd=extract_dir)
-    # compiled_file = os.path.join(extract_dir, "build", "libplc.so")
+    run_compile(cwd=extract_dir)
 
-    if build_state.status == BuildStatus.FAILED:
-        return {"CompilationStatusFail": f"Compilation failed:\n{build_state.logs[-1]}"}
-    elif build_state.status == BuildStatus.COMPILING:
-        return {"CompilationStatus": "Starting program compilation"}
+    # while build_state.status == BuildStatus.COMPILING:
+    if build_state.status == BuildStatus.SUCCESS:
+        return {"CompilationStatus": build_state.status.name}
+    elif build_state.status == BuildStatus.FAILED:
+        return {"CompilationStatus":
+                f"Compilation failed:\n{build_state.logs[-1]}"}
 
-    if build_state.status == BuildStatus.SUCCESS:        
-        return {"status": build_state.status.name}
+    return {"UploadFileFail": "Unknown error during file upload"}
 
 
 POST_HANDLERS: dict[str, Callable[[dict], dict]] = {
