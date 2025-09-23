@@ -63,7 +63,10 @@ def handle_compilation_status(data: dict) -> dict:
     }
 
 def handle_status(data: dict) -> dict:
-    return {"current_status": "operational", "details": data}
+    response = client.status()
+    if response is None:
+        return {"status": "No response from runtime"}
+    return {"status": response}
 
 
 def handle_ping(data: dict) -> dict:

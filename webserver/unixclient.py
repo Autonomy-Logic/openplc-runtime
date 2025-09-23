@@ -77,6 +77,11 @@ class SyncUnixClient:
         self.send_message("PING\n")
         return self.recv_message()
 
+    def status(self):
+        """Send STATUS command"""
+        self.send_message("STATUS\n")
+        return self.recv_message()
+
     def start_plc(self):
         """Send START command"""
         self.send_message("START\n")
