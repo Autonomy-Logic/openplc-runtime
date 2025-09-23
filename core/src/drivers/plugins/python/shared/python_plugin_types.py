@@ -75,8 +75,12 @@ class PluginRuntimeArgs(ctypes.Structure):
             
             return True, "All pointers valid"
             
-        except Exception as e:
-            return False, f"Exception during validation: {e}"
+        except (AttributeError, TypeError) as e:
+            return False, f"Structure access error during validation: {e}"
+        except (ValueError, OverflowError) as e:
+            return False, f"Value validation error: {e}"
+        except OSError as e:
+            return False, f"System error during validation: {e}"
     
     def safe_access_buffer_size(self):
         """
@@ -94,8 +98,12 @@ class PluginRuntimeArgs(ctypes.Structure):
             
             return size, "Success"
             
-        except Exception as e:
-            return -1, f"Exception accessing buffer_size: {e}"
+        except (AttributeError, TypeError) as e:
+            return -1, f"Structure access error: {e}"
+        except (ValueError, OverflowError) as e:
+            return -1, f"Value validation error: {e}"
+        except OSError as e:
+            return -1, f"System error accessing buffer_size: {e}"
     
     def __str__(self):
         """Debug representation of the structure"""
@@ -166,7 +174,7 @@ class PluginStructureValidator:
             
             return True, "Structure validation passed", debug_info
             
-        except Exception as e:
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
             return False, f"Exception during validation: {e}", {}
     
     @staticmethod
@@ -186,7 +194,7 @@ class PluginStructureValidator:
             for field_name, field_type in PluginRuntimeArgs._fields_:
                 offset = getattr(PluginRuntimeArgs, field_name).offset
                 print(f"  {field_name}: offset {offset}")
-        except Exception as e:
+        except (AttributeError, TypeError) as e:
             print(f"  Error getting field offsets: {e}")
 
 class SafeBufferAccess:
@@ -200,6 +208,27 @@ class SafeBufferAccess:
         """
         self.args = runtime_args
         self.is_valid, self.error_msg = runtime_args.validate_pointers()
+    
+    @staticmethod
+    def _handle_buffer_exception(exception, operation_name):
+        """
+        Centralized exception handling for buffer operations
+        Args:
+            exception: The caught exception
+            operation_name: Name of the operation that failed
+        Returns:
+            str: Formatted error message
+        """
+        if isinstance(exception, (AttributeError, TypeError)):
+            return f"Structure access error during {operation_name}: {exception}"
+        elif isinstance(exception, (ValueError, OverflowError)):
+            return f"Value validation error during {operation_name}: {exception}"
+        elif isinstance(exception, OSError):
+            return f"System error during {operation_name}: {exception}"
+        elif isinstance(exception, MemoryError):
+            return f"Memory error during {operation_name}: {exception}"
+        else:
+            return f"Unexpected error during {operation_name}: {exception}"
     
     def read_bool_input(self, buffer_idx, bit_idx, thread_safe=True):
         """
@@ -237,8 +266,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return False, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return False, self._handle_buffer_exception(e, "buffer access")
 
     def read_bool_output(self, buffer_idx, bit_idx, thread_safe=True):
         """
@@ -276,8 +305,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return False, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return False, self._handle_buffer_exception(e, "buffer access")
     
     def write_bool_output(self, buffer_idx, bit_idx, value, thread_safe=True):
         """
@@ -316,8 +345,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return False, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return False, self._handle_buffer_exception(e, "buffer access")
     
     # Byte buffer access functions
     def read_byte_input(self, buffer_idx, thread_safe=True):
@@ -353,8 +382,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return 0, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return 0, self._handle_buffer_exception(e, "buffer access")
     
     def write_byte_output(self, buffer_idx, value, thread_safe=True):
         """
@@ -394,8 +423,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return False, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return False, self._handle_buffer_exception(e, "buffer access")
     
     def read_byte_output(self, buffer_idx, thread_safe=True):
         """
@@ -430,8 +459,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return 0, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return 0, self._handle_buffer_exception(e, "buffer access")
     
     # Int buffer access functions (IEC_UINT - 16-bit)
     def read_int_input(self, buffer_idx, thread_safe=True):
@@ -467,8 +496,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return 0, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return 0, self._handle_buffer_exception(e, "buffer access")
     
     def write_int_output(self, buffer_idx, value, thread_safe=True):
         """
@@ -508,8 +537,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return False, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return False, self._handle_buffer_exception(e, "buffer access")
     
     def read_int_output(self, buffer_idx, thread_safe=True):
         """
@@ -544,8 +573,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return 0, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return 0, self._handle_buffer_exception(e, "buffer access")
     
     # Dint buffer access functions (IEC_UDINT - 32-bit)
     def read_dint_input(self, buffer_idx, thread_safe=True):
@@ -581,8 +610,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return 0, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return 0, self._handle_buffer_exception(e, "buffer access")
     
     def write_dint_output(self, buffer_idx, value, thread_safe=True):
         """
@@ -622,8 +651,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return False, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return False, self._handle_buffer_exception(e, "buffer access")
     
     def read_dint_output(self, buffer_idx, thread_safe=True):
         """
@@ -658,8 +687,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return 0, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return 0, self._handle_buffer_exception(e, "buffer access")
     
     # Lint buffer access functions (IEC_ULINT - 64-bit)
     def read_lint_input(self, buffer_idx, thread_safe=True):
@@ -695,8 +724,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return 0, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return 0, self._handle_buffer_exception(e, "buffer access")
     
     def write_lint_output(self, buffer_idx, value, thread_safe=True):
         """
@@ -736,8 +765,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return False, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return False, self._handle_buffer_exception(e, "buffer access")
     
     def read_lint_output(self, buffer_idx, thread_safe=True):
         """
@@ -772,8 +801,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return 0, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return 0, self._handle_buffer_exception(e, "buffer access")
     
     # Memory buffer access functions (IEC_UINT - 16-bit)
     def read_int_memory(self, buffer_idx, thread_safe=True):
@@ -809,8 +838,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return 0, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return 0, self._handle_buffer_exception(e, "buffer access")
     
     def write_int_memory(self, buffer_idx, value, thread_safe=True):
         """
@@ -850,8 +879,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return False, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return False, self._handle_buffer_exception(e, "buffer access")
     
     # Memory buffer access functions (IEC_UDINT - 32-bit)
     def read_dint_memory(self, buffer_idx, thread_safe=True):
@@ -887,8 +916,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return 0, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return 0, self._handle_buffer_exception(e, "buffer access")
     
     def write_dint_memory(self, buffer_idx, value, thread_safe=True):
         """
@@ -928,8 +957,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return False, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return False, self._handle_buffer_exception(e, "buffer access")
     
     # Memory buffer access functions (IEC_ULINT - 64-bit)
     def read_lint_memory(self, buffer_idx, thread_safe=True):
@@ -965,8 +994,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return 0, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return 0, self._handle_buffer_exception(e, "buffer access")
     
     def write_lint_memory(self, buffer_idx, value, thread_safe=True):
         """
@@ -1006,8 +1035,8 @@ class SafeBufferAccess:
                 if mutex_acquired:
                     self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
-            return False, f"Exception during buffer access: {e}"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return False, self._handle_buffer_exception(e, "buffer access")
     
     # Mutex API functions for manual control
     def acquire_mutex(self):
@@ -1022,7 +1051,7 @@ class SafeBufferAccess:
             if self.args.mutex_take(self.args.buffer_mutex) != 0:
                 return False, "Failed to acquire mutex"
             return True, "Mutex acquired successfully"
-        except Exception as e:
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
             return False, f"Exception during mutex acquisition: {e}"
     
     def release_mutex(self):
@@ -1037,7 +1066,7 @@ class SafeBufferAccess:
             if self.args.mutex_give(self.args.buffer_mutex) != 0:
                 return False, "Failed to release mutex"
             return True, "Mutex released successfully"
-        except Exception as e:
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
             return False, f"Exception during mutex release: {e}"
     
     # Batch operations for optimized mutex usage
@@ -1134,7 +1163,7 @@ class SafeBufferAccess:
                             
                             results.append((True, value, "Success"))
                     
-                    except Exception as e:
+                    except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
                         results.append((False, None, f"Exception during operation: {e}"))
                 
                 return results, "Batch read completed"
@@ -1143,7 +1172,7 @@ class SafeBufferAccess:
                 # Always release mutex
                 self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
             return [], f"Exception during batch read: {e}"
     
     def batch_write_values(self, operations):
@@ -1249,7 +1278,7 @@ class SafeBufferAccess:
                             
                             results.append((True, "Success"))
                     
-                    except Exception as e:
+                    except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
                         results.append((False, f"Exception during operation: {e}"))
                 
                 return results, "Batch write completed"
@@ -1258,7 +1287,7 @@ class SafeBufferAccess:
                 # Always release mutex
                 self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
             return [], f"Exception during batch write: {e}"
     
     def batch_mixed_operations(self, read_operations, write_operations):
@@ -1353,7 +1382,7 @@ class SafeBufferAccess:
                                 
                                 read_results.append((True, value, "Success"))
                         
-                        except Exception as e:
+                        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
                             read_results.append((False, None, f"Exception during read operation: {e}"))
                 
                 # Perform write operations
@@ -1435,7 +1464,7 @@ class SafeBufferAccess:
                                 
                                 write_results.append((True, "Success"))
                         
-                        except Exception as e:
+                        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
                             write_results.append((False, f"Exception during write operation: {e}"))
                 
                 return {'reads': read_results, 'writes': write_results}, "Batch mixed operations completed"
@@ -1444,7 +1473,7 @@ class SafeBufferAccess:
                 # Always release mutex
                 self.args.mutex_give(self.args.buffer_mutex)
                 
-        except Exception as e:
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
             return {}, f"Exception during batch mixed operations: {e}"
 
 def safe_extract_runtime_args_from_capsule(capsule):
@@ -1483,7 +1512,7 @@ def safe_extract_runtime_args_from_capsule(capsule):
         
         return runtime_args, "Success"
         
-    except Exception as e:
+    except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
         return None, f"Exception during capsule extraction: {e}"
 
 if __name__ == "__main__":
