@@ -113,7 +113,7 @@ def handle_upload_file(data: dict) -> dict:
         shutil.rmtree(extract_dir)
 
     safe_extract(zip_file, extract_dir, valid_files)
-    run_compile(cwd=extract_dir)
+    run_compile(client=client, cwd=extract_dir)
 
     # while build_state.status == BuildStatus.COMPILING:
     if build_state.status == BuildStatus.SUCCESS:

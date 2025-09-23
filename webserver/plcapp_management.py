@@ -7,6 +7,8 @@ import subprocess
 import threading
 from typing import Final
 
+from unixclient import SyncUnixClient
+
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE: Final[int] = 10 * 1024 * 1024   # 10 MB per file
@@ -123,7 +125,7 @@ def safe_extract(zip_path, dest_dir, valid_files):
 
             logger.info("Extracted: %s", out_path)
 
-def run_compile(cwd: str = "core/generated"):
+def run_compile(client: SyncUnixClient, cwd: str = "core/generated"):
     """Run compile script asynchronously and update status/logs."""
     script_path: str = "./scripts/compile.sh"
 
@@ -161,6 +163,8 @@ def run_compile(cwd: str = "core/generated"):
     task_wait = threading.Thread(target=wait_and_finish, daemon=True)
     task_wait.start()
     task_wait.join(timeout=0.1)
+    # stop the PLC if running to allow restart with new code
+    client.stop_plc()
     
     process = subprocess.Popen(
         ["bash", "./scripts/compile-clean.sh"],
@@ -173,3 +177,5 @@ def run_compile(cwd: str = "core/generated"):
     task_wait = threading.Thread(target=wait_and_finish, daemon=True)
     task_wait.start()
     task_wait.join(timeout=0.1)
+    # start the PLC again
+    client.start_plc()
