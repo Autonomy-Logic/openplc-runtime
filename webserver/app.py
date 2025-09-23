@@ -1,21 +1,15 @@
-import asyncio
 import logging
 import os
-import sqlite3
 import ssl
 import threading
 from pathlib import Path
 from typing import Callable
-import time
-import uuid
 import zipfile
-import sys
 import shutil
 from dataclasses import dataclass, field
 from enum import Enum, auto
 import subprocess
 import threading
-from contextlib import contextmanager
 
 import flask
 import flask_login
@@ -75,25 +69,6 @@ class BuildProcess:
 
 build_state = BuildProcess()  # global-ish singleton for status
 
-
-@contextmanager
-def create_connection(db_file: str) -> sqlite3.Connection:
-    """Context manager for SQLite database connection."""
-    conn = None
-    try:
-        conn = sqlite3.connect(db_file)
-        logger.info("Connected to database: %s", db_file)
-        yield conn
-        conn.commit()   # commit only if everything inside succeeded
-    except sqlite3.Error as e:
-        if conn:
-            conn.rollback()  # rollback if there was an error
-        logger.error("Database error: %s", e)
-        raise
-    finally:
-        if conn:
-            conn.close()
-            logger.info("Connection to %s closed", db_file)
 
 def analyze_zip(zip_path) -> (bool, list):
     """Analyze the ZIP file for safety before extraction."""
@@ -180,13 +155,13 @@ def safe_extract(zip_path, dest_dir, valid_files):
 
             logger.info(f"Extracted: {out_path}")
 
-def run_compile(script_path: str, cwd: str, output_name):
+def run_compile(script_path: str, cwd: str):
     """Run compile script asynchronously and update status/logs."""
     build_state.status = BuildStatus.COMPILING
     build_state.log(f"[INFO] Starting compilation: {script_path}\n")
-
+    
     process = subprocess.Popen(
-        [script_path, output_name],
+        ["bash", script_path],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -267,8 +242,11 @@ def restapi_callback_get(argument: str, data: dict) -> dict:
 
 
 def handle_upload_file(data: dict) -> dict:
-    filename = None
+    if build_state.status == BuildStatus.COMPILING:
+        return {"CompilationStatus": "Program is compiling, please wait"}
 
+    filename = None
+    
     if "file" not in flask.request.files:
         return {"UploadFileFail": "No file part in the request"}
     
@@ -286,30 +264,16 @@ def handle_upload_file(data: dict) -> dict:
         shutil.rmtree(extract_dir)
 
     safe_extract(zip_file, extract_dir, valid_files)
-    # openplc_runtime.compile_program(filename)
-    output_name = f"program_{uuid.uuid4().hex}.so"
-    run_compile("./scripts/compile.sh", cwd=extract_dir, output_name=output_name)
-    compiled_file = os.path.join(extract_dir, "build", output_name)
+    run_compile("./scripts/compile.sh", cwd=extract_dir)
+    # compiled_file = os.path.join(extract_dir, "build", "libplc.so")
 
     if build_state.status == BuildStatus.FAILED:
         return {"CompilationStatusFail": f"Compilation failed:\n{build_state.logs[-1]}"}
     elif build_state.status == BuildStatus.COMPILING:
         return {"CompilationStatus": "Starting program compilation"}
 
-    if build_state.status == BuildStatus.SUCCESS:
-        database = "restapi.db"
-        try:
-            with create_connection(database) as conn:
-                cur = conn.cursor()
-                cur.execute(
-                    "INSERT INTO CompiledPrograms (Name, FilePath) VALUES (?, ?)",
-                    ("webserver_program", compiled_file)
-                )
-
-        except sqlite3.DatabaseError as e:
-            return {"UploadFileFail": f"Database operation failed: {e}"}
-
-    return {"status": build_state.status.name}
+    if build_state.status == BuildStatus.SUCCESS:        
+        return {"status": build_state.status.name}
 
 
 POST_HANDLERS: dict[str, Callable[[dict], dict]] = {
