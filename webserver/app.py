@@ -40,6 +40,9 @@ client.connect()
 log_server = UnixLogServer("/run/runtime/log_runtime.socket")
 log_server.start()
 
+log_server = UnixLogServer("/run/runtime/log_runtime.socket")
+log_server.start()
+
 BASE_DIR: Final[Path] = Path(__file__).parent
 CERT_FILE: Final[Path] = (BASE_DIR / "certOPENPLC.pem").resolve()
 KEY_FILE: Final[Path] = (BASE_DIR / "keyOPENPLC.pem").resolve()

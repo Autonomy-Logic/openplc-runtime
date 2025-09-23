@@ -10,6 +10,13 @@
 #include <stdlib.h>
 #include <stdatomic.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <errno.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdatomic.h>
+#include <signal.h>
 
 static LogLevel current_level = LOG_LEVEL_INFO;
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -106,6 +113,7 @@ static void log_write(LogLevel level, const char *fmt, va_list args)
     {
         return;
     }
+    
     
     time_t now = time(NULL);
     struct tm t;
