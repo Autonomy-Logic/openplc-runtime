@@ -12,6 +12,8 @@ from pymodbus.datastore import (
     ModbusServerContext,
 )
 
+MAX_BITS = 8
+
 # Add the parent directory to Python path to find shared module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -57,8 +59,8 @@ class OpenPLCCoilsDataBlock(ModbusSparseDataBlock):
             
             if coil_addr < self.num_coils:
                 # Map coil address to buffer and bit indices
-                buffer_idx = coil_addr // 8  # 8 bits per buffer
-                bit_idx = coil_addr % 8      # bit within buffer
+                buffer_idx = coil_addr // MAX_BITS  # 8 bits per buffer
+                bit_idx = coil_addr % MAX_BITS      # bit within buffer
 
                 value, error_msg = self.safe_buffer_access.read_bool_output(buffer_idx, bit_idx, thread_safe=False)
                 if error_msg == "Success":
@@ -92,9 +94,9 @@ class OpenPLCCoilsDataBlock(ModbusSparseDataBlock):
             
             if coil_addr < self.num_coils:
                 # Map coil address to buffer and bit indices
-                buffer_idx = coil_addr // 8  # 8 bits per buffer
-                bit_idx = coil_addr % 8      # bit within buffer
-                
+                buffer_idx = coil_addr // MAX_BITS  # 8 bits per buffer
+                bit_idx = coil_addr % MAX_BITS      # bit within buffer
+
                 success, error_msg = self.safe_buffer_access.write_bool_output(buffer_idx, bit_idx, bool(value), thread_safe=False)
                 if error_msg == "Success":
                     print(f"[MODBUS] Set coil {coil_addr} (buf:{buffer_idx}, bit:{bit_idx}): {bool(value)}")
@@ -138,9 +140,9 @@ class OpenPLCDiscreteInputsDataBlock(ModbusSparseDataBlock):
             
             if input_addr < self.num_inputs:
                 # Map input address to buffer and bit indices
-                buffer_idx = input_addr // 8  # 8 bits per buffer
-                bit_idx = input_addr % 8      # bit within buffer
-                
+                buffer_idx = input_addr // MAX_BITS  # 8 bits per buffer
+                bit_idx = input_addr % MAX_BITS      # bit within buffer
+
                 value, error_msg = self.safe_buffer_access.read_bool_input(buffer_idx, bit_idx, thread_safe=False)
                 if error_msg == "Success":
                     values.append(1 if value else 0)
