@@ -14,9 +14,6 @@
 #include <sys/un.h>
 #include <errno.h>
 #include <unistd.h>
-#include <stdlib.h>
-#include <stdatomic.h>
-#include <signal.h>
 
 static LogLevel current_level = LOG_LEVEL_INFO;
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
