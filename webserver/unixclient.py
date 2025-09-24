@@ -72,26 +72,6 @@ class SyncUnixClient:
                 logger.error("Error receiving message: %s", e)
                 return None
 
-    def ping(self):
-        """Send PING and wait for PONG"""
-        self.send_message("PING\n")
-        return self.recv_message()
-
-    def status(self):
-        """Send STATUS command"""
-        self.send_message("STATUS\n")
-        return self.recv_message()
-
-    def start_plc(self):
-        """Send START command"""
-        self.send_message("START\n")
-        return self.recv_message()
-
-    def stop_plc(self):
-        """Send STOP command"""
-        self.send_message("STOP\n")
-        return self.recv_message()
-
     def close(self):
         if self.sock:
             logger.info("Closing connection")

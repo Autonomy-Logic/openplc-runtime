@@ -72,7 +72,7 @@ def handle_compilation_status(data: dict) -> dict:
     }
 
 def handle_status(data: dict) -> dict:
-    response = client.status()
+    response = runtime_manager.status_plc()
     if response is None:
         return {"status": "No response from runtime"}
     return {"status": response}
@@ -126,7 +126,7 @@ def handle_upload_file(data: dict) -> dict:
 
     safe_extract(zip_file, extract_dir, valid_files)
     try:
-        task_compile = threading.Thread(target=run_compile, args=(client,), 
+        task_compile = threading.Thread(target=run_compile, args=(runtime_manager,), 
                                      kwargs={"cwd": extract_dir}, daemon=True)
         task_compile.start()
     except RuntimeError as e:

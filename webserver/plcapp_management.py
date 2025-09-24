@@ -7,7 +7,7 @@ import subprocess
 import threading
 from typing import Final
 
-from unixclient import SyncUnixClient
+from runtimemanager import RuntimeManager
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ def safe_extract(zip_path, dest_dir, valid_files):
 
             logger.info("Extracted: %s", out_path)
 
-def run_compile(client: SyncUnixClient, cwd: str = "core/generated"):
+def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated"):
     """Run compile script asynchronously and update status/logs."""
     script_path: str = "./scripts/compile.sh"
 
@@ -164,7 +164,7 @@ def run_compile(client: SyncUnixClient, cwd: str = "core/generated"):
     task_wait.start()
     task_wait.join(timeout=0.1)
     # stop the PLC if running to allow restart with new code
-    client.stop_plc()
+    runtime_manager.stop_plc()
     
     process = subprocess.Popen(
         ["bash", "./scripts/compile-clean.sh"],
@@ -178,4 +178,4 @@ def run_compile(client: SyncUnixClient, cwd: str = "core/generated"):
     task_wait.start()
     task_wait.join(timeout=0.1)
     # start the PLC again
-    client.start_plc()
+    runtime_manager.start_plc()
