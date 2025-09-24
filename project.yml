@@ -1,0 +1,23 @@
+---
+:project:
+  :name: openplc-basic-tests
+  :use_exceptions: FALSE
+  :use_mocks: FALSE
+  :use_test_preprocessor: :none
+  :build_root: build/test
+  :test_file_prefix: test_
+
+:paths:
+  :test:
+    - tests/**
+  :source:
+    - core/src/**
+  :include:
+    - core/src/**
+
+:defines:
+  :test:
+    - TEST
+
+:plugins:
+  :enabled: []
