@@ -34,7 +34,7 @@ class RuntimeManager:
                 # Alternatively, match by command line
                 if self.runtime_path in ' '.join(proc.info['cmdline']):
                     return proc
-            except Exception:
+            except (OSError, psutil.Error):
                 continue
         return None
     
@@ -42,35 +42,62 @@ class RuntimeManager:
     def _safe_start_log_server(self):
         try:
             self.log_server.start()
-        except Exception as e:
+        except (OSError, socket.error) as e:
             logger.error("Failed to start log server: %s", e)
-
+        except Exception as e:
+            logger.error("Failed to start log server (unexpected): %s", e)
 
     def _safe_connect_runtime_socket(self):
         try:
             self.runtime_socket.connect()
-        except Exception as e:
+        except (FileNotFoundError, OSError, socket.error) as e:
             logger.error("Failed to connect to runtime socket: %s", e)
-
+        except Exception as e:
+            logger.error("Failed to connect to runtime socket (unexpected): %s", e)
 
     def _safe_stop_log_server(self):
         try:
             self.log_server.stop()
-        except Exception as e:
+        except (OSError, socket.error) as e:
             logger.error("Failed to stop log server: %s", e)
-
+        except Exception as e:
+            logger.error("Failed to stop log server (unexpected): %s", e)
 
     def _safe_close_runtime_socket(self):
         try:
             self.runtime_socket.close()
-        except Exception as e:
+        except (OSError, socket.error) as e:
             logger.error("Failed to close runtime socket: %s", e)
-
+        except Exception as e:
+            logger.error("Failed to close runtime socket (unexpected): %s", e)
 
     def start(self):
         """
         Start the runtime manager and the PLC runtime process
         """
+        if self.running:
+            logger.warning("Runtime manager already running")
+            return
+        
+        self.running = True
+
+        # Ensure UNIX socket paths exist
+        plc_socket_dir = os.path.dirname(self.plc_socket)
+        log_socket_dir = os.path.dirname(self.log_socket)
+        if not os.path.exists(plc_socket_dir):
+            try:
+                os.makedirs(plc_socket_dir)
+                logger.info("Created directory for PLC socket: %s", plc_socket_dir)
+            except OSError as e:
+                logger.error("Failed to create directory for PLC socket: %s", e)
+        if not os.path.exists(log_socket_dir):
+            try:
+                os.makedirs(log_socket_dir)
+                logger.info("Created directory for log socket: %s", log_socket_dir)
+            except OSError as e:
+                logger.error("Failed to create directory for log socket: %s", e)
+
+        # Start runtime process if not already running
         running_process = self.find_running_process()
         if running_process:
             logger.info("Found existing PLC runtime process with PID %d", running_process.pid)
@@ -82,13 +109,13 @@ class RuntimeManager:
             self._safe_start_log_server()
             try:
                 self.process = subprocess.Popen([self.runtime_path])
-            except Exception as e:
+            except (OSError, subprocess.SubprocessError) as e:
                 logger.error("Failed to start PLC runtime process: %s", e)
                 self.process = None
             time.sleep(1)  # Give time to start
             self._safe_connect_runtime_socket()
 
-        self.running = True
+        # Start monitor thread
         if not self.monitor_thread.is_alive():
             self.monitor_thread = threading.Thread(target=self._monitor, daemon=True)
             self.monitor_thread.start()
@@ -123,7 +150,7 @@ class RuntimeManager:
                 self._safe_start_log_server()
                 try:
                     self.process = subprocess.Popen([self.runtime_path])
-                except Exception as e:
+                except (OSError, subprocess.SubprocessError) as e:
                     logger.error("Failed to start PLC runtime process: %s", e)
                     self.process = None
                 time.sleep(1)  # Give time to start
@@ -132,32 +159,37 @@ class RuntimeManager:
                 # Make sure log server and socket are connected
                 if not self.log_server.running:
                     self._safe_start_log_server()
-                if not self.runtime_socket.sock:
+                if not self.runtime_socket.is_connected():
                     self._safe_connect_runtime_socket()
 
             time.sleep(2)
 
 
     def stop(self):
-        """
+        """"
         Stop the runtime manager and the PLC runtime process
         """
+        try:
+            self.runtime_socket.send_message("STOP\n")
+        except (OSError, socket.error) as e:
+            logger.error("Failed to send STOP to PLC runtime: %s", e)
+        except Exception as e:
+            logger.error("Failed to send STOP to PLC runtime (unexpected): %s", e)
         self.running = False
         self.monitor_thread.join(timeout=5)
-        self.runtime_socket.send_message("STOP\n")
         time.sleep(1)
         if self.process:
             if isinstance(self.process, psutil.Process):
                 self.process.terminate()
                 try:
                     self.process.wait(timeout=5)
-                except psutil.TimeoutExpired:
+                except (psutil.TimeoutExpired, psutil.Error) as e:
                     self.process.kill()
             elif isinstance(self.process, subprocess.Popen):
                 self.process.terminate()
                 try:
                     self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
+                except (subprocess.TimeoutExpired, subprocess.SubprocessError) as e:
                     self.process.kill()
             self.process = None
         self._safe_stop_log_server()
@@ -178,10 +210,12 @@ class RuntimeManager:
         try:
             self.runtime_socket.send_message("PING\n")
             return self.runtime_socket.recv_message()
-        except Exception as e:
+        except (OSError, socket.error) as e:
             logger.error("Failed to ping PLC runtime: %s", e)
             return 'PING:ERROR\n'
-        
+        except Exception as e:
+            logger.error("Failed to ping PLC runtime (unexpected): %s", e)
+            return 'PING:ERROR\n'
 
     def start_plc(self):
         """
@@ -190,10 +224,12 @@ class RuntimeManager:
         try:
             self.runtime_socket.send_message("START\n")
             return self.runtime_socket.recv_message()
-        except Exception as e:
+        except (OSError, socket.error) as e:
             logger.error("Failed to start PLC runtime: %s", e)
             return 'START:ERROR\n'
-        
+        except Exception as e:
+            logger.error("Failed to start PLC runtime (unexpected): %s", e)
+            return 'START:ERROR\n'
 
     def stop_plc(self):
         """
@@ -202,7 +238,7 @@ class RuntimeManager:
         try:
             self.runtime_socket.send_message("STOP\n")
             return self.runtime_socket.recv_message()
-        except Exception as e:
+        except (OSError, socket.error) as e:
             logger.error("Failed to stop PLC runtime: %s", e)
             return 'STOP:ERROR\n'
         

@@ -21,6 +21,12 @@ class SyncUnixClient:
         if not re.match(r"^[\w\s.,!?\-]+$", message):
             return False
         return True
+    
+    def is_connected(self):
+        with mutex:
+            if self.sock is None:
+                return False
+            return True
 
     def connect(self):
         """Connect to the Unix socket server"""
