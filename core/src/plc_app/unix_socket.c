@@ -41,11 +41,13 @@ static ssize_t read_line(int fd, char *buffer, size_t max_length)
 
 void handle_unix_socket_commands(const char *command, char *response, size_t response_size)
 {
-    if (strcmp(command, "PING") == 0) {
+    if (strcmp(command, "PING") == 0)
+    {
         log_debug("Received PING command");
         strncpy(response, "PING:OK\n", response_size);
     }
-    else if (strcmp(command, "STATUS") == 0) {
+    else if (strcmp(command, "STATUS") == 0)
+    {
         log_debug("Received STATUS command");
         PLCState current_state = plc_get_state();
 
@@ -60,28 +62,37 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
         else
             strncpy(response, "STATUS:UNKNOWN\n", response_size);
     }
-    else if (strcmp(command, "STOP") == 0) {
+    else if (strcmp(command, "STOP") == 0)
+    {
         log_debug("Received STOP command");
         if (plc_set_state(PLC_STATE_STOPPED))
             strncpy(response, "STOP:OK\n", response_size);
         else
             strncpy(response, "STOP:ERROR\n", response_size);
     }
-    else if (strcmp(command, "START") == 0) {
+    else if (strcmp(command, "START") == 0)
+    {
         log_debug("Received START command");
         PLCState current_state = plc_get_state();
-        if (current_state == PLC_STATE_STOPPED || current_state == PLC_STATE_ERROR) {
-            if (plc_set_state(PLC_STATE_RUNNING)) {
+        if (current_state == PLC_STATE_STOPPED || current_state == PLC_STATE_ERROR)
+        {
+            if (plc_set_state(PLC_STATE_RUNNING))
+            {
                 strncpy(response, "START:OK\n", response_size);
-            } else {
+            }
+            else
+            {
                 strncpy(response, "START:ERROR\n", response_size);
             }
-        } else {
+        }
+        else
+        {
             strncpy(response, "START:ERROR_ALREADY_RUNNING\n", response_size);
             log_error("Received START command but PLC is already RUNNING");
         }
     }
-    else {
+    else
+    {
         log_error("Unknown command received: %s", command);
         strncpy(response, "COMMAND:ERROR\n", response_size);
     }
