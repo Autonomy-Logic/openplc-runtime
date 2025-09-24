@@ -56,6 +56,7 @@ typedef struct
     int (*mutex_take)(pthread_mutex_t *mutex);
     int (*mutex_give)(pthread_mutex_t *mutex);
     pthread_mutex_t *buffer_mutex;
+    char plugin_specific_config_file_path[256];
 
     // Buffer size information
     int buffer_size;
@@ -94,7 +95,8 @@ int plugin_mutex_give(pthread_mutex_t *mutex);
 int python_plugin_get_symbols(plugin_instance_t *plugin);
 
 // Runtime arguments generation
-void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *driver);
+void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *driver,
+                                           int plugin_index);
 void free_structured_args(plugin_runtime_args_t *args);
 
 #endif // PLUGIN_DRIVER_H

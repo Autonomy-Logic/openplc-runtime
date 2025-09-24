@@ -6,6 +6,7 @@ This module provides correct ctypes mappings for the plugin_runtime_args_t struc
 
 import ctypes
 from ctypes import *
+import json
 import sys
 
 # IEC type mappings based on iec_types.h
@@ -44,6 +45,7 @@ class PluginRuntimeArgs(ctypes.Structure):
         ("mutex_take", ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)),
         ("mutex_give", ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)),
         ("buffer_mutex", ctypes.c_void_p),
+        ("plugin_specific_config_file_path", ctypes.c_char * 256),
         
         # Buffer size information
         ("buffer_size", ctypes.c_int),
@@ -1475,6 +1477,64 @@ class SafeBufferAccess:
                 
         except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
             return {}, f"Exception during batch mixed operations: {e}"
+    
+    def get_config_path(self):
+        """
+        Retrieve the plugin-specific configuration file path
+        Returns: (str, str) - (config_path, error_message)
+        """
+        if not self.is_valid:
+            return "", f"Invalid runtime args: {self.error_msg}"
+        
+        try:
+            config_path_bytes = self.args.plugin_specific_config_file_path
+            
+            # Handle different types of C char arrays
+            if isinstance(config_path_bytes, (bytes, bytearray)):
+                config_path = config_path_bytes.decode('utf-8').rstrip('\x00')
+            elif hasattr(config_path_bytes, 'value'):
+                config_path = config_path_bytes.value.decode('utf-8').rstrip('\x00')
+            elif hasattr(config_path_bytes, 'raw'):
+                config_path = config_path_bytes.raw.decode('utf-8').rstrip('\x00')
+            else:
+                # Try to convert to bytes first
+                config_path = bytes(config_path_bytes).decode('utf-8').rstrip('\x00')
+            
+            # Clean up the path - remove all whitespace and control characters
+            config_path = config_path.strip()
+            
+            return config_path, "Success"
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError, MemoryError) as e:
+            return "", f"Exception retrieving config path: {e}"
+        
+    def get_config_file_args_as_map(self):
+        """
+        Parse the plugin-specific configuration file as a key-value map
+        Supports JSON format for flexibility
+        Returns: (dict, str) - (config_map, error_message)
+        """
+        import os
+        
+        config_path, err_msg = self.get_config_path()
+        if not config_path:
+            return {}, f"Failed to get config path: {err_msg}"
+        
+        # Debug information
+        debug_info = f"Original path: '{config_path}', CWD: '{os.getcwd()}'"
+        
+        try:
+            with open(config_path, 'r') as config_file:
+                config_data = json.load(config_file)
+                if not isinstance(config_data, dict):
+                    return {}, "Configuration file must contain a JSON object at the top level"
+                return config_data, "Success"
+        except FileNotFoundError:
+            return {}, f"Configuration file not found: {config_path}"
+        except json.JSONDecodeError as e:
+            return {}, f"JSON parsing error in config file {config_path}: {e}"
+        except (OSError, MemoryError) as e:
+            return {}, f"Exception reading config file {config_path}: {e}"
+    
 
 def safe_extract_runtime_args_from_capsule(capsule):
     """

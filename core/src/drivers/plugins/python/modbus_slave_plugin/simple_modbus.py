@@ -5,6 +5,7 @@ import threading
 import time
 import sys
 import os
+import json
 from pymodbus.server import StartAsyncTcpServer, ServerStop
 from pymodbus.datastore import (
     ModbusSparseDataBlock,
@@ -290,16 +291,13 @@ class OpenPLCHoldingRegistersDataBlock(ModbusSparseDataBlock):
 server_task = None
 server_context = None
 runtime_args = None
-update_thread = None
 running = False
-gIp = "172.29.65.104"
+gIp = "172.29.65.104"  # Default values
 gPort = 5020
 
-def init(args_capsule, host="172.29.65.104", port=5020):
+def init(args_capsule):
     """Initialize the Modbus plugin"""
     global runtime_args, server_context, gIp, gPort
-    gIp = host
-    gPort = port
 
     print("[MODBUS] Python plugin 'simple_modbus' initializing...")
     
@@ -322,6 +320,26 @@ def init(args_capsule, host="172.29.65.104", port=5020):
             runtime_args = args_capsule
             print(f"[MODBUS] ✓ Using direct runtime args for testing")
         
+        # Try to load configuration from plugin_specific_config_file_path
+        try:
+            config_map, status = SafeBufferAccess(runtime_args).get_config_file_args_as_map()
+            if status == "Success" and config_map:
+                # Try to extract network configuration
+                network_config = config_map.get('network_configuration', {})
+                if network_config and 'host' in network_config and 'port' in network_config:
+                    gIp = str(network_config['host'])
+                    gPort = int(network_config['port'])
+                    print(f"[MODBUS] ✓ Configuration loaded - Host: {gIp}, Port: {gPort}")
+                else:
+                    print(f"[MODBUS] ⚠ Config file loaded but network_configuration section missing or incomplete - using defaults")
+                    print(f"[MODBUS] Available config sections: {list(config_map.keys())}")
+            else:
+                print(f"[MODBUS] ✗ Failed to load configuration file: {status} - using defaults")
+        except Exception as config_error:
+            print(f"[MODBUS] ⚠ Exception while loading config: {config_error} - using defaults")
+            import traceback
+            traceback.print_exc()
+
         # Safely access buffer size using validation
         buffer_size, size_error = runtime_args.safe_access_buffer_size()
         if buffer_size == -1:
@@ -353,7 +371,7 @@ def init(args_capsule, host="172.29.65.104", port=5020):
         )
         server_context = ModbusServerContext(devices={1: device}, single=False)
         
-        print(f"[MODBUS] ✓ Plugin initialized successfully - Host: {host}, Port: {port}")
+        print(f"[MODBUS] ✓ Plugin initialized successfully - Host: {gIp}, Port: {gPort}")
         return True
         
     except Exception as e:
@@ -364,7 +382,7 @@ def init(args_capsule, host="172.29.65.104", port=5020):
 
 def start_loop():
     """Start the Modbus server"""
-    global server_task, running, update_thread, gIp, gPort
+    global server_task, running, gIp, gPort
     
     if server_context is None:
         print("[MODBUS] Error: Plugin not initialized")
@@ -445,13 +463,9 @@ def start_loop():
 
 def stop_loop():
     """Stop the Modbus server"""
-    global server_task, running, update_thread
+    global server_task, running
     
     running = False
-    
-    if update_thread:
-        update_thread.join(timeout=1.0)
-        update_thread = None
     
     if server_task:
         # Stop the asyncio server

@@ -150,7 +150,7 @@ int plugin_driver_init(plugin_driver_t *driver)
         {
             // Generate structured args for Python plugin
             PyObject *args =
-                (PyObject *)generate_structured_args_with_driver(PLUGIN_TYPE_PYTHON, driver);
+                (PyObject *)generate_structured_args_with_driver(PLUGIN_TYPE_PYTHON, driver, i);
             if (!args)
             {
                 fprintf(stderr, "Failed to generate runtime args for plugin: %s\n",
@@ -330,7 +330,8 @@ void plugin_driver_destroy(plugin_driver_t *driver)
  * For PLUGIN_TYPE_NATIVE: Returns plugin_runtime_args_t*
  * For PLUGIN_TYPE_PYTHON: Returns PyObject* (PyCapsule containing plugin_runtime_args_t*)
  */
-void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *driver)
+void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *driver,
+                                           int plugin_index)
 {
     printf("[PLUGIN]: Generating structured args for plugin type %d\n", type);
 
@@ -370,6 +371,14 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
     args->mutex_give = plugin_mutex_give;
     // Set buffer mutex from driver
     args->buffer_mutex = &driver->buffer_mutex;
+
+    // Initialize plugin specific config path as empty
+    memset(args->plugin_specific_config_file_path, '\0',
+           sizeof(args->plugin_specific_config_file_path));
+
+    memcpy(args->plugin_specific_config_file_path,
+           driver->plugins[plugin_index].config.plugin_related_config_path,
+           sizeof(driver->plugins[plugin_index].config.plugin_related_config_path));
 
     // Initialize buffer size info
     args->buffer_size     = BUFFER_SIZE;

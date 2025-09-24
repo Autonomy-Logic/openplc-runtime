@@ -1,0 +1,21 @@
+{
+  "_comment": "Modbus Slave Plugin Configuration Example - JSON format",
+  "_description": "This file shows how to configure the Modbus slave plugin",
+  "plugin_modbus_slave": {
+    "type": "PLUGIN_TYPE_PYTHON",
+    "path": "/home/marcone/Documents/Github/openplc-runtime/core/src/drivers/modbus_slave.py",
+    "enabled": true,
+    "description": "Modbus TCP Slave server that exposes OpenPLC buffers"
+  },
+  "network_configuration": {
+    "host": "172.29.65.104",
+    "port": 5024
+  },
+  "buffer_mapping": {
+    "_comment": "Buffer mapping configuration",
+    "max_coils": 8000,
+    "max_discrete_inputs": 8000,
+    "max_holding_registers": 1000,
+    "max_input_registers": 1000
+  }
+}
