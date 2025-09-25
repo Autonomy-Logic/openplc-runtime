@@ -507,6 +507,27 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
 
     PyRun_SimpleString(python_path_cmd);
 
+    // Setup virtual environment if specified
+    if (strlen(plugin->config.venv_path) > 0)
+    {
+        char venv_setup_cmd[1024];
+        snprintf(venv_setup_cmd, sizeof(venv_setup_cmd),
+                 "import sys\n"
+                 "venv_path = '%s/lib/python%d.%d/site-packages'\n"
+                 "if venv_path not in sys.path:\n"
+                 "    sys.path.insert(0, venv_path)\n"
+                 "print('[PLUGIN] Using venv for %s: %s')",
+                 plugin->config.venv_path, PY_MAJOR_VERSION, PY_MINOR_VERSION, plugin->config.name,
+                 plugin->config.venv_path);
+
+        if (PyRun_SimpleString(venv_setup_cmd) != 0)
+        {
+            fprintf(stderr, "Failed to setup venv for plugin: %s\n", plugin->config.name);
+            free(py_binds);
+            return -1;
+        }
+    }
+
     // Load the Python module
     py_binds->pModule = PyImport_ImportModule(module_name);
     if (!py_binds->pModule)
