@@ -79,7 +79,8 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
                 safe = False
 
             # Check disallowed extensions
-            if ext in DISALLOWED_EXT:
+            # TODO remove this additional BASH SCRIPT check
+            if ext in DISALLOWED_EXT or "create_standard_function_txt.sh" in ext:
                 logger.warning("Disallowed extension: %s",
                                filename)
                 safe = False
