@@ -1,15 +1,27 @@
 #!/bin/bash
 set -euo pipefail
 
-libPATH="core/generated/lib"
-srcPATH="core/generated"
+# Paths
+ROOT="core/generated"
+LIB_PATH="$ROOT/lib"
+SRC_PATH="$ROOT"
+BUILD_PATH="build"   # root-level build directory
+
+# Flags
 FLAGS="-w -O3 -fPIC"
 
-# Compile objects
-gcc $FLAGS -I "$libPATH" -c "$srcPATH/Config0.c" -o Config0.o
-gcc $FLAGS -I "$libPATH" -c "$srcPATH/Res0.c"    -o Res0.o
-gcc $FLAGS -I "$libPATH" -c "$srcPATH/debug.c"   -o debug.o
-gcc $FLAGS -I "$libPATH" -c "$srcPATH/glueVars.c" -o glueVars.o
+# Ensure build directory exists
+mkdir -p "$BUILD_PATH"
 
-# Link shared library
-gcc $FLAGS -shared -o libplc.so Config0.o Res0.o debug.o glueVars.o
+# Compile objects into build/
+gcc $FLAGS -I "$LIB_PATH" -c "$SRC_PATH/Config0.c"   -o "$BUILD_PATH/Config0.o"
+gcc $FLAGS -I "$LIB_PATH" -c "$SRC_PATH/Res0.c"      -o "$BUILD_PATH/Res0.o"
+gcc $FLAGS -I "$LIB_PATH" -c "$SRC_PATH/debug.c"     -o "$BUILD_PATH/debug.o"
+gcc $FLAGS -I "$LIB_PATH" -c "$SRC_PATH/glueVars.c"  -o "$BUILD_PATH/glueVars.o"
+
+# Link shared library into build/
+gcc $FLAGS -shared -o "$BUILD_PATH/libplc_new.so" \
+    "$BUILD_PATH/Config0.o" "$BUILD_PATH/Res0.o" "$BUILD_PATH/debug.o" "$BUILD_PATH/glueVars.o"
+
+echo "[INFO] Build finished. Artifacts in $BUILD_PATH:"
+ls -lh "$BUILD_PATH"
