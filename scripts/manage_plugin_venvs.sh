@@ -112,7 +112,7 @@ install_dependencies() {
     fi
     
     local venv_path="$VENVS_DIR/$plugin_name"
-    local plugin_path="$PLUGINS_DIR/${plugin_name}_plugin"
+    local plugin_path="$PLUGINS_DIR/${plugin_name}"
     local requirements_file="$plugin_path/requirements.txt"
     
     if [ ! -d "$venv_path" ]; then
