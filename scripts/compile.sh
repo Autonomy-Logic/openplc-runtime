@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-libPATH="core/generated/plc_lib/lib"
-srcPATH="core/generated/plc_lib"
+libPATH="core/generated/lib"
+srcPATH="core/generated"
 FLAGS="-w -O3 -fPIC"
 
 # Compile objects

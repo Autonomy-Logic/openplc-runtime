@@ -95,18 +95,44 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
         return safe, valid_files
 
 
+import os
+import zipfile
+
+import os
+import zipfile
+
 def safe_extract(zip_path, dest_dir, valid_files):
-    """Extract files safely to a target directory."""
+    """Extract files safely to a target directory.
+    - Skips macOS metadata (__MACOSX, .DS_Store)
+    - Auto-strips a single common root folder if present
+    """
     build_state.status = BuildStatus.UNZIPPING
+
     with zipfile.ZipFile(zip_path, "r") as zf:
+        # Detect roots (ignoring macOS junk)
+        roots = set()
+        for info in valid_files:
+            if info.filename.startswith("__MACOSX/") or info.filename.endswith(".DS_Store"):
+                continue
+            parts = info.filename.split("/", 1)
+            if parts and parts[0]:
+                roots.add(parts[0])
+        strip_root = len(roots) == 1
+
         for info in valid_files:
             filename = info.filename
 
-            # Skip directory entries
-            if filename.endswith("/"):
-                dir_path = os.path.join(dest_dir, filename)
-                os.makedirs(dir_path, exist_ok=True)
+            # Skip macOS junk and directories
+            if filename.startswith("__MACOSX/") or filename.endswith(".DS_Store") or filename.endswith("/"):
                 continue
+
+            # Optionally strip single root folder
+            if strip_root:
+                parts = filename.split("/", 1)
+                if len(parts) == 2:
+                    filename = parts[1]
+                else:
+                    filename = parts[0]
 
             out_path = os.path.join(dest_dir, filename)
             out_path = os.path.abspath(out_path)
@@ -116,10 +142,8 @@ def safe_extract(zip_path, dest_dir, valid_files):
                 logger.warning("Skipping suspicious path: %s", filename)
                 continue
 
-            # Create parent directories if needed
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-            # Extract file
             with zf.open(info) as src, open(out_path, "wb") as dst:
                 dst.write(src.read())
 
