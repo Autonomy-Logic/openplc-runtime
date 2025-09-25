@@ -102,12 +102,6 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
         return safe, valid_files
 
 
-import os
-import zipfile
-
-import os
-import zipfile
-
 def safe_extract(zip_path, dest_dir, valid_files):
     """Extract files safely to a target directory.
     - Skips macOS metadata (__MACOSX, .DS_Store)
