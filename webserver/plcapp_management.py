@@ -126,7 +126,7 @@ def safe_extract(zip_path, dest_dir, valid_files):
             logger.info("Extracted: %s", out_path)
 
 def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated"):
-    """Run compile script asynchronously and update status/logs."""
+    """Run compile script synchronously (wait for completion) and update status/logs."""
     script_path: str = "./scripts/compile.sh"
 
     build_state.status = BuildStatus.COMPILING
@@ -138,18 +138,19 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated"):
             build_state.log(msg)
         pipe.close()
 
-    def wait_and_finish():
-        exit_code = process.wait()
+    def wait_and_finish(proc: subprocess.Popen, step_name: str):
+        exit_code = proc.wait()
         build_state.exit_code = exit_code
         if exit_code == 0:
             build_state.status = BuildStatus.SUCCESS
-            build_state.log("[INFO] Compilation succeeded\n")
+            build_state.log(f"[INFO] {step_name} succeeded\n")
         else:
             build_state.status = BuildStatus.FAILED
-            build_state.log(f"[INFO] Compilation failed (exit={exit_code})\n")
-            raise RuntimeError(f"Compilation failed (exit={exit_code})")
-    
-    process = subprocess.Popen(
+            build_state.log(f"[INFO] {step_name} failed (exit={exit_code})\n")
+            raise RuntimeError(f"{step_name} failed (exit={exit_code})")
+
+    # --- Compile step ---
+    compile_proc = subprocess.Popen(
         ["bash", script_path],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -157,16 +158,17 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated"):
         bufsize=1
     )
 
-    threading.Thread(target=stream_output, args=(process.stdout, "[OUT] "), daemon=True).start()
-    threading.Thread(target=stream_output, args=(process.stderr, "[ERR] "), daemon=True).start()
+    threading.Thread(target=stream_output, args=(compile_proc.stdout, "[OUT] "), daemon=True).start()
+    threading.Thread(target=stream_output, args=(compile_proc.stderr, "[ERR] "), daemon=True).start()
 
-    task_wait = threading.Thread(target=wait_and_finish, daemon=True)
-    task_wait.start()
-    task_wait.join(timeout=0.1)
-    # stop the PLC if running to allow restart with new code
+    # Block until compile finishes
+    wait_and_finish(compile_proc, "Compilation")
+
+    # Stop PLC before cleanup
     runtime_manager.stop_plc()
-    
-    process = subprocess.Popen(
+
+    # --- Cleanup step ---
+    cleanup_proc = subprocess.Popen(
         ["bash", "./scripts/compile-clean.sh"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -174,8 +176,14 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated"):
         bufsize=1
     )
 
-    task_wait = threading.Thread(target=wait_and_finish, daemon=True)
-    task_wait.start()
-    task_wait.join(timeout=0.1)
-    # start the PLC again
-    runtime_manager.start_plc()
+    threading.Thread(target=stream_output, args=(cleanup_proc.stdout, "[CLEAN-OUT] "), daemon=True).start()
+    threading.Thread(target=stream_output, args=(cleanup_proc.stderr, "[CLEAN-ERR] "), daemon=True).start()
+
+    # Block until cleanup finishes
+    wait_and_finish(cleanup_proc, "Cleanup")
+
+    # Restart PLC only if everything succeeded
+    if build_state.status == BuildStatus.SUCCESS:
+        runtime_manager.start_plc()
+    else:
+        build_state.log("[INFO] PLC will not be restarted due to failed build/cleanup\n")
