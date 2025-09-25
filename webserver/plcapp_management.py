@@ -32,6 +32,11 @@ class BuildProcess:
         logger.info(msg)
         self.logs.append(msg)
 
+    def clear(self):
+        self.status = BuildStatus.IDLE
+        self.logs.clear()
+        self.exit_code = None
+
 
 build_state = BuildProcess()  # global-ish singleton for status
 
@@ -39,9 +44,10 @@ build_state = BuildProcess()  # global-ish singleton for status
 def analyze_zip(zip_path) -> tuple[bool, list]:
     """Analyze the ZIP file for safety before extraction."""
     build_state.status = BuildStatus.UNZIPPING
+    build_state.log(f"[INFO] Analyzing ZIP file: {zip_path}\n")
 
     if not zipfile.is_zipfile(zip_path):
-        logger.warning("Not a valid ZIP file.")
+        build_state.log("Not a valid ZIP file.")
         return False, []
 
     with zipfile.ZipFile(zip_path, "r") as zf:

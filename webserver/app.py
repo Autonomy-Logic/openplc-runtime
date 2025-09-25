@@ -67,7 +67,7 @@ def handle_runtime_logs(data: dict) -> dict:
 def handle_compilation_status(data: dict) -> dict:
     return {
         "status": build_state.status.name,
-        "logs": build_state.logs[-20:],  # last 20 lines
+        "logs": build_state.logs[:],  # all lines
         "exit_code": build_state.exit_code
     }
 
@@ -105,6 +105,8 @@ def restapi_callback_get(argument: str, data: dict) -> dict:
 
 
 def handle_upload_file(data: dict) -> dict:
+    build_state.clear()
+
     if build_state.status == BuildStatus.COMPILING:
         return {"CompilationStatus": "Program is compiling, please wait"}
     
