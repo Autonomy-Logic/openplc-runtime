@@ -5,9 +5,8 @@ set -euo pipefail
 ROOT="core/generated"
 LIB_PATH="$ROOT/lib"
 SRC_PATH="$ROOT"
-BUILD_PATH="build"   # root-level build directory
+BUILD_PATH="build"
 
-# Flags
 FLAGS="-w -O3 -fPIC"
 
 # Ensure build directory exists
