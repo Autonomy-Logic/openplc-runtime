@@ -19,8 +19,8 @@ from restapi import (
     register_callback_post,
     restapi_bp,
 )
-from unixclient import SyncUnixClient
-from unixserver import UnixLogServer
+from runtimemanager import RuntimeManager
+
 
 app = flask.Flask(__name__)
 app.secret_key = str(os.urandom(16))
@@ -30,11 +30,13 @@ login_manager.init_app(app)
 logger = logging.getLogger(__name__)
 
 openplc_runtime = openplc.runtime()
-client = SyncUnixClient("/run/runtime/plc_runtime.socket")
-client.connect()
+runtime_manager = RuntimeManager(
+    runtime_path="./build/plc_main",
+    plc_socket="/run/runtime/plc_runtime.socket",
+    log_socket="/run/runtime/log_runtime.socket",
+)
 
-log_server = UnixLogServer("/run/runtime/log_runtime.socket")
-log_server.start()
+runtime_manager.start()
 
 BASE_DIR = Path(__file__).parent
 CERT_FILE = (BASE_DIR / "certOPENPLC.pem").resolve()
@@ -53,17 +55,18 @@ def create_connection(db_file):
 
 
 def handle_start_plc(data: dict) -> dict:
-    response = client.start_plc()
+    response = runtime_manager.start_plc()
     return {"status": response}
 
 
 def handle_stop_plc(data: dict) -> dict:
-    response = client.stop_plc()
+    response = runtime_manager.stop_plc()
     return {"status": response}
 
 
 def handle_runtime_logs(data: dict) -> dict:
-    return {"runtime-logs": list(log_server.log_buffer)}
+    response = runtime_manager.get_logs()
+    return {"runtime-logs": response}
 
 
 def handle_compilation_status(data: dict) -> dict:
@@ -100,7 +103,7 @@ def handle_status(data: dict) -> dict:
 
 
 def handle_ping(data: dict) -> dict:
-    response = client.ping()
+    response = runtime_manager.ping()
     return {"status": response}
 
 
@@ -231,6 +234,8 @@ def run_https():
         logger.info("HTTP server stopped by KeyboardInterrupt")
     finally:
         openplc_runtime.stop_runtime()
+        runtime_manager.stop()
+        logger.info("Runtime manager stopped")
 
 
 if __name__ == "__main__":
