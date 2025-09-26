@@ -304,7 +304,7 @@ def init(args_capsule):
     try:
         # Print structure validation info for debugging
         print("[MODBUS] Validating plugin structure alignment...")
-        PluginStructureValidator.print_structure_info()
+        # PluginStructureValidator.print_structure_info()
         
         # Extract runtime args from capsule using safe method
         if hasattr(args_capsule, '__class__') and 'PyCapsule' in str(type(args_capsule)):
@@ -346,9 +346,9 @@ def init(args_capsule):
             print(f"[MODBUS] ✗ Failed to access buffer size: {size_error}")
             return False
         
-        print(f"[MODBUS]   Buffer size: {buffer_size}")
-        print(f"[MODBUS]   Bits per buffer: {runtime_args.bits_per_buffer}")
-        print(f"[MODBUS]   Structure details: {runtime_args}")
+        # print(f"[MODBUS]   Buffer size: {buffer_size}")
+        # print(f"[MODBUS]   Bits per buffer: {runtime_args.bits_per_buffer}")
+        # print(f"[MODBUS]   Structure details: {runtime_args}")
         
         # Create OpenPLC-connected data blocks for all Modbus types
         coils_block = OpenPLCCoilsDataBlock(runtime_args, num_coils=64)
@@ -357,11 +357,11 @@ def init(args_capsule):
         holding_registers_block = OpenPLCHoldingRegistersDataBlock(runtime_args, num_registers=32)
 
         # Create device context with all OpenPLC-connected data blocks
-        print(f"[MODBUS] Created data blocks:")
-        print(f"[MODBUS]   - Coils (bool_output): {coils_block.num_coils} coils")
-        print(f"[MODBUS]   - Discrete Inputs (bool_input): {discrete_inputs_block.num_inputs} inputs")
-        print(f"[MODBUS]   - Input Registers (int_input): {input_registers_block.num_registers} registers")
-        print(f"[MODBUS]   - Holding Registers (int_output): {holding_registers_block.num_registers} registers")
+        # print(f"[MODBUS] Created data blocks:")
+        # print(f"[MODBUS]   - Coils (bool_output): {coils_block.num_coils} coils")
+        # print(f"[MODBUS]   - Discrete Inputs (bool_input): {discrete_inputs_block.num_inputs} inputs")
+        # print(f"[MODBUS]   - Input Registers (int_input): {input_registers_block.num_registers} registers")
+        # print(f"[MODBUS]   - Holding Registers (int_output): {holding_registers_block.num_registers} registers")
         
         device = ModbusDeviceContext(
             di=discrete_inputs_block,      # Discrete Inputs -> bool_input
