@@ -1,6 +1,19 @@
 #!/bin/bash
 set -e
 
+# Check for root privileges
+check_root() 
+{
+    if [[ $EUID -ne 0 ]]; then
+        echo "ERROR: This script must be run as root" >&2
+        echo "Example: sudo ./install.sh" >&2
+        exit 1
+    fi
+}
+
+# Make sure we are root before proceeding
+check_root
+
 # Detect the project root directory
 # This works whether the script is called from project root, Docker, or anywhere else
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -141,7 +154,15 @@ echo "Virtual environment created at $VENV_DIR"
 echo "Compiling OpenPLC..."
 if compile_plc; then
     echo "Build process completed successfully!"
-    echo "OpenPLC Runtime is ready to use."
+    echo "OpenPLC Runtime v4 is ready to use."
+    echo ""
+    echo "To start the OpenPLC Runtime v4, run:"
+    echo "sudo ./start_openplc.sh"
+
+    # Create installation marker
+    touch "$OPENPLC_DIR/.installed"
+    echo "Installation completed at $(date)" > "$OPENPLC_DIR/.installed"
+
 else
     echo "ERROR: Build process failed!" >&2
     echo "Please check the error messages above for details." >&2

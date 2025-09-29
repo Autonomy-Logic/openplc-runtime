@@ -1,6 +1,29 @@
 #!/bin/bash
 set -euo pipefail
 
+check_root() 
+{
+    if [[ $EUID -ne 0 ]]; then
+        echo "ERROR: This script must be run as root" >&2
+        echo "Example: sudo ./start_openplc.sh" >&2
+        exit 1
+    fi
+}
+
+check_installation()
+{
+    if [ ! -f "$OPENPLC_DIR/.installed" ]; then
+        echo "ERROR: OpenPLC Runtime v4 is not installed." >&2
+        echo "Please run the install script first:" >&2
+        echo "  sudo ./install.sh" >&2
+        exit 1
+    fi
+}
+
+# Startup checks
+check_installation
+check_root
+
 # Detect the project root directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPENPLC_DIR="$SCRIPT_DIR"
