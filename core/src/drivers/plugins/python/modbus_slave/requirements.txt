@@ -1,0 +1,2 @@
+pymodbus==3.11.2
+asyncio-mqtt==0.16.2
