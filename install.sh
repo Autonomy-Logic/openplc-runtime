@@ -67,11 +67,38 @@ install_deps_dnf() {
 }
 
 compile_plc() {
-    mkdir -p "$OPENPLC_DIR/build"
-    cd "$OPENPLC_DIR/build"
-    cmake ..
-    make -j"$(nproc)"
-    cd "$OPENPLC_DIR"
+    echo "Creating build directory..."
+    if ! mkdir -p "$OPENPLC_DIR/build"; then
+        echo "ERROR: Failed to create build directory" >&2
+        return 1
+    fi
+    
+    cd "$OPENPLC_DIR/build" || {
+        echo "ERROR: Failed to change to build directory" >&2
+        return 1
+    }
+    
+    echo "Running cmake configuration..."
+    if ! cmake ..; then
+        echo "ERROR: CMake configuration failed" >&2
+        cd "$OPENPLC_DIR"
+        return 1
+    fi
+    
+    echo "Compiling with make (using $(nproc) cores)..."
+    if ! make -j"$(nproc)"; then
+        echo "ERROR: Compilation failed" >&2
+        cd "$OPENPLC_DIR"
+        return 1
+    fi
+    
+    cd "$OPENPLC_DIR" || {
+        echo "ERROR: Failed to return to main directory" >&2
+        return 1
+    }
+    
+    echo "SUCCESS: OpenPLC compiled successfully!"
+    return 0
 }
 
 if [ "$1" = "linux" ]; then
@@ -91,7 +118,11 @@ echo "Dependencies installed..."
 echo "Virtual environment created at $VENV_DIR"
 
 echo "Compiling OpenPLC..."
-#compile openplc
-compile_plc
-
-echo "OpenPLC compiled successfully."
+if compile_plc; then
+    echo "Build process completed successfully!"
+    echo "OpenPLC Runtime is ready to use."
+else
+    echo "ERROR: Build process failed!" >&2
+    echo "Please check the error messages above for details." >&2
+    exit 1
+fi
