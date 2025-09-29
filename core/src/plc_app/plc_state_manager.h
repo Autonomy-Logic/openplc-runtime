@@ -9,7 +9,8 @@ typedef enum
     PLC_STATE_INIT,
     PLC_STATE_RUNNING,
     PLC_STATE_STOPPED,
-    PLC_STATE_ERROR
+    PLC_STATE_ERROR,
+    PLC_STATE_EMPTY
 } PLCState;
 
 /**

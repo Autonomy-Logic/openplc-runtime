@@ -15,22 +15,38 @@ install_dependencies() {
     && rm -rf /var/lib/apt/lists/*
 }
 
-if [ "$1" = "docker" ]; then
-    install_dependencies
-    python3 -m venv "$VENV_DIR"
-    "$VENV_DIR/bin/python3" -m pip install --upgrade pip
-    "$VENV_DIR/bin/python3" -m pip install -r requirements.txt
-fi
+build_plc_app(){
+    rm -rf build
+    mkdir build
+    cd build || exit 1
+    cmake ..
+    make
+    cd ..
+}
 
-if [ "$1" = "linux" ]; then
-    mkdir -p /var/run/runtime
-    chmod 775 /var/run/runtime
-    chmod +x install.sh
-    chmod +x scripts/*
-    install_dependencies
-    python3 -m venv "$VENV_DIR"
-    "$VENV_DIR/bin/python3" -m pip install --upgrade pip
-    "$VENV_DIR/bin/python3" -m pip install -r requirements.txt
-fi
+case "$1" in
+    docker)
+        install_dependencies
+        build_plc_app
+        python3 -m venv "$VENV_DIR"
+        "$VENV_DIR/bin/python3" -m pip install --upgrade pip
+        "$VENV_DIR/bin/python3" -m pip install -r requirements.txt
+        ;;
+    linux)
+        mkdir -p /var/run/runtime
+        chmod 775 /var/run/runtime
+        chmod +x install.sh
+        chmod +x scripts/*
+        install_dependencies
+        build_plc_app
+        python3 -m venv "$VENV_DIR"
+        "$VENV_DIR/bin/python3" -m pip install --upgrade pip
+        "$VENV_DIR/bin/python3" -m pip install -r requirements.txt
+        ;;
+    *)
+        echo "Usage: $0 {docker|linux}"
+        exit 1
+        ;;
+esac
 
 echo "Dependencies installed."

@@ -39,7 +39,7 @@ class CertGen:
             public_exponent=65537, key_size=2048, backend=default_backend()
         )
 
-    def generate_self_signed_cert(self, cert_file="cert.pem", key_file="key.pem"):
+    def generate_self_signed_cert(self, cert_file, key_file):
         logger.debug("Generating self-signed certificate for %s...", self.hostname)
 
         self.generate_key()

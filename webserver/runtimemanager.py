@@ -241,5 +241,14 @@ class RuntimeManager:
         except (OSError, socket.error) as e:
             logger.error("Failed to stop PLC runtime: %s", e)
             return 'STOP:ERROR\n'
+        
+    def status_plc(self):
+        """
+        Send STATUS command
+        """
+        try:
+            self.runtime_socket.send_message("STATUS\n")
+            return self.runtime_socket.recv_message()
         except Exception as e:
-            logger.error("Failed to stop PLC runtime (unexpected): %s", e)
+            logger.error("Failed to stop PLC runtime: %s", e)
+            return 'STATUS:ERROR\n'
