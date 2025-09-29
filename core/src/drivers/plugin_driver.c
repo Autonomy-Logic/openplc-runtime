@@ -421,7 +421,7 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
         if (!capsule)
         {
             fprintf(stderr, "[PLUGIN]: Error - failed to create Python capsule\n");
-            free(args);
+            // Note: create_python_runtime_args_capsule already freed args on failure
             return NULL;
         }
         printf("[PLUGIN]: Python capsule created successfully\n");
@@ -448,7 +448,7 @@ void free_structured_args(plugin_runtime_args_t *args)
 
 int python_plugin_get_symbols(plugin_instance_t *plugin)
 {
-    if (!plugin || !plugin->config.path)
+    if (!plugin || plugin->config.path[0] == '\0')
     {
         return -1;
     }

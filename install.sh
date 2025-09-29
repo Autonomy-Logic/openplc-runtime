@@ -1,9 +1,19 @@
 #!/bin/bash
 set -e
 
-OPENPLC_DIR="$PWD"
+# Detect the project root directory
+# This works whether the script is called from project root, Docker, or anywhere else
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OPENPLC_DIR="$SCRIPT_DIR"
 VENV_DIR="$OPENPLC_DIR/.venv"
 SCRIPTS_DIR="$OPENPLC_DIR/scripts"
+
+# Ensure we're in the project directory
+cd "$OPENPLC_DIR"
+
+echo "OpenPLC Runtime Installation"
+echo "Project directory: $OPENPLC_DIR"
+echo "Working directory: $(pwd)"
 
 install_dependencies() 
 {
@@ -67,7 +77,16 @@ install_deps_dnf() {
 }
 
 compile_plc() {
-    echo "Creating build directory..."
+    echo "Preparing build directory..."
+    
+    # Always clean build directory for Docker environment or when CMake cache exists
+    # This prevents cross-contamination between Linux and Docker builds
+    if [ -d "$OPENPLC_DIR/build" ] && [ -f "$OPENPLC_DIR/build/CMakeCache.txt" ]; then
+        echo "Cleaning existing build directory to ensure clean build..."
+        rm -rf "$OPENPLC_DIR/build"
+    fi
+    
+    # Create build directory
     if ! mkdir -p "$OPENPLC_DIR/build"; then
         echo "ERROR: Failed to create build directory" >&2
         return 1
@@ -101,17 +120,19 @@ compile_plc() {
     return 0
 }
 
-if [ "$1" = "linux" ]; then
-    mkdir -p /var/run/runtime
-    chmod 775 /var/run/runtime
-    chmod +x install.sh
-    chmod +x scripts/*
-fi
+# Setup runtime directory (needed for both Linux and Docker)
+mkdir -p /var/run/runtime
+chmod 775 /var/run/runtime 2>/dev/null || true  # Ignore permission errors in Docker
+
+# Make scripts executable
+chmod +x "$OPENPLC_DIR/install.sh" 2>/dev/null || true
+chmod +x "$OPENPLC_DIR/scripts/"* 2>/dev/null || true
+chmod +x "$OPENPLC_DIR/start_openplc.sh" 2>/dev/null || true
 
 install_dependencies
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/python3" -m pip install --upgrade pip
-"$VENV_DIR/bin/python3" -m pip install -r requirements.txt
+"$VENV_DIR/bin/python3" -m pip install -r "$OPENPLC_DIR/requirements.txt"
 
 
 echo "Dependencies installed..."
