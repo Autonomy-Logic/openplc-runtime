@@ -108,9 +108,9 @@ int load_plc_program(PluginManager *pm)
         log_error("Failed to load PLC application");
 
         pthread_mutex_lock(&state_mutex);
-        plc_state = PLC_STATE_ERROR;
+        plc_state = PLC_STATE_EMPTY;
         pthread_mutex_unlock(&state_mutex);
-        log_info("PLC State: ERROR");
+        log_info("PLC State: EMPTY");
 
         return -1;
     }

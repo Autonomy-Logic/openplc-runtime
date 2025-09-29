@@ -1,16 +1,14 @@
-import asyncio
 import logging
 import os
-import sqlite3
 import ssl
-import threading
 from pathlib import Path
+import threading
 from typing import Callable
-import time
+import shutil
+from typing import Final
 
 import flask
 import flask_login
-import openplc
 from credentials import CertGen
 from restapi import (
     app_restapi,
@@ -21,6 +19,14 @@ from restapi import (
 )
 from runtimemanager import RuntimeManager
 
+from plcapp_management import (
+    build_state,
+    BuildStatus,
+    analyze_zip,
+    run_compile,
+    safe_extract,
+    MAX_FILE_SIZE
+)
 
 app = flask.Flask(__name__)
 app.secret_key = str(os.urandom(16))
@@ -29,7 +35,6 @@ login_manager.init_app(app)
 
 logger = logging.getLogger(__name__)
 
-openplc_runtime = openplc.runtime()
 runtime_manager = RuntimeManager(
     runtime_path="./build/plc_main",
     plc_socket="/run/runtime/plc_runtime.socket",
@@ -38,20 +43,10 @@ runtime_manager = RuntimeManager(
 
 runtime_manager.start()
 
-BASE_DIR = Path(__file__).parent
-CERT_FILE = (BASE_DIR / "certOPENPLC.pem").resolve()
-KEY_FILE = (BASE_DIR / "keyOPENPLC.pem").resolve()
-HOSTNAME = "localhost"
-
-def create_connection(db_file):
-    """ Create a connection to the database file """
-    try:
-        conn = sqlite3.connect(db_file)
-        return conn
-    except sqlite3.Error as e:
-        logger.error("Error creating database connection: %s", e)
-
-    return None
+BASE_DIR: Final[Path] = Path(__file__).parent
+CERT_FILE: Final[Path] = (BASE_DIR / "certOPENPLC.pem").resolve()
+KEY_FILE: Final[Path] = (BASE_DIR / "keyOPENPLC.pem").resolve()
+HOSTNAME: Final[str] = "localhost"
 
 
 def handle_start_plc(data: dict) -> dict:
@@ -70,36 +65,17 @@ def handle_runtime_logs(data: dict) -> dict:
 
 
 def handle_compilation_status(data: dict) -> dict:
-    try:
-        logs = openplc_runtime.compilation_status()
-        _logs = logs
-    except Exception as e:
-        logger.error("Error retrieving compilation logs: %s", e)
-        _logs = str(e)
-
-    status = _logs
-    if not isinstance(status, str):
-        _status = "No compilation in progress"
-        _error = ""
-    elif "Compilation finished successfully!" in status:
-        _status = "Success"
-        _error = "No error"
-    elif "Compilation finished with errors!" in status:
-        _status = "Error"
-        _error = openplc_runtime.get_compilation_error()
-    else:
-        _status = "Compiling"
-        _error = openplc_runtime.get_compilation_error()
-    
-    logger.debug(
-        "Compilation status: %s, logs: %s", _status, _logs, extra={"error": _error}
-    )
-
-    return {"status": _status, "logs": _logs, "error": _error}
-
+    return {
+        "status": build_state.status.name,
+        "logs": build_state.logs[:],  # all lines
+        "exit_code": build_state.exit_code
+    }
 
 def handle_status(data: dict) -> dict:
-    return {"current_status": "operational", "details": data}
+    response = runtime_manager.status_plc()
+    if response is None:
+        return {"status": "No response from runtime"}
+    return {"status": response}
 
 
 def handle_ping(data: dict) -> dict:
@@ -129,51 +105,37 @@ def restapi_callback_get(argument: str, data: dict) -> dict:
 
 
 def handle_upload_file(data: dict) -> dict:
-    filename = None
+    build_state.clear()
 
-    # Validate file presence
+    if build_state.status == BuildStatus.COMPILING:
+        return {"CompilationStatus": "Program is compiling, please wait"}
+    
     if "file" not in flask.request.files:
         return {"UploadFileFail": "No file part in the request"}
     
-    st_file = flask.request.files["file"]
-    
-    if st_file.content_length > 32 * 1024 * 1024:  # 32 MB limit
+    zip_file = flask.request.files["file"]
+
+    if zip_file.content_length > MAX_FILE_SIZE:
         return {"UploadFileFail": "File is too large"}
 
-    # Database operations
-    database = "openplc.db"
-    conn = create_connection(database)
-    if conn is None:
-        return {"UploadFileFail": "Error connecting to the database"}
-    
-    logger.info("%s connected", database)
-    
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM Programs WHERE Name = 'webserver_program'")
-        row = cur.fetchone()
-        
-        if not row or len(row) < 4:
-            return {"UploadFileFail": "Program record not found or invalid"}
-        
-        filename = str(row[3])
-        st_file.save(f"st_files/{filename}")
-        cur.close()
-        
-    except Exception as e:
-        return {"UploadFileFail": f"Database operation failed: {e}"}
-    finally:
-        if conn:
-            conn.close()
+    safe, valid_files = analyze_zip(zip_file)
+    if not safe:
+        return {"UploadFileFail": "Uploaded ZIP file failed safety checks"}
 
-    if openplc_runtime.status() == "Compiling":
-        return {"RuntimeStatus": "Compiling"}
+    extract_dir = "core/generated"
+    if os.path.exists(extract_dir):
+        shutil.rmtree(extract_dir)
 
+    safe_extract(zip_file, extract_dir, valid_files)
     try:
-        openplc_runtime.compile_program(filename)
-        return {"CompilationStatus": "Starting program compilation"}
-    except Exception as e:
-        return {"CompilationStatusFail": f"Compilation failed: {e}"}
+        task_compile = threading.Thread(target=run_compile, args=(runtime_manager,), 
+                                     kwargs={"cwd": extract_dir}, daemon=True)
+        task_compile.start()
+    except RuntimeError as e:
+        return {"CompilationStatus":
+                f"Compilation failed:\n{build_state.logs[-1]}"}
+
+    return {"CompilationStatus": build_state.status.name}
 
 
 POST_HANDLERS: dict[str, Callable[[dict], dict]] = {
@@ -233,7 +195,6 @@ def run_https():
     except KeyboardInterrupt:
         logger.info("HTTP server stopped by KeyboardInterrupt")
     finally:
-        openplc_runtime.stop_runtime()
         runtime_manager.stop()
         logger.info("Runtime manager stopped")
 

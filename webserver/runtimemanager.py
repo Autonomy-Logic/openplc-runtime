@@ -39,6 +39,7 @@ class RuntimeManager:
                     cmdline_str = ' '.join(str(arg) for arg in cmdline if arg is not None)
                     if self.runtime_path in cmdline_str:
                         return proc
+                      
             except (OSError, psutil.Error, TypeError, ValueError):
                 continue
         return None
@@ -248,3 +249,17 @@ class RuntimeManager:
             return 'STOP:ERROR\n'
         except Exception as e:
             logger.error("Failed to stop PLC runtime (unexpected): %s", e)
+        
+    def status_plc(self):
+        """
+        Send STATUS command
+        """
+        try:
+            self.runtime_socket.send_message("STATUS\n")
+            return self.runtime_socket.recv_message()
+        except (OSError, socket.error) as e:
+            logger.error("Failed to get PLC status: %s", e)
+            return 'STATUS:ERROR\n'
+        except Exception as e:
+            logger.error("Failed to get PLC status (unexpected): %s", e)
+            return 'STATUS:ERROR\n'

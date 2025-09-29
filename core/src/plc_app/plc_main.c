@@ -133,7 +133,6 @@ int main()
     if (plc_set_state(PLC_STATE_RUNNING) != true)
     {
         log_error("Failed to set PLC state to RUNNING");
-        return -1;
     }
 
     while (keep_running)
