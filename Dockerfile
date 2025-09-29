@@ -3,14 +3,17 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
     python3 python3-venv python3-pip bash \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workdir
 COPY . .
 RUN mkdir -p /var/run/runtime
-RUN chmod +x install.sh scripts/* build/*
-RUN ./install.sh docker
+# Clean any existing build artifacts to ensure clean Docker build
+RUN rm -rf build/ venvs/ 2>/dev/null || true
+RUN chmod +x install.sh scripts/* start_openplc.sh
+RUN ./install.sh
 
 EXPOSE 8443
 
-CMD ["bash", "-c", "./build/plc_main & .venv/bin/python3 webserver/app.py"]
+CMD ["bash", "./start_openplc.sh"]

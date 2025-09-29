@@ -384,13 +384,13 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
     args->buffer_size     = BUFFER_SIZE;
     args->bits_per_buffer = 8;
 
-    printf("[PLUGIN]: Runtime args initialized:\n");
-    printf("[PLUGIN]:   buffer_size = %d\n", args->buffer_size);
-    printf("[PLUGIN]:   bits_per_buffer = %d\n", args->bits_per_buffer);
-    printf("[PLUGIN]:   buffer_mutex = %p\n", (void *)args->buffer_mutex);
-    printf("[PLUGIN]:   bool_input = %p\n", (void *)args->bool_input);
-    printf("[PLUGIN]:   mutex_take = %p\n", (void *)args->mutex_take);
-    printf("[PLUGIN]:   mutex_give = %p\n", (void *)args->mutex_give);
+    // printf("[PLUGIN]: Runtime args initialized:\n");
+    // printf("[PLUGIN]:   buffer_size = %d\n", args->buffer_size);
+    // printf("[PLUGIN]:   bits_per_buffer = %d\n", args->bits_per_buffer);
+    // printf("[PLUGIN]:   buffer_mutex = %p\n", (void *)args->buffer_mutex);
+    // printf("[PLUGIN]:   bool_input = %p\n", (void *)args->bool_input);
+    // printf("[PLUGIN]:   mutex_take = %p\n", (void *)args->mutex_take);
+    // printf("[PLUGIN]:   mutex_give = %p\n", (void *)args->mutex_give);
 
     // Validate critical pointers
     if (!args->buffer_mutex)
@@ -421,7 +421,7 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
         if (!capsule)
         {
             fprintf(stderr, "[PLUGIN]: Error - failed to create Python capsule\n");
-            free(args);
+            // Note: create_python_runtime_args_capsule already freed args on failure
             return NULL;
         }
         printf("[PLUGIN]: Python capsule created successfully\n");
@@ -448,7 +448,7 @@ void free_structured_args(plugin_runtime_args_t *args)
 
 int python_plugin_get_symbols(plugin_instance_t *plugin)
 {
-    if (!plugin || !plugin->config.path)
+    if (!plugin || plugin->config.path[0] == '\0')
     {
         return -1;
     }
@@ -506,6 +506,41 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
     }
 
     PyRun_SimpleString(python_path_cmd);
+
+    // Setup virtual environment if specified
+    if (strlen(plugin->config.venv_path) > 0)
+    {
+        // Construct the venv site-packages path
+        char venv_site_packages[512];
+        snprintf(venv_site_packages, sizeof(venv_site_packages), "%s/lib/python%d.%d/site-packages",
+                 plugin->config.venv_path, PY_MAJOR_VERSION, PY_MINOR_VERSION);
+        // Get sys.path
+        PyObject *sys_path = PySys_GetObject("path");
+        if (sys_path && PyList_Check(sys_path))
+        {
+            PyObject *venv_path_obj = PyUnicode_FromString(venv_site_packages);
+            int found               = PySequence_Contains(sys_path, venv_path_obj);
+            if (found == 0)
+            { // Not found
+                if (PyList_Insert(sys_path, 0, venv_path_obj) != 0)
+                {
+                    fprintf(stderr, "Failed to insert venv path into sys.path for plugin: %s\n",
+                            plugin->config.name);
+                    Py_DECREF(venv_path_obj);
+                    free(py_binds);
+                    return -1;
+                }
+            }
+            Py_DECREF(venv_path_obj);
+        }
+        else
+        {
+            fprintf(stderr, "Failed to get sys.path for plugin: %s\n", plugin->config.name);
+            free(py_binds);
+            return -1;
+        }
+        printf("[PLUGIN] Using venv for %s: %s\n", plugin->config.name, venv_site_packages);
+    }
 
     // Load the Python module
     py_binds->pModule = PyImport_ImportModule(module_name);

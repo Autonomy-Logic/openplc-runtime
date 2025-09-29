@@ -29,12 +29,18 @@ class RuntimeManager:
         # Find the running PLC runtime process by executable path
         for proc in psutil.process_iter(['pid', 'exe', 'cmdline']):
             try:
+                # First try to match by executable path (most reliable)
                 if proc.info['exe'] and os.path.samefile(proc.info['exe'], self.runtime_path):
                     return proc
-                # Alternatively, match by command line
-                if self.runtime_path in ' '.join(proc.info['cmdline']):
-                    return proc
-            except (OSError, psutil.Error):
+                
+                # Alternatively, match by command line (fallback)
+                cmdline = proc.info.get('cmdline')
+                if cmdline and isinstance(cmdline, (list, tuple)) and len(cmdline) > 0:
+                    cmdline_str = ' '.join(str(arg) for arg in cmdline if arg is not None)
+                    if self.runtime_path in cmdline_str:
+                        return proc
+                      
+            except (OSError, psutil.Error, TypeError, ValueError):
                 continue
         return None
     
@@ -241,6 +247,8 @@ class RuntimeManager:
         except (OSError, socket.error) as e:
             logger.error("Failed to stop PLC runtime: %s", e)
             return 'STOP:ERROR\n'
+        except Exception as e:
+            logger.error("Failed to stop PLC runtime (unexpected): %s", e)
         
     def status_plc(self):
         """
@@ -249,6 +257,9 @@ class RuntimeManager:
         try:
             self.runtime_socket.send_message("STATUS\n")
             return self.runtime_socket.recv_message()
+        except (OSError, socket.error) as e:
+            logger.error("Failed to get PLC status: %s", e)
+            return 'STATUS:ERROR\n'
         except Exception as e:
-            logger.error("Failed to stop PLC runtime: %s", e)
+            logger.error("Failed to get PLC status (unexpected): %s", e)
             return 'STATUS:ERROR\n'
