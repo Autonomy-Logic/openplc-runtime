@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+# Detect the project root directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OPENPLC_DIR="$SCRIPT_DIR"
+
+# Ensure we're in the project directory
+cd "$OPENPLC_DIR"
+
 check_root() 
 {
     if [[ $EUID -ne 0 ]]; then
@@ -23,13 +30,6 @@ check_installation()
 # Startup checks
 check_installation
 check_root
-
-# Detect the project root directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OPENPLC_DIR="$SCRIPT_DIR"
-
-# Ensure we're in the project directory
-cd "$OPENPLC_DIR"
 
 echo "Starting OpenPLC Runtime"
 echo "Project directory: $OPENPLC_DIR"
