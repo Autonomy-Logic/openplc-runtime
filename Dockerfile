@@ -10,7 +10,7 @@ WORKDIR /workdir
 COPY . .
 RUN mkdir -p /var/run/runtime
 # Clean any existing build artifacts to ensure clean Docker build
-RUN rm -rf build/ .venv/ venvs/ 2>/dev/null || true
+RUN rm -rf build/ venvs/ 2>/dev/null || true
 RUN chmod +x install.sh scripts/* start_openplc.sh
 RUN ./install.sh
 

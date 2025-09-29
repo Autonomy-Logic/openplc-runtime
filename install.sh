@@ -5,7 +5,7 @@ set -e
 # This works whether the script is called from project root, Docker, or anywhere else
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPENPLC_DIR="$SCRIPT_DIR"
-VENV_DIR="$OPENPLC_DIR/.venv"
+VENV_DIR="$OPENPLC_DIR/venvs/runtime"
 SCRIPTS_DIR="$OPENPLC_DIR/scripts"
 
 # Ensure we're in the project directory

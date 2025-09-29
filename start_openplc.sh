@@ -116,7 +116,7 @@ setup_plugin_venvs() {
 # Setup plugin virtual environments
 setup_plugin_venvs
 
-source "$OPENPLC_DIR/.venv/bin/activate"
+source "$OPENPLC_DIR/venvs/runtime/bin/activate"
 
 # Start the PLC webserver
-"$OPENPLC_DIR/.venv/bin/python3" "$OPENPLC_DIR/webserver/app.py"
+"$OPENPLC_DIR/venvs/runtime/bin/python3" "$OPENPLC_DIR/webserver/app.py"
