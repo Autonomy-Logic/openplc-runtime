@@ -3,8 +3,23 @@ import threading
 import collections
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
+
+LOG_PATTERN = re.compile(r"""
+    ^\[(?P<time>[\d-]+\s+[\d:]+)\]   # timestamp inside [ ]
+    \s+\[(?P<level>[A-Z]+)\]         # level inside [ ]
+    \s+(?P<message>.*)$              # the rest is message
+""", re.VERBOSE)
+
+LEVEL_MAP = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
 
 class UnixLogServer:
     def __init__(self, socket_path="/run/runtime/log_runtime.socket"):
@@ -57,6 +72,8 @@ class UnixLogServer:
             with client_sock.makefile('r') as f:
                 for line in f:
                     self.log_buffer.append(line.strip())
+                    self.parse_and_log(line)
+
         except Exception as e:
             logger.error("Error handling client: %s", e)
         finally:
@@ -64,6 +81,16 @@ class UnixLogServer:
                 self.clients.remove(client_sock)
             client_sock.close()
             logger.info("Client disconnected")
+
+    def parse_and_log(self, line: str):
+        match = LOG_PATTERN.match(line.strip())
+        if match:
+            level = LEVEL_MAP.get(match["level"], logging.INFO)
+            message = match["message"]
+            logger.log(level, message)
+        else:
+            # fallback if line doesn't match
+            logger.info(f"RAW: {line.strip()}")
 
     def stop(self):
         """Stop the Unix socket server"""
