@@ -35,7 +35,7 @@ repos:
     hooks:
       - id: clang-format
         files: \.(c|h)$
-        args: [--style=file]
+        args: [--style=file] # Assumes a .clang-format file is present
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0 # Use this specific modern version
     hooks:

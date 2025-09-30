@@ -54,6 +54,19 @@ int parse_plugin_config(const char *config_file, plugin_config_t *configs, int m
         strncpy(configs[config_count].plugin_related_config_path, token,
                 sizeof(configs[config_count].plugin_related_config_path) - 1);
 
+        // parsing venv_path (optional field)
+        token = strtok(NULL, ",\n\r");
+        if (token)
+        {
+            strncpy(configs[config_count].venv_path, token,
+                    sizeof(configs[config_count].venv_path) - 1);
+        }
+        else
+        {
+            // No venv_path specified, use empty string
+            configs[config_count].venv_path[0] = '\0';
+        }
+
         // Incrementing index to target next config
         config_count++;
     }

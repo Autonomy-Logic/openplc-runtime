@@ -21,6 +21,12 @@ class SyncUnixClient:
         if not re.match(r"^[\w\s.,!?\-]+$", message):
             return False
         return True
+    
+    def is_connected(self):
+        with mutex:
+            if self.sock is None:
+                return False
+            return True
 
     def connect(self):
         """Connect to the Unix socket server"""
@@ -71,21 +77,6 @@ class SyncUnixClient:
             except Exception as e:
                 logger.error("Error receiving message: %s", e)
                 return None
-
-    def ping(self):
-        """Send PING and wait for PONG"""
-        self.send_message("PING\n")
-        return self.recv_message()
-
-    def start_plc(self):
-        """Send START command"""
-        self.send_message("START\n")
-        return self.recv_message()
-
-    def stop_plc(self):
-        """Send STOP command"""
-        self.send_message("STOP\n")
-        return self.recv_message()
 
     def close(self):
         if self.sock:
