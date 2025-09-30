@@ -50,8 +50,10 @@ class UnixLogServer:
             self.running = True
             threading.Thread(target=self._accept_clients, daemon=True).start()
             logger.info("Log server started at %s", self.socket_path)
-        except Exception as e:
+        except (OSError, socket.error) as e:
             logger.error("Failed to start server: %s", e)
+        except Exception as e:
+            logger.error("Failed to start server (unexpected): %s", e)
             raise
 
     def _accept_clients(self):
@@ -63,17 +65,20 @@ class UnixLogServer:
                     self.clients.append(client_sock)
                 threading.Thread(target=self._handle_client, args=(client_sock,), daemon=True).start()
                 logger.info("Client connected")
+            except (OSError, socket.error) as e:
+                if self.running:
+                    logger.error("Socket error: %s", e)
             except Exception as e:
                 logger.error("Error accepting client: %s", e)
 
-    def _handle_client(self, client_sock):
+    def _handle_client(self, client_sock: socket.socket):
         """Handle communication with a connected client"""
         try:
             with client_sock.makefile('r') as f:
                 for line in f:
-                    self.log_buffer.append(line.strip())
                     self.parse_and_log(line)
-
+        except (OSError, socket.error) as e:
+            logger.error("Socket error: %s", e)
         except Exception as e:
             logger.error("Error handling client: %s", e)
         finally:
@@ -83,7 +88,12 @@ class UnixLogServer:
             logger.info("Client disconnected")
 
     def parse_and_log(self, line: str):
-        match = LOG_PATTERN.match(line.strip())
+        sline = line.strip()
+        if not sline:
+            return
+        
+        self.log_buffer.append(sline)
+        match = LOG_PATTERN.match(sline)
         if match:
             level = LEVEL_MAP.get(match["level"], logging.INFO)
             message = match["message"]
