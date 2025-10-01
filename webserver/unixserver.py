@@ -2,25 +2,10 @@ import socket
 import threading
 import logging
 import os
-import re
-from . import collector_logger, log_buffer
+from logger import get_logger, LogParser
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-
-LOG_PATTERN = re.compile(r"""
-    ^\[(?P<time>[\d-]+\s+[\d:]+)\]   # timestamp inside [ ]
-    \s+\[(?P<level>[A-Z]+)\]         # level inside [ ]
-    \s+(?P<message>.*)$              # the rest is message
-""", re.VERBOSE)
-
-LEVEL_MAP = {
-    "DEBUG": logging.DEBUG,
-    "INFO": logging.INFO,
-    "WARNING": logging.WARNING,
-    "ERROR": logging.ERROR,
-    "CRITICAL": logging.CRITICAL,
-}
 
 class UnixLogServer:
     def __init__(self, socket_path="/run/runtime/log_runtime.socket"):
@@ -29,7 +14,7 @@ class UnixLogServer:
         self.clients = []
         self.lock = threading.Lock()
         self.running = False
-        self.log_buffer = log_buffer
+        self.log_buffer = collector_logger.log_buffer
 
     def start(self):
         """Start the Unix socket server"""
