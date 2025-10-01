@@ -1,11 +1,12 @@
 import socket
 import threading
-import collections
 import logging
 import os
 import re
+from . import collector_logger, log_buffer
 
 logger = logging.getLogger(__name__)
+
 
 LOG_PATTERN = re.compile(r"""
     ^\[(?P<time>[\d-]+\s+[\d:]+)\]   # timestamp inside [ ]
@@ -28,7 +29,7 @@ class UnixLogServer:
         self.clients = []
         self.lock = threading.Lock()
         self.running = False
-        self.log_buffer = collections.deque(maxlen=1000)
+        self.log_buffer = log_buffer
 
     def start(self):
         """Start the Unix socket server"""
@@ -92,15 +93,35 @@ class UnixLogServer:
         if not sline:
             return
         
-        self.log_buffer.append(sline)
-        match = LOG_PATTERN.match(sline)
+        match = LOG_PATTERN.match(line.strip())
         if match:
             level = LEVEL_MAP.get(match["level"], logging.INFO)
             message = match["message"]
-            logger.log(level, message)
+
+            # Re-log into Python logging system
+            record = collector_logger.makeRecord(
+                name="external",
+                level=level,
+                fn="",
+                lno=0,
+                msg=message,
+                args=(),
+                exc_info=None
+            )
+            record.source = "external"  # mark as external
+            collector_logger.handle(record)
         else:
-            # fallback if line doesn't match
-            logger.info(f"RAW: {line.strip()}")
+            record = collector_logger.makeRecord(
+                name="external",
+                level=logging.INFO,
+                fn="",
+                lno=0,
+                msg=f"RAW: {line.strip()}",
+                args=(),
+                exc_info=None
+            )
+            record.source = "external"
+            collector_logger.handle(record)
 
     def stop(self):
         """Stop the Unix socket server"""

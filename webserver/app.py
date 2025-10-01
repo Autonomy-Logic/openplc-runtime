@@ -27,6 +27,8 @@ from plcapp_management import (
     safe_extract,
     MAX_FILE_SIZE
 )
+from . import collector_logger
+
 
 app = flask.Flask(__name__)
 app.secret_key = str(os.urandom(16))
@@ -97,7 +99,7 @@ def restapi_callback_get(argument: str, data: dict) -> dict:
     """
     Dispatch GET callbacks by argument.
     """
-    logger.debug("GET | Received argument: %s, data: %s", argument, data)
+    collector_logger.debug("GET | Received argument: %s, data: %s", argument, data)
     handler = GET_HANDLERS.get(argument)
     if handler:
         return handler(data)
@@ -147,7 +149,7 @@ def restapi_callback_post(argument: str, data: dict) -> dict:
     """
     Dispatch POST callbacks by argument.
     """
-    logger.debug("POST | Received argument: %s, data: %s", argument, data)
+    collector_logger.debug("POST | Received argument: %s, data: %s", argument, data)
     handler = POST_HANDLERS.get(argument)
     
     if not handler:
