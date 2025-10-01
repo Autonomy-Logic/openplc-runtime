@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 MAX_FILE_SIZE: Final[int] = 10 * 1024 * 1024   # 10 MB per file
 MAX_TOTAL_SIZE: Final[int] = 50 * 1024 * 1024  # 50 MB total
 DISALLOWED_EXT = (".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr")
+ALLOWED_FILENAME = "create_standard_function_txt.sh"
 
 class BuildStatus(Enum):
     IDLE = auto()
@@ -80,10 +81,11 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
 
             # Check disallowed extensions
             # TODO remove this additional BASH SCRIPT check
-            if ext in DISALLOWED_EXT or "create_standard_function_txt.sh" in ext:
-                logger.warning("Disallowed extension: %s",
-                               filename)
-                safe = False
+            if ALLOWED_FILENAME not in filename:
+                if ext in DISALLOWED_EXT:
+                    print("Disallowed extension: %s",
+                                   filename)
+                    safe = False
 
             total_size += uncompressed_size
             valid_files.append(info)
