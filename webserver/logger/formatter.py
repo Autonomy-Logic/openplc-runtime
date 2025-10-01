@@ -1,6 +1,7 @@
 import logging
 import datetime
 
+
 class CustomFormatter(logging.Formatter):
     """Custom formatter with timestamp, level, and message."""
 

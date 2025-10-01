@@ -2,8 +2,9 @@ import logging
 import logging.config
 from .logger import get_logger
 from .parser import LogParser
+from .bufferhandler import BufferHandler
 
-__all__ = ["get_logger", "LogParser"]
+__all__ = ["get_logger", "LogParser", "BufferHandler"]
 __version__ = "0.1"
 __author__ = "Autonomy"
 __license__ = "MIT"
