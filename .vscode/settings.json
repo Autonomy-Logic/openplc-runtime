@@ -5,7 +5,8 @@
         "dlfcn.h": "c",
         "utils.h": "c",
         "plc_state_manager.h": "c",
-        "unix_socket.h": "c"
+        "unix_socket.h": "c",
+        "plugin_driver.h": "c"
     },
     "editor.rulers": [
         80

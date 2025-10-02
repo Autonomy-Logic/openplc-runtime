@@ -6,7 +6,7 @@ from typing import Optional
 from threading import Lock
 
 
-logger = get_logger("logger", use_buffer=True)
+logger = get_logger(use_buffer=True)
 mutex = Lock()
 
 

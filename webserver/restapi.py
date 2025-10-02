@@ -15,7 +15,7 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import check_password_hash, generate_password_hash
 from logger import get_logger, LogParser
 
-logger = get_logger("logger")
+logger = get_logger(use_buffer=True)
 
 env = os.getenv("FLASK_ENV", "development")
 

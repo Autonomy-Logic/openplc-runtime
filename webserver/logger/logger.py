@@ -11,20 +11,15 @@ def get_logger(name: str = "logger",
     collector_logger = logging.getLogger(name)
     collector_logger.setLevel(logging.DEBUG)
 
-    # Print logs to console
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-    collector_logger.addHandler(stream_handler)
+    handler = logging.StreamHandler()
+    handler.setFormatter(CustomFormatter())
+    collector_logger.addHandler(handler)
 
-    if not collector_logger.handlers:
-        # 
-        handler = logging.StreamHandler()
-        handler.setFormatter(CustomFormatter())
-        collector_logger.addHandler(handler)
-
-        if use_buffer:
-            buffer_handler = BufferHandler()
-            buffer_handler.setFormatter(logging.Formatter("%(asctime)s"))
-            collector_logger.addHandler(buffer_handler)
+    if use_buffer:
+        # Use buffer handler for log messages
+        buffer_handler = BufferHandler()
+        buffer_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+        collector_logger.addHandler(buffer_handler)
 
     return collector_logger

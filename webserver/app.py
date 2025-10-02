@@ -35,7 +35,7 @@ app.secret_key = str(os.urandom(16))
 login_manager = flask_login.LoginManager()
 login_manager.init_app(app)
 
-logger = get_logger("logger", use_buffer=True)
+logger = get_logger(use_buffer=True)
 
 runtime_manager = RuntimeManager(
     runtime_path="./build/plc_main",

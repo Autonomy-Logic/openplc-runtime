@@ -8,7 +8,7 @@ from unixserver import UnixLogServer
 from unixclient import SyncUnixClient
 from logger import get_logger, LogParser
 
-logger = get_logger("logger", use_buffer=True)
+logger = get_logger(use_buffer=True)
 
 
 class RuntimeManager:
@@ -208,12 +208,12 @@ class RuntimeManager:
         Get current logs from the runtime
         """
         for handler in logger.handlers:
-            print("Handler:", handler.__doc__)
+            logger.info("Handler:", handler.__doc__)
             if hasattr(handler, "get_logs"):
                 _logs = handler.get_logs()
-                print("Buffered logs:", _logs)
+                logger.info("Buffered logs:", _logs)
             else:
-                print("Handler has no get_logs method")
+                logger.warning("Handler has no get_logs method")
                 return []
         return list(_logs)
 

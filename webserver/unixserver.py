@@ -1,10 +1,10 @@
+import json
 import socket
 import threading
-import logging
 import os
 from logger import get_logger, LogParser
 
-logger = get_logger("logger", use_buffer=True)
+logger = get_logger(use_buffer=True)
 
 
 class UnixLogServer:
@@ -14,6 +14,7 @@ class UnixLogServer:
         self.clients = []
         self.lock = threading.Lock()
         self.running = False
+        # self.parser = LogParser(logger)
 
     def start(self):
         """Start the Unix socket server"""
@@ -62,7 +63,9 @@ class UnixLogServer:
             with client_sock.makefile('r') as f:
                 for line in f:
                     # self.parse_and_log(line)
-                    logger.parse_and_log(line)
+                    print(json.loads(line.strip()))
+                    # self.parser.parse_and_log(line)
+                    # logger.info(line.strip())
         except (OSError, socket.error) as e:
             logger.error("Socket error: %s", e)
         except Exception as e:
