@@ -4,7 +4,7 @@ import logging
 import os
 from logger import get_logger, LogParser
 
-logger = get_logger(__name__)
+logger = get_logger("logger", use_buffer=True)
 
 
 class UnixLogServer:
@@ -14,7 +14,6 @@ class UnixLogServer:
         self.clients = []
         self.lock = threading.Lock()
         self.running = False
-        self.log_buffer = collector_logger.log_buffer
 
     def start(self):
         """Start the Unix socket server"""
@@ -62,7 +61,8 @@ class UnixLogServer:
         try:
             with client_sock.makefile('r') as f:
                 for line in f:
-                    self.parse_and_log(line)
+                    # self.parse_and_log(line)
+                    logger.parse_and_log(line)
         except (OSError, socket.error) as e:
             logger.error("Socket error: %s", e)
         except Exception as e:
@@ -73,40 +73,40 @@ class UnixLogServer:
             client_sock.close()
             logger.info("Client disconnected")
 
-    def parse_and_log(self, line: str):
-        sline = line.strip()
-        if not sline:
-            return
+    # def parse_and_log(self, line: str):
+    #     sline = line.strip()
+    #     if not sline:
+    #         return
         
-        match = LOG_PATTERN.match(line.strip())
-        if match:
-            level = LEVEL_MAP.get(match["level"], logging.INFO)
-            message = match["message"]
+    #     match = LOG_PATTERN.match(line.strip())
+    #     if match:
+    #         level = LEVEL_MAP.get(match["level"], logging.INFO)
+    #         message = match["message"]
 
-            # Re-log into Python logging system
-            record = collector_logger.makeRecord(
-                name="external",
-                level=level,
-                fn="",
-                lno=0,
-                msg=message,
-                args=(),
-                exc_info=None
-            )
-            record.source = "external"  # mark as external
-            collector_logger.handle(record)
-        else:
-            record = collector_logger.makeRecord(
-                name="external",
-                level=logging.INFO,
-                fn="",
-                lno=0,
-                msg=f"RAW: {line.strip()}",
-                args=(),
-                exc_info=None
-            )
-            record.source = "external"
-            collector_logger.handle(record)
+    #         # Re-log into Python logging system
+    #         record = collector_logger.makeRecord(
+    #             name="external",
+    #             level=level,
+    #             fn="",
+    #             lno=0,
+    #             msg=message,
+    #             args=(),
+    #             exc_info=None
+    #         )
+    #         record.source = "external"  # mark as external
+    #         collector_logger.handle(record)
+    #     else:
+    #         record = collector_logger.makeRecord(
+    #             name="external",
+    #             level=logging.INFO,
+    #             fn="",
+    #             lno=0,
+    #             msg=f"RAW: {line.strip()}",
+    #             args=(),
+    #             exc_info=None
+    #         )
+    #         record.source = "external"
+    #         collector_logger.handle(record)
 
     def stop(self):
         """Stop the Unix socket server"""

@@ -1,11 +1,12 @@
 import socket
 import os
-import logging
+from logger import get_logger, LogParser
 import re
 from typing import Optional
 from threading import Lock
 
-logger = logging.getLogger(__name__)
+
+logger = get_logger("logger", use_buffer=True)
 mutex = Lock()
 
 

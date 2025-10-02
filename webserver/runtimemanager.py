@@ -6,9 +6,10 @@ import os
 import psutil
 from unixserver import UnixLogServer
 from unixclient import SyncUnixClient
-import logging
+from logger import get_logger, LogParser
 
-logger = logging.getLogger(__name__)
+logger = get_logger("logger", use_buffer=True)
+
 
 class RuntimeManager:
     def __init__(self, runtime_path, plc_socket, log_socket):
@@ -206,9 +207,16 @@ class RuntimeManager:
         """
         Get current logs from the runtime
         """
-        return list(self.log_server.log_buffer)
-    
-    
+        for handler in logger.handlers:
+            print("Handler:", handler.__doc__)
+            if hasattr(handler, "get_logs"):
+                _logs = handler.get_logs()
+                print("Buffered logs:", _logs)
+            else:
+                print("Handler has no get_logs method")
+                return []
+        return list(_logs)
+
     def ping(self):
         """
         Send PING and wait for PONG
