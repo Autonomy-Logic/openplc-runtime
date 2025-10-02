@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "utils/log.h"
+
 struct PluginManager {
     char *so_path;
     void *handle;
@@ -49,7 +51,7 @@ bool plugin_manager_load(PluginManager *pm)
     pm->handle = dlopen(pm->so_path, RTLD_NOW);
     if (!pm->handle) 
     {
-        fprintf(stderr, "Failed to load plugin %s: %s\n", pm->so_path, dlerror());
+        log_error("Failed to load plugin %s: %s", pm->so_path, dlerror());
         return false;
     }
     return true;
@@ -66,7 +68,7 @@ void *plugin_manager_get_symbol(PluginManager *pm, const char *symbol_name)
     char *err = dlerror();
     if (err) 
     {
-        fprintf(stderr, "dlsym error: %s\n", err);
+        log_error("dlsym error: %s", err);
         return NULL;
     }
     return sym;

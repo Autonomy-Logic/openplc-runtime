@@ -30,7 +30,7 @@ void *watchdog_thread(void *arg)
         long now = atomic_load(&plc_heartbeat);
         if (now == last) 
         {
-            fprintf(stderr, "[Watchdog] No heartbeat! PLC unresponsive.\n");
+            fprintf(stderr, "[Watchdog] No heartbeat! PLC unresponsive.\n"); // Use stderr to ensure visibility and avoid lockups in log system
             exit(EXIT_FAILURE);
         }
 
