@@ -1,10 +1,19 @@
 import logging
-import datetime
+import time
+import json
 
-
-class CustomFormatter(logging.Formatter):
-    """Custom formatter with timestamp, level, and message."""
+class JsonFormatter(logging.Formatter):
+    """Format log records as JSON strings."""
 
     def format(self, record: logging.LogRecord) -> str:
-        timestamp = datetime.datetime.fromtimestamp(record.created).isoformat()
-        return f"[{timestamp}] [{record.levelname}] {record.getMessage()}"
+        log_dict = {
+            "timestamp": str(int(record.created)),   # epoch seconds
+            "level": record.levelname,
+            "message": record.getMessage()
+        }
+
+        # Include optional fields if present
+        if hasattr(record, "source"):
+            log_dict["source"] = record.source
+
+        return json.dumps(log_dict, ensure_ascii=False)

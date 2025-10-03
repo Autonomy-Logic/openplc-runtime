@@ -1,4 +1,3 @@
-import logging
 import os
 import re
 import secrets
@@ -11,7 +10,7 @@ ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 DB_PATH = Path(__file__).resolve().parent.parent / "restapi.db"
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
-logger = logging.getLogger("logger")
+# logger = logging.getLogger("logger")
 
 
 # Function to validate environment variable values

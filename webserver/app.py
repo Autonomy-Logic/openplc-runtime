@@ -27,7 +27,7 @@ from plcapp_management import (
     MAX_FILE_SIZE
 )
 
-from logger import get_logger, LogParser
+# from logger import get_logger, LogParser
 
 
 app = flask.Flask(__name__)
@@ -35,7 +35,7 @@ app.secret_key = str(os.urandom(16))
 login_manager = flask_login.LoginManager()
 login_manager.init_app(app)
 
-logger = get_logger(use_buffer=True)
+# logger = get_logger(use_buffer=True)
 
 runtime_manager = RuntimeManager(
     runtime_path="./build/plc_main",
@@ -99,7 +99,7 @@ def restapi_callback_get(argument: str, data: dict) -> dict:
     """
     Dispatch GET callbacks by argument.
     """
-    logger.debug("GET | Received argument: %s, data: %s", argument, data)
+    # logger.debug("GET | Received argument: %s, data: %s", argument, data)
     handler = GET_HANDLERS.get(argument)
     if handler:
         return handler(data)
@@ -149,7 +149,7 @@ def restapi_callback_post(argument: str, data: dict) -> dict:
     """
     Dispatch POST callbacks by argument.
     """
-    logger.debug("POST | Received argument: %s, data: %s", argument, data)
+    # logger.debug("POST | Received argument: %s, data: %s", argument, data)
     handler = POST_HANDLERS.get(argument)
     
     if not handler:
@@ -167,9 +167,10 @@ def run_https():
         try:
             db.create_all()
             db.session.commit()
-            logger.info("Database tables created successfully.")
+            # logger.info("Database tables created successfully.")
         except Exception as e:
-            logger.error("Error creating database tables: %s", e)
+            # logger.error("Error creating database tables: %s", e)
+            pass
 
     try:
         cert_gen = CertGen(hostname=HOSTNAME, ip_addresses=["127.0.0.1"])
@@ -191,14 +192,17 @@ def run_https():
         )
 
     except FileNotFoundError as e:
-        logger.error("Could not find SSL credentials! %s", e)
+        # logger.error("Could not find SSL credentials! %s", e)
+        pass
     except ssl.SSLError as e:
-        logger.error("SSL credentials FAIL! %s", e)
+        # logger.error("SSL credentials FAIL! %s", e)
+        pass
     except KeyboardInterrupt:
-        logger.info("HTTP server stopped by KeyboardInterrupt")
+        # logger.info("HTTP server stopped by KeyboardInterrupt")
+        pass
     finally:
         runtime_manager.stop()
-        logger.info("Runtime manager stopped")
+        # logger.info("Runtime manager stopped")
 
 
 if __name__ == "__main__":

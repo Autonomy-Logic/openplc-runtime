@@ -17,4 +17,3 @@ for handler in logger.handlers:
 
 print(dir(logger))
 
-print(logger.get_logs())

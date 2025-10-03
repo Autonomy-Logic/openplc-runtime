@@ -1,12 +1,12 @@
 import socket
 import os
-from logger import get_logger, LogParser
 import re
 from typing import Optional
 from threading import Lock
 
+# from logger import get_logger, LogParser
 
-logger = get_logger(use_buffer=True)
+# logger = get_logger(use_buffer=True)
 mutex = Lock()
 
 
@@ -35,13 +35,13 @@ class SyncUnixClient:
             raise FileNotFoundError(f"Socket not found: {self.socket_path}")
 
         try:
-            logger.info("Connecting to socket %s", self.socket_path)
+            # logger.info("Connecting to socket %s", self.socket_path)
             self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self.sock.settimeout(1.0)  # 1s timeout on blocking calls
             self.sock.connect(self.socket_path)
-            logger.info("Connected to server socket %s", self.socket_path)
+            # logger.info("Connected to server socket %s", self.socket_path)
         except Exception as e:
-            logger.error("Failed to connect: %s", e)
+            # logger.error("Failed to connect: %s", e)
             raise
 
     def send_message(self, msg: str):
@@ -52,9 +52,9 @@ class SyncUnixClient:
             data = msg.encode()
             try:
                 self.sock.sendall(data)
-                logger.info("Sent message: %s", data)
+                # logger.info("Sent message: %s", data)
             except Exception as e:
-                logger.error("Error sending message: %s", e)
+                # logger.error("Error sending message: %s", e)
                 raise
 
     def recv_message(self, timeout: float = 0.5) -> Optional[str]:
@@ -67,21 +67,21 @@ class SyncUnixClient:
             try:
                 data = self.sock.recv(1024)
                 if not data:
-                    logger.warning("Connection closed by server")
+                    # logger.warning("Connection closed by server")
                     return None
                 message = data.decode("utf-8").strip()
-                logger.info("Received message: %s", message)
+                # logger.info("Received message: %s", message)
                 return message
             except socket.timeout:
-                logger.debug("Timeout waiting for message")
+                # logger.debug("Timeout waiting for message")
                 return None
             except Exception as e:
-                logger.error("Error receiving message: %s", e)
+                # logger.error("Error receiving message: %s", e)
                 return None
 
     def close(self):
         if self.sock:
-            logger.info("Closing connection")
+            # logger.info("Closing connection")
             try:
                 self.sock.close()
             finally:

@@ -4,7 +4,8 @@ import threading
 import os
 from logger import get_logger, LogParser
 
-logger = get_logger(use_buffer=True)
+logger, buffer = get_logger(use_buffer=True)
+parser = LogParser(logger)
 
 
 class UnixLogServer:
@@ -63,8 +64,8 @@ class UnixLogServer:
             with client_sock.makefile('r') as f:
                 for line in f:
                     # self.parse_and_log(line)
-                    print(json.loads(line.strip()))
-                    # self.parser.parse_and_log(line)
+                    # print(json.loads(line.strip()))
+                    parser.parse_and_log(line)
                     # logger.info(line.strip())
         except (OSError, socket.error) as e:
             logger.error("Socket error: %s", e)

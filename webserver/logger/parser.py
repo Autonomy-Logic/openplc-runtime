@@ -1,9 +1,11 @@
 import re
 import logging
+import time
+import json
 from typing import Optional, Dict
 
 class LogParser:
-    """Parse and re-log log entries from external sources."""
+    """Parse and re-log log entries from external sources as JSON."""
 
     LOG_PATTERN = re.compile(
         r'^\[(?P<timestamp>.*?)\] \[(?P<level>\w+)\] (?P<message>.*)$'
@@ -23,18 +25,10 @@ class LogParser:
         """
         self.collector_logger = collector_logger
 
-    @classmethod
-    def parse(cls, raw_log: str) -> Optional[Dict[str, str]]:
-        """Parse raw log string into dict, or None if it doesn't match."""
-        match = cls.LOG_PATTERN.match(raw_log.strip())
-        if not match:
-            return None
-        return match.groupdict()
-
     def parse_and_log(self, line: str) -> None:
         """
-        Parse a line, then re-log it into the collector_logger.
-        If not parsable, re-log as RAW.
+        Parse a line, then re-log it as JSON into the collector_logger.
+        If not parsable, log as RAW JSON.
         """
         sline = line.strip()
         if not sline:
@@ -43,29 +37,37 @@ class LogParser:
         match = self.LOG_PATTERN.match(sline)
         if match:
             groups = match.groupdict()
-            level = self.LEVEL_MAP.get(groups["level"], logging.INFO)
-            message = groups["message"]
+            # If original timestamp can't be converted, fallback to now
+            try:
+                timestamp = str(int(time.mktime(time.strptime(groups["timestamp"], "%Y-%m-%dT%H:%M:%S"))))
+            except Exception:
+                timestamp = str(int(time.time()))
 
-            record = self.collector_logger.makeRecord(
-                name="external",
-                level=level,
-                fn="",
-                lno=0,
-                msg=message,
-                args=(),
-                exc_info=None
-            )
-            record.source = "external"
-            self.collector_logger.handle(record)
+            log_dict = {
+                "timestamp": timestamp,
+                "level": groups["level"],
+                "message": groups["message"]
+            }
+
+            level = self.LEVEL_MAP.get(groups["level"], logging.INFO)
+
         else:
-            record = self.collector_logger.makeRecord(
-                name="external",
-                level=logging.INFO,
-                fn="",
-                lno=0,
-                msg=f"RAW: {sline}",
-                args=(),
-                exc_info=None
-            )
-            record.source = "external"
-            self.collector_logger.handle(record)
+            log_dict = {
+                "timestamp": str(int(time.time())),
+                "level": "INFO",
+                "message": f"RAW: {sline}"
+            }
+            level = logging.INFO
+
+        # Log as JSON string
+        record = self.collector_logger.makeRecord(
+            name="external",
+            level=level,
+            fn="",
+            lno=0,
+            msg=json.dumps(log_dict, ensure_ascii=False),
+            args=(),
+            exc_info=None
+        )
+        record.source = "external"
+        self.collector_logger.handle(record)
