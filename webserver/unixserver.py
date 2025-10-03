@@ -63,10 +63,7 @@ class UnixLogServer:
         try:
             with client_sock.makefile('r') as f:
                 for line in f:
-                    # self.parse_and_log(line)
-                    # print(json.loads(line.strip()))
                     parser.parse_and_log(line)
-                    # logger.info(line.strip())
         except (OSError, socket.error) as e:
             logger.error("Socket error: %s", e)
         except Exception as e:
@@ -76,41 +73,6 @@ class UnixLogServer:
                 self.clients.remove(client_sock)
             client_sock.close()
             logger.info("Client disconnected")
-
-    # def parse_and_log(self, line: str):
-    #     sline = line.strip()
-    #     if not sline:
-    #         return
-        
-    #     match = LOG_PATTERN.match(line.strip())
-    #     if match:
-    #         level = LEVEL_MAP.get(match["level"], logging.INFO)
-    #         message = match["message"]
-
-    #         # Re-log into Python logging system
-    #         record = collector_logger.makeRecord(
-    #             name="external",
-    #             level=level,
-    #             fn="",
-    #             lno=0,
-    #             msg=message,
-    #             args=(),
-    #             exc_info=None
-    #         )
-    #         record.source = "external"  # mark as external
-    #         collector_logger.handle(record)
-    #     else:
-    #         record = collector_logger.makeRecord(
-    #             name="external",
-    #             level=logging.INFO,
-    #             fn="",
-    #             lno=0,
-    #             msg=f"RAW: {line.strip()}",
-    #             args=(),
-    #             exc_info=None
-    #         )
-    #         record.source = "external"
-    #         collector_logger.handle(record)
 
     def stop(self):
         """Stop the Unix socket server"""

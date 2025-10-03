@@ -1,3 +1,4 @@
+import json
 import subprocess
 import socket
 import threading
@@ -208,7 +209,8 @@ class RuntimeManager:
         Get current logs from the runtime
         """
         try:
-            return list(buffer.get_logs())
+            _logs = buffer.normalize_buffer_logs(buffer.get_logs())
+            return _logs
         except AttributeError as e:
             logger.error("Failed to get logs from buffer: %s", e)
             return []

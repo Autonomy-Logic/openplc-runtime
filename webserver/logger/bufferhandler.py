@@ -1,6 +1,10 @@
 import logging
 from collections import deque
 from typing import List, Optional
+import json
+import re
+from datetime import datetime
+
 
 class BufferHandler(logging.Handler):
     """
@@ -23,6 +27,35 @@ class BufferHandler(logging.Handler):
         if count is None or count > len(self.buffer):
             return list(self.buffer)
         return list(self.buffer)[-count:]
+
+    def normalize_buffer_logs(self, buffer_records):
+        """
+        Takes a list of log strings from buffer and returns a list of clean JSON dicts.
+        """
+        result = []
+        json_extract = re.compile(r'(\{.*\})')  # match JSON inside log line
+
+        for record in buffer_records:
+            match = json_extract.search(record)
+            if not match:
+                continue
+
+            try:
+                raw_json = json.loads(match.group(1))
+                # Convert unix timestamp → readable datetime
+                ts = int(raw_json.get("timestamp", 0))
+                dt = datetime.utcfromtimestamp(ts).isoformat() + "Z"
+
+                entry = {
+                    "timestamp": dt,
+                    "level": raw_json.get("level", "INFO"),
+                    "message": raw_json.get("message", "")
+                }
+                result.append(entry)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        return result
 
     def clear(self) -> None:
         self.buffer.clear()
