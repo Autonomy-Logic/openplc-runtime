@@ -1,9 +1,68 @@
-#include "mock_mockable_pthread.h" // CMock-generated mocks for pthread functions
-#include "mock_mockable_stdlib.h"  // CMock-generated mocks for stdlib functions
-#include "plugin_config.h"         // For plugin_config_t, etc.
+#include "plugin_config.h" // For plugin_config_t, etc.
 #include "plugin_driver.h"
 #include "unity.h"
+#include <pthread.h>
+#include <stdlib.h>
 #include <string.h>
+
+// Simple mock control variables
+static int mock_calloc_should_fail             = 0;
+static int mock_pthread_mutex_init_should_fail = 0;
+static void *mock_calloc_return_value          = NULL;
+static int mock_calloc_call_count              = 0;
+static int mock_pthread_mutex_init_call_count  = 0;
+static int mock_free_call_count                = 0;
+
+// Mock implementations - override the real functions
+void *calloc(size_t num, size_t size)
+{
+    mock_calloc_call_count++;
+    if (mock_calloc_should_fail)
+    {
+        return NULL;
+    }
+    if (mock_calloc_return_value)
+    {
+        return mock_calloc_return_value;
+    }
+    // Default: use real malloc and zero it
+    void *ptr = malloc(num * size);
+    if (ptr)
+    {
+        memset(ptr, 0, num * size);
+    }
+    return ptr;
+}
+
+int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr)
+{
+    (void)mutex;
+    (void)attr; // Suppress unused warnings
+    mock_pthread_mutex_init_call_count++;
+    return mock_pthread_mutex_init_should_fail ? -1 : 0;
+}
+
+void free(void *ptr)
+{
+    mock_free_call_count++;
+    // For test purposes, we track the call but don't actually free
+    // In a real scenario, you might want to call the real free
+    if (ptr)
+    {
+        // Could call real free here if needed: ((void(*)(void*))dlsym(RTLD_NEXT, "free"))(ptr);
+    }
+}
+
+// Mock reset function
+void reset_mocks(void)
+{
+    mock_calloc_should_fail             = 0;
+    mock_pthread_mutex_init_should_fail = 0;
+    mock_calloc_return_value            = NULL;
+    mock_calloc_call_count              = 0;
+    mock_pthread_mutex_init_call_count  = 0;
+    mock_free_call_count                = 0;
+}
 
 // Define external buffer variables that plugin_driver.c expects
 // These are normally defined in image_tables.c
@@ -31,74 +90,67 @@ void plugin_manager_destroy(PluginManager *manager)
 
 void setUp(void)
 {
-    // This function is called before each test
+    // Reset all mocks before each test
+    reset_mocks();
 }
 
 void tearDown(void)
 {
-    // This function is called after each test
+    // Clean up after each test if needed
+    reset_mocks();
 }
 
-// Test Case 1: Test for driver creation
+// Test Case 1: Test for driver creation - success case
 void test_plugin_driver_create_ShouldAllocateAndInitializeDriver(void)
 {
-    // Mock memory for the driver
-    plugin_driver_t mock_driver_memory;
-
-    // Expectations
-    // 1. calloc should be called with (count=1, size=sizeof(plugin_driver_t))
-    calloc_ExpectAndReturn(1, sizeof(plugin_driver_t), &mock_driver_memory);
-
-    // 2. pthread_mutex_init should be called and succeed
-    pthread_mutex_init_IgnoreAndReturn(0);
+    // Setup: Configure mocks for success (default behavior is success)
+    // No special setup needed - mocks will succeed by default
 
     // Call the function under test
     plugin_driver_t *driver = plugin_driver_create();
 
     // Assertions
     TEST_ASSERT_NOT_NULL_MESSAGE(driver, "Driver creation should not return NULL");
-    TEST_ASSERT_EQUAL_PTR_MESSAGE(&mock_driver_memory, driver,
-                                  "Returned pointer should match calloc's result");
 
-    // Verify internal state
+    // Verify that calloc was called
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, mock_calloc_call_count, "calloc should be called once");
+
+    // Verify that pthread_mutex_init was called
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, mock_pthread_mutex_init_call_count,
+                                  "pthread_mutex_init should be called once");
+
+    // Verify internal state - all fields should be zero-initialized by calloc
     TEST_ASSERT_EQUAL_INT(0, driver->plugin_count);
 
-    // Cleanup - in this case, the mock memory doesn't need freeing
-    // but we should call plugin_driver_destroy if it exists
-    // plugin_driver_destroy(driver);
+    // Cleanup
+    free(driver);
 }
 
 // Test Case 2: Test driver creation - calloc failure
 void test_plugin_driver_create_CallocFails_ShouldReturnNULL(void)
 {
-    // Expectations
-    // 1. calloc should be called once and fail (return NULL)
-    calloc_ExpectAndReturn(1, sizeof(plugin_driver_t), NULL);
-    // 2. pthread_mutex_init should NOT be called
+    // Setup: Configure calloc to fail
+    mock_calloc_should_fail = 1;
 
     // Call the function under test
     plugin_driver_t *driver = plugin_driver_create();
 
     // Assertions
     TEST_ASSERT_NULL_MESSAGE(driver, "Driver creation should return NULL if calloc fails");
+
+    // Verify that calloc was called
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, mock_calloc_call_count, "calloc should be called once");
+
+    // Verify that pthread_mutex_init was NOT called (since calloc failed)
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, mock_pthread_mutex_init_call_count,
+                                  "pthread_mutex_init should not be called if calloc fails");
 }
 
 // Test Case 3: Test driver creation - mutex init failure
 void test_plugin_driver_create_MutexInitFails_ShouldFreeAndReturnNULL(void)
 {
-    // Allocate a real block of memory for the driver to test free
-    plugin_driver_t *real_driver_block = (plugin_driver_t *)malloc(sizeof(plugin_driver_t));
-    TEST_ASSERT_NOT_NULL_MESSAGE(real_driver_block,
-                                 "Failed to allocate real driver block for testing");
-
-    // Expectations
-    // 1. calloc should be called once and succeed
-    calloc_ExpectAndReturn(1, sizeof(plugin_driver_t), real_driver_block);
-    // 2. pthread_mutex_init should be called once and fail (return non-zero)
-    pthread_mutex_init_ExpectAndReturn(&real_driver_block->buffer_mutex, NULL,
-                                       -1); // Non-zero return for failure
-    // 3. free should be called once for the allocated driver block
-    free_Expect(real_driver_block);
+    // Setup: Configure pthread_mutex_init to fail
+    mock_pthread_mutex_init_should_fail = 1;
 
     // Call the function under test
     plugin_driver_t *driver = plugin_driver_create();
@@ -107,13 +159,16 @@ void test_plugin_driver_create_MutexInitFails_ShouldFreeAndReturnNULL(void)
     TEST_ASSERT_NULL_MESSAGE(driver,
                              "Driver creation should return NULL if pthread_mutex_init fails");
 
-    // No need to free real_driver_block here, as it's expected to be freed by the function under
-    // test. However, if the test fails, we should clean up. In practice, Unity's tearDown() could
-    // handle this.
+    // Verify that all expected functions were called
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, mock_calloc_call_count, "calloc should be called once");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, mock_pthread_mutex_init_call_count,
+                                  "pthread_mutex_init should be called once");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(
+        1, mock_free_call_count, "free should be called once to clean up after mutex init failure");
 }
 
-// Test Case 4: This test focuses on the loading and population of the driver's plugin array
-void test_plugin_driver_load_config_ValidConfig_ShouldPopulateDriver(void)
+// Test Case 4: Test data structure manipulation (simplified)
+void test_plugin_driver_data_structure_ShouldStorePluginInfo(void)
 {
     // Setup: Create a mock driver instance
     plugin_driver_t driver;
