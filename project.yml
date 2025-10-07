@@ -16,6 +16,8 @@
     # Exclude files that are not part of the unit under test or have heavy external deps
     # For now, we include everything and let Ceedling handle linking.
     # If specific files cause issues, we can exclude them here.
+  :support:
+    - tests/support/**  # Include support files (stubs, mocks, helpers)
   :include:
     - core/src/**
     - tests/support # For custom helpers or mocks if needed

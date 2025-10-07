@@ -1,4 +1,5 @@
 #include "plugin_config.h"
+#include "plugin_driver.h"
 #include "unity.h"
 #include <string.h>
 
@@ -36,6 +37,9 @@ void tearDown(void)
     // This function is called after each test
 }
 
+// Note: External buffer variables and mock functions are now defined in
+// tests/support/test_plugin_driver_stubs.c and will be linked automatically
+
 // Test Case 1: Test parsing a valid configuration file
 // This covers "Teste de leitura e parsing de configurações"
 void test_parse_plugin_config_ValidFile_ShouldSucceed(void)
@@ -61,7 +65,7 @@ void test_parse_plugin_config_ValidFile_ShouldSucceed(void)
     TEST_ASSERT_EQUAL_STRING("plugin1", configs[0].name);
     TEST_ASSERT_EQUAL_STRING("../path/to/plugin1.py", configs[0].path);
     TEST_ASSERT_EQUAL_INT(1, configs[0].enabled);
-    TEST_ASSERT_EQUAL_INT(0, configs[0].type); // 0 for Python from plugin_config.h
+    TEST_ASSERT_EQUAL_INT(PLUGIN_TYPE_PYTHON, configs[0].type); // 0 for Python from plugin_config.h
     TEST_ASSERT_EQUAL_STRING("./config1.ini\n", configs[0].plugin_related_config_path);
     TEST_ASSERT_EQUAL_STRING("", configs[0].venv_path); // No venv_path specified
 
@@ -69,7 +73,7 @@ void test_parse_plugin_config_ValidFile_ShouldSucceed(void)
     TEST_ASSERT_EQUAL_STRING("plugin2", configs[1].name);
     TEST_ASSERT_EQUAL_STRING("./plugins/plugin2.so", configs[1].path);
     TEST_ASSERT_EQUAL_INT(0, configs[1].enabled);
-    TEST_ASSERT_EQUAL_INT(1, configs[1].type); // 1 for Native from plugin_config.h
+    TEST_ASSERT_EQUAL_INT(PLUGIN_TYPE_NATIVE, configs[1].type); // 1 for Native from plugin_config.h
     TEST_ASSERT_EQUAL_STRING("./config2.conf\n", configs[1].plugin_related_config_path);
     TEST_ASSERT_EQUAL_STRING("", configs[1].venv_path); // No venv_path specified
 
@@ -77,7 +81,7 @@ void test_parse_plugin_config_ValidFile_ShouldSucceed(void)
     TEST_ASSERT_EQUAL_STRING("plugin3", configs[2].name);
     TEST_ASSERT_EQUAL_STRING("/another/path/plugin3.py", configs[2].path);
     TEST_ASSERT_EQUAL_INT(1, configs[2].enabled);
-    TEST_ASSERT_EQUAL_INT(0, configs[2].type); // 0 for Python from plugin_config.h
+    TEST_ASSERT_EQUAL_INT(PLUGIN_TYPE_PYTHON, configs[2].type); // 0 for Python from plugin_config.h
     TEST_ASSERT_EQUAL_STRING("./config3.ini", configs[2].plugin_related_config_path);
     TEST_ASSERT_EQUAL_STRING("/path/to/venv3", configs[2].venv_path); // venv_path specified
 
