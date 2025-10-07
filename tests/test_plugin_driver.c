@@ -49,7 +49,7 @@ void free(void *ptr)
     // In a real scenario, you might want to call the real free
     if (ptr)
     {
-        // Could call real free here if needed: ((void(*)(void*))dlsym(RTLD_NEXT, "free"))(ptr);
+        free(ptr);
     }
 }
 
