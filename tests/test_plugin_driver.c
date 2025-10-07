@@ -216,9 +216,9 @@ void test_plugin_driver_data_structure_ShouldStorePluginInfo(void)
     // No cleanup needed for driver if it's stack allocated
 }
 
-// Test Case 5: Teste de chamada de plugins que tiveram a inicialização falha
-// (Test calling plugins that failed initialization)
+// Test Case 5: Test calling plugins that failed initialization
 // This test focuses on the `plugin_driver_init` function and how it handles
+// plugins where the `init` function (Python or Native) returns an error.
 // plugins where the `init` function (Python or Native) returns an error.
 void test_plugin_driver_Init_WhenPluginInitFails_ShouldHaltAndReturnError(void)
 {
