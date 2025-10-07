@@ -35,7 +35,7 @@ app.secret_key = str(os.urandom(16))
 login_manager = flask_login.LoginManager()
 login_manager.init_app(app)
 
-logger, _ = get_logger(use_buffer=True)
+logger, _ = get_logger("logger", use_buffer=True)
 
 runtime_manager = RuntimeManager(
     runtime_path="./build/plc_main",
@@ -81,6 +81,7 @@ def handle_status(data: dict) -> dict:
 
 
 def handle_ping(data: dict) -> dict:
+    logger.warning("Ping received from web interface")
     response = runtime_manager.ping()
     return {"status": response}
 
@@ -199,7 +200,7 @@ def run_https():
         elif cert_gen.is_certificate_valid(CERT_FILE):
             cert_gen.generate_self_signed_cert(cert_file=CERT_FILE, key_file=KEY_FILE)
         else:
-            print("Credentials already generated!")
+            logger.warning("Credentials already generated!")
 
         context = (CERT_FILE, KEY_FILE)
         app_restapi.run(
@@ -211,17 +212,14 @@ def run_https():
         )
 
     except FileNotFoundError as e:
-        # logger.error("Could not find SSL credentials! %s", e)
-        pass
+        logger.error("Could not find SSL credentials! %s", e)
     except ssl.SSLError as e:
-        # logger.error("SSL credentials FAIL! %s", e)
-        pass
+        logger.error("SSL credentials FAIL! %s", e)
     except KeyboardInterrupt:
-        # logger.info("HTTP server stopped by KeyboardInterrupt")
-        pass
+        logger.info("HTTP server stopped by KeyboardInterrupt")
     finally:
+        logger.info("Runtime manager stopped")
         runtime_manager.stop()
-        # logger.info("Runtime manager stopped")
 
 
 if __name__ == "__main__":

@@ -36,9 +36,7 @@ __description__ = "RestAPI interface for runtime core"
 # Single global buffer for all logs
 shared_buffer_handler = BufferHandler()
 
-# Simple unified format (no JSON yet)
 formatter = JsonFormatter()
-# logging.Formatter("[%(levelname)s] %(asctime)s - %(name)s - %(message)s", "%H:%M:%S")
 shared_buffer_handler.setFormatter(formatter)
 
 def get_logger(name="runtime", use_buffer: bool = False):
