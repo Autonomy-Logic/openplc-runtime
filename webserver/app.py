@@ -105,37 +105,56 @@ def restapi_callback_get(argument: str, data: dict) -> dict:
 
 
 def handle_upload_file(data: dict) -> dict:
-    build_state.clear()
-
     if build_state.status == BuildStatus.COMPILING:
-        return {"CompilationStatus": "Program is compiling, please wait"}
+        return {"UploadFileFail": "Runtime is compiling another program, please wait", "CompilationStatus": build_state.status.name}
+    
+    build_state.clear() # remove all previous build logs
     
     if "file" not in flask.request.files:
-        return {"UploadFileFail": "No file part in the request"}
+        build_state.status = BuildStatus.FAILED
+        return {"UploadFileFail": "No file part in the request", "CompilationStatus": build_state.status.name}
     
     zip_file = flask.request.files["file"]
 
     if zip_file.content_length > MAX_FILE_SIZE:
-        return {"UploadFileFail": "File is too large"}
-
-    safe, valid_files = analyze_zip(zip_file)
-    if not safe:
-        return {"UploadFileFail": "Uploaded ZIP file failed safety checks"}
-
-    extract_dir = "core/generated"
-    if os.path.exists(extract_dir):
-        shutil.rmtree(extract_dir)
-
-    safe_extract(zip_file, extract_dir, valid_files)
+        build_state.status = BuildStatus.FAILED
+        return {"UploadFileFail": "File is too large", "CompilationStatus": build_state.status.name}
+    
     try:
-        task_compile = threading.Thread(target=run_compile, args=(runtime_manager,), 
-                                     kwargs={"cwd": extract_dir}, daemon=True)
-        task_compile.start()
-    except RuntimeError as e:
-        return {"CompilationStatus":
-                f"Compilation failed:\n{build_state.logs[-1]}"}
+        build_state.status = BuildStatus.UNZIPPING
+        safe, valid_files = analyze_zip(zip_file)
+        if not safe:
+            build_state.status = BuildStatus.FAILED
+            return {"UploadFileFail": "Uploaded ZIP file failed safety checks", "CompilationStatus": build_state.status.name}
 
-    return {"CompilationStatus": build_state.status.name}
+        extract_dir = "core/generated"
+        if os.path.exists(extract_dir):
+            shutil.rmtree(extract_dir)
+
+        safe_extract(zip_file, extract_dir, valid_files)
+
+        # Start compilation in a separate thread
+        build_state.status = BuildStatus.COMPILING
+
+        task_compile = threading.Thread(
+            target=run_compile, 
+            args=(runtime_manager,), 
+            kwargs={"cwd": extract_dir}, 
+            daemon=True
+        )
+        
+        task_compile.start()
+
+        return {"UploadFileFail": "", "CompilationStatus": build_state.status.name}
+    
+    except (OSError, IOError) as e:
+        build_state.status = BuildStatus.FAILED
+        build_state.log(f"[ERROR] File system error: {e}")
+        return {"UploadFileFail": f"File system error: {e}", "CompilationStatus": build_state.status.name}
+    except Exception as e:
+        build_state.status = BuildStatus.FAILED
+        build_state.log(f"[ERROR] Unexpected error: {e}")
+        return {"UploadFileFail": f"Unexpected error: {e}", "CompilationStatus": build_state.status.name}
 
 
 POST_HANDLERS: dict[str, Callable[[dict], dict]] = {

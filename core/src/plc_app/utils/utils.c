@@ -46,10 +46,10 @@ void set_realtime_priority(void)
 
     if (sched_setscheduler(0, SCHED_FIFO, &param) != 0) 
     {
-        fprintf(stderr, "sched_setscheduler failed: %s\n", strerror(errno));
+        log_error("sched_setscheduler failed: %s", strerror(errno));
     } 
     else 
     {
-        printf("Scheduler set to SCHED_FIFO, priority %d\n", param.sched_priority);
+        log_info("Scheduler set to SCHED_FIFO, priority %d", param.sched_priority);
     }
 }

@@ -44,10 +44,9 @@ build_state = BuildProcess()  # global-ish singleton for status
 def analyze_zip(zip_path) -> tuple[bool, list]:
     """Analyze the ZIP file for safety before extraction."""
     build_state.status = BuildStatus.UNZIPPING
-    build_state.log(f"[INFO] Analyzing ZIP file: {zip_path}\n")
 
     if not zipfile.is_zipfile(zip_path):
-        build_state.log("Not a valid ZIP file.")
+        build_state.log("[ERROR] Not a valid PLC Program file.\n")
         return False, []
 
     with zipfile.ZipFile(zip_path, "r") as zf:
@@ -79,8 +78,7 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
                 safe = False
 
             # Check disallowed extensions
-            # TODO remove this additional BASH SCRIPT check
-            if ext in DISALLOWED_EXT or "create_standard_function_txt.sh" in ext:
+            if ext in DISALLOWED_EXT:
                 logger.warning("Disallowed extension: %s",
                                filename)
                 safe = False
@@ -94,10 +92,8 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
                            total_size)
             safe = False
 
-        if safe:
-            logger.info("ZIP file looks safe to extract (based on static checks).")
-        else:
-            logger.warning("ZIP file failed safety checks.")
+        if safe == False:
+            logger.error("PLC Program file failed safety checks, aborting.")
 
         return safe, valid_files
 
@@ -148,14 +144,12 @@ def safe_extract(zip_path, dest_dir, valid_files):
             with zf.open(info) as src, open(out_path, "wb") as dst:
                 dst.write(src.read())
 
-            logger.info("Extracted: %s", out_path)
-
 def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated"):
     """Run compile script synchronously (wait for completion) and update status/logs."""
     script_path: str = "./scripts/compile.sh"
 
     build_state.status = BuildStatus.COMPILING
-    build_state.log(f"[INFO] Starting compilation: {script_path}\n")
+    build_state.log(f"[INFO] Starting compilation\n")
 
     def stream_output(pipe, prefix):
         for line in iter(pipe.readline, ''):
@@ -168,11 +162,10 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated"):
         build_state.exit_code = exit_code
         if exit_code == 0:
             build_state.status = BuildStatus.SUCCESS
-            build_state.log(f"[INFO] {step_name} succeeded\n")
+            build_state.log(f"[INFO] {step_name} finished successfully\n")
         else:
             build_state.status = BuildStatus.FAILED
-            build_state.log(f"[INFO] {step_name} failed (exit={exit_code})\n")
-            raise RuntimeError(f"{step_name} failed (exit={exit_code})")
+            build_state.log(f"[ERROR] {step_name} failed (exit={exit_code})\n")
 
     # --- Compile step ---
     compile_proc = subprocess.Popen(
@@ -183,11 +176,11 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated"):
         bufsize=1
     )
 
-    threading.Thread(target=stream_output, args=(compile_proc.stdout, "[OUT] "), daemon=True).start()
-    threading.Thread(target=stream_output, args=(compile_proc.stderr, "[ERR] "), daemon=True).start()
+    threading.Thread(target=stream_output, args=(compile_proc.stdout, ""), daemon=True).start()
+    threading.Thread(target=stream_output, args=(compile_proc.stderr, "[ERROR] "), daemon=True).start()
 
     # Block until compile finishes
-    wait_and_finish(compile_proc, "Compilation")
+    wait_and_finish(compile_proc, "Build")
 
     # Stop PLC before cleanup
     runtime_manager.stop_plc()
@@ -201,8 +194,8 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated"):
         bufsize=1
     )
 
-    threading.Thread(target=stream_output, args=(cleanup_proc.stdout, "[CLEAN-OUT] "), daemon=True).start()
-    threading.Thread(target=stream_output, args=(cleanup_proc.stderr, "[CLEAN-ERR] "), daemon=True).start()
+    threading.Thread(target=stream_output, args=(cleanup_proc.stdout, ""), daemon=True).start()
+    threading.Thread(target=stream_output, args=(cleanup_proc.stderr, "[ERROR] "), daemon=True).start()
 
     # Block until cleanup finishes
     wait_and_finish(cleanup_proc, "Cleanup")
@@ -211,4 +204,4 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated"):
     if build_state.status == BuildStatus.SUCCESS:
         runtime_manager.start_plc()
     else:
-        build_state.log("[INFO] PLC will not be restarted due to failed build/cleanup\n")
+        build_state.log("[WARNING] PLC program has not been updated because the build failed\n")
