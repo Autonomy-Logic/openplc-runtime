@@ -13,9 +13,9 @@ from flask_jwt_extended import (
 )
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import check_password_hash, generate_password_hash
-# from logger import get_logger, LogParser
+from logger import get_logger, LogParser
 
-# logger = get_logger(use_buffer=True)
+logger, buffer = get_logger("logger", use_buffer=True)
 
 env = os.getenv("FLASK_ENV", "development")
 
@@ -82,13 +82,13 @@ def user_lookup_callback(_jwt_header, jwt_data):
 def register_callback_get(callback: Callable[[str, dict], dict]):
     global _handler_callback_get
     _handler_callback_get = callback
-    # logger.info("GET Callback registered successfully for rest_blueprint!")
+    logger.info("GET Callback registered successfully for rest_blueprint!")
 
 
 def register_callback_post(callback: Callable[[str, dict], dict]):
     global _handler_callback_post
     _handler_callback_post = callback
-    # logger.info("POST Callback registered successfully for rest_blueprint!")
+    logger.info("POST Callback registered successfully for rest_blueprint!")
 
 
 @restapi_bp.route("/create-user", methods=["POST"])

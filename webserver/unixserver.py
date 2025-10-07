@@ -4,7 +4,7 @@ import threading
 import os
 from logger import get_logger, LogParser
 
-logger, buffer = get_logger(use_buffer=True)
+logger, _ = get_logger("runtime", use_buffer=True)
 parser = LogParser(logger)
 
 

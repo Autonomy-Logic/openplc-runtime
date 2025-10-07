@@ -27,7 +27,7 @@ from plcapp_management import (
     MAX_FILE_SIZE
 )
 
-# from logger import get_logger, LogParser
+from logger import get_logger, LogParser
 
 
 app = flask.Flask(__name__)
@@ -35,7 +35,7 @@ app.secret_key = str(os.urandom(16))
 login_manager = flask_login.LoginManager()
 login_manager.init_app(app)
 
-# logger = get_logger(use_buffer=True)
+logger, _ = get_logger(use_buffer=True)
 
 runtime_manager = RuntimeManager(
     runtime_path="./build/plc_main",
@@ -99,7 +99,7 @@ def restapi_callback_get(argument: str, data: dict) -> dict:
     """
     Dispatch GET callbacks by argument.
     """
-    # logger.debug("GET | Received argument: %s, data: %s", argument, data)
+    logger.debug("GET | Received argument: %s, data: %s", argument, data)
     handler = GET_HANDLERS.get(argument)
     if handler:
         return handler(data)
@@ -168,7 +168,7 @@ def restapi_callback_post(argument: str, data: dict) -> dict:
     """
     Dispatch POST callbacks by argument.
     """
-    # logger.debug("POST | Received argument: %s, data: %s", argument, data)
+    logger.debug("POST | Received argument: %s, data: %s", argument, data)
     handler = POST_HANDLERS.get(argument)
     
     if not handler:

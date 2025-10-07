@@ -24,6 +24,7 @@ class BufferHandler(logging.Handler):
 
     def get_logs(self, count: Optional[int] = None) -> List[str]:
         """Retrieve logs from buffer."""
+        print(f"Buffer: {list(self.buffer)[-10:]}")
         if count is None or count > len(self.buffer):
             return list(self.buffer)
         return list(self.buffer)[-count:]

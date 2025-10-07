@@ -20,19 +20,18 @@ def get_logger(name: str = "logger",
     if use_buffer:
         # Use buffer handler for log messages
         buffer_handler = BufferHandler()
-        buffer_handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+        buffer_handler.setFormatter(JsonFormatter())
         collector_logger.addHandler(buffer_handler)
     
-    if use_buffer:
-        # Find buffer handler again if it already exists
-        if buffer_handler is None:
-            for h in collector_logger.handlers:
-                if isinstance(h, BufferHandler):
-                    buffer_handler = h
-                    break
-        return collector_logger, buffer_handler
-    else:
-        return collector_logger, None
+    # if use_buffer:
+    #     # Find buffer handler again if it already exists
+    #     if buffer_handler is None:
+    #         for h in collector_logger.handlers:
+    #             if isinstance(h, BufferHandler):
+    #                 buffer_handler = h
+    #                 break
+    #     return collector_logger, buffer_handler
+    # else:
+    #     return collector_logger, None
 
-    # return collector_logger
+    return collector_logger, buffer_handler

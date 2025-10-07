@@ -9,7 +9,7 @@ from unixserver import UnixLogServer
 from unixclient import SyncUnixClient
 from logger import get_logger, LogParser
 
-logger, buffer = get_logger(use_buffer=True)
+logger, buffer = get_logger("logger", use_buffer=True)
 
 
 class RuntimeManager:
