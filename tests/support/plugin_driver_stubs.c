@@ -1,3 +1,4 @@
+#include "plugin_config.h"
 #include "plugin_driver.h"
 
 // Mock implementations for external buffer variables
