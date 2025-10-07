@@ -6,8 +6,11 @@
 // Helper function to remove newline characters from string
 static void remove_newline(char *str)
 {
-    if (!str) return;
-    
+    if (!str)
+    {
+        return;
+    }
+
     // Remove \n, \r characters from the end of string
     char *end = str + strlen(str) - 1;
     while (end >= str && (*end == '\n' || *end == '\r' || *end == ' ' || *end == '\t'))
@@ -71,7 +74,9 @@ int parse_plugin_config(const char *config_file, plugin_config_t *configs, int m
             continue;
         strncpy(configs[config_count].plugin_related_config_path, token,
                 sizeof(configs[config_count].plugin_related_config_path) - 1);
-        configs[config_count].plugin_related_config_path[sizeof(configs[config_count].plugin_related_config_path) - 1] = '\0';
+        configs[config_count]
+            .plugin_related_config_path[sizeof(configs[config_count].plugin_related_config_path) -
+                                        1] = '\0';
         remove_newline(configs[config_count].plugin_related_config_path);
 
         // parsing venv_path (optional field)
