@@ -45,12 +45,10 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr)
 void free(void *ptr)
 {
     mock_free_call_count++;
-    // For test purposes, we track the call but don't actually free
-    // In a real scenario, you might want to call the real free
-    if (ptr)
-    {
-        free(ptr);
-    }
+    // For unit tests, we only track the call count
+    // Memory will be freed automatically when the test process ends
+    // This avoids recursion issues with dlsym
+    (void)ptr; // Suppress unused parameter warning
 }
 
 // Mock reset function
