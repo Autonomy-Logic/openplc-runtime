@@ -3,6 +3,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Helper function to remove newline characters from string
+static void remove_newline(char *str)
+{
+    if (!str) return;
+    
+    // Remove \n, \r characters from the end of string
+    char *end = str + strlen(str) - 1;
+    while (end >= str && (*end == '\n' || *end == '\r' || *end == ' ' || *end == '\t'))
+    {
+        *end = '\0';
+        end--;
+    }
+}
+
 int parse_plugin_config(const char *config_file, plugin_config_t *configs, int max_configs)
 {
     FILE *file = fopen(config_file, "r");
@@ -28,12 +42,16 @@ int parse_plugin_config(const char *config_file, plugin_config_t *configs, int m
         if (!token)
             continue;
         strncpy(configs[config_count].name, token, sizeof(configs[config_count].name) - 1);
+        configs[config_count].name[sizeof(configs[config_count].name) - 1] = '\0';
+        remove_newline(configs[config_count].name);
 
         // Parsing path
         token = strtok(NULL, ",");
         if (!token)
             continue;
         strncpy(configs[config_count].path, token, sizeof(configs[config_count].path) - 1);
+        configs[config_count].path[sizeof(configs[config_count].path) - 1] = '\0';
+        remove_newline(configs[config_count].path);
 
         // Parsing enabled
         token = strtok(NULL, ",");
@@ -53,6 +71,8 @@ int parse_plugin_config(const char *config_file, plugin_config_t *configs, int m
             continue;
         strncpy(configs[config_count].plugin_related_config_path, token,
                 sizeof(configs[config_count].plugin_related_config_path) - 1);
+        configs[config_count].plugin_related_config_path[sizeof(configs[config_count].plugin_related_config_path) - 1] = '\0';
+        remove_newline(configs[config_count].plugin_related_config_path);
 
         // parsing venv_path (optional field)
         token = strtok(NULL, ",\n\r");
@@ -60,6 +80,8 @@ int parse_plugin_config(const char *config_file, plugin_config_t *configs, int m
         {
             strncpy(configs[config_count].venv_path, token,
                     sizeof(configs[config_count].venv_path) - 1);
+            configs[config_count].venv_path[sizeof(configs[config_count].venv_path) - 1] = '\0';
+            remove_newline(configs[config_count].venv_path);
         }
         else
         {

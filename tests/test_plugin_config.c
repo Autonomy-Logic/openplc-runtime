@@ -66,7 +66,7 @@ void test_parse_plugin_config_ValidFile_ShouldSucceed(void)
     TEST_ASSERT_EQUAL_STRING("../path/to/plugin1.py", configs[0].path);
     TEST_ASSERT_EQUAL_INT(1, configs[0].enabled);
     TEST_ASSERT_EQUAL_INT(PLUGIN_TYPE_PYTHON, configs[0].type); // 0 for Python from plugin_config.h
-    TEST_ASSERT_EQUAL_STRING("./config1.ini\n", configs[0].plugin_related_config_path);
+    TEST_ASSERT_EQUAL_STRING("./config1.ini", configs[0].plugin_related_config_path);
     TEST_ASSERT_EQUAL_STRING("", configs[0].venv_path); // No venv_path specified
 
     // Validate plugin2
@@ -74,7 +74,7 @@ void test_parse_plugin_config_ValidFile_ShouldSucceed(void)
     TEST_ASSERT_EQUAL_STRING("./plugins/plugin2.so", configs[1].path);
     TEST_ASSERT_EQUAL_INT(0, configs[1].enabled);
     TEST_ASSERT_EQUAL_INT(PLUGIN_TYPE_NATIVE, configs[1].type); // 1 for Native from plugin_config.h
-    TEST_ASSERT_EQUAL_STRING("./config2.conf\n", configs[1].plugin_related_config_path);
+    TEST_ASSERT_EQUAL_STRING("./config2.conf", configs[1].plugin_related_config_path);
     TEST_ASSERT_EQUAL_STRING("", configs[1].venv_path); // No venv_path specified
 
     // Validate plugin3
