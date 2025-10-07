@@ -9,8 +9,8 @@ import time
 import ctypes
 from ctypes import *
 import threading
-
-
+import sys
+import os
 # Add the parent directory to Python path to find shared module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
