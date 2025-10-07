@@ -1,6 +1,5 @@
 #ifndef PLUGIN_DRIVER_H
 #define PLUGIN_DRIVER_H
-#define PY_SSIZE_T_CLEAN
 
 #include "../lib/iec_types.h"
 #include "../plc_app/plcapp_manager.h"
