@@ -1,23 +1,61 @@
----
 :project:
-  :name: openplc-basic-tests
+  :name: openplc-runtime-tests
   :use_exceptions: FALSE
-  :use_mocks: FALSE
+  :use_mocks: TRUE
   :use_test_preprocessor: :none
+  :use_backtrace: :gdb
   :build_root: build/test
   :test_file_prefix: test_
+  :release_build: FALSE # We don't need release builds for testing
 
 :paths:
   :test:
     - tests/**
   :source:
     - core/src/**
+    # Exclude files that are not part of the unit under test or have heavy external deps
+    # For now, we include everything and let Ceedling handle linking.
+    # If specific files cause issues, we can exclude them here.
+  :support:
+    - tests/support/**  # Include support files (stubs, mocks, helpers)
   :include:
     - core/src/**
+    - tests/support # For custom helpers or mocks if needed
 
 :defines:
   :test:
     - TEST
+    - BUFFER_SIZE=128 # Define BUFFER_SIZE used by image_tables.h
+    - MAX_PLUGINS=16   # Define MAX_PLUGINS used by plugin_driver.h
+    - UNITY_INCLUDE_DOUBLE # Enable double support in Unity
 
 :plugins:
   :enabled: []
+
+:cmock:
+  :mock_prefix: mock_
+  :when_no_prototypes: :warn
+  :enforce_strict_ordering: FALSE
+  :plugins:
+    - :ignore
+    - :callback
+  :treat_as:
+    uint8:    HEX8
+    uint16:   HEX16  
+    uint32:   UINT32
+    bool:     UINT8
+
+:flags:
+  :test:
+    :compile:
+      - -I/usr/include/python3.10 # From pkg-config --cflags-only-I python3-embed
+
+:libraries:
+  :test:
+    - python3.10               # From pkg-config --libs python3-embed (Ceedling adds -l)
+    - dl                       # Required by plugin_driver.c (Ceedling adds -l)
+    - pthread                  # Required by plugin_driver.c (Ceedling adds -l)
+
+:unity:
+  :includes:
+    - "unity_helper.h"

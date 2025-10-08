@@ -79,7 +79,7 @@ int main(int argc, char *argv[])
 
     // Initialize logging system
     log_set_level(LOG_LEVEL_DEBUG);
-    
+
     if (log_init(LOG_SOCKET_PATH) < 0)
     {
         fprintf(stderr, "Failed to initialize logging system\n");
