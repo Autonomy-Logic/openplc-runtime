@@ -15,7 +15,6 @@ class UnixLogServer:
         self.clients = []
         self.lock = threading.Lock()
         self.running = False
-        # self.parser = LogParser(logger)
 
     def start(self):
         """Start the Unix socket server"""
@@ -93,4 +92,6 @@ class UnixLogServer:
         except OSError:
             if os.path.exists(self.socket_path):
                 logger.error("Failed to remove socket file")
+        except Exception as e:
+            logger.error("Error during server shutdown: %s", e)
         logger.info("Log server stopped")

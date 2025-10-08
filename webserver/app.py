@@ -29,13 +29,12 @@ from plcapp_management import (
 
 from logger import get_logger, LogParser
 
+logger, _ = get_logger("logger", use_buffer=True)
 
 app = flask.Flask(__name__)
 app.secret_key = str(os.urandom(16))
 login_manager = flask_login.LoginManager()
 login_manager.init_app(app)
-
-logger, _ = get_logger("logger", use_buffer=True)
 
 runtime_manager = RuntimeManager(
     runtime_path="./build/plc_main",
@@ -81,7 +80,6 @@ def handle_status(data: dict) -> dict:
 
 
 def handle_ping(data: dict) -> dict:
-    logger.warning("Ping received from web interface")
     response = runtime_manager.ping()
     return {"status": response}
 
@@ -187,10 +185,9 @@ def run_https():
         try:
             db.create_all()
             db.session.commit()
-            # logger.info("Database tables created successfully.")
+            logger.info("Database tables created successfully.")
         except Exception as e:
-            # logger.error("Error creating database tables: %s", e)
-            pass
+            logger.error("Error creating database tables: %s", e)
 
     try:
         cert_gen = CertGen(hostname=HOSTNAME, ip_addresses=["127.0.0.1"])

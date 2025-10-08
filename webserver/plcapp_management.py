@@ -96,10 +96,10 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
                            total_size)
             safe = False
 
-        # if safe:
-        #     logger.info("ZIP file looks safe to extract (based on static checks).")
-        # else:
-        #     logger.warning("ZIP file failed safety checks.")
+        if safe:
+            logger.debug("ZIP file looks safe to extract (based on static checks).")
+        else:
+            logger.warning("ZIP file failed safety checks.")
 
         return safe, valid_files
 
@@ -150,7 +150,7 @@ def safe_extract(zip_path, dest_dir, valid_files):
             with zf.open(info) as src, open(out_path, "wb") as dst:
                 dst.write(src.read())
 
-            # logger.info("Extracted: %s", out_path)
+            logger.debug("Extracted: %s", out_path)
 
 def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated"):
     """Run compile script synchronously (wait for completion) and update status/logs."""

@@ -7,8 +7,9 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+from logger import get_logger, LogParser
 
-# logger = logging.getLogger("logger")
+logger, buffer = get_logger("logger", use_buffer=True)
 
 
 class CertGen:
@@ -39,7 +40,8 @@ class CertGen:
         )
 
     def generate_self_signed_cert(self, cert_file, key_file):
-        # logger.debug("Generating self-signed certificate for %s...", self.hostname)
+        logger.debug("Generating self-signed certificate for %s...", 
+                     self.hostname)
 
         self.generate_key()
 
@@ -71,13 +73,13 @@ class CertGen:
                     serialization.NoEncryption(),
                 )
             )
-        # logger.debug("Certificate saved to %s", cert_file)
-        # logger.debug("Private key saved to %s", key_file)
+        logger.debug("Certificate saved to %s", cert_file)
+        logger.debug("Private key saved to %s", key_file)
 
     def is_certificate_valid(self, cert_file):
         """Check if the certificate is valid."""
         if not os.path.exists(cert_file):
-            # logger.warning("Certificate file not found: %s", cert_file)
+            logger.warning("Certificate file not found: %s", cert_file)
             return False
 
         try:
@@ -89,15 +91,18 @@ class CertGen:
             now = datetime.datetime.now(datetime.timezone.utc)
 
             if now < cert.not_valid_before_utc:
-                # logger.warning("Certificate is not yet valid. Valid from: %s", cert.not_valid_before_utc)
+                logger.warning("Certificate is not yet valid. Valid from: %s", 
+                               cert.not_valid_before_utc)
                 return False
             if now > cert.not_valid_after_utc:
-                # logger.warning("Certificate has expired. Expired on: %s", cert.not_valid_after_utc)
+                logger.warning("Certificate has expired. Expired on: %s", 
+                               cert.not_valid_after_utc)
                 return False
 
-            # logger.info("Certificate is valid. Expires on: %s", cert.not_valid_after_utc)
+            logger.info("Certificate is valid. Expires on: %s",
+                        cert.not_valid_after_utc)
             return True
 
         except Exception as e:
-            # logger.error("Error loading or parsing certificate: %s", e)
+            logger.error("Error loading or parsing certificate: %s", e)
             return False

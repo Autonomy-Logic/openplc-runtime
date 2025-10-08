@@ -1,4 +1,3 @@
-import logging
 import os
 from typing import Callable, Optional
 
@@ -37,9 +36,14 @@ jwt_blacklist = set()
 
 @jwt.token_in_blocklist_loader
 def check_if_token_revoked(jwt_header, jwt_payload):
-    jti = jwt_payload["jti"]
-    return jti in jwt_blacklist
-
+    try:
+        jti = jwt_payload["jti"]
+        return jti in jwt_blacklist
+    except KeyError as e:
+        logger.error("Error revoking JWT: %s", e)
+    except Exception as e:
+        logger.error("Error revoking JWT: %s", e)
+    return False
 
 class User(db.Model):  # type: ignore[name-defined]
     __tablename__ = "users"
@@ -57,7 +61,6 @@ class User(db.Model):  # type: ignore[name-defined]
         self.password_hash = generate_password_hash(
             password, method=self.derivation_method
         )
-        # logger.debug("Password set for user %s | %s", self.username, self.password_hash)
         return self.password_hash
 
     def check_password(self, password: str) -> bool:
@@ -82,13 +85,13 @@ def user_lookup_callback(_jwt_header, jwt_data):
 def register_callback_get(callback: Callable[[str, dict], dict]):
     global _handler_callback_get
     _handler_callback_get = callback
-    logger.info("GET Callback registered successfully for rest_blueprint!")
+    logger.debug("GET Callback registered successfully for rest_blueprint!")
 
 
 def register_callback_post(callback: Callable[[str, dict], dict]):
     global _handler_callback_post
     _handler_callback_post = callback
-    logger.info("POST Callback registered successfully for rest_blueprint!")
+    logger.debug("POST Callback registered successfully for rest_blueprint!")
 
 
 @restapi_bp.route("/create-user", methods=["POST"])
@@ -96,8 +99,11 @@ def create_user():
     # check if there are any users in the database
     try:
         users_exist = User.query.first() is not None
+    except db.session.SQLAlchemyError as e:
+        logger.error("Database error checking for users: %s", e)
+        return jsonify({"msg": "User creation error"}), 500
     except Exception as e:
-        # logger.error("Error checking for users: %s", e)
+        logger.error("Error checking for users: %s", e)
         return jsonify({"msg": "User creation error"}), 401
 
     # if there are no users, we don't need to verify JWT
@@ -130,8 +136,16 @@ def create_user():
 def get_user_info(user_id):
     try:
         user = User.query.get(user_id)
+    except db.session.NoResultFound:
+        return jsonify({"msg": "User not found"}), 404
+    except db.session.InvalidRequestError:
+        return jsonify({"msg": "Invalid request"}), 400
+    except db.session.OperationalError:
+        return jsonify({"msg": "Database operational error"}), 500
+    except db.session.SQLAlchemyError:
+        return jsonify({"msg": "Database error"}), 500
     except Exception as e:
-        # logger.error("Error retrieving user: %s", e)
+        logger.error("Error retrieving user: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
 
     if not user:
@@ -145,14 +159,18 @@ def get_users_info():
     # If there are no users, we don't need to verify JWT
     try:
         verify_jwt_in_request()
+    except jwt.ExpiredSignatureError:
+        return jsonify({"msg": "Token has expired"}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({"msg": "Invalid token"}), 401
     except Exception:
-        # logger.warning(
-        #     "No JWT token provided, checking for users without authentication"
-        # )
+        logger.warning(
+            "No JWT token provided, checking for users without authentication"
+        )
         try:
             users_exist = User.query.first() is not None
         except Exception as e:
-            # logger.error("Error checking for users: %s", e)
+            logger.error("Error checking for users: %s", e)
             return jsonify({"msg": "User retrieval error"}), 500
 
         if not users_exist:
@@ -161,8 +179,16 @@ def get_users_info():
 
     try:
         users = User.query.all()
+    except db.session.NoResultFound:
+        return jsonify({"msg": "No users found"}), 404
+    except db.session.InvalidRequestError:
+        return jsonify({"msg": "Invalid request"}), 400
+    except db.session.OperationalError:
+        return jsonify({"msg": "Database operational error"}), 500
+    except db.session.SQLAlchemyError:
+        return jsonify({"msg": "Database error"}), 500
     except Exception as e:
-        # logger.error("Error retrieving users: %s", e)
+        logger.error("Error retrieving users: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
 
     return jsonify([user.to_dict() for user in users]), 200
@@ -181,8 +207,16 @@ def change_password(user_id):
 
     try:
         user = User.query.get(user_id)
+    except db.session.NoResultFound:
+        return jsonify({"msg": "User not found"}), 404
+    except db.session.InvalidRequestError:
+        return jsonify({"msg": "Invalid request"}), 400
+    except db.session.OperationalError:
+        return jsonify({"msg": "Database operational error"}), 500
+    except db.session.SQLAlchemyError:
+        return jsonify({"msg": "Database error"}), 500
     except Exception as e:
-        # logger.error("Error retrieving user: %s", e)
+        logger.error("Error retrieving user: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
 
     if not user:
@@ -206,8 +240,16 @@ def change_password(user_id):
 def delete_user(user_id):
     try:
         user = User.query.get(user_id)
+    except db.session.NoResultFound:
+        return jsonify({"msg": "User not found"}), 404
+    except db.session.InvalidRequestError:
+        return jsonify({"msg": "Invalid request"}), 400
+    except db.session.OperationalError:
+        return jsonify({"msg": "Database operational error"}), 500
+    except db.session.SQLAlchemyError:
+        return jsonify({"msg": "Database error"}), 500
     except Exception as e:
-        # logger.error("Error retrieving user: %s", e)
+        logger.error("Error retrieving user: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
 
     if not user:
@@ -227,9 +269,17 @@ def login():
 
     try:
         user = User.query.filter_by(username=username).one_or_none()
-        # logger.debug("User found: %s", user)
+        logger.debug("User found: %s", user)
+    except db.session.NoResultFound:
+        return jsonify({"msg": "User not found"}), 404
+    except db.session.InvalidRequestError:
+        return jsonify({"msg": "Invalid request"}), 400
+    except db.session.OperationalError:
+        return jsonify({"msg": "Database operational error"}), 500
+    except db.session.SQLAlchemyError:
+        return jsonify({"msg": "Database error"}), 500
     except Exception as e:
-        # logger.error("Error retrieving user: %s", e)
+        logger.error("Error retrieving user: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
 
     if not user or not user.check_password(password):
@@ -248,13 +298,16 @@ def logout():
 
 
 def revoke_jwt():
-    jti = get_jwt()["jti"]
+    # Add the JWT ID to the blacklist
     try:
-        # Add the JWT ID to the blacklist
+        jti = get_jwt()["jti"]
         jwt_blacklist.add(jti)
+    except KeyError as e:
+        logger.error("Error revoking JWT: %s", e)
+    except AttributeError as e:
+        logger.error("Error revoking JWT: %s", e)
     except Exception as e:
-        # logger.error("Error revoking JWT: %s", e)
-        pass
+        logger.error("Error revoking JWT: %s", e)
 
 
 @restapi_bp.route("/<command>", methods=["GET"])
@@ -267,9 +320,11 @@ def restapi_plc_get(command):
         data = request.args.to_dict()
         result = _handler_callback_get(command, data)
         return jsonify(result), 200
-
+    except db.session.SQLAlchemyError as e:
+        logger.error("Database error in restapi_plc_get: %s", e)
+        return jsonify({"error": "Database error"}), 500
     except Exception as e:
-        # logger.error("Error in restapi_plc_get: %s", e)
+        logger.error("Error in restapi_plc_get: %s", e)
         return jsonify({"error": str(e)}), 500
 
 
@@ -284,6 +339,9 @@ def restapi_plc_post(command):
 
         result = _handler_callback_post(command, data)
         return jsonify(result), 200
+    except db.session.SQLAlchemyError as e:
+        logger.error("Database error in restapi_plc_post: %s", e)
+        return jsonify({"error": "Database error"}), 500
     except Exception as e:
-        # logger.error("Error in restapi_plc_post: %s", e)
+        logger.error("Error in restapi_plc_post: %s", e)
         return jsonify({"error": str(e)}), 500
