@@ -188,7 +188,7 @@ class OpenPLCInputRegistersDataBlock(ModbusSparseDataBlock):
             print(f"[MODBUS] Error: Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
             return [0] * count
         
-        # Ensure buffer mutext
+        # Ensure buffer mutex
         self.safe_buffer_access.acquire_mutex()
 
         values = []
