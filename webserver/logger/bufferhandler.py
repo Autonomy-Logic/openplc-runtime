@@ -3,6 +3,7 @@ from collections import deque
 from typing import List, Optional
 import json
 from datetime import datetime, timezone
+from threading import Lock
 
 
 class BufferHandler(logging.Handler):
@@ -10,22 +11,38 @@ class BufferHandler(logging.Handler):
     Custom logging handler that stores log records in memory (FIFO).
     Logs are formatted using the attached formatter (JSON).
     """
+    _instance = None
+    _lock = Lock()
 
     def __init__(self, capacity: int = 1000):
         super().__init__()
         self.buffer = deque(maxlen=capacity)
 
     def emit(self, record: logging.LogRecord) -> None:
-        try:
-            self.buffer.append(self.format(record))
-        except Exception:
-            self.handleError(record)
+        with self._lock:
+            try:
+                self.buffer.append(self.format(record))
+            except Exception:
+                self.handleError(record)
 
-    def get_logs(self, count: Optional[int] = None) -> List[str]:
+    def get_logs(self, 
+                 count: Optional[int] = None,
+                 min_id: Optional[int] = None,
+                 level: Optional[str] = None) -> List[str]:
         """Retrieve logs from buffer."""
-        if count is None or count > len(self.buffer):
-            return list(self.buffer)
-        return list(self.buffer)[-count:]
+        with self._lock:
+        #     if count is None or count > len(self.buffer):
+        #         return list(self.buffer)
+        #     return list(self.buffer)[-count:]
+        
+        # with self._lock:
+            filtered_logs = list(self.buffer)
+            if min_id is not None:
+                filtered_logs = [log for log in filtered_logs if log.get("id") >= min_id]
+            if level is not None:
+                filtered_logs = [log for log in filtered_logs if log.get("level") == level]
+            print(f"Filtered logs: {filtered_logs}")
+            return filtered_logs
 
     def normalize_logs(self, json_logs):
         normalized = []
@@ -57,34 +74,14 @@ class BufferHandler(logging.Handler):
 
         return normalized
 
-    # def normalize_buffer_logs(self, buffer_records):
-    #     """
-    #     Takes a list of log strings from buffer and returns a list of clean JSON dicts.
-    #     """
-    #     result = []
-    #     json_extract = re.compile(r'(\{.*\})')  # match JSON inside log line
-
-    #     for record in buffer_records:
-    #         match = json_extract.search(record)
-    #         if not match:
-    #             continue
-
-    #         try:
-    #             raw_json = json.loads(match.group(1))
-    #             # Convert unix timestamp → readable datetime
-    #             ts = int(raw_json.get("timestamp", 0))
-    #             dt = datetime.utcfromtimestamp(ts).isoformat() + "Z"
-
-    #             entry = {
-    #                 "timestamp": dt,
-    #                 "level": raw_json.get("level", "INFO"),
-    #                 "message": raw_json.get("message", "")
-    #             }
-    #             result.append(entry)
-    #         except (json.JSONDecodeError, ValueError):
-    #             continue
-
-    #     return result
+    @classmethod
+    def get_instance(cls):
+        """Singleton accessor."""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
 
     def clear(self) -> None:
         self.buffer.clear()

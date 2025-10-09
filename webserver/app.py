@@ -61,7 +61,16 @@ def handle_stop_plc(data: dict) -> dict:
 
 
 def handle_runtime_logs(data: dict) -> dict:
-    response = runtime_manager.get_logs()
+    print("Fetching logs with data=%s", data)
+    if "id" in data:
+        min_id = int(data["id"])
+    else:
+        min_id = None
+    if "level" in data:
+        level = data["level"]
+    else:
+        level = None
+    response = runtime_manager.get_logs(min_id=min_id)
     return {"runtime-logs": response}
 
 

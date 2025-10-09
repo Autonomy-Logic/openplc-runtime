@@ -320,9 +320,6 @@ def restapi_plc_get(command):
         data = request.args.to_dict()
         result = _handler_callback_get(command, data)
         return jsonify(result), 200
-    except db.session.SQLAlchemyError as e:
-        logger.error("Database error in restapi_plc_get: %s", e)
-        return jsonify({"error": "Database error"}), 500
     except Exception as e:
         logger.error("Error in restapi_plc_get: %s", e)
         return jsonify({"error": str(e)}), 500
@@ -336,12 +333,8 @@ def restapi_plc_post(command):
 
     try:
         data = request.get_json(silent=True) or {}
-
         result = _handler_callback_post(command, data)
         return jsonify(result), 200
-    except db.session.SQLAlchemyError as e:
-        logger.error("Database error in restapi_plc_post: %s", e)
-        return jsonify({"error": "Database error"}), 500
     except Exception as e:
         logger.error("Error in restapi_plc_post: %s", e)
         return jsonify({"error": str(e)}), 500

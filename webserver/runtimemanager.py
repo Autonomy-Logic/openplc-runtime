@@ -204,12 +204,13 @@ class RuntimeManager:
         self._safe_close_runtime_socket()
 
 
-    def get_logs(self):
+    def get_logs(self, min_id=None, level=None):
         """
         Get current logs from the runtime
         """
         try:
-            _logs = buffer.normalize_logs(buffer.get_logs())
+            _logs = buffer.normalize_logs(
+                buffer.get_logs(count=min_id))
             return _logs
         except AttributeError as e:
             logger.error("Failed to get logs from buffer: %s", e)
