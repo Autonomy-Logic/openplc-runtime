@@ -9,7 +9,7 @@ from typing import Final
 from runtimemanager import RuntimeManager
 from logger import get_logger, LogParser
 
-logger, _ = get_logger("runtime",use_buffer=True)
+logger, _ = get_logger("runtime", use_buffer=True)
 
 
 MAX_FILE_SIZE: Final[int] = 10 * 1024 * 1024   # 10 MB per file
