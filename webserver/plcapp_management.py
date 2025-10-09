@@ -16,6 +16,7 @@ MAX_FILE_SIZE: Final[int] = 10 * 1024 * 1024   # 10 MB per file
 MAX_TOTAL_SIZE: Final[int] = 50 * 1024 * 1024  # 50 MB total
 DISALLOWED_EXT = (".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr")
 ALLOWED_FILENAME = "create_standard_function_txt.sh"
+ALLOWED_FILENAME = "create_standard_function_txt.sh"
 
 class BuildStatus(Enum):
     IDLE = auto()
@@ -31,7 +32,7 @@ class BuildProcess:
     exit_code: int | None = None
 
     def log(self, msg: str):
-        logger.info(msg)
+        # logger.info(msg)
         self.logs.append(msg)
 
     def clear(self):
@@ -64,7 +65,7 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
 
             # Check for path traversal or absolute paths
             if filename.startswith("/") or ".." in filename or ":" in filename:
-                logger.warning("Dangerous path: %s", filename)
+                # logger.warning("Dangerous path: %s", filename)
                 safe = False
 
             # Check uncompressed size
@@ -75,8 +76,8 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
 
             # Check compression ratio (ZIP bomb detection)
             if compressed_size > 0 and uncompressed_size / compressed_size > 1000:
-                logger.warning("Suspicious compression ratio in %s",
-                               filename)
+                # logger.warning("Suspicious compression ratio in %s",
+                            #    filename)
                 safe = False
 
             # Check disallowed extensions
@@ -92,8 +93,8 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
 
         # Check total size
         if total_size > MAX_TOTAL_SIZE:
-            logger.warning("Total uncompressed size too large: %d bytes", 
-                           total_size)
+            # logger.warning("Total uncompressed size too large: %d bytes", 
+            #                total_size)
             safe = False
 
         if safe:
@@ -142,7 +143,7 @@ def safe_extract(zip_path, dest_dir, valid_files):
 
             # Ensure extraction stays inside destination
             if not out_path.startswith(os.path.abspath(dest_dir)):
-                logger.warning("Skipping suspicious path: %s", filename)
+                # logger.warning("Skipping suspicious path: %s", filename)
                 continue
 
             os.makedirs(os.path.dirname(out_path), exist_ok=True)

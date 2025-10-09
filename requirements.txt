@@ -3,7 +3,6 @@ Flask-Login
 Flask-JWT-Extended
 flask_sqlalchemy
 PyJWT
-cryptography
 python-dotenv
 pytest
 pytest-flask

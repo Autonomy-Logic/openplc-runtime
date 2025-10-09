@@ -42,7 +42,7 @@ class SyncUnixClient:
             data = msg.encode()
             try:
                 self.sock.sendall(data)
-                logger.info("Sent message: %s", data)
+                # logger.info("Sent message: %s", data)
             except Exception as e:
                 logger.error("Error sending message: %s", e)
 
@@ -56,7 +56,7 @@ class SyncUnixClient:
             try:
                 data = self.sock.recv(1024)
                 if not data:
-                    logger.warning("Connection closed by server")
+                    # logger.warning("Connection closed by server")
                     return None
                 message = data.decode("utf-8").strip()
                 logger.debug("Received message: %s", message)
@@ -65,7 +65,7 @@ class SyncUnixClient:
                 logger.warning("Timeout waiting for message")
                 return None
             except Exception as e:
-                logger.error("Error receiving message: %s", e)
+                # logger.error("Error receiving message: %s", e)
                 return None
 
     def close(self):

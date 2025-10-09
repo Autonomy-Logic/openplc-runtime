@@ -5,6 +5,7 @@ import threading
 from typing import Callable
 import shutil
 from typing import Final
+import sys
 
 import flask
 import flask_login
@@ -106,7 +107,7 @@ def restapi_callback_get(argument: str, data: dict) -> dict:
     """
     Dispatch GET callbacks by argument.
     """
-    logger.debug("GET | Received argument: %s, data: %s", argument, data)
+    # logger.debug("GET | Received argument: %s, data: %s", argument, data)
     handler = GET_HANDLERS.get(argument)
     if handler:
         return handler(data)
@@ -175,7 +176,7 @@ def restapi_callback_post(argument: str, data: dict) -> dict:
     """
     Dispatch POST callbacks by argument.
     """
-    logger.debug("POST | Received argument: %s, data: %s", argument, data)
+    # logger.debug("POST | Received argument: %s, data: %s", argument, data)
     handler = POST_HANDLERS.get(argument)
     
     if not handler:
@@ -193,16 +194,18 @@ def run_https():
         try:
             db.create_all()
             db.session.commit()
-            logger.info("Database tables created successfully.")
+            # logger.info("Database tables created successfully.")
         except Exception as e:
-            logger.error("Error creating database tables: %s", e)
+            # logger.error("Error creating database tables: %s", e)
+            pass
 
     try:
         cert_gen = CertGen(hostname=HOSTNAME, ip_addresses=["127.0.0.1"])
+
+        # Check if certificate exists. If not, generate one
         if not os.path.exists(CERT_FILE) or not os.path.exists(KEY_FILE):
-            cert_gen.generate_self_signed_cert(cert_file=CERT_FILE, 
-                                               key_file=KEY_FILE)
-        elif cert_gen.is_certificate_valid(CERT_FILE):
+            # logger.info("Generating https certificate...")
+            print("Generating https certificate...") # TODO: remove this temporary print once logger is functional again
             cert_gen.generate_self_signed_cert(cert_file=CERT_FILE, key_file=KEY_FILE)
         else:
             logger.warning("Credentials already generated!")
@@ -217,11 +220,14 @@ def run_https():
         )
 
     except FileNotFoundError as e:
-        logger.error("Could not find SSL credentials! %s", e)
+        # logger.error("Could not find SSL credentials! %s", e)
+        pass
     except ssl.SSLError as e:
-        logger.error("SSL credentials FAIL! %s", e)
+        # logger.error("SSL credentials FAIL! %s", e)
+        pass
     except KeyboardInterrupt:
-        logger.info("HTTP server stopped by KeyboardInterrupt")
+        # logger.info("HTTP server stopped by KeyboardInterrupt")
+        pass
     finally:
         logger.info("Runtime manager stopped")
         runtime_manager.stop()

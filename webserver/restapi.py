@@ -162,13 +162,13 @@ def get_users_info():
     except (JWTError, NoAuthorizationError, UserNotFoundError) as e:
         return jsonify({"msg": f"Invalid token: {e}"}), 401
     except Exception:
-        logger.warning(
-            "No JWT token provided, checking for users without authentication"
-        )
+        # logger.warning(
+        #     "No JWT token provided, checking for users without authentication"
+        # )
         try:
             users_exist = User.query.first() is not None
         except Exception as e:
-            logger.error("Error checking for users: %s", e)
+            # logger.error("Error checking for users: %s", e)
             return jsonify({"msg": "User retrieval error"}), 500
 
         if not users_exist:
@@ -200,7 +200,7 @@ def change_password(user_id):
     except (InvalidRequestError, NoResultFound) as e:
         return jsonify({"msg": f"Database error: {e}"}), 500
     except Exception as e:
-        logger.error("Error retrieving user: %s", e)
+        # logger.error("Error retrieving user: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
 
     if not user:
@@ -293,7 +293,7 @@ def restapi_plc_get(command):
         result = _handler_callback_get(command, data)
         return jsonify(result), 200
     except Exception as e:
-        logger.error("Error in restapi_plc_get: %s", e)
+        # logger.error("Error in restapi_plc_get: %s", e)
         return jsonify({"error": str(e)}), 500
 
 
@@ -308,5 +308,5 @@ def restapi_plc_post(command):
         result = _handler_callback_post(command, data)
         return jsonify(result), 200
     except Exception as e:
-        logger.error("Error in restapi_plc_post: %s", e)
+        # logger.error("Error in restapi_plc_post: %s", e)
         return jsonify({"error": str(e)}), 500

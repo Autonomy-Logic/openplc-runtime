@@ -1,4 +1,5 @@
 import json
+import json
 import socket
 import threading
 import os
@@ -37,7 +38,10 @@ class UnixLogServer:
             threading.Thread(target=self._accept_clients, daemon=True).start()
             logger.info("Log server started at %s", self.socket_path)
         except (OSError, socket.error) as e:
+        except (OSError, socket.error) as e:
             logger.error("Failed to start server: %s", e)
+        except Exception as e:
+            logger.error("Failed to start server (unexpected): %s", e)
         except Exception as e:
             logger.error("Failed to start server (unexpected): %s", e)
             raise
@@ -54,14 +58,21 @@ class UnixLogServer:
             except (OSError, socket.error) as e:
                 if self.running:
                     logger.error("Socket error: %s", e)
+            except (OSError, socket.error) as e:
+                if self.running:
+                    logger.error("Socket error: %s", e)
             except Exception as e:
                 logger.error("Error accepting client: %s", e)
 
+    def _handle_client(self, client_sock: socket.socket):
     def _handle_client(self, client_sock: socket.socket):
         """Handle communication with a connected client"""
         try:
             with client_sock.makefile('r') as f:
                 for line in f:
+                    parser.parse_and_log(line)
+        except (OSError, socket.error) as e:
+            logger.error("Socket error: %s", e)
                     parser.parse_and_log(line)
         except (OSError, socket.error) as e:
             logger.error("Socket error: %s", e)
