@@ -11,6 +11,7 @@ from flask_jwt_extended import (
     verify_jwt_in_request,
 )
 from flask_sqlalchemy import SQLAlchemy
+from flask_sqlalchemy.exceptions import InvalidRequestError, NoResultFound
 from werkzeug.security import check_password_hash, generate_password_hash
 from logger import get_logger, LogParser
 
@@ -99,12 +100,12 @@ def create_user():
     # check if there are any users in the database
     try:
         users_exist = User.query.first() is not None
-    except db.session.SQLAlchemyError as e:
+    except (InvalidRequestError, NoResultFound) as e:
         logger.error("Database error checking for users: %s", e)
-        return jsonify({"msg": "User creation error"}), 500
+        return jsonify({"msg": f"User creation error: {e}"}), 500
     except Exception as e:
         logger.error("Error checking for users: %s", e)
-        return jsonify({"msg": "User creation error"}), 401
+        return jsonify({"msg": f"User creation error: {e}"}), 401
 
     # if there are no users, we don't need to verify JWT
     if users_exist and verify_jwt_in_request(optional=True) is None:
@@ -136,17 +137,11 @@ def create_user():
 def get_user_info(user_id):
     try:
         user = User.query.get(user_id)
-    except db.session.NoResultFound:
-        return jsonify({"msg": "User not found"}), 404
-    except db.session.InvalidRequestError:
-        return jsonify({"msg": "Invalid request"}), 400
-    except db.session.OperationalError:
-        return jsonify({"msg": "Database operational error"}), 500
-    except db.session.SQLAlchemyError:
-        return jsonify({"msg": "Database error"}), 500
+    except (InvalidRequestError, NoResultFound) as e:
+        return jsonify({"msg": f"Database error: {e}"}), 500
     except Exception as e:
         logger.error("Error retrieving user: %s", e)
-        return jsonify({"msg": "User retrieval error"}), 500
+        return jsonify({"msg": f"User retrieval error: {e}"}), 500
 
     if not user:
         return jsonify({"msg": "User not found"}), 404
@@ -179,17 +174,9 @@ def get_users_info():
 
     try:
         users = User.query.all()
-    except db.session.NoResultFound:
-        return jsonify({"msg": "No users found"}), 404
-    except db.session.InvalidRequestError:
-        return jsonify({"msg": "Invalid request"}), 400
-    except db.session.OperationalError:
-        return jsonify({"msg": "Database operational error"}), 500
-    except db.session.SQLAlchemyError:
-        return jsonify({"msg": "Database error"}), 500
-    except Exception as e:
+    except (InvalidRequestError, NoResultFound) as e:
         logger.error("Error retrieving users: %s", e)
-        return jsonify({"msg": "User retrieval error"}), 500
+        return jsonify({"msg": f"User retrieval error: {e}"}), 500
 
     return jsonify([user.to_dict() for user in users]), 200
 
@@ -207,14 +194,8 @@ def change_password(user_id):
 
     try:
         user = User.query.get(user_id)
-    except db.session.NoResultFound:
-        return jsonify({"msg": "User not found"}), 404
-    except db.session.InvalidRequestError:
-        return jsonify({"msg": "Invalid request"}), 400
-    except db.session.OperationalError:
-        return jsonify({"msg": "Database operational error"}), 500
-    except db.session.SQLAlchemyError:
-        return jsonify({"msg": "Database error"}), 500
+    except (InvalidRequestError, NoResultFound) as e:
+        return jsonify({"msg": f"Database error: {e}"}), 500
     except Exception as e:
         logger.error("Error retrieving user: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
@@ -240,17 +221,11 @@ def change_password(user_id):
 def delete_user(user_id):
     try:
         user = User.query.get(user_id)
-    except db.session.NoResultFound:
-        return jsonify({"msg": "User not found"}), 404
-    except db.session.InvalidRequestError:
-        return jsonify({"msg": "Invalid request"}), 400
-    except db.session.OperationalError:
-        return jsonify({"msg": "Database operational error"}), 500
-    except db.session.SQLAlchemyError:
-        return jsonify({"msg": "Database error"}), 500
+    except (InvalidRequestError, NoResultFound) as e:
+        return jsonify({"msg": f"Database error: {e}"}), 500
     except Exception as e:
         logger.error("Error retrieving user: %s", e)
-        return jsonify({"msg": "User retrieval error"}), 500
+        return jsonify({"msg": f"User retrieval error: {e}"}), 500
 
     if not user:
         return jsonify({"msg": "User not found"}), 404
@@ -270,17 +245,11 @@ def login():
     try:
         user = User.query.filter_by(username=username).one_or_none()
         logger.debug("User found: %s", user)
-    except db.session.NoResultFound:
-        return jsonify({"msg": "User not found"}), 404
-    except db.session.InvalidRequestError:
-        return jsonify({"msg": "Invalid request"}), 400
-    except db.session.OperationalError:
-        return jsonify({"msg": "Database operational error"}), 500
-    except db.session.SQLAlchemyError:
-        return jsonify({"msg": "Database error"}), 500
+    except (InvalidRequestError, NoResultFound) as e:
+        return jsonify({"msg": f"User not found: {e}"}), 404
     except Exception as e:
         logger.error("Error retrieving user: %s", e)
-        return jsonify({"msg": "User retrieval error"}), 500
+        return jsonify({"msg": f"User retrieval error: {e}"}), 500
 
     if not user or not user.check_password(password):
         return jsonify("Wrong username or password"), 401
