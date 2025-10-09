@@ -25,31 +25,38 @@ class BufferHandler(logging.Handler):
             except Exception:
                 self.handleError(record)
 
-    def get_logs(self, 
-                 count: Optional[int] = None,
+    def filter_logs(self, logs, level=None, min_id=None, max_id=None):
+        result = logs
+        if level is not None:
+            result = [log for log in result if log.get("level") == level]
+        if min_id is not None:
+            result = [log for log in result if log.get("id", 0) >= min_id]
+        if max_id is not None:
+            result = [log for log in result if log.get("id", 0) <= max_id]
+        return result
+
+    def get_logs(self, count: Optional[int] = None,
                  min_id: Optional[int] = None,
                  level: Optional[str] = None) -> List[str]:
         """Retrieve logs from buffer."""
         with self._lock:
-        #     if count is None or count > len(self.buffer):
-        #         return list(self.buffer)
-        #     return list(self.buffer)[-count:]
-        
-        # with self._lock:
-            filtered_logs = list(self.buffer)
-            if min_id is not None:
-                filtered_logs = [log for log in filtered_logs if log.get("id") >= min_id]
-            if level is not None:
-                filtered_logs = [log for log in filtered_logs if log.get("level") == level]
-            print(f"Filtered logs: {filtered_logs}")
+            filtered_logs = [json.loads(item) for item in self.buffer]
+            # json_output = json.dumps(filtered_logs, indent=2)
+            filtered_logs = self.filter_logs(filtered_logs, level=level, min_id=min_id)
+            if count is not None and count < len(filtered_logs):
+                filtered_logs = filtered_logs[-count:]
             return filtered_logs
 
-    def normalize_logs(self, json_logs):
-        normalized = []
-        for entry in json_logs:
-            try:
-                data = json.loads(entry)
+    def normalize_timestamp_no_microseconds(self, ts: str) -> str:
+        """Normalize ISO 8601 timestamp to remove microseconds."""
+        dt = datetime.fromisoformat(ts)
+        return dt.replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%S%z")
 
+    def normalize_logs(self, json_logs: List[dict]) -> List[dict]:
+        """Normalize a list of log entries (dicts)."""
+        normalized = []
+        for data in json_logs:
+            try:
                 # Normalize timestamp (convert unix timestamp → ISO 8601)
                 ts = data.get("timestamp")
 
@@ -58,18 +65,23 @@ class BufferHandler(logging.Handler):
                     ts_dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
                     data["timestamp"] = ts_dt.isoformat()
 
+                # If it's ISO 8601 but has microseconds, strip them
+                if "timestamp" in data:
+                    data["timestamp"] = self.normalize_timestamp_no_microseconds(data["timestamp"])
+
                 # Ensure minimal required fields
                 data.setdefault("level", "INFO")
                 data.setdefault("message", "")
 
                 normalized.append(data)
 
-            except (json.JSONDecodeError, TypeError) as e:
+            except (json.JSONDecodeError, TypeError, ValueError) as e:
                 # If something is not JSON, safely wrap it
                 normalized.append({
+                    "id": None,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "level": "ERROR",
-                    "message": f"Malformed log: {entry}",
+                    "message": f"Malformed log: {data} ({e})",
                 })
 
         return normalized

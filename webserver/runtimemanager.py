@@ -210,7 +210,7 @@ class RuntimeManager:
         """
         try:
             _logs = buffer.normalize_logs(
-                buffer.get_logs(count=min_id))
+                buffer.get_logs(min_id=min_id, level=level))
             return _logs
         except AttributeError as e:
             logger.error("Failed to get logs from buffer: %s", e)
