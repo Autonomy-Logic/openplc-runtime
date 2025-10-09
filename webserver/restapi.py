@@ -10,6 +10,11 @@ from flask_jwt_extended import (
     jwt_required,
     verify_jwt_in_request,
 )
+from flask_jwt_extended.exceptions import (
+    JWTError,
+    NoAuthorizationError,
+    UserNotFoundError
+)
 from flask_sqlalchemy import SQLAlchemy
 from flask_sqlalchemy.exceptions import InvalidRequestError, NoResultFound
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -154,10 +159,8 @@ def get_users_info():
     # If there are no users, we don't need to verify JWT
     try:
         verify_jwt_in_request()
-    except jwt.ExpiredSignatureError:
-        return jsonify({"msg": "Token has expired"}), 401
-    except jwt.InvalidTokenError:
-        return jsonify({"msg": "Invalid token"}), 401
+    except (JWTError, NoAuthorizationError, UserNotFoundError) as e:
+        return jsonify({"msg": f"Invalid token: {e}"}), 401
     except Exception:
         logger.warning(
             "No JWT token provided, checking for users without authentication"
