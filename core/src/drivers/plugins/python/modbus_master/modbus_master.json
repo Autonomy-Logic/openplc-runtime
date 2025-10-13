@@ -1,0 +1,52 @@
+[
+  {
+    "name": "device_1",
+    "protocol": "MODBUS",
+    "config": {
+      "type": "SLAVE",
+      "host": "172.29.65.104",
+      "port": 5024,
+      "cycle_time_ms": 100,
+      "timeout_ms": 1000,
+      "io_points": [
+        {
+          "fc": 5,
+          "offset": "0x0000",
+          "iec_location": "%QW10",
+          "len": 5
+        },
+        {
+          "fc": 2,
+          "offset": "0x0000",
+          "iec_location": "%IX0.0",
+          "len": 16
+        }
+      ]
+    }
+  },
+  {
+    "name": "device_2",
+    "protocol": "MODBUS",
+    "config": {
+      "type": "SLAVE",
+      "host": "172.29.66.104",
+      "port": 5024,
+      "cycle_time_ms": 100,
+      "timeout_ms": 1000,
+      "io_points": [
+        {
+          "fc": 2,
+          "offset": "0x0000",
+          "iec_location": "%IX0.0",
+          "len": 5
+        },
+        {
+          "fc": 2,
+          "offset": "0x0010",
+          "iec_location": "%IX2.0",
+          "len": 16
+        }
+      ]
+    }
+  }
+]
