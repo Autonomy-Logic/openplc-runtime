@@ -2,15 +2,16 @@
 OpenPLC Python Plugin Configuration Package
 """
 
-from .base_protocol_config import BaseProtocolConfig, PluginConfigError, ModbusIoPointConfig
-from .plugin_config_models import PluginInstanceConfig, ModbusTcpConfig, PluginConfigParser
+from .plugin_config_decode.plugin_config_contact import PluginConfigContract, PluginConfigError, ModbusIoPointConfig
+from .plugin_config_decode.modbus_master_config_model import ModbusTcpConfig
+from .plugin_config_decode.plugin_config_decoder import PluginInstanceConfig, PluginConfigDecoder
 
 __all__ = [
     # abstract contract for each protocol config model
-    'BaseProtocolConfig',
+    'PluginConfigContract',
     # top level config instance
     'PluginConfigError', 
-    'PluginConfigParser',
+    'PluginConfigDecoder',
     'PluginInstanceConfig',
     # concrete protocol config models
     'ModbusIoPointConfig',

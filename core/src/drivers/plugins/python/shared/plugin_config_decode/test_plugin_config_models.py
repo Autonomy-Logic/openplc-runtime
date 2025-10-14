@@ -12,14 +12,9 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-from plugin_config_models import (
-    PluginConfigParser,
-    ModbusTcpConfig
-)
-from base_protocol_config import (
-    PluginConfigError,
-    ModbusIoPointConfig
-)
+from .plugin_config_decoder import PluginConfigDecoder
+from .modbus_master_config_model import ModbusTcpConfig
+from .plugin_config_contact import PluginConfigError
 
 def test_json_string_parsing():
     """Test parsing from JSON string with example data."""
@@ -76,7 +71,7 @@ def test_json_string_parsing():
 
     try:
         print("\nAttempting to parse example JSON string...")
-        parsed_configs = PluginConfigParser.parse_from_json_string(example_json_data_str)
+        parsed_configs = PluginConfigDecoder.parse_from_json_string(example_json_data_str)
         print("Successfully parsed JSON string.\n")
 
         for i, config in enumerate(parsed_configs):
@@ -132,7 +127,7 @@ def test_file_parsing():
             print(f"Warning: Could not find config at {file_to_parse}, trying fallback path: {config_file_path}")
             file_to_parse = config_file_path  # Use the simpler relative path as a fallback
 
-        parsed_file_configs = PluginConfigParser.parse_from_json_file(file_to_parse)
+        parsed_file_configs = PluginConfigDecoder.parse_from_json_file(file_to_parse)
         print(f"Successfully parsed from file: {file_to_parse}\n")
 
         for i, config in enumerate(parsed_file_configs):
@@ -172,7 +167,7 @@ def test_error_handling():
     # Test missing 'config' field
     invalid_json_missing_field = '{"name": "test", "protocol": "MODBUS"}'  # Missing "config"
     try:
-        PluginConfigParser.parse_from_json_string(invalid_json_missing_field)
+        PluginConfigDecoder.parse_from_json_string(invalid_json_missing_field)
         print("ERROR: Should have caught missing 'config' field error")
         return False
     except PluginConfigError as e:
@@ -181,7 +176,7 @@ def test_error_handling():
     # Test unsupported protocol
     invalid_json_bad_protocol = '{"name": "test", "protocol": "DNE", "config": {}}'
     try:
-        PluginConfigParser.parse_from_json_string(invalid_json_bad_protocol)
+        PluginConfigDecoder.parse_from_json_string(invalid_json_bad_protocol)
         print("ERROR: Should have caught unsupported protocol error")
         return False
     except PluginConfigError as e:
@@ -190,7 +185,7 @@ def test_error_handling():
     # Test invalid Modbus config
     invalid_modbus_config = '{"name": "test", "protocol": "MODBUS", "config": {"type": "MASTER", "host": "localhost"}}'
     try:
-        PluginConfigParser.parse_from_json_string(invalid_modbus_config)
+        PluginConfigDecoder.parse_from_json_string(invalid_modbus_config)
         print("ERROR: Should have caught invalid Modbus type error")
         return False
     except PluginConfigError as e:

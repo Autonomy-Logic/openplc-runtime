@@ -1,14 +1,7 @@
-#!/usr/bin/env python3
-"""
-Base protocol configuration abstract class for OpenPLC Python plugins.
-"""
-
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
 
-class PluginConfigError(Exception):
-    """Custom exception for plugin configuration errors."""
-    pass
+from .plugin_config_contact import PluginConfigContract, PluginConfigError
 
 class ModbusIoPointConfig:
     """
@@ -59,45 +52,54 @@ class ModbusIoPointConfig:
 
     def __repr__(self) -> str:
         return (f"IoPointConfig(fc={self.fc}, offset=0x{self.offset:04X}, "
-                f"iec_location='{self.iec_location}', length={self.length})")
-
-class BaseProtocolConfig(ABC):
+                f"iec_location='{self.iec_location}', length={self.length})") 
+    
+class ModbusTcpConfig(PluginConfigContract):
     """
-    Abstract base class for protocol-specific configurations.
+    Configuration model for Modbus TCP protocol (acting as Master).
     """
     def __init__(self, config_data: Dict[str, Any]):
-        self.raw_config = config_data
-        self._parse_specific_config()
+        self.type: str = ""
+        self.host: str = ""
+        self.port: int = 502  # Default Modbus port
+        self.cycle_time_ms: int = 100
+        self.timeout_ms: int = 1000
+        self.io_points: List[ModbusIoPointConfig] = []
+        super().__init__(config_data)
 
-    @abstractmethod
     def _parse_specific_config(self):
-        """
-        Parse and validate protocol-specific fields from the 'config' object.
-        This method should populate instance attributes with parsed and validated data.
-        Raises PluginConfigError on validation failure.
-        """
-        pass
+        """Parses Modbus TCP specific fields."""
+        self.type = self.raw_config.get("type", "").upper()
+        if self.type != "SLAVE":
+            # In this context, "SLAVE" refers to the remote device type the master is talking to.
+            raise PluginConfigError(f"Invalid type for Modbus master config: {self.type}. Expected 'SLAVE'.")
 
-    @abstractmethod
-    def get_protocol_name(self) -> str:
-        """Returns the protocol name this config is for."""
-        pass
+        host_val = self.raw_config.get("host")
+        if not isinstance(host_val, str) or not host_val:
+            raise PluginConfigError(f"Invalid or missing host: {host_val}. Must be a non-empty string.")
+        self.host = host_val
 
-    def get_common_io_points(self) -> List[ModbusIoPointConfig]:
-        """
-        Parses and returns the list of I/O points, which is common across protocols.
-        """
-        io_points_data = self.raw_config.get("io_points", [])
-        if not isinstance(io_points_data, list):
-            raise PluginConfigError("'io_points' must be a list.")
+        self.port = self.raw_config.get("port", 502)
+        if not isinstance(self.port, int) or not (1 <= self.port <= 65535):
+            raise PluginConfigError(f"Invalid port: {self.port}. Must be an integer between 1 and 65535.")
+
+        self.cycle_time_ms = self.raw_config.get("cycle_time_ms", 100)
+        if not isinstance(self.cycle_time_ms, int) or self.cycle_time_ms <= 0:
+            raise PluginConfigError(f"Invalid cycle_time_ms: {self.cycle_time_ms}. Must be a positive integer.")
+
+        self.timeout_ms = self.raw_config.get("timeout_ms", 1000)
+        if not isinstance(self.timeout_ms, int) or self.timeout_ms <= 0:
+            raise PluginConfigError(f"Invalid timeout_ms: {self.timeout_ms}. Must be a positive integer.")
         
-        parsed_io_points = []
-        for point_data in io_points_data:
-            try:
-                parsed_io_points.append(ModbusIoPointConfig.from_dict(point_data))
-            except PluginConfigError as e:
-                raise PluginConfigError(f"Error parsing io_point: {e}")
-        return parsed_io_points
+        try:
+            self.io_points = self.get_common_io_points()
+        except PluginConfigError as e:
+            raise PluginConfigError(f"Error parsing io_points for Modbus TCP: {e}")
+
+    def get_protocol_name(self) -> str:
+        return "MODBUS"
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(raw_config={self.raw_config})"
+        return (f"ModbusTcpConfig(type='{self.type}', host='{self.host}', port={self.port}, "
+                f"cycle_time_ms={self.cycle_time_ms}, timeout_ms={self.timeout_ms}, "
+                f"io_points={self.io_points})")
