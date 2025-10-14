@@ -2,8 +2,8 @@
 OpenPLC Python Plugin Configuration Package
 """
 
-from .plugin_config_decode.plugin_config_contact import PluginConfigContract, PluginConfigError, ModbusIoPointConfig
-from .plugin_config_decode.modbus_master_config_model import ModbusTcpConfig
+from .plugin_config_decode.plugin_config_contact import PluginConfigContract, PluginConfigError
+from .plugin_config_decode.modbus_master_config_model import ModbusIoPointConfig, ModbusTcpConfig
 from .plugin_config_decode.plugin_config_decoder import PluginInstanceConfig, PluginConfigDecoder
 
 __all__ = [

@@ -3,10 +3,11 @@
 Base protocol configuration abstract class for OpenPLC Python plugins.
 """
 
-from .modbus_master_config_model import ModbusIoPointConfig
-
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
+from typing import List, Dict, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .modbus_master_config_model import ModbusIoPointConfig
 
 class PluginConfigError(Exception):
     """Custom exception for plugin configuration errors."""
@@ -35,10 +36,16 @@ class PluginConfigContract(ABC):
         """Returns the protocol name this config is for."""
         pass
 
-    def get_common_io_points(self) -> List[ModbusIoPointConfig]:
+    def get_common_io_points(self) -> List[Any]:
         """
         Parses and returns the list of I/O points, which is common across protocols.
         """
+        # Import dynamically to avoid circular dependencies
+        try:
+            from .modbus_master_config_model import ModbusIoPointConfig
+        except ImportError:
+            from modbus_master_config_model import ModbusIoPointConfig
+            
         io_points_data = self.raw_config.get("io_points", [])
         if not isinstance(io_points_data, list):
             raise PluginConfigError("'io_points' must be a list.")

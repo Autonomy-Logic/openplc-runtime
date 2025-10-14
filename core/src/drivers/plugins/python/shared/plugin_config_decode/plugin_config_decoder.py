@@ -7,13 +7,13 @@ This module provides classes to parse and validate plugin-specific JSON configur
 import json
 from typing import List, Dict, Any, Optional
 
-# try:
-#     from .plugin_config_contact import PluginConfigContract, PluginConfigError
-#     from .modbus_master_config_model import ModbusIoPointConfig, ModbusTcpConfig
-# except ImportError:
+try:
+    from .plugin_config_contact import PluginConfigContract, PluginConfigError
+    from .modbus_master_config_model import ModbusIoPointConfig, ModbusTcpConfig
+except ImportError:
     # For direct execution
-from .plugin_config_contact import PluginConfigContract, PluginConfigError
-from .modbus_master_config_model import ModbusIoPointConfig, ModbusTcpConfig
+    from plugin_config_contact import PluginConfigContract, PluginConfigError
+    from modbus_master_config_model import ModbusIoPointConfig, ModbusTcpConfig
 
 class PluginInstanceConfig:
     """

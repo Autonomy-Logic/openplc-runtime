@@ -12,9 +12,14 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-from .plugin_config_decoder import PluginConfigDecoder
-from .modbus_master_config_model import ModbusTcpConfig
-from .plugin_config_contact import PluginConfigError
+try:
+    from .plugin_config_decoder import PluginConfigDecoder
+    from .modbus_master_config_model import ModbusTcpConfig, ModbusIoPointConfig
+    from .plugin_config_contact import PluginConfigError
+except ImportError:
+    from plugin_config_decoder import PluginConfigDecoder
+    from modbus_master_config_model import ModbusTcpConfig, ModbusIoPointConfig
+    from plugin_config_contact import PluginConfigError
 
 def test_json_string_parsing():
     """Test parsing from JSON string with example data."""

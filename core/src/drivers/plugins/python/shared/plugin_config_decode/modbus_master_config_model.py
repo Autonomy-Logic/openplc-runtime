@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
 
-from .plugin_config_contact import PluginConfigContract, PluginConfigError
+try:
+    from .plugin_config_contact import PluginConfigContract, PluginConfigError
+except ImportError:
+    from plugin_config_contact import PluginConfigContract, PluginConfigError
 
 class ModbusIoPointConfig:
     """
