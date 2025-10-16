@@ -7,13 +7,14 @@ import threading
 from typing import Final
 
 from runtimemanager import RuntimeManager
+from logger import get_logger, LogParser
 
-# logger = logging.getLogger("logger")
+logger, _ = get_logger("runtime", use_buffer=True)
+
 
 MAX_FILE_SIZE: Final[int] = 10 * 1024 * 1024   # 10 MB per file
 MAX_TOTAL_SIZE: Final[int] = 50 * 1024 * 1024  # 50 MB total
 DISALLOWED_EXT = (".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr")
-ALLOWED_FILENAME = "create_standard_function_txt.sh"
 
 class BuildStatus(Enum):
     IDLE = auto()
@@ -67,8 +68,8 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
 
             # Check uncompressed size
             if uncompressed_size > MAX_FILE_SIZE:
-                # logger.warning("File too large: %s (%d bytes)",
-                #                 filename, uncompressed_size)
+                logger.warning("File too large: %s (%d bytes)",
+                                filename, uncompressed_size)
                 safe = False
 
             # Check compression ratio (ZIP bomb detection)
@@ -78,12 +79,10 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
                 safe = False
 
             # Check disallowed extensions
-            # TODO remove this additional BASH SCRIPT check
-            if ALLOWED_FILENAME not in filename:
-                if ext in DISALLOWED_EXT:
-                    print("Disallowed extension: %s",
-                                   filename)
-                    safe = False
+            if ext in DISALLOWED_EXT:
+                logger.warning("Disallowed extension: %s",
+                                filename)
+                safe = False
 
             total_size += uncompressed_size
             valid_files.append(info)
@@ -94,10 +93,10 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
             #                total_size)
             safe = False
 
-        # if safe:
-        #     logger.info("ZIP file looks safe to extract (based on static checks).")
-        # else:
-        #     logger.warning("ZIP file failed safety checks.")
+        if safe:
+            logger.debug("ZIP file looks safe to extract (based on static checks).")
+        else:
+            logger.warning("ZIP file failed safety checks.")
 
         return safe, valid_files
 
@@ -148,7 +147,7 @@ def safe_extract(zip_path, dest_dir, valid_files):
             with zf.open(info) as src, open(out_path, "wb") as dst:
                 dst.write(src.read())
 
-            # logger.info("Extracted: %s", out_path)
+            logger.debug("Extracted: %s", out_path)
 
 def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated"):
     """Run compile script synchronously (wait for completion) and update status/logs."""

@@ -14,6 +14,7 @@ __pycache__/
 *.pem
 *.db
 *.socket
+*.installed
 
 # Ignore all object files and shared libraries
 *.o

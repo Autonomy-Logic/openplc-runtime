@@ -9,7 +9,7 @@ from unixserver import UnixLogServer
 from unixclient import SyncUnixClient
 from logger import get_logger, LogParser
 
-logger, buffer = get_logger(use_buffer=True)
+logger, buffer = get_logger("logger", use_buffer=True)
 
 
 class RuntimeManager:
@@ -204,12 +204,13 @@ class RuntimeManager:
         self._safe_close_runtime_socket()
 
 
-    def get_logs(self):
+    def get_logs(self, min_id=None, level=None):
         """
         Get current logs from the runtime
         """
         try:
-            _logs = buffer.normalize_buffer_logs(buffer.get_logs())
+            _logs = buffer.normalize_logs(
+                buffer.get_logs(min_id=min_id, level=level))
             return _logs
         except AttributeError as e:
             logger.error("Failed to get logs from buffer: %s", e)

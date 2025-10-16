@@ -1,4 +1,3 @@
-import logging
 import os
 from typing import Callable, Optional
 
@@ -13,9 +12,9 @@ from flask_jwt_extended import (
 )
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import check_password_hash, generate_password_hash
-# from logger import get_logger, LogParser
+from logger import get_logger, LogParser
 
-# logger = get_logger(use_buffer=True)
+logger, buffer = get_logger("logger", use_buffer=True)
 
 env = os.getenv("FLASK_ENV", "development")
 
@@ -37,9 +36,14 @@ jwt_blacklist = set()
 
 @jwt.token_in_blocklist_loader
 def check_if_token_revoked(jwt_header, jwt_payload):
-    jti = jwt_payload["jti"]
-    return jti in jwt_blacklist
-
+    try:
+        jti = jwt_payload["jti"]
+        return jti in jwt_blacklist
+    except KeyError as e:
+        logger.error("Error revoking JWT: %s", e)
+    except Exception as e:
+        logger.error("Error revoking JWT: %s", e)
+    return False
 
 class User(db.Model):  # type: ignore[name-defined]
     __tablename__ = "users"
@@ -57,7 +61,6 @@ class User(db.Model):  # type: ignore[name-defined]
         self.password_hash = generate_password_hash(
             password, method=self.derivation_method
         )
-        # logger.debug("Password set for user %s | %s", self.username, self.password_hash)
         return self.password_hash
 
     def check_password(self, password: str) -> bool:
@@ -82,13 +85,13 @@ def user_lookup_callback(_jwt_header, jwt_data):
 def register_callback_get(callback: Callable[[str, dict], dict]):
     global _handler_callback_get
     _handler_callback_get = callback
-    # logger.info("GET Callback registered successfully for rest_blueprint!")
+    logger.debug("GET Callback registered successfully for rest_blueprint!")
 
 
 def register_callback_post(callback: Callable[[str, dict], dict]):
     global _handler_callback_post
     _handler_callback_post = callback
-    # logger.info("POST Callback registered successfully for rest_blueprint!")
+    logger.debug("POST Callback registered successfully for rest_blueprint!")
 
 
 @restapi_bp.route("/create-user", methods=["POST"])
@@ -97,8 +100,8 @@ def create_user():
     try:
         users_exist = User.query.first() is not None
     except Exception as e:
-        # logger.error("Error checking for users: %s", e)
-        return jsonify({"msg": "User creation error"}), 401
+        logger.error("Error checking for users: %s", e)
+        return jsonify({"msg": f"User creation error: {e}"}), 401
 
     # if there are no users, we don't need to verify JWT
     if users_exist and verify_jwt_in_request(optional=True) is None:
@@ -131,8 +134,8 @@ def get_user_info(user_id):
     try:
         user = User.query.get(user_id)
     except Exception as e:
-        # logger.error("Error retrieving user: %s", e)
-        return jsonify({"msg": "User retrieval error"}), 500
+        logger.error("Error retrieving user: %s", e)
+        return jsonify({"msg": f"User retrieval error: {e}"}), 500
 
     if not user:
         return jsonify({"msg": "User not found"}), 404
@@ -162,7 +165,7 @@ def get_users_info():
     try:
         users = User.query.all()
     except Exception as e:
-        # logger.error("Error retrieving users: %s", e)
+        logger.error("Error retrieving users: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
 
     return jsonify([user.to_dict() for user in users]), 200
@@ -182,7 +185,7 @@ def change_password(user_id):
     try:
         user = User.query.get(user_id)
     except Exception as e:
-        # logger.error("Error retrieving user: %s", e)
+        logger.error("Error retrieving user: %s", e)
         return jsonify({"msg": "User retrieval error"}), 500
 
     if not user:
@@ -207,8 +210,8 @@ def delete_user(user_id):
     try:
         user = User.query.get(user_id)
     except Exception as e:
-        # logger.error("Error retrieving user: %s", e)
-        return jsonify({"msg": "User retrieval error"}), 500
+        logger.error("Error retrieving user: %s", e)
+        return jsonify({"msg": f"User retrieval error: {e}"}), 500
 
     if not user:
         return jsonify({"msg": "User not found"}), 404
@@ -227,10 +230,10 @@ def login():
 
     try:
         user = User.query.filter_by(username=username).one_or_none()
-        # logger.debug("User found: %s", user)
+        logger.debug("User found: %s", user)
     except Exception as e:
-        # logger.error("Error retrieving user: %s", e)
-        return jsonify({"msg": "User retrieval error"}), 500
+        logger.error("Error retrieving user: %s", e)
+        return jsonify({"msg": f"User retrieval error: {e}"}), 500
 
     if not user or not user.check_password(password):
         return jsonify("Wrong username or password"), 401
@@ -248,13 +251,16 @@ def logout():
 
 
 def revoke_jwt():
-    jti = get_jwt()["jti"]
+    # Add the JWT ID to the blacklist
     try:
-        # Add the JWT ID to the blacklist
+        jti = get_jwt()["jti"]
         jwt_blacklist.add(jti)
+    except KeyError as e:
+        logger.error("Error revoking JWT: %s", e)
+    except AttributeError as e:
+        logger.error("Error revoking JWT: %s", e)
     except Exception as e:
-        # logger.error("Error revoking JWT: %s", e)
-        pass
+        logger.error("Error revoking JWT: %s", e)
 
 
 @restapi_bp.route("/<command>", methods=["GET"])
@@ -267,7 +273,6 @@ def restapi_plc_get(command):
         data = request.args.to_dict()
         result = _handler_callback_get(command, data)
         return jsonify(result), 200
-
     except Exception as e:
         # logger.error("Error in restapi_plc_get: %s", e)
         return jsonify({"error": str(e)}), 500
@@ -281,7 +286,6 @@ def restapi_plc_post(command):
 
     try:
         data = request.get_json(silent=True) or {}
-
         result = _handler_callback_post(command, data)
         return jsonify(result), 200
     except Exception as e:

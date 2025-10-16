@@ -2,8 +2,8 @@ import logging
 from collections import deque
 from typing import List, Optional
 import json
-import re
-from datetime import datetime
+from datetime import datetime, timezone
+from threading import Lock
 
 
 class BufferHandler(logging.Handler):
@@ -11,51 +11,89 @@ class BufferHandler(logging.Handler):
     Custom logging handler that stores log records in memory (FIFO).
     Logs are formatted using the attached formatter (JSON).
     """
+    _instance = None
+    _lock = Lock()
 
     def __init__(self, capacity: int = 1000):
         super().__init__()
         self.buffer = deque(maxlen=capacity)
 
     def emit(self, record: logging.LogRecord) -> None:
-        try:
-            self.buffer.append(self.format(record))
-        except Exception:
-            self.handleError(record)
-
-    def get_logs(self, count: Optional[int] = None) -> List[str]:
-        """Retrieve logs from buffer."""
-        if count is None or count > len(self.buffer):
-            return list(self.buffer)
-        return list(self.buffer)[-count:]
-
-    def normalize_buffer_logs(self, buffer_records):
-        """
-        Takes a list of log strings from buffer and returns a list of clean JSON dicts.
-        """
-        result = []
-        json_extract = re.compile(r'(\{.*\})')  # match JSON inside log line
-
-        for record in buffer_records:
-            match = json_extract.search(record)
-            if not match:
-                continue
-
+        with self._lock:
             try:
-                raw_json = json.loads(match.group(1))
-                # Convert unix timestamp → readable datetime
-                ts = int(raw_json.get("timestamp", 0))
-                dt = datetime.utcfromtimestamp(ts).isoformat() + "Z"
+                self.buffer.append(self.format(record))
+            except Exception:
+                self.handleError(record)
 
-                entry = {
-                    "timestamp": dt,
-                    "level": raw_json.get("level", "INFO"),
-                    "message": raw_json.get("message", "")
-                }
-                result.append(entry)
-            except (json.JSONDecodeError, ValueError):
-                continue
-
+    def filter_logs(self, logs, level=None, min_id=None, max_id=None):
+        result = logs
+        if level is not None:
+            result = [log for log in result if log.get("level") == level]
+        if min_id is not None:
+            result = [log for log in result if log.get("id", 0) >= min_id]
+        if max_id is not None:
+            result = [log for log in result if log.get("id", 0) <= max_id]
         return result
+
+    def get_logs(self, count: Optional[int] = None,
+                 min_id: Optional[int] = None,
+                 level: Optional[str] = None) -> List[str]:
+        """Retrieve logs from buffer."""
+        with self._lock:
+            filtered_logs = [json.loads(item) for item in self.buffer]
+            # json_output = json.dumps(filtered_logs, indent=2)
+            filtered_logs = self.filter_logs(filtered_logs, level=level, min_id=min_id)
+            if count is not None and count < len(filtered_logs):
+                filtered_logs = filtered_logs[-count:]
+            return filtered_logs
+
+    def normalize_timestamp_no_microseconds(self, ts: str) -> str:
+        """Normalize ISO 8601 timestamp to remove microseconds."""
+        dt = datetime.fromisoformat(ts)
+        return dt.replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    def normalize_logs(self, json_logs: List[dict]) -> List[dict]:
+        """Normalize a list of log entries (dicts)."""
+        normalized = []
+        for data in json_logs:
+            try:
+                # Normalize timestamp (convert unix timestamp → ISO 8601)
+                ts = data.get("timestamp")
+
+                # If it's numeric (e.g., 1759843183), convert it to ISO 8601 UTC
+                if ts and str(ts).isdigit():
+                    ts_dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+                    data["timestamp"] = ts_dt.isoformat()
+
+                # If it's ISO 8601 but has microseconds, strip them
+                if "timestamp" in data:
+                    data["timestamp"] = self.normalize_timestamp_no_microseconds(data["timestamp"])
+
+                # Ensure minimal required fields
+                data.setdefault("level", "INFO")
+                data.setdefault("message", "")
+
+                normalized.append(data)
+
+            except (json.JSONDecodeError, TypeError, ValueError) as e:
+                # If something is not JSON, safely wrap it
+                normalized.append({
+                    "id": None,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "level": "ERROR",
+                    "message": f"Malformed log: {data} ({e})",
+                })
+
+        return normalized
+
+    @classmethod
+    def get_instance(cls):
+        """Singleton accessor."""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
 
     def clear(self) -> None:
         self.buffer.clear()

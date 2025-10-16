@@ -1,10 +1,9 @@
-import json
 import socket
 import threading
 import os
 from logger import get_logger, LogParser
 
-logger, buffer = get_logger(use_buffer=True)
+logger, _ = get_logger("runtime", use_buffer=True)
 parser = LogParser(logger)
 
 
@@ -15,7 +14,6 @@ class UnixLogServer:
         self.clients = []
         self.lock = threading.Lock()
         self.running = False
-        # self.parser = LogParser(logger)
 
     def start(self):
         """Start the Unix socket server"""
@@ -41,7 +39,6 @@ class UnixLogServer:
             logger.error("Failed to start server: %s", e)
         except Exception as e:
             logger.error("Failed to start server (unexpected): %s", e)
-            raise
 
     def _accept_clients(self):
         """Accept incoming client connections"""
@@ -53,8 +50,7 @@ class UnixLogServer:
                 threading.Thread(target=self._handle_client, args=(client_sock,), daemon=True).start()
                 logger.info("Client connected")
             except (OSError, socket.error) as e:
-                if self.running:
-                    logger.error("Socket error: %s", e)
+                logger.error("Socket error: %s", e)
             except Exception as e:
                 logger.error("Error accepting client: %s", e)
 
@@ -93,4 +89,6 @@ class UnixLogServer:
         except OSError:
             if os.path.exists(self.socket_path):
                 logger.error("Failed to remove socket file")
+        except Exception as e:
+            logger.error("Error during server shutdown: %s", e)
         logger.info("Log server stopped")

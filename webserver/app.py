@@ -28,15 +28,14 @@ from plcapp_management import (
     MAX_FILE_SIZE
 )
 
-# from logger import get_logger, LogParser
+from logger import get_logger, LogParser
 
+logger, _ = get_logger("logger", use_buffer=True)
 
 app = flask.Flask(__name__)
 app.secret_key = str(os.urandom(16))
 login_manager = flask_login.LoginManager()
 login_manager.init_app(app)
-
-# logger = get_logger(use_buffer=True)
 
 runtime_manager = RuntimeManager(
     runtime_path="./build/plc_main",
@@ -63,7 +62,15 @@ def handle_stop_plc(data: dict) -> dict:
 
 
 def handle_runtime_logs(data: dict) -> dict:
-    response = runtime_manager.get_logs()
+    if "id" in data:
+        min_id = int(data["id"])
+    else:
+        min_id = None
+    if "level" in data:
+        level = data["level"]
+    else:
+        level = None
+    response = runtime_manager.get_logs(min_id=min_id, level=level)
     return {"runtime-logs": response}
 
 
@@ -200,12 +207,8 @@ def run_https():
             # logger.info("Generating https certificate...")
             print("Generating https certificate...") # TODO: remove this temporary print once logger is functional again
             cert_gen.generate_self_signed_cert(cert_file=CERT_FILE, key_file=KEY_FILE)
-
-        # Check if the certificate is valid
-        if not cert_gen.is_certificate_valid(CERT_FILE):
-            # logger.error("Invalid certificate. Cannot start https application")
-            print("Invalid certificate. Cannot start https application") # TODO: remove this temporary print once logger is functional again
-            sys.exit(1)
+        else:
+            logger.warning("Credentials already generated!")
 
         context = (CERT_FILE, KEY_FILE)
         app_restapi.run(
@@ -226,8 +229,8 @@ def run_https():
         # logger.info("HTTP server stopped by KeyboardInterrupt")
         pass
     finally:
+        logger.info("Runtime manager stopped")
         runtime_manager.stop()
-        # logger.info("Runtime manager stopped")
 
 
 if __name__ == "__main__":
