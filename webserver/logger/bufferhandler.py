@@ -61,7 +61,7 @@ class BufferHandler(logging.Handler):
                 ts = data.get("timestamp")
 
                 # If it's numeric (e.g., 1759843183), convert it to ISO 8601 UTC
-                if ts and ts.isdigit():
+                if ts and str(ts).isdigit():
                     ts_dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
                     data["timestamp"] = ts_dt.isoformat()
 
