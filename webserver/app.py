@@ -9,17 +9,17 @@ import sys
 
 import flask
 import flask_login
-from credentials import CertGen
-from restapi import (
+from webserver.credentials import CertGen
+from webserver.restapi import (
     app_restapi,
     db,
     register_callback_get,
     register_callback_post,
     restapi_bp,
 )
-from runtimemanager import RuntimeManager
+from webserver.runtimemanager import RuntimeManager
 
-from plcapp_management import (
+from webserver.plcapp_management import (
     build_state,
     BuildStatus,
     analyze_zip,
@@ -28,7 +28,7 @@ from plcapp_management import (
     MAX_FILE_SIZE
 )
 
-from logger import get_logger, LogParser
+from webserver.logger import get_logger, LogParser
 
 logger, _ = get_logger("logger", use_buffer=True)
 

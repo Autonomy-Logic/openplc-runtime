@@ -5,9 +5,9 @@ import threading
 import time
 import os
 import psutil
-from unixserver import UnixLogServer
-from unixclient import SyncUnixClient
-from logger import get_logger, LogParser
+from webserver.unixserver import UnixLogServer
+from webserver.unixclient import SyncUnixClient
+from webserver.logger import get_logger, LogParser
 
 logger, buffer = get_logger("logger", use_buffer=True)
 

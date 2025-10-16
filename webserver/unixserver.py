@@ -1,7 +1,7 @@
 import socket
 import threading
 import os
-from logger import get_logger, LogParser
+from webserver.logger import get_logger, LogParser
 
 logger, _ = get_logger("runtime", use_buffer=True)
 parser = LogParser(logger)

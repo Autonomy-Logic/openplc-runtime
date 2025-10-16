@@ -144,9 +144,9 @@ chmod +x "$OPENPLC_DIR/start_openplc.sh" 2>/dev/null || true
 
 install_dependencies
 python3 -m venv "$VENV_DIR"
-"$VENV_DIR/bin/python3" -m pip install --upgrade pip
+"$VENV_DIR/bin/python3" -m pip install --upgrade pip setuptools wheel
 "$VENV_DIR/bin/python3" -m pip install -r "$OPENPLC_DIR/requirements.txt"
-
+"$VENV_DIR/bin/python3" -m pip install -e .
 
 echo "Dependencies installed..."
 echo "Virtual environment created at $VENV_DIR"

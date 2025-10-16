@@ -6,8 +6,8 @@ import subprocess
 import threading
 from typing import Final
 
-from runtimemanager import RuntimeManager
-from logger import get_logger, LogParser
+from webserver.runtimemanager import RuntimeManager
+from webserver.logger import get_logger, LogParser
 
 logger, _ = get_logger("runtime", use_buffer=True)
 

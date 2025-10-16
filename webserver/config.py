@@ -4,7 +4,7 @@ import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
-from logger import get_logger, LogParser
+from webserver.logger import get_logger, LogParser
 
 logger, buffer = get_logger("logger", use_buffer=True)
 

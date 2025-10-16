@@ -3,7 +3,7 @@ import os
 import re
 from typing import Optional
 from threading import Lock
-from logger import get_logger, LogParser
+from webserver.logger import get_logger, LogParser
 
 logger, _ = get_logger(use_buffer=True)
 mutex = Lock()

@@ -1,7 +1,7 @@
 import os
 from typing import Callable, Optional
 
-import config
+import webserver.config
 from flask import Blueprint, Flask, jsonify, request
 from flask_jwt_extended import (
     JWTManager,
@@ -12,7 +12,7 @@ from flask_jwt_extended import (
 )
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import check_password_hash, generate_password_hash
-from logger import get_logger, LogParser
+from webserver.logger import get_logger, LogParser
 
 logger, buffer = get_logger("logger", use_buffer=True)
 
@@ -21,9 +21,9 @@ env = os.getenv("FLASK_ENV", "development")
 app_restapi = Flask(__name__)
 
 if env == "production":
-    app_restapi.config.from_object(config.ProdConfig)
+    app_restapi.config.from_object(webserver.config.ProdConfig)
 else:
-    app_restapi.config.from_object(config.DevConfig)
+    app_restapi.config.from_object(webserver.config.DevConfig)
 
 restapi_bp = Blueprint("restapi_blueprint", __name__)
 _handler_callback_get: Optional[Callable[[str, dict], dict]] = None
