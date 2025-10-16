@@ -1,0 +1,12 @@
+[project]
+name = "openplc-runtime"
+version = "0.1.0"
+description = "OpenPLC Runtime"
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["setuptools>=64", "wheel", "packaging>=24.2"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["webserver"]
