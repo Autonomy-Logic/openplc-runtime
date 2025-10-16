@@ -21,12 +21,10 @@ class PluginConfigContract(ABC):
         self.config_path = config_path
         self.config = {}
 
-    @abstractmethod
-    def from_json_file(cls, file_path: str):
+    def from_json_file(self, file_path: str):
         """Creates an instance from a JSON file."""
         pass
 
-    @abstractmethod
     def validate(self) -> None:
         """Validates the configuration."""
         pass
