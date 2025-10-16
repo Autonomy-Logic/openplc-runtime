@@ -14,7 +14,7 @@ class ModbusMasterConfig(PluginConfigContract):
     def __init__(self, config_path: str):
         super().__init__(config_path) # Call the base class constructor
         self.config = {} # attributes specific to ModbusMasterConfig can be added here
-        self.io_points: List[ModbusIoPointConfig] = []  # List to hold Modbus I/O points
+        self.io_points: List['ModbusIoPointConfig'] = []  # List to hold Modbus I/O points
 
     def from_json_file(self, file_path: str):
         """Read config from a JSON file."""

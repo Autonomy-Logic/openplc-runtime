@@ -3,8 +3,7 @@
 Base protocol configuration abstract class for OpenPLC Python plugins.
 """
 
-from abc import ABC, abstractmethod
-from typing import List, Dict, Any
+from abc import ABC
 
 class PluginConfigError(Exception):
     """Custom exception for plugin configuration errors."""
