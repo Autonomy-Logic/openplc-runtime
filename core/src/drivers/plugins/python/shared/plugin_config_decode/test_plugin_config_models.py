@@ -21,7 +21,7 @@ except ImportError:
 
 def test_modbus_config_from_valid_dict():
     """Test ModbusMasterConfig initialization and from_json_file with valid data."""
-    valid_config_data = {
+    valid_config_data = [{
         "name": "test_modbus_device",
         "protocol": "MODBUS",
         "config": {
@@ -45,7 +45,7 @@ def test_modbus_config_from_valid_dict():
                 }
             ]
         }
-    }
+    }]
 
     print("--- Testing ModbusMasterConfig from valid data ---")
     tmp_file_path = None
