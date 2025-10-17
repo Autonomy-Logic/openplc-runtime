@@ -71,37 +71,14 @@ def init(args_capsule):
             # Let's check if runtime_args has a direct attribute for config path first.
             if hasattr(runtime_args, 'plugin_specific_config_file_path'):
                 config_file_path = runtime_args.plugin_specific_config_file_path
-            elif hasattr(runtime_args, 'config_file_path'): # Fallback name
-                config_file_path = runtime_args.config_file_path
             else:
-                # If not directly on runtime_args, we might need to get it from the map
-                # like the slave example, but ModbusMasterConfig.import_config_from_file needs a path.
-                # For now, let's assume a default path if not found directly.
-                # This part might need adjustment based on how C provides the path.
+                # If not directly on runtime_args
                 print("[MODBUS_MASTER] ⚠ Plugin-specific config file path not found directly in runtime_args.")
-                # Attempt to get it from the config map, though this is indirect for ModbusMasterConfig
-                config_map, map_status = safe_buffer_accessor.get_config_file_args_as_map()
-                if map_status == "Success" and config_map:
-                    # This map is the *content* of the config, not the path.
-                    # ModbusMasterConfig needs the path to the .json file.
-                    # This indicates a potential mismatch in how config is loaded for master vs slave.
-                    # The slave plugin parses the map directly for network_config.
-                    # The master plugin uses ModbusMasterConfig which loads from a file path.
-                    
-                    # For now, we'll assume the C runtime provides a specific path
-                    # or we default to a known location relative to this script.
-                    # Let's try a default path relative to this script.
-                    current_dir = os.path.dirname(os.path.abspath(__file__))
-                    default_config_path = os.path.join(current_dir, "modbus_master.json")
-                    print(f"[MODBUS_MASTER] Using default config path: {default_config_path}")
-                    config_file_path = default_config_path
-                else:
-                    print(f"[MODBUS_MASTER] ✗ Could not determine config file path from get_config_file_args_as_map: {map_status}")
-                    # Fallback to a default path if map loading fails or is empty
-                    current_dir = os.path.dirname(os.path.abspath(__file__))
-                    default_config_path = os.path.join(current_dir, "modbus_master.json")
-                    print(f"[MODBUS_MASTER] Falling back to default config path: {default_config_path}")
-                    config_file_path = default_config_path
+                # Fallback to a default path if map loading fails or is empty
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                default_config_path = os.path.join(current_dir, "modbus_master.json")
+                print(f"[MODBUS_MASTER] Falling back to default config path: {default_config_path}")
+                config_file_path = default_config_path
 
 
             if not config_file_path or not os.path.exists(config_file_path):
