@@ -1,10 +1,12 @@
 import logging
 import pytest
 
-# 👇 Import your logger module directly
 from webserver.logger import get_logger, BufferHandler
 
 def test_logger_creates_handlers():
+    # Reset previous handlers
+    logger, _ = get_logger("test_logger", use_buffer=True)
+    logger.handlers.clear()
     logger, _ = get_logger("test_logger", use_buffer=True)
 
     # Assert logger level
