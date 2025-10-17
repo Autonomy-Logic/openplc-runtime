@@ -2,6 +2,7 @@ Flask
 Flask-Login
 Flask-JWT-Extended
 flask_sqlalchemy
+Flask-SocketIO
 PyJWT
 python-dotenv
 pytest

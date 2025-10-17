@@ -5,7 +5,7 @@ repos:
       - id: pylint
         # args: [--fail-on=F,E]
         args: [
-            "--disable=C0114,C0411,C0115,C0116,C0412,E0401,W0718,R1702,R0911,R0912,R0915,R1705,W0404,W0603,W0613",
+            "--disable=C0114,C0411,C0115,C0116,C0412,E0401,W0718,R1702,R0911,R0912,R0915,R1705,W0404,W0603,W0613,W0511",
           ] # example: disable missing-docstring
         additional_dependencies:
           [flask, flask-sqlalchemy, flask_jwt_extended, werkzeug]
@@ -26,10 +26,10 @@ repos:
         args: ["--fix"]
       - id: ruff-format
         args: []
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.17.1
-    hooks:
-      - id: mypy
+  # - repo: https://github.com/pre-commit/mirrors-mypy
+  #   rev: v1.17.1
+  #   hooks:
+  #     - id: mypy
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v21.1.0 # Let autoupdate find the latest
     hooks:

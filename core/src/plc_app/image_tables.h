@@ -66,6 +66,15 @@ extern void (*ext_glueVars)(void);
 extern void (*ext_updateTime)(void);
 
 /**
+ * @brief Debug functions
+ */
+extern void (*ext_set_endianness)(uint8_t value);
+extern uint16_t (*ext_get_var_count)(void);
+extern size_t (*ext_get_var_size)(size_t idx);
+extern void *(*ext_get_var_addr)(size_t idx);
+extern void (*ext_set_trace)(size_t idx, bool forced, void *val);
+
+/**
  * @brief Initialize symbols for the plugin manager
  *
  * @param[in]  pm  The plugin manager to initialize symbols for

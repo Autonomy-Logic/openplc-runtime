@@ -2,8 +2,8 @@
 #define UNIX_SOCKET_H
 
 #define SOCKET_PATH "/run/runtime/plc_runtime.socket"
-#define COMMAND_BUFFER_SIZE 1024
-#define MAX_RESPONSE_SIZE 1024
+#define COMMAND_BUFFER_SIZE 8192
+#define MAX_RESPONSE_SIZE 8192
 #define MAX_CLIENTS 1
 
 int setup_unix_socket();

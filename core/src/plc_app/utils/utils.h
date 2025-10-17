@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <sched.h>
 #include <time.h>
+#include <stdint.h>
 
 #include "log.h"
 
@@ -39,5 +40,25 @@ void timespec_diff(struct timespec *a, struct timespec *b,
  * @brief Set the realtime priority object
  */
 void set_realtime_priority(void);
+
+/**
+ * @brief Parse a hex string into a byte array
+ *
+ * @param hex_string The hex string to parse
+ * @param data The byte array to store the result
+ * @return The number of bytes parsed
+ */
+size_t parse_hex_string(const char *hex_string, uint8_t *data);
+
+/**
+ * @brief Convert a byte array to a hex string
+ *
+ * @param bytes The byte array to convert
+ * @param len The length of the byte array
+ * @param out_str The string to store the result
+ * @param out_size The size of the output string buffer
+ * @param prepend An optional string to prepend to the output (can be NULL)
+ */
+void bytes_to_hex_string(const uint8_t *bytes, size_t len, char *out_str, size_t out_size, const char *prepend);
 
 #endif // UTILS_H

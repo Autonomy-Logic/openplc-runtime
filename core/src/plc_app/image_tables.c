@@ -44,6 +44,15 @@ void (*ext_setBufferPointers)(
     IEC_UINT *int_memory[BUFFER_SIZE], IEC_UDINT *dint_memory[BUFFER_SIZE],
     IEC_ULINT *lint_memory[BUFFER_SIZE]);
 
+
+// Debug
+void (*ext_set_endianness)(uint8_t value);
+uint16_t (*ext_get_var_count)(void);
+size_t (*ext_get_var_size)(size_t idx);
+void *(*ext_get_var_addr)(size_t idx);
+void (*ext_set_trace)(size_t idx, bool forced, void *val);
+
+
 int symbols_init(PluginManager *pm) 
 {
     // Get pointer to external functions
@@ -65,9 +74,26 @@ int symbols_init(PluginManager *pm)
     *(void **)(&ext_common_ticktime__) =
         plugin_manager_get_func(pm, void (*)(unsigned long), "common_ticktime__");
 
+    *(void **)(&ext_set_endianness) =
+        plugin_manager_get_func(pm, void (*)(unsigned long), "set_endianness");
+
+    *(void **)(&ext_get_var_count) =
+        plugin_manager_get_func(pm, uint16_t (*)(uint16_t), "get_var_count");
+
+    *(void **)(&ext_get_var_size) =
+        plugin_manager_get_func(pm, size_t (*)(size_t), "get_var_size");
+
+    *(void **)(&ext_get_var_addr) =
+        plugin_manager_get_func(pm, void *(*)(unsigned long), "get_var_addr");
+
+    *(void **)(&ext_set_trace) =
+        plugin_manager_get_func(pm, void (*)(unsigned long), "set_trace");
+
     // Check if all symbols were loaded successfully
     if (!ext_config_run__ || !ext_config_init__ || !ext_glueVars ||
-        !ext_updateTime || !ext_setBufferPointers || !ext_common_ticktime__) 
+        !ext_updateTime || !ext_setBufferPointers || !ext_common_ticktime__ ||
+        !ext_set_endianness || !ext_get_var_count || !ext_get_var_size ||
+        !ext_get_var_addr || !ext_set_trace) 
     {
         log_error("Failed to load all symbols");
         return -1;

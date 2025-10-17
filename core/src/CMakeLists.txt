@@ -33,6 +33,7 @@ add_executable(plc_main
     ${CMAKE_SOURCE_DIR}/core/src/drivers/plugin_driver.c
     ${CMAKE_SOURCE_DIR}/core/src/drivers/plugin_config.c
     ${CMAKE_SOURCE_DIR}/core/src/plc_app/unix_socket.c
+    ${CMAKE_SOURCE_DIR}/core/src/plc_app/debug_handler.c
 )
 
 # Link against shared library

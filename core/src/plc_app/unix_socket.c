@@ -1,18 +1,19 @@
+#include <errno.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-#include <pthread.h>
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <errno.h>
-#include <stdatomic.h>
-#include <signal.h>
 
+#include "debug_handler.h"
+#include "plc_state_manager.h"
 #include "unix_socket.h"
 #include "utils/log.h"
 #include "utils/utils.h"
-#include "plc_state_manager.h"
 
 extern volatile sig_atomic_t keep_running;
 extern PLCState plc_state;
@@ -22,14 +23,14 @@ static ssize_t read_line(int fd, char *buffer, size_t max_length)
 {
     size_t total_read = 0;
     char ch;
-    while (total_read < max_length - 1) 
+    while (total_read < max_length - 1)
     {
         ssize_t bytes_read = read(fd, &ch, 1);
-        if (bytes_read <= 0) 
+        if (bytes_read <= 0)
         {
             return bytes_read; // error or connection closed
         }
-        if (ch == '\n') 
+        if (ch == '\n')
         {
             break; // end of line
         }
@@ -93,6 +94,28 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
             log_error("Received START command but PLC is already RUNNING");
         }
     }
+    else if (strncmp(command, "DEBUG:", 6) == 0)
+    {
+        log_debug("Received DEBUG command");
+        uint8_t debug_data[4096] = {0};
+        size_t data_length       = parse_hex_string(&command[6], debug_data);
+        if (data_length > 0)
+        {
+            data_length = process_debug_data(debug_data, data_length);
+            if (data_length > 0)
+            {
+                bytes_to_hex_string(debug_data, data_length, response, response_size, "DEBUG:");
+            }
+            else
+            {
+                strncpy(response, "DEBUG:ERROR_PROCESSING\n", response_size);
+            }
+        }
+        else
+        {
+            strncpy(response, "DEBUG:ERROR_PARSING\n", response_size);
+        }
+    }
     else
     {
         log_error("Unknown command received: %s", command);
@@ -103,21 +126,21 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
     response[response_size - 1] = '\0';
 }
 
-void *unix_socket_thread(void *arg) 
+void *unix_socket_thread(void *arg)
 {
     (void)arg;
     int *server_fd_pt = (int *)arg;
     int client_fd;
     char command_buffer[COMMAND_BUFFER_SIZE];
 
-    if (server_fd_pt == NULL) 
+    if (server_fd_pt == NULL)
     {
         log_error("Server file descriptor is NULL");
         return NULL;
     }
-    
+
     int server_fd = *server_fd_pt;
-    if (server_fd < 0) 
+    if (server_fd < 0)
     {
         log_error("Failed to set up UNIX socket");
         return NULL;
@@ -126,14 +149,14 @@ void *unix_socket_thread(void *arg)
     while (keep_running)
     {
         client_fd = accept(server_fd, NULL, NULL);
-        if (client_fd < 0) 
+        if (client_fd < 0)
         {
-            if (errno == EINTR) 
+            if (errno == EINTR)
             {
                 continue; // Interrupted by signal, retry
             }
             log_error("Unix socket accept failed: %s", strerror(errno));
-            
+
             // Retry after a short delay
             sleep(1);
             continue;
@@ -144,14 +167,14 @@ void *unix_socket_thread(void *arg)
         while (keep_running)
         {
             ssize_t bytes_read = read_line(client_fd, command_buffer, COMMAND_BUFFER_SIZE);
-            if (bytes_read > 0) 
+            if (bytes_read > 0)
             {
                 log_debug("Received command: %s", command_buffer);
 
                 // Handle the command
                 char response[MAX_RESPONSE_SIZE] = {0};
                 handle_unix_socket_commands(command_buffer, response, MAX_RESPONSE_SIZE);
-                if (strlen(response) > 0) 
+                if (strlen(response) > 0)
                 {
                     ssize_t bytes_written = write(client_fd, response, strlen(response));
                     if (bytes_written <= 0)
@@ -164,8 +187,8 @@ void *unix_socket_thread(void *arg)
             {
                 log_info("Unix socket client disconnected");
                 break;
-            } 
-            else 
+            }
+            else
             {
                 log_error("Unix socket read failed: %s", strerror(errno));
                 break;
@@ -180,7 +203,7 @@ void *unix_socket_thread(void *arg)
 
 void close_unix_socket(int server_fd)
 {
-    if (server_fd >= 0) 
+    if (server_fd >= 0)
     {
         close(server_fd);
         unlink(SOCKET_PATH);
@@ -197,7 +220,7 @@ int setup_unix_socket()
     unlink(SOCKET_PATH);
 
     // Create socket
-    if ((server_fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) 
+    if ((server_fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0)
     {
         log_error("Socket creation failed: %s", strerror(errno));
         return -1;
@@ -209,7 +232,7 @@ int setup_unix_socket()
     strncpy(address.sun_path, SOCKET_PATH, sizeof(address.sun_path) - 1);
 
     // Bind socket to the address
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) 
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
     {
         log_error("Socket bind failed: %s", strerror(errno));
         close(server_fd);
@@ -217,7 +240,7 @@ int setup_unix_socket()
     }
 
     // Listen for incoming connections
-    if (listen(server_fd, MAX_CLIENTS) < 0) 
+    if (listen(server_fd, MAX_CLIENTS) < 0)
     {
         log_error("Socket listen failed: %s", strerror(errno));
         close(server_fd);
@@ -225,12 +248,12 @@ int setup_unix_socket()
     }
 
     log_info("UNIX socket server setup at %s", SOCKET_PATH);
-    
+
     // Create a thread to handle socket commands
     pthread_t socket_thread;
     int *fd_ptr = malloc(sizeof(int));
-    *fd_ptr = server_fd;
-    if (pthread_create(&socket_thread, NULL, unix_socket_thread, fd_ptr) != 0) 
+    *fd_ptr     = server_fd;
+    if (pthread_create(&socket_thread, NULL, unix_socket_thread, fd_ptr) != 0)
     {
         log_error("Failed to create UNIX socket thread: %s", strerror(errno));
         close(server_fd);
