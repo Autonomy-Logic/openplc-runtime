@@ -75,7 +75,7 @@ def init(args_capsule):
                 config_file_path = runtime_args.config_file_path
             else:
                 # If not directly on runtime_args, we might need to get it from the map
-                # like the slave example, but ModbusMasterConfig.from_json_file needs a path.
+                # like the slave example, but ModbusMasterConfig.import_config_from_file needs a path.
                 # For now, let's assume a default path if not found directly.
                 # This part might need adjustment based on how C provides the path.
                 print("[MODBUS_MASTER] ⚠ Plugin-specific config file path not found directly in runtime_args.")
@@ -111,8 +111,8 @@ def init(args_capsule):
             print(f"[MODBUS_MASTER] ✓ Configuration file path: {config_file_path}")
             
             # Initialize ModbusMasterConfig and load from JSON file
-            modbus_master_config = ModbusMasterConfig(config_path=config_file_path)
-            modbus_master_config.from_json_file(file_path=config_file_path)
+            modbus_master_config = ModbusMasterConfig()
+            modbus_master_config.import_config_from_file(file_path=config_file_path)
             
             # Validate the loaded configuration
             modbus_master_config.validate()

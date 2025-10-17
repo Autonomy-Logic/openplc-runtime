@@ -20,7 +20,7 @@ except ImportError:
     from modbus_master_config_model import ModbusMasterConfig, ModbusIoPointConfig
 
 def test_modbus_config_from_valid_dict():
-    """Test ModbusMasterConfig initialization and from_json_file with valid data."""
+    """Test ModbusMasterConfig initialization and import_config_from_file with valid data."""
     valid_config_data = [{
         "name": "test_modbus_device",
         "protocol": "MODBUS",
@@ -56,7 +56,7 @@ def test_modbus_config_from_valid_dict():
             tmp_file_path = tmp_file.name
 
         config_instance = ModbusMasterConfig(config_path="dummy_init_path")
-        config_instance.from_json_file(tmp_file_path) # Load data from the temp file
+        config_instance.import_config_from_file(tmp_file_path) # Load data from the temp file
 
         # Assertions for top-level attributes
         assert config_instance.name == "test_modbus_device", f"Expected name 'test_modbus_device', got {config_instance.name}"
@@ -110,7 +110,7 @@ def test_modbus_config_from_file():
 
     try:
         config_instance = ModbusMasterConfig(config_path="dummy_init_path_for_file_test")
-        config_instance.from_json_file(config_file_path)
+        config_instance.import_config_from_file(config_file_path)
 
         print(f"Successfully parsed from file: {config_file_path}")
         print(f"Name: {config_instance.name}")
@@ -203,7 +203,7 @@ def test_modbus_config_error_handling():
 
     # Test with a non-existent file
     try:
-        config_instance.from_json_file("non_existent_file.json")
+        config_instance.import_config_from_file("non_existent_file.json")
         print("ERROR: Should have raised FileNotFoundError for non-existent file.")
         return False
     except FileNotFoundError:
@@ -220,7 +220,7 @@ def test_modbus_config_error_handling():
         tmp_file_path = tmp_file.name
     
     try:
-        config_instance.from_json_file(tmp_file_path)
+        config_instance.import_config_from_file(tmp_file_path)
         print("ERROR: Should have raised json.JSONDecodeError for malformed JSON.")
         return False
     except json.JSONDecodeError:
@@ -233,14 +233,14 @@ def test_modbus_config_error_handling():
             os.remove(tmp_file_path)
 
     # Test with JSON missing top-level keys (e.g., "config")
-    # Current ModbusMasterConfig.from_json_file uses .get() with defaults, so it shouldn't fail.
+    # Current ModbusMasterConfig.import_config_from_file uses .get() with defaults, so it shouldn't fail.
     json_missing_config_key = '{"name": "test_device", "protocol": "MODBUS"}'
     tmp_file_path_missing_config = None # Initialize
     with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json") as tmp_file:
         tmp_file.write(json_missing_config_key)
         tmp_file_path_missing_config = tmp_file.name
     try:
-        config_instance.from_json_file(tmp_file_path_missing_config)
+        config_instance.import_config_from_file(tmp_file_path_missing_config)
         # Expect default values to be used
         assert config_instance.name == "test_device"
         assert config_instance.config == {} # Default from .get()

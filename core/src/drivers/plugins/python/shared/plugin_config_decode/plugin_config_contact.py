@@ -14,13 +14,12 @@ class PluginConfigContract(ABC):
     """
     Abstract base class for protocol-specific configurations.
     """
-    def __init__(self, config_path: str):
+    def __init__(self):
         self.name = "UNDEFINED"
         self.protocol = "UNDEFINED"
-        self.config_path = config_path
         self.config = {}
 
-    def from_json_file(self, file_path: str):
+    def import_config_from_file(self, file_path: str):
         """Creates an instance from a JSON file."""
         pass
 
@@ -29,4 +28,4 @@ class PluginConfigContract(ABC):
         pass
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(PATH={self.config_path})"
+        return f"{self.__class__.__name__}(CONFIG={self.config})"

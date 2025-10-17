@@ -11,12 +11,12 @@ class ModbusMasterConfig(PluginConfigContract):
     """
     Modbus Master configuration model.
     """
-    def __init__(self, config_path: str):
-        super().__init__(config_path) # Call the base class constructor
+    def __init__(self):
+        super().__init__() # Call the base class constructor
         self.config = {} # attributes specific to ModbusMasterConfig can be added here
         self.io_points: List['ModbusIoPointConfig'] = []  # List to hold Modbus I/O points
 
-    def from_json_file(self, file_path: str):
+    def import_config_from_file(self, file_path: str):
         """Read config from a JSON file."""
         with open(file_path, 'r') as f:
             raw_config = json.load(f)
@@ -75,8 +75,8 @@ class ModbusMasterConfig(PluginConfigContract):
         pass
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(PATH={self.config_path})"
-    
+        return f"{self.__class__.__name__}(CONFIG={self.config})"
+
 
 class ModbusIoPointConfig:
     """
