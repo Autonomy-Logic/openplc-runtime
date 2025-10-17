@@ -4,6 +4,7 @@ set -euo pipefail
 # Detect the project root directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPENPLC_DIR="$SCRIPT_DIR"
+VENV_DIR="$OPENPLC_DIR/venvs/runtime"
 
 # Ensure we're in the project directory
 cd "$OPENPLC_DIR"
@@ -58,6 +59,23 @@ log_warning() {
 
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+setup_runtime_venv() {
+    if [ -d "$VENV_DIR" ]; then
+        log_info "Runtime virtual environment already exists."
+    else
+        log_info "Creating runtime virtual environment..."
+        python3 -m venv "$VENV_DIR"
+        if [ $? -ne 0 ]; then
+            log_error "Failed to create runtime virtual environment."
+            exit 1
+        fi
+            "$VENV_DIR/bin/python3" -m pip install --upgrade pip
+            "$VENV_DIR/bin/python3" -m pip install -r "$OPENPLC_DIR/requirements.txt"
+            source "$VENV_DIR/bin/activate"
+            log_success "Runtime virtual environment created and activated."
+    fi
 }
 
 # Function to setup plugin virtual environments
@@ -138,8 +156,7 @@ setup_plugin_venvs() {
 
 # Setup plugin virtual environments
 setup_plugin_venvs
-
-source "$OPENPLC_DIR/venvs/runtime/bin/activate"
+setup_runtime_venv
 
 # Start the PLC webserver
-"$OPENPLC_DIR/venvs/runtime/bin/python3" "$OPENPLC_DIR/webserver/app.py"
+"$VENV_DIR/bin/python3" "$OPENPLC_DIR/webserver/app.py"
