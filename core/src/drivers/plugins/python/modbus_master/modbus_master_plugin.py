@@ -135,7 +135,7 @@ def init(args_capsule):
         except json.JSONDecodeError as e:
             print(f"[MODBUS_MASTER] ✗ Error decoding JSON configuration: {e}")
             if config_file_path:
-                 print(f"[MODBUS_MASTER]   File path: {config_file_path}")
+                print(f"[MODBUS_MASTER]   File path: {config_file_path}")
             return False
         except ValueError as e: # Catch validation errors from ModbusMasterConfig
             print(f"[MODBUS_MASTER] ✗ Configuration validation error: {e}")
