@@ -24,8 +24,8 @@ from webserver.restapi import (
     register_callback_post,
     restapi_bp,
 )
-from runtimemanager import RuntimeManager
-from logger import get_logger, LogParser
+from webserver.runtimemanager import RuntimeManager
+from webserver.logger import get_logger, LogParser
 
 logger, _ = get_logger("logger", use_buffer=True)
 
