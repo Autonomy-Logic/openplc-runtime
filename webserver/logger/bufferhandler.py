@@ -16,13 +16,13 @@ class BufferHandler(logging.Handler):
         self.buffer = deque(maxlen=capacity)
         self.records = []  # Store formatted log records as strings
         self._lock = Lock()
-        self._instance = None
 
     def emit(self, record: logging.LogRecord) -> None:
         with self._lock:
             try:
-                self.records.append(self.format(record))
-                self.buffer.append(self.format(record))
+                formatted_record = self.format(record)
+                self.records.append(formatted_record)
+                self.buffer.append(formatted_record)
             except Exception:
                 self.handleError(record)
 
@@ -86,15 +86,6 @@ class BufferHandler(logging.Handler):
                 })
 
         return normalized
-
-    @classmethod
-    def get_instance(cls):
-        """Singleton accessor."""
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-        return cls._instance
 
     def clear(self) -> None:
         self.buffer.clear()

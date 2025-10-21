@@ -9,8 +9,7 @@ import flask
 import flask_login
 from webserver.credentials import CertGen
 from debug_websocket import init_debug_websocket
-from logger import get_logger
-from plcapp_management import (
+from webserver.plcapp_management import (
     MAX_FILE_SIZE,
     BuildStatus,
     analyze_zip,
@@ -26,16 +25,6 @@ from webserver.restapi import (
     restapi_bp,
 )
 from runtimemanager import RuntimeManager
-
-from plcapp_management import (
-    build_state,
-    BuildStatus,
-    analyze_zip,
-    run_compile,
-    safe_extract,
-    MAX_FILE_SIZE
-)
-
 from logger import get_logger, LogParser
 
 logger, _ = get_logger("logger", use_buffer=True)

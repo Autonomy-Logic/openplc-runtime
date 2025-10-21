@@ -4,4 +4,4 @@ def test_logger_initializes_correctly(test_logger):
     assert logger.name == "test_logger"
     assert logger.level == 10  # logging.DEBUG
     assert len(logger.handlers) >= 1
-    assert isinstance(buffer.get_logs(), list) or hasattr(buffer.emit(), "append")
+    assert isinstance(buffer.get_logs(), list)
