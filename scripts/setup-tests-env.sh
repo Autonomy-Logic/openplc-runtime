@@ -46,16 +46,7 @@ pythonpath = .
 EOF
 fi
 
-# Ensure conftest.py exists to set PYTHONPATH
-if [ ! -f "$PROJECT_ROOT/tests/pytest/conftest.py" ]; then
-    echo "🧰 Creating tests/pytest/conftest.py..."
-    mkdir -p "$PROJECT_ROOT/tests/pytest"
-    cat <<EOF > "$PROJECT_ROOT/tests/pytest/conftest.py"
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-EOF
-fi
+# Existing conftest.py with fixtures is preserved; no need to create or overwrite.
 
 echo "🧪 Running pytest..."
 pytest -vvv
