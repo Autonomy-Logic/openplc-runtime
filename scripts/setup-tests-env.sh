@@ -6,7 +6,7 @@ set -e
 # ===========================
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV_DIR="$PROJECT_ROOT/venvs/runtime"
+VENV_DIR="$PROJECT_ROOT/venvs/test-env"
 
 echo "🚀 Setting up test environment for OpenPLC Runtime"
 echo "📂 Project root: $PROJECT_ROOT"
