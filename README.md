@@ -16,6 +16,58 @@ OpenPLC Runtime v4 designed to run programs built on OpenPLC Editor v4
 - Python (required to run xml2st)
 - Docker Desktop (contains GCC and Make internally)
 
+## Run project
+
+### Docker
+
+1. Build image
+
+```
+   sudo bash ./scripts/build-docker-image.sh
+```
+
+2. Run image
+
+```
+   sudo bash ./scripts/run-image.sh
+```
+
+### Linux
+
+1. Installation
+
+```
+   sudo bash ./install.sh
+```
+
+2. Start
+
+```
+   sudo bash ./start_openplc.sh
+```
+
+## Unit Tests
+
+1. Run locally
+
+```
+   sudo bash ./scripts/setup-test-env.sh
+```
+
+ or
+
+2. Build development docker image
+
+```
+   sudo bash ./scripts/build-docker-iamge-dev.sh
+```
+
+3. Run development docker image
+
+```
+   sudo bash ./scripts/run-image-dev.sh
+```
+
 ## Pre-commit setup
 
 1. Install
