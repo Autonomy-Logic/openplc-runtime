@@ -2,7 +2,7 @@ import os
 import socket
 from threading import Lock
 from typing import Optional
-from webserver.logger import get_logger, LogParser
+from webserver.logger import get_logger
 
 logger, _ = get_logger(use_buffer=True)
 mutex = Lock()
