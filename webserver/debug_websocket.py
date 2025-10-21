@@ -126,9 +126,7 @@ def init_debug_websocket(app, unix_client_instance):
             logger.debug("Debug command received: %s", command_hex)
 
             unix_command = f"DEBUG:{command_hex}\n"
-            _unix_client.send_message(unix_command)
-
-            response = _unix_client.recv_message(timeout=2.0)
+            response = _unix_client.send_and_receive(unix_command, timeout=2.0)
 
             if response is None:
                 logger.warning("No response from runtime")

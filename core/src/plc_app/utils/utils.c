@@ -6,6 +6,7 @@
 
 unsigned long long *ext_common_ticktime__ = NULL;
 unsigned long tick__ = 0;
+char *ext_plc_program_md5 = NULL;
 
 void normalize_timespec(struct timespec *ts) 
 {

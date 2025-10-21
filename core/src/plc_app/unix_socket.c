@@ -105,6 +105,12 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
             if (data_length > 0)
             {
                 bytes_to_hex_string(debug_data, data_length, response, response_size, "DEBUG:");
+                size_t len = strlen(response);
+                if (len < response_size - 1)
+                {
+                    response[len]     = '\n';
+                    response[len + 1] = '\0';
+                }
             }
             else
             {

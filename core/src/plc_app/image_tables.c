@@ -74,6 +74,9 @@ int symbols_init(PluginManager *pm)
     *(void **)(&ext_common_ticktime__) =
         plugin_manager_get_func(pm, void (*)(unsigned long), "common_ticktime__");
 
+    *(void **)(&ext_plc_program_md5) =
+        plugin_manager_get_func(pm, char *(*)(unsigned long), "plc_program_md5");
+
     *(void **)(&ext_set_endianness) =
         plugin_manager_get_func(pm, void (*)(unsigned long), "set_endianness");
 
@@ -92,8 +95,8 @@ int symbols_init(PluginManager *pm)
     // Check if all symbols were loaded successfully
     if (!ext_config_run__ || !ext_config_init__ || !ext_glueVars ||
         !ext_updateTime || !ext_setBufferPointers || !ext_common_ticktime__ ||
-        !ext_set_endianness || !ext_get_var_count || !ext_get_var_size ||
-        !ext_get_var_addr || !ext_set_trace) 
+        !ext_plc_program_md5 || !ext_set_endianness || !ext_get_var_count || 
+        !ext_get_var_size || !ext_get_var_addr || !ext_set_trace) 
     {
         log_error("Failed to load all symbols");
         return -1;

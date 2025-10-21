@@ -183,11 +183,10 @@ static void debugGetMd5(uint8_t *frame, size_t *frame_len, void *endianness)
     frame[0] = MB_FC_DEBUG_GET_MD5;
     frame[1] = MB_DEBUG_SUCCESS;
 
-    const char md5[] = "0000000000000000";
     int md5_len      = 0;
-    for (md5_len = 0; md5[md5_len] != '\0'; md5_len++)
+    for (md5_len = 0; ext_plc_program_md5[md5_len] != '\0'; md5_len++)
     {
-        frame[md5_len + 2] = md5[md5_len];
+        frame[md5_len + 2] = ext_plc_program_md5[md5_len];
     }
 
     *frame_len = md5_len + 2;

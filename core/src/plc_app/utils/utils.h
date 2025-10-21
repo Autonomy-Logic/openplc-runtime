@@ -10,6 +10,7 @@
 
 extern unsigned long long *ext_common_ticktime__;
 extern unsigned long tick__;
+extern char *ext_plc_program_md5;
 
 
 /**
