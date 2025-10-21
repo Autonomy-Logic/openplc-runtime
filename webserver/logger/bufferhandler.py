@@ -89,6 +89,7 @@ class BufferHandler(logging.Handler):
 
     def clear(self) -> None:
         self.buffer.clear()
+        self.records.clear()
 
     def __len__(self):
         return len(self.buffer)
