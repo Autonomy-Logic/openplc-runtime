@@ -51,7 +51,7 @@ OpenPLC Runtime v4 designed to run programs built on OpenPLC Editor v4
 1. Run locally
 
 ```
-   sudo bash ./scripts/setup-test-env.sh
+   sudo bash ./scripts/setup-tests-env.sh
 ```
 
  or
