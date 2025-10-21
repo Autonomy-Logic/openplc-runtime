@@ -59,7 +59,7 @@ OpenPLC Runtime v4 designed to run programs built on OpenPLC Editor v4
 2. Build development docker image
 
 ```
-   sudo bash ./scripts/build-docker-iamge-dev.sh
+   sudo bash ./scripts/build-docker-image-dev.sh
 ```
 
 3. Run development docker image
