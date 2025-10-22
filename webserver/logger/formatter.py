@@ -11,7 +11,6 @@ class JsonFormatter(logging.Formatter):
         msg = record.getMessage()
 
         # Try to detect pre-formatted JSON
-        # if msg.strip().startswith("{") and msg.strip().endswith("}"):
         try:
             log_entry = json.loads(msg)
             log_entry["id"] = config.LoggerConfig.log_id
