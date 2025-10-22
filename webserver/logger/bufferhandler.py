@@ -21,6 +21,7 @@ class BufferHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         with self._lock:
             try:
+                config.LoggerConfig.log_id += 1
                 formatted_record = self.format(record)
                 self.records.append(formatted_record)
                 self.buffer.append(formatted_record)
@@ -90,7 +91,7 @@ class BufferHandler(logging.Handler):
     def clear(self) -> None:
         self.buffer.clear()
         self.records.clear()
-        config.log_id = 0
+        config.LoggerConfig.log_id = 0
 
     def __len__(self):
         return len(self.buffer)

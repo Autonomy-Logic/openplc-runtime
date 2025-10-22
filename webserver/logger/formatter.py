@@ -1,3 +1,4 @@
+# logger/formatter.py
 from datetime import datetime, timezone
 import logging
 import json
@@ -13,17 +14,15 @@ class JsonFormatter(logging.Formatter):
         # if msg.strip().startswith("{") and msg.strip().endswith("}"):
         try:
             log_entry = json.loads(msg)
-            config.log_id += 1
-            log_entry["id"] = config.log_id
+            log_entry["id"] = config.LoggerConfig.log_id
             # Already JSON — just make sure timestamp exists
             if "timestamp" not in log_entry:
                 log_entry["timestamp"] = datetime.now(timezone.utc).isoformat()
         
         except json.JSONDecodeError:
             # Not JSON, so create our standard JSON structure
-            config.log_id += 1
             log_entry = {
-                "id": config.log_id,
+                "id": config.LoggerConfig.log_id,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "level": record.levelname,
                 "message": msg,
