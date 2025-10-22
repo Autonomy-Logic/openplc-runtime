@@ -4,6 +4,7 @@ from typing import List, Optional
 import json
 from datetime import datetime, timezone
 from threading import Lock
+from . import config
 
 
 class BufferHandler(logging.Handler):
@@ -42,7 +43,6 @@ class BufferHandler(logging.Handler):
         """Retrieve logs from buffer."""
         with self._lock:
             filtered_logs = [json.loads(item) for item in self.buffer]
-            # json_output = json.dumps(filtered_logs, indent=2)
             filtered_logs = self.filter_logs(filtered_logs, level=level, min_id=min_id)
             if count is not None and count < len(filtered_logs):
                 filtered_logs = filtered_logs[-count:]
@@ -90,6 +90,7 @@ class BufferHandler(logging.Handler):
     def clear(self) -> None:
         self.buffer.clear()
         self.records.clear()
+        config.log_id = 0
 
     def __len__(self):
         return len(self.buffer)
