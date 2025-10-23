@@ -14,3 +14,9 @@ class LoggerConfig:
         with cls._log_id_lock:
             cls.log_id += 1
             return cls.log_id
+    
+    @classmethod
+    def reset_log_id(cls) -> None:
+        """Reset the global log ID to zero."""
+        with cls._log_id_lock:
+            cls.log_id = 0

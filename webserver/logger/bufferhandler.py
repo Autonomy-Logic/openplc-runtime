@@ -91,7 +91,7 @@ class BufferHandler(logging.Handler):
     def clear(self) -> None:
         self.buffer.clear()
         self.records.clear()
-        config.LoggerConfig.log_id = 0
+        config.LoggerConfig.reset_log_id()
 
     def __len__(self):
         return len(self.buffer)
