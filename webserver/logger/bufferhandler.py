@@ -21,7 +21,7 @@ class BufferHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         with self._lock:
             try:
-                config.LoggerConfig.log_id += 1
+                record.log_id = config.LoggerConfig.next_log_id()
                 formatted_record = self.format(record)
                 self.records.append(formatted_record)
                 self.buffer.append(formatted_record)
