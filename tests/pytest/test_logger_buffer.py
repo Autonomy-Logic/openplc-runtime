@@ -45,7 +45,7 @@ def test_normalize_log_record(test_logger):
     logger, buffer = test_logger
     logger.info("Test log for normalization")
     logs = buffer.normalize_logs(buffer.get_logs())
-    assert type(logs) == list
+    assert isinstance(logs, list)
     assert all("timestamp" in log for log in logs)
 
 def test_filter_logs_by_level(test_logger):
