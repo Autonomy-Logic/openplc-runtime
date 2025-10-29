@@ -100,25 +100,6 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // Initialize plugin driver system
-    plugin_driver = plugin_driver_create();
-    if (plugin_driver)
-    {
-        log_info("[PLUGIN]: Plugin driver system created");
-        // Load plugin configuration
-        if (plugin_driver_load_config(plugin_driver, "./plugins.conf") == 0)
-        {
-            // Start plugins
-            plugin_driver_init(plugin_driver);
-            plugin_driver_start(plugin_driver);
-            log_info("[PLUGIN]: Plugin driver system initialized");
-        }
-        else
-        {
-            log_error("[PLUGIN]: Failed to load plugin configuration");
-        }
-    }
-
     // Start PLC state manager
     if (plc_state_manager_init() != 0)
     {
@@ -145,6 +126,25 @@ int main(int argc, char *argv[])
     if (plc_set_state(PLC_STATE_RUNNING) != true)
     {
         log_error("Failed to set PLC state to RUNNING");
+    }
+
+    // Initialize plugin driver system
+    plugin_driver = plugin_driver_create();
+    if (plugin_driver)
+    {
+        log_info("[PLUGIN]: Plugin driver system created");
+        // Load plugin configuration
+        if (plugin_driver_load_config(plugin_driver, "./plugins.conf") == 0)
+        {
+            // Start plugins
+            plugin_driver_init(plugin_driver);
+            plugin_driver_start(plugin_driver);
+            log_info("[PLUGIN]: Plugin driver system initialized");
+        }
+        else
+        {
+            log_error("[PLUGIN]: Failed to load plugin configuration");
+        }
     }
 
     while (keep_running)
