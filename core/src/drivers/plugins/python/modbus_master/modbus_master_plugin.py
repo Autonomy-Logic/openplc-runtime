@@ -646,13 +646,14 @@ class ModbusSlaveDevice(threading.Thread):
                 cycle_elapsed = time.monotonic() - cycle_start_time
                 sleep_duration = max(0, cycle_time - cycle_elapsed)
                 if sleep_duration > 0:
-                    # Sleep in small increments to allow for quick shutdown
-                    for _ in range(int(sleep_duration * 10)):
-                        if self._stop_event.is_set(): 
-                            break
-                        time.sleep(0.1)
-                    if self._stop_event.is_set(): 
-                        break
+                    # Sleep in small increments (100ms each) to allow for quick shutdown
+                    sleep_increment = 0.1
+                    remaining_sleep = sleep_duration
+                    
+                    while remaining_sleep > 0 and not self._stop_event.is_set():
+                        actual_sleep = min(sleep_increment, remaining_sleep)
+                        time.sleep(actual_sleep)
+                        remaining_sleep -= actual_sleep
 
         except ConnectionException as ce:
             print(f"[{self.name}] ✗ Connection failed: {ce}")
