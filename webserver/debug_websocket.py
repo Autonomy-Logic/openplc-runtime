@@ -10,7 +10,7 @@ from flask import request
 from flask_jwt_extended import decode_token
 from flask_socketio import SocketIO, emit
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
-from logger import get_logger
+from webserver.logger import get_logger
 
 logger, _ = get_logger("debug_ws", use_buffer=True)
 

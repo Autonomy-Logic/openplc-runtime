@@ -8,7 +8,7 @@ from typing import Callable, Final
 import flask
 import flask_login
 from webserver.credentials import CertGen
-from debug_websocket import init_debug_websocket
+from webserver.debug_websocket import init_debug_websocket
 from webserver.plcapp_management import (
     MAX_FILE_SIZE,
     BuildStatus,

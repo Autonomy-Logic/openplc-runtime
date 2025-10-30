@@ -8,9 +8,10 @@ from webserver.logger import get_logger, LogParser
 
 logger, buffer = get_logger("logger", use_buffer=True)
 
-# Always resolve .env relative to the repo root to guarantee it is found
-ENV_PATH = Path(__file__).resolve().parent.parent / "webserver/.env"
-DB_PATH = Path(__file__).resolve().parent.parent / "webserver/restapi.db"
+# Use /var/run/runtime for persistent data to avoid Docker volume permission issues
+# This directory is created in the Dockerfile and can use a named volume
+ENV_PATH = Path("/var/run/runtime/.env")
+DB_PATH = Path("/var/run/runtime/restapi.db")
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
 # Function to validate environment variable values
