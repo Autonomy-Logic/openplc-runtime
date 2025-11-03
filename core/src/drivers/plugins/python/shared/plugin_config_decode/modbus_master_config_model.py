@@ -7,7 +7,7 @@ from typing import Optional, Literal, List, Dict, Any
 try:
     from .plugin_config_contact import PluginConfigContract
 except ImportError:
-    # Para execução direta
+    # For direct execution
     from plugin_config_contact import PluginConfigContract
 
 Area = Literal["I", "Q", "M"]
