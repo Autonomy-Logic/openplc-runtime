@@ -134,7 +134,7 @@ class ModbusSlaveDevice(threading.Thread):
             else:  # Non-boolean (B, W, D, L)
                 if area == "M":  # Memory area
                     if size == "B":
-                        buffer_type_str = "byte_input"  # Memory area uses input buffer types
+                        buffer_type_str = "byte_memory"  # Memory area uses memory buffer types
                     elif size == "W":
                         buffer_type_str = "int_memory"
                     elif size == "D":
