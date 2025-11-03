@@ -7,7 +7,7 @@ from typing import Optional, Literal, List, Dict, Any
 try:
     from .plugin_config_contact import PluginConfigContract
 except ImportError:
-    # Para execução direta
+    # For direct execution
     from plugin_config_contact import PluginConfigContract
 
 Area = Literal["I", "Q", "M"]
@@ -19,16 +19,16 @@ ADDR_RE = re.compile(r"^%([IQM])([XBWDL])(\d+)(?:\.(\d+))?$", re.IGNORECASE)
 class IECAddress:
     area: Area              # 'I' | 'Q' | 'M'
     size: Size              # 'X' | 'B' | 'W' | 'D' | 'L'
-    byte: int               # byte base (para X é o byte do bit; p/ B/W/D/L é o início)
-    bit: Optional[int]      # só para X
-    index_bits: Optional[int]   # índice linear em bits (só p/ X)
-    index_bytes: int            # índice linear em bytes (offset no buffer)
+    byte: int               # base byte (for X it's the bit's byte; for B/W/D/L it's the start)
+    bit: Optional[int]      # only for X
+    index_bits: Optional[int]   # linear index in bits (only for X)
+    index_bytes: int            # linear index in bytes (buffer offset)
     width_bits: int             # 1, 8, 16, 32, 64
 
 def parse_iec_address(s: str) -> IECAddress:
     m = ADDR_RE.match(s.strip())
     if not m:
-        raise ValueError(f"Endereço IEC inválido: {s!r}")
+        raise ValueError(f"Invalid IEC address: {s!r}")
     _area, _size, n1, n2 = m.groups()
     area: Area = _area.upper()  # type: ignore 
     size: Size = _size.upper() # type: ignore
@@ -37,7 +37,7 @@ def parse_iec_address(s: str) -> IECAddress:
 
     if size == "X":
         if bit is None or not (0 <= bit <= 7):
-            raise ValueError("Bit ausente ou fora de 0..7 para endereço do tipo X (bit).")
+            raise ValueError("Missing bit or out of 0..7 range for X-type (bit) address.")
         index_bits = byte * 8 + bit
         index_bytes = byte
         width_bits = 1
@@ -58,7 +58,7 @@ def parse_iec_address(s: str) -> IECAddress:
         index_bytes = byte * 8
         width_bits = 64
     else:
-        raise ValueError(f"Tamanho não suportado: {size}")
+        raise ValueError(f"Unsupported size: {size}")
 
     return IECAddress(area, size, byte, bit, index_bits, index_bytes, width_bits)
 
