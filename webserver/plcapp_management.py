@@ -122,6 +122,9 @@ def safe_extract(zip_path, dest_dir, valid_files):
         for info in valid_files:
             filename = info.filename
 
+            # Normalize path separators for cross-platform compatibility (Windows \ to Unix /)
+            filename = filename.replace('\\', '/')
+
             # Skip macOS junk and directories
             if filename.startswith("__MACOSX/") or filename.endswith(".DS_Store") or filename.endswith("/"):
                 continue
