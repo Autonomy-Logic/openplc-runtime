@@ -26,6 +26,7 @@ extern IEC_UDINT *dint_memory[BUFFER_SIZE];
 extern IEC_ULINT *lint_memory[BUFFER_SIZE];
 static PyThreadState *main_tstate = NULL;
 static PyGILState_STATE gstate;
+static int has_python_plugin = 0;
 
 // Prototypes
 static void python_plugin_cleanup(plugin_instance_t *plugin);
@@ -108,9 +109,13 @@ int plugin_driver_load_config(plugin_driver_t *driver, const char *config_file)
     }
 
     driver->plugin_count = config_count;
+    has_python_plugin = 0;
     for (int w = 0; w < config_count; w++)
     {
         memcpy(&driver->plugins[w].config, &configs[w], sizeof(plugin_config_t));
+        if (configs[w].type == PLUGIN_TYPE_PYTHON) {
+            has_python_plugin = 1;
+        }
     }
 
     // Agora leio todos os simbolos que preciso (init, start, stop, cycle, cleanup) e adiciono na
@@ -224,8 +229,11 @@ int plugin_driver_start(plugin_driver_t *driver)
         return 0;
     }
 
-    main_tstate = PyEval_SaveThread();
-    gstate      = PyGILState_Ensure();
+
+    if (has_python_plugin) {
+        main_tstate = PyEval_SaveThread();
+        gstate      = PyGILState_Ensure();
+    }
 
     for (int i = 0; i < driver->plugin_count; i++)
     {
@@ -284,7 +292,9 @@ int plugin_driver_start(plugin_driver_t *driver)
             break;
         }
     }
-    PyGILState_Release(gstate);
+    if (has_python_plugin) {
+        PyGILState_Release(gstate);
+    }
     return 0;
 }
 
@@ -356,7 +366,9 @@ void plugin_driver_destroy(plugin_driver_t *driver)
         return;
     }
 
-    gstate = PyGILState_Ensure();
+    if (has_python_plugin) {
+        gstate = PyGILState_Ensure();
+    }
 
     plugin_driver_stop(driver);
 
@@ -385,9 +397,11 @@ void plugin_driver_destroy(plugin_driver_t *driver)
         }
     }
 
-    PyGILState_Release(gstate);
-    PyEval_RestoreThread(main_tstate);
-    Py_FinalizeEx();
+    if (has_python_plugin) {
+        PyGILState_Release(gstate);
+        PyEval_RestoreThread(main_tstate);
+        Py_FinalizeEx();
+    }
     pthread_mutex_destroy(&driver->buffer_mutex);
 
     free(driver);
