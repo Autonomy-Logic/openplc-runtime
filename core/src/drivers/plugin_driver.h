@@ -65,6 +65,7 @@ typedef struct plugin_instance_s
 {
     PluginManager *manager;
     python_binds_t *python_plugin;
+    plugin_funct_bundle_t *native_plugin;
     // pthread_t thread;
     int running;
     plugin_config_t config;
@@ -90,6 +91,9 @@ int plugin_mutex_give(pthread_mutex_t *mutex);
 
 // Python plugin functions
 int python_plugin_get_symbols(plugin_instance_t *plugin);
+
+// Native plugin functions
+int native_plugin_get_symbols(plugin_instance_t *plugin);
 
 // Runtime arguments generation
 void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *driver,

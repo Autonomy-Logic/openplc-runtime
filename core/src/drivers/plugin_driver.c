@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <dlfcn.h>
 
 // External buffer declarations from image_tables.c
 extern IEC_BOOL *bool_input[BUFFER_SIZE][8];
@@ -127,6 +128,13 @@ int plugin_driver_load_config(plugin_driver_t *driver, const char *config_file)
                 plugin_manager_destroy(plugin->manager);
                 return -1;
             }
+        } else if (plugin->config.type == PLUGIN_TYPE_NATIVE) {
+            if (native_plugin_get_symbols(plugin) != 0)
+            {
+                fprintf(stderr, "Failed to get native plugin symbols for: %s\n",
+                        plugin->config.path);
+                return -1;
+            }
         }
     }
 
@@ -171,9 +179,31 @@ int plugin_driver_init(plugin_driver_t *driver)
             }
             Py_DECREF(result);
         }
-        else if (plugin->config.type == PLUGIN_TYPE_NATIVE && plugin->manager)
+        else if (plugin->config.type == PLUGIN_TYPE_NATIVE && plugin->native_plugin &&
+                 plugin->native_plugin->init)
         {
-            // TODO: Implement native plugin initialization
+            // Generate structured args for native plugin
+            plugin_runtime_args_t *args =
+                (plugin_runtime_args_t *)generate_structured_args_with_driver(PLUGIN_TYPE_NATIVE, driver, i);
+            if (!args)
+            {
+                fprintf(stderr, "Failed to generate runtime args for native plugin: %s\n",
+                        plugin->config.name);
+                return -1;
+            }
+
+            // Call the native init function
+            int result = plugin->native_plugin->init(args);
+            if (result != 0)
+            {
+                fprintf(stderr, "Native init function failed for plugin: %s (returned %d)\n",
+                        plugin->config.name, result);
+                free_structured_args(args);
+                return -1;
+            }
+
+            // Free the args after successful initialization
+            free_structured_args(args);
         }
     }
 
@@ -235,7 +265,18 @@ int plugin_driver_start(plugin_driver_t *driver)
 
         case PLUGIN_TYPE_NATIVE:
         {
-            // TODO: Implement native plugin start logic
+            // Native plugins run synchronously - call start_loop if available
+            if (plugin->native_plugin && plugin->native_plugin->start)
+            {
+                plugin->native_plugin->start();
+                printf("[PLUGIN]: Native plugin %s started successfully.\n", plugin->config.name);
+                plugin->running = 1;
+            }
+            else
+            {
+                fprintf(stderr, "Native plugin %s does not have a start_loop function.\n",
+                        plugin->config.name);
+            }
         }
         break;
 
@@ -286,9 +327,17 @@ int plugin_driver_stop(plugin_driver_t *driver)
             plugin->running = 0;
         }
 
+        else if (driver->plugins[i].native_plugin && driver->plugins[i].native_plugin->stop &&
+                 driver->plugins[i].running)
+        {
+            plugin_instance_t *plugin = &driver->plugins[i];
+            plugin->native_plugin->stop();
+            printf("[PLUGIN]: Native plugin %s stopped successfully.\n", plugin->config.name);
+            plugin->running = 0;
+        }
+
         printf("[PLUGIN]: Plugin %s stopped...\n", driver->plugins[i].config.name);
         // Plugin manager only handles destruction, not stopping
-        // TODO: Implement native plugin stop logic if needed
     }
 
     return 0;
@@ -322,6 +371,17 @@ void plugin_driver_destroy(plugin_driver_t *driver)
         if (plugin->python_plugin)
         {
             python_plugin_cleanup(plugin);
+        }
+        if (plugin->native_plugin)
+        {
+            // Call cleanup function if available
+            if (plugin->native_plugin->cleanup)
+            {
+                plugin->native_plugin->cleanup();
+                printf("[PLUGIN]: Native plugin %s cleaned up successfully.\n", plugin->config.name);
+            }
+            free(plugin->native_plugin);
+            plugin->native_plugin = NULL;
         }
     }
 
@@ -616,6 +676,89 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
     printf("  - start_loop: %s\n", py_binds->pFuncStart ? "✓" : "✗");
     printf("  - stop_loop: %s\n", py_binds->pFuncStop ? "✓" : "✗");
     printf("  - cleanup: %s\n", py_binds->pFuncCleanup ? "✓" : "✗");
+
+    return 0;
+}
+
+int native_plugin_get_symbols(plugin_instance_t *plugin)
+{
+    if (!plugin || plugin->config.path[0] == '\0')
+    {
+        return -1;
+    }
+
+    // Allocate native plugin function bundle
+    plugin_funct_bundle_t *native_bundle = calloc(1, sizeof(plugin_funct_bundle_t));
+    if (!native_bundle)
+    {
+        return -1;
+    }
+
+    // Load the shared library
+    void *handle = dlopen(plugin->config.path, RTLD_LAZY);
+    if (!handle)
+    {
+        fprintf(stderr, "Failed to load native plugin '%s': %s\n", plugin->config.path, dlerror());
+        free(native_bundle);
+        return -1;
+    }
+
+    // Clear any existing error
+    dlerror();
+
+    // Get function pointers for required functions
+    // init function is required
+    native_bundle->init = (plugin_init_func_t)dlsym(handle, "init");
+    if (!native_bundle->init)
+    {
+        fprintf(stderr, "Error: 'init' function not found in native plugin '%s': %s\n",
+                plugin->config.path, dlerror());
+        dlclose(handle);
+        free(native_bundle);
+        return -1;
+    }
+
+    // Optional functions - set to NULL if not found
+    native_bundle->start = (plugin_start_loop_func_t)dlsym(handle, "start_loop");
+    if (!native_bundle->start)
+    {
+        fprintf(stderr, "Warning: 'start_loop' function not found in native plugin '%s' (optional)\n",
+                plugin->config.path);
+    }
+
+    native_bundle->stop = (plugin_stop_loop_func_t)dlsym(handle, "stop_loop");
+    if (!native_bundle->stop)
+    {
+        fprintf(stderr, "Warning: 'stop_loop' function not found in native plugin '%s' (optional)\n",
+                plugin->config.path);
+    }
+
+    native_bundle->run_cycle = (plugin_run_cycle_func_t)dlsym(handle, "run_cycle");
+    if (!native_bundle->run_cycle)
+    {
+        fprintf(stderr, "Warning: 'run_cycle' function not found in native plugin '%s' (optional)\n",
+                plugin->config.path);
+    }
+
+    native_bundle->cleanup = (plugin_cleanup_func_t)dlsym(handle, "cleanup");
+    if (!native_bundle->cleanup)
+    {
+        fprintf(stderr, "Warning: 'cleanup' function not found in native plugin '%s' (optional)\n",
+                plugin->config.path);
+    }
+
+    // Store the native bundle and handle in the plugin instance
+    plugin->native_plugin = native_bundle;
+
+    // Note: We don't store the dlopen handle anywhere, but we could add it to the struct if needed
+    // For now, we'll assume the library stays loaded for the lifetime of the program
+
+    printf("Native plugin '%s' symbols loaded successfully\n", plugin->config.path);
+    printf("  - init: ✓\n");
+    printf("  - start_loop: %s\n", native_bundle->start ? "✓" : "✗");
+    printf("  - stop_loop: %s\n", native_bundle->stop ? "✓" : "✗");
+    printf("  - run_cycle: %s\n", native_bundle->run_cycle ? "✓" : "✗");
+    printf("  - cleanup: %s\n", native_bundle->cleanup ? "✓" : "✗");
 
     return 0;
 }
