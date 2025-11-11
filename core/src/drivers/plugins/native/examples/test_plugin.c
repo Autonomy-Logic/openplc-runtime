@@ -103,9 +103,9 @@ void stop_loop()
     printf("[TEST_PLUGIN]: Test plugin loop stopped!\n");
 }
 
-// Optional run_cycle function
-// This function is called on each PLC cycle if the plugin needs to run synchronously
-void run_cycle()
+// Optional cycle_start function
+// This function is called at the start of each PLC cycle if the plugin needs to run synchronously
+void cycle_start()
 {
     if (!plugin_initialized || !plugin_running) {
         return; // Silent if not running
@@ -116,7 +116,24 @@ void run_cycle()
     cycle_count++;
 
     if (cycle_count % 1000 == 0) { // Print every 1000 cycles
-        printf("[TEST_PLUGIN]: Running cycle %d\n", cycle_count);
+        printf("[TEST_PLUGIN]: Starting cycle %d\n", cycle_count);
+    }
+}
+
+// Optional cycle_end function
+// This function is called at the end of each PLC cycle if the plugin needs to run synchronously
+void cycle_end()
+{
+    if (!plugin_initialized || !plugin_running) {
+        return; // Silent if not running
+    }
+
+    // Simple test - just print a message occasionally
+    static int cycle_count = 0;
+    cycle_count++;
+
+    if (cycle_count % 1000 == 0) { // Print every 1000 cycles
+        printf("[TEST_PLUGIN]: Ending cycle %d\n", cycle_count);
     }
 }
 

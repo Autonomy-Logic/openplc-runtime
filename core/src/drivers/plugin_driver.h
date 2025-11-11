@@ -19,7 +19,8 @@ typedef enum
 typedef int (*plugin_init_func_t)(void *);
 typedef void (*plugin_start_loop_func_t)();
 typedef void (*plugin_stop_loop_func_t)();
-typedef void (*plugin_run_cycle_func_t)();
+typedef void (*plugin_cycle_start_func_t)();
+typedef void (*plugin_cycle_end_func_t)();
 typedef void (*plugin_cleanup_func_t)();
 
 typedef struct
@@ -27,7 +28,8 @@ typedef struct
     plugin_init_func_t init;
     plugin_start_loop_func_t start;
     plugin_stop_loop_func_t stop;
-    plugin_run_cycle_func_t run_cycle;
+    plugin_cycle_start_func_t cycle_start;
+    plugin_cycle_end_func_t cycle_end;
     plugin_cleanup_func_t cleanup;
 } plugin_funct_bundle_t;
 

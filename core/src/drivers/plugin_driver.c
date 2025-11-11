@@ -118,7 +118,7 @@ int plugin_driver_load_config(plugin_driver_t *driver, const char *config_file)
         }
     }
 
-    // Agora leio todos os simbolos que preciso (init, start, stop, cycle, cleanup) e adiciono na
+    // Now retrieve the function symbols and initialize
     // struct plugin_instance_t para cada plugin.
     for (int i = 0; i < driver->plugin_count; i++)
     {
@@ -747,10 +747,17 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
                 plugin->config.path);
     }
 
-    native_bundle->run_cycle = (plugin_run_cycle_func_t)dlsym(handle, "run_cycle");
-    if (!native_bundle->run_cycle)
+    native_bundle->cycle_start = (plugin_cycle_start_func_t)dlsym(handle, "cycle_start");
+    if (!native_bundle->cycle_start)
     {
-        fprintf(stderr, "Warning: 'run_cycle' function not found in native plugin '%s' (optional)\n",
+        fprintf(stderr, "Warning: 'cycle_start' function not found in native plugin '%s' (optional)\n",
+                plugin->config.path);
+    }
+
+    native_bundle->cycle_end = (plugin_cycle_end_func_t)dlsym(handle, "cycle_end");
+    if (!native_bundle->cycle_end)
+    {
+        fprintf(stderr, "Warning: 'cycle_end' function not found in native plugin '%s' (optional)\n",
                 plugin->config.path);
     }
 
@@ -771,7 +778,8 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     printf("  - init: ✓\n");
     printf("  - start_loop: %s\n", native_bundle->start ? "✓" : "✗");
     printf("  - stop_loop: %s\n", native_bundle->stop ? "✓" : "✗");
-    printf("  - run_cycle: %s\n", native_bundle->run_cycle ? "✓" : "✗");
+    printf("  - cycle_start: %s\n", native_bundle->cycle_start ? "✓" : "✗");
+    printf("  - cycle_end: %s\n", native_bundle->cycle_end ? "✓" : "✗");
     printf("  - cleanup: %s\n", native_bundle->cleanup ? "✓" : "✗");
 
     return 0;
