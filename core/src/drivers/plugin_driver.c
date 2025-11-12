@@ -392,6 +392,12 @@ void plugin_driver_destroy(plugin_driver_t *driver)
                 plugin->native_plugin->cleanup();
                 printf("[PLUGIN]: Native plugin %s cleaned up successfully.\n", plugin->config.name);
             }
+            // Close the shared library handle
+            if (plugin->native_plugin->handle) {
+                dlclose(plugin->native_plugin->handle);
+                plugin->native_plugin->handle = NULL;
+            }
+            
             free(plugin->native_plugin);
             plugin->native_plugin = NULL;
         }
@@ -709,13 +715,16 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     }
 
     // Load the shared library
-    void *handle = dlopen(plugin->config.path, RTLD_LAZY);
+    void *handle = dlopen(plugin->config.path, RTLD_LOCAL | RTLD_NOW);
     if (!handle)
     {
         fprintf(stderr, "Failed to load native plugin '%s': %s\n", plugin->config.path, dlerror());
         free(native_bundle);
         return -1;
     }
+
+    // Store the handle in the native bundle
+    native_bundle->handle = handle;
 
     // Clear any existing error
     dlerror();

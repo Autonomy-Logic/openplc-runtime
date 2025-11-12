@@ -25,6 +25,7 @@ typedef void (*plugin_cleanup_func_t)();
 
 typedef struct
 {
+    void *handle; // Handle to the loaded shared library
     plugin_init_func_t init;
     plugin_start_loop_func_t start;
     plugin_stop_loop_func_t stop;
