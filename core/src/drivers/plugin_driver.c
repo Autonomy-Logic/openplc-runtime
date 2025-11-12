@@ -397,7 +397,7 @@ void plugin_driver_destroy(plugin_driver_t *driver)
                 dlclose(plugin->native_plugin->handle);
                 plugin->native_plugin->handle = NULL;
             }
-            
+
             free(plugin->native_plugin);
             plugin->native_plugin = NULL;
         }
@@ -779,9 +779,6 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
 
     // Store the native bundle and handle in the plugin instance
     plugin->native_plugin = native_bundle;
-
-    // Note: We don't store the dlopen handle anywhere, but we could add it to the struct if needed
-    // For now, we'll assume the library stays loaded for the lifetime of the program
 
     printf("Native plugin '%s' symbols loaded successfully\n", plugin->config.path);
     printf("  - init: ✓\n");
