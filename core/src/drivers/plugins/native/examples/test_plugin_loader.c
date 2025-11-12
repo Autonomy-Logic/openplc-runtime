@@ -5,6 +5,7 @@
 #include <pthread.h>
 
 // Define plugin_runtime_args_t structure locally (same as in plugin)
+// TODO: Ideally, include from a shared header but avoiding Python dependencies here
 typedef struct
 {
     // Buffer pointers
