@@ -136,58 +136,60 @@ class LintBufferType(IBufferType):
         return ctypes.c_uint64
 
 
+# Core buffer types (module-level constants)
+_BUFFER_TYPES = {
+    'bool': BoolBufferType(),
+    'byte': ByteBufferType(),
+    'int': IntBufferType(),
+    'dint': DintBufferType(),
+    'lint': LintBufferType(),
+}
+
+# Buffer type mappings (used by the facade to map method names to types)
+_BUFFER_MAPPINGS = {
+    # Boolean buffers
+    'bool_input': ('bool', 'input'),
+    'bool_output': ('bool', 'output'),
+
+    # Byte buffers
+    'byte_input': ('byte', 'input'),
+    'byte_output': ('byte', 'output'),
+
+    # Integer buffers (16-bit)
+    'int_input': ('int', 'input'),
+    'int_output': ('int', 'output'),
+    'int_memory': ('int', 'memory'),
+
+    # Double integer buffers (32-bit)
+    'dint_input': ('dint', 'input'),
+    'dint_output': ('dint', 'output'),
+    'dint_memory': ('dint', 'memory'),
+
+    # Long integer buffers (64-bit)
+    'lint_input': ('lint', 'input'),
+    'lint_output': ('lint', 'output'),
+    'lint_memory': ('lint', 'memory'),
+}
+
+
 class BufferTypes:
     """
-    Singleton registry of all buffer types.
-
+    Utility class for accessing buffer type definitions and metadata.
+    
     This class provides a centralized way to access buffer type definitions
     and metadata. It's used by validators and accessors to understand buffer
     characteristics.
     """
 
-    def __init__(self):
-        # Core buffer types
-        self._types = {
-            'bool': BoolBufferType(),
-            'byte': ByteBufferType(),
-            'int': IntBufferType(),
-            'dint': DintBufferType(),
-            'lint': LintBufferType(),
-        }
-
-        # Buffer type mappings (used by the facade to map method names to types)
-        self._buffer_mappings = {
-            # Boolean buffers
-            'bool_input': ('bool', 'input'),
-            'bool_output': ('bool', 'output'),
-
-            # Byte buffers
-            'byte_input': ('byte', 'input'),
-            'byte_output': ('byte', 'output'),
-
-            # Integer buffers (16-bit)
-            'int_input': ('int', 'input'),
-            'int_output': ('int', 'output'),
-            'int_memory': ('int', 'memory'),
-
-            # Double integer buffers (32-bit)
-            'dint_input': ('dint', 'input'),
-            'dint_output': ('dint', 'output'),
-            'dint_memory': ('dint', 'memory'),
-
-            # Long integer buffers (64-bit)
-            'lint_input': ('lint', 'input'),
-            'lint_output': ('lint', 'output'),
-            'lint_memory': ('lint', 'memory'),
-        }
-
-    def get_type(self, type_name: str) -> IBufferType:
+    @staticmethod
+    def get_type(type_name: str) -> IBufferType:
         """Get buffer type definition by name"""
-        if type_name not in self._types:
+        if type_name not in _BUFFER_TYPES:
             raise ValueError(f"Unknown buffer type: {type_name}")
-        return self._types[type_name]
+        return _BUFFER_TYPES[type_name]
 
-    def get_buffer_info(self, buffer_name: str) -> Tuple[IBufferType, str]:
+    @staticmethod
+    def get_buffer_info(buffer_name: str) -> Tuple[IBufferType, str]:
         """
         Get buffer type and direction for a buffer name
 
@@ -197,36 +199,34 @@ class BufferTypes:
         Returns:
             Tuple of (IBufferType, direction) where direction is 'input', 'output', or 'memory'
         """
-        if buffer_name not in self._buffer_mappings:
+        if buffer_name not in _BUFFER_MAPPINGS:
             raise ValueError(f"Unknown buffer name: {buffer_name}")
 
-        type_name, direction = self._buffer_mappings[buffer_name]
-        buffer_type = self.get_type(type_name)
+        type_name, direction = _BUFFER_MAPPINGS[buffer_name]
+        buffer_type = BufferTypes.get_type(type_name)
         return buffer_type, direction
 
-    def get_all_types(self) -> dict:
+    @staticmethod
+    def get_all_types() -> dict:
         """Get all buffer type definitions"""
-        return self._types.copy()
+        return _BUFFER_TYPES.copy()
 
-    def get_all_buffers(self) -> dict:
+    @staticmethod
+    def get_all_buffers() -> dict:
         """Get all buffer name mappings"""
-        return self._buffer_mappings.copy()
+        return _BUFFER_MAPPINGS.copy()
 
-    def validate_type_exists(self, type_name: str) -> bool:
+    @staticmethod
+    def validate_type_exists(type_name: str) -> bool:
         """Check if a buffer type exists"""
-        return type_name in self._types
+        return type_name in _BUFFER_TYPES
 
-    def validate_buffer_exists(self, buffer_name: str) -> bool:
+    @staticmethod
+    def validate_buffer_exists(buffer_name: str) -> bool:
         """Check if a buffer name exists"""
-        return buffer_name in self._buffer_mappings
+        return buffer_name in _BUFFER_MAPPINGS
 
-
-# Singleton instance
-_buffer_types_instance = None
 
 def get_buffer_types() -> BufferTypes:
-    """Get the singleton BufferTypes instance"""
-    global _buffer_types_instance
-    if _buffer_types_instance is None:
-        _buffer_types_instance = BufferTypes()
-    return _buffer_types_instance
+    """Get the BufferTypes utility class"""
+    return BufferTypes
