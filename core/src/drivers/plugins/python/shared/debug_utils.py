@@ -6,6 +6,7 @@ It handles variable listing, size queries, value reading/writing, and other debu
 """
 
 from typing import List, Tuple, Dict, Any, Optional
+import ctypes
 try:
     # Try relative imports first (when used as package)
     from .component_interfaces import IDebugUtils
@@ -50,7 +51,6 @@ class DebugUtils(IDebugUtils):
 
         try:
             # Convert Python list to C arrays
-            import ctypes
             num_vars = len(indexes)
             indexes_array = (ctypes.c_size_t * num_vars)(*indexes)
             result_array = (ctypes.c_void_p * num_vars)()
@@ -83,8 +83,7 @@ class DebugUtils(IDebugUtils):
         Returns:
             Tuple[int, str]: (size, error_message)
         """
-        try:
-            import ctypes
+        try:  
             size = self.args.get_var_size(ctypes.c_size_t(index))
             return size, "Success"
 
@@ -101,8 +100,7 @@ class DebugUtils(IDebugUtils):
         Returns:
             Tuple[Any, str]: (value, error_message)
         """
-        try:
-            import ctypes
+        try:       
             # Get variable address and size
             addresses, addr_err = self.get_var_list([index])
             if not addresses or addresses[0] is None:
@@ -156,8 +154,7 @@ class DebugUtils(IDebugUtils):
         Returns:
             Tuple[bool, str]: (success, error_message)
         """
-        try:
-            import ctypes
+        try:   
             # Get variable address and size
             addresses, addr_err = self.get_var_list([index])
             if not addresses or addresses[0] is None:
