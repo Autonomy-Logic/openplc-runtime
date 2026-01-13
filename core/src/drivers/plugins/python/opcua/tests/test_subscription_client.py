@@ -88,60 +88,41 @@ async def test_subscriptions(endpoint_url: str):
 
         # Browse for available nodes
         print()
-        print("Browsing root node for objects...")
-        root = client.get_root_node()
-        objects = await root.get_children()
-
-        for obj in objects:
-            name = await obj.read_browse_name()
-            print(f"  {name}")
-
-        # Try to find some test variables to subscribe to
-        print()
-        print("Looking for test variables...")
+        print("Browsing Objects folder...")
+        objects_node = client.get_objects_node()
 
         test_nodes = []
 
-        # Try to find some common variable names
-        variable_names = [
-            "test_bool",
-            "test_int",
-            "test_real",
-            "temperature",
-            "pressure",
-            "motor_speed",
-        ]
+        async def find_variables(node, depth=0, max_depth=3):
+            """Recursively find variables in the address space."""
+            if depth > max_depth:
+                return
 
-        objects_node = client.get_objects_node()
-
-        for var_name in variable_names:
             try:
-                # Try to browse for the variable
-                node_id = f"ns={ns_idx};s={var_name}"
-                node = client.get_node(node_id)
-                value = await node.read_value()
-                print(f"  Found: {var_name} = {value}")
-                test_nodes.append(node)
+                children = await node.get_children()
+                for child in children:
+                    try:
+                        node_class = await child.read_node_class()
+                        name = await child.read_browse_name()
+
+                        if node_class == ua.NodeClass.Variable:
+                            try:
+                                value = await child.read_value()
+                                print(f"{'  ' * depth}[VAR] {name.Name} = {value}")
+                                test_nodes.append(child)
+                            except Exception as e:
+                                print(f"{'  ' * depth}[VAR] {name.Name} (unreadable: {e})")
+
+                        elif node_class == ua.NodeClass.Object:
+                            print(f"{'  ' * depth}[DIR] {name.Name}/")
+                            await find_variables(child, depth + 1, max_depth)
+
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
-        if not test_nodes:
-            # Browse objects folder to find any variables
-            print("  No named variables found, browsing for any variables...")
-            try:
-                children = await objects_node.get_children()
-                for child in children[:10]:  # Limit to first 10
-                    try:
-                        node_class = await child.read_node_class()
-                        if node_class == ua.NodeClass.Variable:
-                            name = await child.read_browse_name()
-                            value = await child.read_value()
-                            print(f"  Found variable: {name.Name} = {value}")
-                            test_nodes.append(child)
-                    except Exception:
-                        pass
-            except Exception as e:
-                print(f"  Browse failed: {e}")
+        await find_variables(objects_node)
 
         if not test_nodes:
             print()
