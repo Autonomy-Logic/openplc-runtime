@@ -4,72 +4,65 @@
 
 This document outlines the implementation plan for adding OPC-UA subscription support to the OpenPLC OPC-UA plugin. Subscriptions enable push-based data updates, replacing inefficient polling with server-initiated notifications.
 
-## Current State
+## Current State (UPDATED)
 
-The plugin currently uses a synchronization loop that:
+The plugin now supports subscriptions via asyncua's built-in subscription handling:
 1. Reads PLC memory every `cycle_time_ms` (default 100ms)
-2. Updates OPC-UA node values
-3. Clients must poll to get updated values
+2. Updates OPC-UA node values using `write_attribute_value()` with DataValue
+3. Clients can create subscriptions and receive push notifications on value changes
+4. Proper timestamps (SourceTimestamp, ServerTimestamp) are included
 
-## Target State
+## Implementation Status
 
-With subscriptions:
-1. Clients create subscriptions with desired parameters
-2. Server monitors values and pushes changes automatically
-3. Reduced network traffic and lower latency
+### Phase 1: Enable Native Subscription Support - COMPLETED
+- [x] Verified asyncua server subscription handling works
+- [x] Updated `_update_opcua_node()` to use `write_attribute_value()` with DataValue
+- [x] Server reference passed to SynchronizationManager
 
-## asyncua Subscription Support
+### Phase 2: Optimize Value Updates - COMPLETED
+- [x] Using `write_attribute_value()` with proper DataValue objects
+- [x] SourceTimestamp set to PLC cycle time (when value was read)
+- [x] ServerTimestamp set to processing time
+- [x] StatusCode set to Good for valid values
 
-The asyncua library provides built-in subscription support:
-
-```python
-# Client-side (for reference)
-subscription = await client.create_subscription(period=100, handler=handler)
-handle = await subscription.subscribe_data_change(node)
-
-# Server-side (what we need to support)
-# asyncua Server automatically handles subscriptions when clients request them
-# We need to ensure our value updates trigger proper notifications
-```
-
-## Implementation Tasks
-
-### Phase 1: Enable Native Subscription Support
-- [ ] Verify asyncua server subscription handling works with current setup
-- [ ] Ensure `set_value()` calls trigger data change notifications
-- [ ] Test with UAExpert or similar client
-
-### Phase 2: Optimize Value Updates
-- [ ] Use `write_attribute()` with proper timestamps
-- [ ] Implement source timestamps from PLC cycle
-- [ ] Add server timestamps for audit trail
-
-### Phase 3: Subscription Configuration
+### Phase 3: Subscription Configuration - PENDING
 - [ ] Add subscription-related settings to config
 - [ ] Configure default publishing intervals
 - [ ] Set limits on max subscriptions/monitored items
 
-### Phase 4: Advanced Features
+### Phase 4: Advanced Features - PENDING
 - [ ] Deadband filtering for analog values
 - [ ] Queue size configuration
 - [ ] Sampling interval limits
 
 ## Key asyncua APIs
 
-### Server Value Updates (triggers notifications)
+### Server Value Updates (IMPLEMENTED)
 ```python
-# Current approach - may not trigger notifications properly
-await node.write_value(value)
-
-# Recommended approach - explicit data value with timestamps
+# Our implementation in synchronization.py:
+from datetime import datetime, timezone
 from asyncua import ua
-dv = ua.DataValue(
-    ua.Variant(value, variant_type),
-    SourceTimestamp=source_time,
-    ServerTimestamp=server_time
+
+# Create DataValue with timestamps
+data_value = ua.DataValue(
+    Value=ua.Variant(opcua_value, expected_type),
+    StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
+    SourceTimestamp=self._cycle_timestamp,  # PLC cycle time
+    ServerTimestamp=datetime.now(timezone.utc)
 )
-await node.write_attribute(ua.AttributeIds.Value, dv)
+
+# Use write_attribute_value for optimal subscription triggering
+await self.server.write_attribute_value(
+    var_node.node.nodeid,
+    data_value
+)
 ```
+
+This approach:
+- Triggers data change notifications for subscribed clients
+- Is faster than `write_value()` (fewer validation checks)
+- Includes proper timestamps for audit trail
+- Bypasses PreWrite callbacks (server-internal operation)
 
 ### Subscription Parameters
 - **PublishingInterval**: How often server sends notifications (ms)

@@ -7,14 +7,20 @@ OPC-UA server nodes and PLC runtime variables.
 Sync Directions:
 1. OPC-UA → Runtime: Client writes propagated to PLC
 2. Runtime → OPC-UA: PLC values published to clients
+
+Subscription Support:
+- Uses write_attribute_value() with DataValue for optimal notification triggering
+- Includes SourceTimestamp from PLC cycle and ServerTimestamp for audit trail
+- Automatically triggers data change notifications for subscribed clients
 """
 
 import asyncio
 import os
 import sys
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Callable
 
-from asyncua import ua
+from asyncua import ua, Server
 
 # Add directories to path for module access
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -48,9 +54,10 @@ class SynchronizationManager:
     - Change detection to minimize writes
     - Direct memory access optimization when available
     - Batch operations for efficiency
+    - Subscription support with proper timestamps
 
     Usage:
-        sync_mgr = SynchronizationManager(buffer_accessor, variable_nodes)
+        sync_mgr = SynchronizationManager(server, buffer_accessor, variable_nodes)
         await sync_mgr.initialize()
         await sync_mgr.run(is_running_callback, cycle_time)
     """
@@ -58,7 +65,8 @@ class SynchronizationManager:
     def __init__(
         self,
         buffer_accessor: SafeBufferAccess,
-        variable_nodes: Dict[int, VariableNode]
+        variable_nodes: Dict[int, VariableNode],
+        server: Optional[Server] = None
     ):
         """
         Initialize the synchronization manager.
@@ -66,9 +74,11 @@ class SynchronizationManager:
         Args:
             buffer_accessor: SafeBufferAccess for PLC memory operations
             variable_nodes: Dict mapping variable index to VariableNode
+            server: Optional Server instance for optimized write_attribute_value
         """
         self.buffer_accessor = buffer_accessor
         self.variable_nodes = variable_nodes
+        self.server = server
 
         # Optimization: metadata cache for direct memory access
         self.variable_metadata: Dict[int, VariableMetadata] = {}
@@ -79,6 +89,9 @@ class SynchronizationManager:
 
         # Readwrite nodes (filtered from variable_nodes)
         self._readwrite_nodes: Dict[int, VariableNode] = {}
+
+        # Cycle timestamp for subscription notifications
+        self._cycle_timestamp: Optional[datetime] = None
 
     async def initialize(self) -> bool:
         """
@@ -151,6 +164,9 @@ class SynchronizationManager:
 
         while is_running():
             try:
+                # Capture cycle timestamp for subscription notifications
+                self._cycle_timestamp = datetime.now(timezone.utc)
+
                 # Direction 1: OPC-UA → Runtime
                 await self.sync_opcua_to_runtime()
 
@@ -295,9 +311,12 @@ class SynchronizationManager:
         """
         Update an OPC-UA node with a new value.
 
-        Uses set_value() instead of write_value() to bypass PreWrite callbacks.
-        This is appropriate for server-internal sync operations which are
-        privileged and should not be subject to client permission rules.
+        Uses write_attribute_value() with DataValue for optimal subscription support.
+        This approach:
+        - Triggers data change notifications for subscribed clients
+        - Includes SourceTimestamp (PLC cycle time) and ServerTimestamp
+        - Bypasses PreWrite callbacks (server-internal operation)
+        - Is faster than write_value() for server-side updates
 
         Args:
             var_node: The VariableNode to update
@@ -318,8 +337,26 @@ class SynchronizationManager:
             # Create Variant with explicit type
             variant = ua.Variant(opcua_value, expected_type)
 
-            # Write to node
-            await var_node.node.write_value(variant)
+            # Create DataValue with timestamps for subscription notifications
+            # SourceTimestamp: When the value was read from PLC (cycle time)
+            # ServerTimestamp: When the server processed it (now)
+            data_value = ua.DataValue(
+                Value=variant,
+                StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
+                SourceTimestamp=self._cycle_timestamp,
+                ServerTimestamp=datetime.now(timezone.utc)
+            )
+
+            # Use write_attribute_value for optimal subscription triggering
+            # This is faster than write_value and properly triggers notifications
+            if self.server:
+                await self.server.write_attribute_value(
+                    var_node.node.nodeid,
+                    data_value
+                )
+            else:
+                # Fallback to write_value if no server reference
+                await var_node.node.write_value(variant)
 
         except Exception as e:
             log_error(f"Failed to update OPC-UA node {var_node.debug_var_index}: {e}")
@@ -329,6 +366,7 @@ class SynchronizationManager:
         Update an OPC-UA array node by reading all elements from PLC memory.
 
         Arrays in PLC have consecutive indices starting from debug_var_index.
+        Uses DataValue with timestamps for subscription support.
 
         Args:
             var_node: The VariableNode representing the array
@@ -374,8 +412,23 @@ class SynchronizationManager:
             # Create array Variant
             variant = ua.Variant(array_values, expected_type)
 
-            # Write to node
-            await var_node.node.write_value(variant)
+            # Create DataValue with timestamps for subscription notifications
+            data_value = ua.DataValue(
+                Value=variant,
+                StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
+                SourceTimestamp=self._cycle_timestamp,
+                ServerTimestamp=datetime.now(timezone.utc)
+            )
+
+            # Use write_attribute_value for subscription support
+            if self.server:
+                await self.server.write_attribute_value(
+                    var_node.node.nodeid,
+                    data_value
+                )
+            else:
+                # Fallback to write_value if no server reference
+                await var_node.node.write_value(variant)
 
         except Exception as e:
             log_error(f"Failed to update array node {var_node.debug_var_index}: {e}")

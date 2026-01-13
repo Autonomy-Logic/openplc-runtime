@@ -364,7 +364,8 @@ class OpcuaServerManager:
         Initialize the synchronization manager.
 
         Creates the sync manager and initializes its metadata cache
-        for optimized memory access.
+        for optimized memory access. Passes server reference for
+        optimized subscription notifications via write_attribute_value.
 
         Returns:
             True if initialization successful
@@ -372,7 +373,8 @@ class OpcuaServerManager:
         try:
             self.sync_manager = SynchronizationManager(
                 buffer_accessor=self.buffer_accessor,
-                variable_nodes=self.variable_nodes
+                variable_nodes=self.variable_nodes,
+                server=self.server  # Pass server for subscription support
             )
 
             if not await self.sync_manager.initialize():
