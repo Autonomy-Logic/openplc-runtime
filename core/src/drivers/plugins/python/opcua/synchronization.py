@@ -398,7 +398,7 @@ class SynchronizationManager:
                             array_values.append(self._get_default_value(var_node.datatype))
             else:
                 # Use batch operation
-                results = self.buffer_accessor.get_var_values_batch(element_indices)
+                results, batch_msg = self.buffer_accessor.get_var_values_batch(element_indices)
                 for val, msg in results:
                     if msg == "Success" and val is not None:
                         opcua_value = convert_value_for_opcua(var_node.datatype, val)
