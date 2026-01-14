@@ -208,7 +208,7 @@ async def test_subscriptions(endpoint_url: str):
             pass
 
         # Print summary
-        if 'handler' in dir():
+        if 'handler' in locals():
             print()
             print("=" * 60)
             print("SUMMARY")

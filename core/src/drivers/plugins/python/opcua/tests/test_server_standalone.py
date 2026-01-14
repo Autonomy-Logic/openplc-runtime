@@ -55,7 +55,7 @@ class TestOpcuaServer:
 
             # Register namespace
             self.namespace_idx = await self.server.register_namespace(
-                "urn:openplc:opcua:test"
+                "urn:openplc:opcua:datatype:test"
             )
 
             print(f"Namespace registered at index {self.namespace_idx}")

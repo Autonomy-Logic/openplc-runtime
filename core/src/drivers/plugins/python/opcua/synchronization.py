@@ -57,7 +57,7 @@ class SynchronizationManager:
     - Subscription support with proper timestamps
 
     Usage:
-        sync_mgr = SynchronizationManager(server, buffer_accessor, variable_nodes)
+        sync_mgr = SynchronizationManager(buffer_accessor, variable_nodes, server)
         await sync_mgr.initialize()
         await sync_mgr.run(is_running_callback, cycle_time)
     """
