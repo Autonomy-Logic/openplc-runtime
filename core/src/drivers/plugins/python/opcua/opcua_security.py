@@ -23,6 +23,8 @@ from asyncua.crypto.cert_gen import setup_self_signed_certificate
 from asyncua.crypto.security_policies import SecurityPolicyBasic256Sha256, SecurityPolicyAes128Sha256RsaOaep, SecurityPolicyAes256Sha256RsaPss
 from asyncua.crypto.truststore import TrustStore
 from asyncua.crypto.validator import CertificateValidator
+from asyncua.crypto.permission_rules import SimpleRoleRuleset, PermissionRuleset
+from asyncua.server.user_managers import UserRole
 from asyncua import ua
 from cryptography.x509.oid import ExtensionOID, ExtendedKeyUsageOID
 from cryptography import x509
@@ -39,6 +41,84 @@ try:
     from .opcua_logging import log_info, log_warn, log_error
 except ImportError:
     from opcua_logging import log_info, log_warn, log_error
+
+
+class OpenPLCRoleRuleset(PermissionRuleset):
+    """
+    Custom permission ruleset for OpenPLC OPC-UA server.
+
+    Extends the standard SimpleRoleRuleset to allow regular users to
+    modify subscription parameters (publish interval, etc.).
+
+    The default asyncua SimpleRoleRuleset is missing ModifySubscriptionRequest
+    from the USER_TYPES list, which prevents non-admin users from modifying
+    subscription parameters via SCADA clients like UAExpert.
+    """
+
+    # Operations that require Admin role
+    ADMIN_TYPES = [
+        ua.ObjectIds.RegisterServerRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.RegisterServer2Request_Encoding_DefaultBinary,
+        ua.ObjectIds.AddNodesRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.DeleteNodesRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.AddReferencesRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.DeleteReferencesRequest_Encoding_DefaultBinary,
+    ]
+
+    # Operations allowed for regular User role (includes ModifySubscription)
+    USER_TYPES = [
+        ua.ObjectIds.CreateSessionRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.CloseSessionRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.ActivateSessionRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.ReadRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.WriteRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.BrowseRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.GetEndpointsRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.FindServersRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.TranslateBrowsePathsToNodeIdsRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.CreateSubscriptionRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.ModifySubscriptionRequest_Encoding_DefaultBinary,  # Added for SCADA clients
+        ua.ObjectIds.DeleteSubscriptionsRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.CreateMonitoredItemsRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.ModifyMonitoredItemsRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.DeleteMonitoredItemsRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.HistoryReadRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.PublishRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.RepublishRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.CloseSecureChannelRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.CallRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.SetMonitoringModeRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.SetPublishingModeRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.RegisterNodesRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.UnregisterNodesRequest_Encoding_DefaultBinary,
+        ua.ObjectIds.TransferSubscriptionsRequest_Encoding_DefaultBinary,  # Added for session transfer
+    ]
+
+    def __init__(self):
+        """Initialize the permission ruleset with role-based permissions."""
+        admin_ids = list(map(ua.NodeId, self.ADMIN_TYPES))
+        user_ids = list(map(ua.NodeId, self.USER_TYPES))
+        self._permission_dict = {
+            UserRole.Admin: set().union(admin_ids, user_ids),
+            UserRole.User: set(user_ids),
+            UserRole.Anonymous: set(),  # Anonymous users have no permissions by default
+        }
+
+    def check_validity(self, user, action_type_id, body):
+        """
+        Check if user has permission for the given action.
+
+        Args:
+            user: User object with role attribute
+            action_type_id: NodeId of the requested operation
+            body: Request body (unused, for future extensions)
+
+        Returns:
+            True if user has permission, False otherwise
+        """
+        if action_type_id in self._permission_dict.get(user.role, set()):
+            return True
+        return False
 
 
 class OpcuaSecurityManager:
@@ -479,16 +559,20 @@ class OpcuaSecurityManager:
             else:
                 log_warn(f"Unsupported security policy/mode combination '{profile.security_policy}/{profile.security_mode}' for profile '{profile.name}', skipping")
         
+        # Create custom permission ruleset that allows ModifySubscription for users
+        permission_ruleset = OpenPLCRoleRuleset()
+
         if security_policies:
             log_info(f"=== SECURITY MANAGER DEBUG ===")
             log_info(f"Setting {len(security_policies)} security policies: {security_policies}")
-            server.set_security_policy(security_policies)
+            server.set_security_policy(security_policies, permission_ruleset=permission_ruleset)
             log_info(f"Security policies applied to server successfully")
+            log_info(f"Using OpenPLCRoleRuleset for subscription permission support")
             log_info(f"=== END SECURITY MANAGER DEBUG ===")
         else:
             # Default to no security if no profiles enabled
             log_warn("No security profiles enabled, defaulting to NoSecurity")
-            server.set_security_policy([ua.SecurityPolicyType.NoSecurity])
+            server.set_security_policy([ua.SecurityPolicyType.NoSecurity], permission_ruleset=permission_ruleset)
         
         # Setup server certificates if needed
         log_info("=== CERTIFICATE SETUP DEBUG ===")
