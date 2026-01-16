@@ -174,6 +174,7 @@ class OpcuaSecurityManager:
         self.security_policy = None
         self.security_mode = None
         self.trusted_certificates = []  # List of trusted client certificates
+        self._trust_store_temp_dir = None  # Track temp dir for cleanup
 
     async def initialize_security(self) -> bool:
         """
@@ -258,8 +259,8 @@ class OpcuaSecurityManager:
                 self.private_key_data = key_file.read()
 
             # Validate certificate format (basic check)
-                if not self._validate_certificate_format():
-                    return False
+            if not self._validate_certificate_format():
+                return False
 
             log_info(f"Server certificates loaded from {cert_path}")
             return True
@@ -289,14 +290,31 @@ class OpcuaSecurityManager:
                 import datetime
                 
                 cert = x509.load_pem_x509_certificate(self.certificate_data, default_backend())
-                
+
+                # Use timezone-aware datetime for comparison
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+
+                # Get certificate validity dates (prefer UTC versions if available)
+                not_valid_after = getattr(cert, 'not_valid_after_utc', None)
+                if not_valid_after is None:
+                    not_valid_after = cert.not_valid_after.replace(tzinfo=datetime.timezone.utc)
+
+                not_valid_before = getattr(cert, 'not_valid_before_utc', None)
+                if not_valid_before is None:
+                    not_valid_before = cert.not_valid_before.replace(tzinfo=datetime.timezone.utc)
+
+                # Check if certificate is not yet valid
+                if not_valid_before > now_utc:
+                    log_warn("Certificate is not yet valid")
+                    return False
+
                 # Check expiration
-                if cert.not_valid_after < datetime.datetime.now():
+                if not_valid_after < now_utc:
                     log_warn("Certificate has expired")
                     return False
-                
+
                 # Check if certificate will expire soon (within 30 days)
-                days_until_expiry = (cert.not_valid_after - datetime.datetime.now()).days
+                days_until_expiry = (not_valid_after - now_utc).days
                 if days_until_expiry < 30:
                     log_warn(f"Certificate expires in {days_until_expiry} days")
                 
@@ -704,6 +722,7 @@ class OpcuaSecurityManager:
         try:
             # Create temporary directory for certificate files
             temp_dir = tempfile.mkdtemp(prefix="opcua_trust_")
+            self._trust_store_temp_dir = temp_dir  # Store for cleanup
             cert_files = []
             
             for i, cert_pem in enumerate(trusted_certificates):
@@ -737,7 +756,21 @@ class OpcuaSecurityManager:
         except Exception as e:
             log_error(f"Failed to create TrustStore: {e}")
             return None
-    
+
+    def cleanup(self) -> None:
+        """Clean up resources including temporary directories.
+
+        Should be called when the server is shutting down.
+        """
+        if self._trust_store_temp_dir and os.path.exists(self._trust_store_temp_dir):
+            try:
+                import shutil
+                shutil.rmtree(self._trust_store_temp_dir)
+                log_info(f"Cleaned up trust store temp directory: {self._trust_store_temp_dir}")
+                self._trust_store_temp_dir = None
+            except Exception as e:
+                log_warn(f"Failed to clean up trust store temp directory: {e}")
+
     async def setup_certificate_validation(self, server, trusted_certificates) -> None:
         """Setup certificate validation for asyncua Server.
         

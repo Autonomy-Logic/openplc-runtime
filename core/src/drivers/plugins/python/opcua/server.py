@@ -319,6 +319,10 @@ class OpcuaServerManager:
             self.running = False
             self.server = None
 
+            # Clean up security manager resources (temp directories, etc.)
+            if self.security_manager:
+                self.security_manager.cleanup()
+
         except Exception as e:
             log_error(f"Error during cleanup: {e}")
 

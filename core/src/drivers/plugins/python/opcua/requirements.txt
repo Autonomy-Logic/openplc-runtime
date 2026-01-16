@@ -5,6 +5,9 @@ asyncua==1.1.8
 # System monitoring and performance metrics
 psutil==7.2.1
 
+# Password hashing for user authentication (required for security)
+bcrypt>=4.0.0
+
 # Core dependencies (automatically installed with asyncua)
 # cryptography>=3.4.8        # For OPC-UA security features
 # python-dateutil>=2.8.0     # For datetime handling in OPC-UA

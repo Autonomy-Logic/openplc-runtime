@@ -8,6 +8,12 @@
 // Returns NULL for all addresses if no PLC program is loaded
 void get_var_list(size_t num_vars, size_t *indexes, void **result)
 {
+    // Validate input parameters
+    if (!indexes || !result || num_vars == 0)
+    {
+        return;
+    }
+
     // Check if PLC program is loaded (function pointers are set)
     if (!ext_get_var_count || !ext_get_var_addr)
     {
