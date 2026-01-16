@@ -15,6 +15,7 @@ import socket
 import hashlib
 import asyncio
 import tempfile
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple, List
 from urllib.parse import urlparse
@@ -764,7 +765,6 @@ class OpcuaSecurityManager:
         """
         if self._trust_store_temp_dir and os.path.exists(self._trust_store_temp_dir):
             try:
-                import shutil
                 shutil.rmtree(self._trust_store_temp_dir)
                 log_info(f"Cleaned up trust store temp directory: {self._trust_store_temp_dir}")
                 self._trust_store_temp_dir = None
