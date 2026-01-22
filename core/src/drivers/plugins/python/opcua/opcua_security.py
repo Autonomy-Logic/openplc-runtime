@@ -882,36 +882,42 @@ class OpcuaSecurityManager:
             else:
                 log_info(f"Using existing certificate files: {cert_file}, {key_file}")
             
-            # Load certificate (PEM format works)
+            # Load and convert certificate from PEM to DER
             log_info(f"Loading server certificate from: {cert_file}")
             with open(cert_file, 'rb') as f:
-                cert_data = f.read()
-            log_info(f"Certificate loaded: {len(cert_data)} bytes")
-            
-            # Load private key and convert PEM to DER (asyncua requires DER for keys)
+                cert_pem_data = f.read()
+            log_info(f"Certificate PEM loaded: {len(cert_pem_data)} bytes")
+
+            # Load private key
             log_info(f"Loading server private key from: {key_file}")
             with open(key_file, 'rb') as f:
-                pem_key_data = f.read()
-            
-            # Convert private key from PEM to DER for asyncua compatibility
+                key_pem_data = f.read()
+
+            # Convert certificate and key from PEM to DER for asyncua compatibility
             from cryptography.hazmat.primitives.serialization import load_pem_private_key
             try:
-                private_key = load_pem_private_key(pem_key_data, password=None)
-                der_key_data = private_key.private_bytes(
+                # Convert certificate PEM to DER
+                cert_obj = x509.load_pem_x509_certificate(cert_pem_data, default_backend())
+                cert_der_data = cert_obj.public_bytes(serialization.Encoding.DER)
+                log_info(f"Certificate converted to DER: {len(cert_der_data)} bytes")
+
+                # Convert private key PEM to DER
+                private_key = load_pem_private_key(key_pem_data, password=None)
+                key_der_data = private_key.private_bytes(
                     encoding=serialization.Encoding.DER,
                     format=serialization.PrivateFormat.PKCS8,
                     encryption_algorithm=serialization.NoEncryption()
                 )
-                log_info(f"Certificate data loaded and converted: cert={len(cert_data)} bytes, key={len(der_key_data)} bytes DER")
-                
-                # Load certificate and converted key into server
-                log_info(f"Loading certificate into asyncua server: {len(cert_data)} bytes")
-                await server.load_certificate(cert_data)  # PEM cert works
-                log_info(f"Loading private key into asyncua server: {len(der_key_data)} bytes (DER format)")
-                await server.load_private_key(der_key_data)  # DER key required
-                
+                log_info(f"Private key converted to DER: {len(key_der_data)} bytes")
+
+                # Load certificate and key into server (both in DER format)
+                log_info(f"Loading certificate into asyncua server: {len(cert_der_data)} bytes DER")
+                await server.load_certificate(cert_der_data)
+                log_info(f"Loading private key into asyncua server: {len(key_der_data)} bytes DER")
+                await server.load_private_key(key_der_data)
+
             except Exception as e:
-                log_error(f"Failed to convert private key from PEM to DER: {e}")
+                log_error(f"Failed to load certificate/key into asyncua server: {e}")
                 raise
             
             log_info("Self-signed server certificate loaded successfully into asyncua server")
