@@ -222,7 +222,7 @@ async def generate_certificate_with_sans(
                 x509.KeyUsage(
                     digital_signature=True,
                     key_encipherment=True,
-                    content_commitment=False,
+                    content_commitment=True,  # nonRepudiation - required by OPC-UA
                     data_encipherment=True,
                     key_agreement=False,
                     key_cert_sign=False,
