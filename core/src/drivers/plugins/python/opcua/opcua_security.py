@@ -8,32 +8,34 @@ This module provides utilities for handling OPC-UA security features including:
 - Client trust list management
 """
 
-import os
-import sys
-import ssl
-import socket
-import hashlib
-import asyncio
-import tempfile
-import shutil
-import ipaddress
 import datetime
+import hashlib
+import ipaddress
+import os
+import shutil
+import socket
+import ssl
+import sys
+import tempfile
 from pathlib import Path
-from typing import Optional, Tuple, List, Set
+from typing import List, Optional, Set, Tuple
 from urllib.parse import urlparse
-from asyncua.crypto import uacrypto
-from asyncua.crypto.cert_gen import setup_self_signed_certificate
-from asyncua.crypto.security_policies import SecurityPolicyBasic256Sha256, SecurityPolicyAes128Sha256RsaOaep, SecurityPolicyAes256Sha256RsaPss
+
+from asyncua import ua
+from asyncua.crypto.permission_rules import PermissionRuleset
+from asyncua.crypto.security_policies import (
+    SecurityPolicyAes128Sha256RsaOaep,
+    SecurityPolicyAes256Sha256RsaPss,
+    SecurityPolicyBasic256Sha256,
+)
 from asyncua.crypto.truststore import TrustStore
 from asyncua.crypto.validator import CertificateValidator
-from asyncua.crypto.permission_rules import SimpleRoleRuleset, PermissionRuleset
 from asyncua.server.user_managers import UserRole
-from asyncua import ua
-from cryptography.x509.oid import ExtensionOID, ExtendedKeyUsageOID, NameOID
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 # Add directories to path for module access
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -42,9 +44,9 @@ if _current_dir not in sys.path:
 
 # Import logging (handle both package and direct loading)
 try:
-    from .opcua_logging import log_info, log_warn, log_error
+    from .opcua_logging import log_error, log_info, log_warn
 except ImportError:
-    from opcua_logging import log_info, log_warn, log_error
+    from opcua_logging import log_error, log_info, log_warn
 
 
 # ioctl constants for network interface enumeration (Linux)
@@ -94,9 +96,9 @@ def get_local_ip_addresses() -> Set[str]:
 
         # Method 3: Try to get all interface IPs using netifaces-like approach
         try:
+            import array
             import fcntl
             import struct
-            import array
 
             # Get list of network interfaces
             buf_size = _MAX_INTERFACES * _SIZEOF_IFREQ
@@ -113,8 +115,7 @@ def get_local_ip_addresses() -> Set[str]:
                 # Parse the buffer for interface addresses
                 offset = 0
                 while offset < out_bytes:
-                    # Interface name is 16 bytes, then sockaddr
-                    iface_name = buf[offset : offset + 16].tobytes().split(b"\0")[0]
+                    # Interface name is 16 bytes, then sockaddr (unused, skip it)
                     # Skip to IP address (offset 20 from start of entry)
                     ip_offset = offset + 20
                     if ip_offset + 4 <= len(buf):
@@ -144,7 +145,7 @@ async def generate_certificate_with_sans(
     state: str = "CA",
     locality: str = "California",
     key_size: int = 2048,
-    valid_days: int = 365,
+    valid_days: int = 3650,
 ) -> bool:
     """
     Generate a self-signed certificate with multiple Subject Alternative Names.
@@ -164,7 +165,7 @@ async def generate_certificate_with_sans(
         state: State/Province
         locality: City/Locality
         key_size: RSA key size (default 2048)
-        valid_days: Certificate validity in days (default 365)
+        valid_days: Certificate validity in days (default 3650 = 10 years)
 
     Returns:
         bool: True if certificate generated successfully
@@ -241,18 +242,18 @@ async def generate_certificate_with_sans(
                 critical=True,
             )
             .add_extension(
-                x509.ExtendedKeyUsage([
-                    ExtendedKeyUsageOID.SERVER_AUTH,
-                    ExtendedKeyUsageOID.CLIENT_AUTH,
-                ]),
+                x509.ExtendedKeyUsage(
+                    [
+                        ExtendedKeyUsageOID.SERVER_AUTH,
+                        ExtendedKeyUsageOID.CLIENT_AUTH,
+                    ]
+                ),
                 critical=False,
             )
         )
 
         # Sign the certificate
-        certificate = cert_builder.sign(
-            private_key, hashes.SHA256(), default_backend()
-        )
+        certificate = cert_builder.sign(private_key, hashes.SHA256(), default_backend())
 
         # Write private key to file (PKCS8 format required by asyncua)
         key_path.parent.mkdir(parents=True, exist_ok=True)
@@ -368,14 +369,14 @@ class OpcuaSecurityManager:
         "None": None,
         "Basic256Sha256": SecurityPolicyBasic256Sha256,
         "Aes128_Sha256_RsaOaep": SecurityPolicyAes128Sha256RsaOaep,
-        "Aes256_Sha256_RsaPss": SecurityPolicyAes256Sha256RsaPss
+        "Aes256_Sha256_RsaPss": SecurityPolicyAes256Sha256RsaPss,
     }
 
     # Mapping from config strings to opcua-asyncio message security modes
     SECURITY_MODE_MAPPING = {
         "None": 1,  # MessageSecurityMode.None
         "Sign": 2,  # MessageSecurityMode.Sign
-        "SignAndEncrypt": 3  # MessageSecurityMode.SignAndEncrypt
+        "SignAndEncrypt": 3,  # MessageSecurityMode.SignAndEncrypt
     }
 
     # Mapping from (policy, mode) to SecurityPolicyType for asyncua Server
@@ -388,9 +389,15 @@ class OpcuaSecurityManager:
         ("Basic128Rsa15", "Sign"): ua.SecurityPolicyType.Basic128Rsa15_Sign,
         ("Basic128Rsa15", "SignAndEncrypt"): ua.SecurityPolicyType.Basic128Rsa15_SignAndEncrypt,
         ("Aes128_Sha256_RsaOaep", "Sign"): ua.SecurityPolicyType.Aes128Sha256RsaOaep_Sign,
-        ("Aes128_Sha256_RsaOaep", "SignAndEncrypt"): ua.SecurityPolicyType.Aes128Sha256RsaOaep_SignAndEncrypt,
+        (
+            "Aes128_Sha256_RsaOaep",
+            "SignAndEncrypt",
+        ): ua.SecurityPolicyType.Aes128Sha256RsaOaep_SignAndEncrypt,
         ("Aes256_Sha256_RsaPss", "Sign"): ua.SecurityPolicyType.Aes256Sha256RsaPss_Sign,
-        ("Aes256_Sha256_RsaPss", "SignAndEncrypt"): ua.SecurityPolicyType.Aes256Sha256RsaPss_SignAndEncrypt,
+        (
+            "Aes256_Sha256_RsaPss",
+            "SignAndEncrypt",
+        ): ua.SecurityPolicyType.Aes256Sha256RsaPss_SignAndEncrypt,
     }
 
     CERTS_DIR = "certs"
@@ -445,16 +452,84 @@ class OpcuaSecurityManager:
                 if not self._load_trusted_certificates():
                     return False
 
-            log_info(f"Security initialized: policy={self.config.security_policy}, mode={self.config.security_mode}")
+            log_info(
+                f"Security initialized: policy={self.config.security_policy}, mode={self.config.security_mode}"
+            )
             return True
 
         except Exception as e:
             log_error(f"Failed to initialize security: {e}")
             return False
 
+    def _is_certificate_valid(self, cert_path: str) -> bool:
+        """
+        Check if a certificate file exists and is still valid (not expired).
+
+        Args:
+            cert_path: Path to the certificate file
+
+        Returns:
+            bool: True if certificate exists and is valid, False otherwise
+        """
+        if not os.path.exists(cert_path):
+            return False
+
+        try:
+            with open(cert_path, "rb") as f:
+                cert_data = f.read()
+
+            cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+
+            # Use timezone-aware datetime for comparison
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+
+            # Get certificate validity dates (prefer UTC versions if available)
+            not_valid_after = getattr(cert, "not_valid_after_utc", None)
+            if not_valid_after is None:
+                not_valid_after = cert.not_valid_after.replace(tzinfo=datetime.timezone.utc)
+
+            not_valid_before = getattr(cert, "not_valid_before_utc", None)
+            if not_valid_before is None:
+                not_valid_before = cert.not_valid_before.replace(tzinfo=datetime.timezone.utc)
+
+            # Check if certificate is not yet valid
+            if not_valid_before > now_utc:
+                log_warn(f"Certificate {cert_path} is not yet valid")
+                return False
+
+            # Check if certificate has expired
+            if not_valid_after < now_utc:
+                log_warn(f"Certificate {cert_path} has expired")
+                return False
+
+            # Certificate is valid
+            days_until_expiry = (not_valid_after - now_utc).days
+            log_info(f"Certificate {cert_path} is valid for {days_until_expiry} more days")
+            return True
+
+        except Exception as e:
+            log_warn(f"Failed to validate certificate {cert_path}: {e}")
+            return False
+
+    def _remove_certificate_files(self, cert_path: str, key_path: str) -> None:
+        """
+        Remove existing certificate and key files.
+
+        Args:
+            cert_path: Path to the certificate file
+            key_path: Path to the private key file
+        """
+        for file_path in [cert_path, key_path]:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    log_info(f"Removed expired certificate file: {file_path}")
+                except Exception as e:
+                    log_warn(f"Failed to remove file {file_path}: {e}")
+
     async def _ensure_server_certificates(self) -> bool:
         """
-        Ensure server certificates exist, generate if missing.
+        Ensure server certificates exist and are valid, generate if missing or expired.
 
         Returns:
             bool: True if certificates are available
@@ -466,9 +541,15 @@ class OpcuaSecurityManager:
             cert_path = os.path.join(self.certs_dir, self.SERVER_CERT_FILE)
             key_path = os.path.join(self.certs_dir, self.SERVER_KEY_FILE)
 
-            # Check if certificates already exist
+            # Check if certificates already exist and are valid
             if os.path.exists(cert_path) and os.path.exists(key_path):
-                log_info(f"Found existing server certificates in {self.certs_dir}")
+                if self._is_certificate_valid(cert_path):
+                    log_info(f"Found valid server certificates in {self.certs_dir}")
+                else:
+                    log_info("Server certificate is expired or invalid, regenerating")
+                    self._remove_certificate_files(cert_path, key_path)
+                    if not await self.generate_server_certificate(cert_path, key_path):
+                        return False
             else:
                 log_info(f"Server certificates not found, generating new ones in {self.certs_dir}")
                 if not await self.generate_server_certificate(cert_path, key_path):
@@ -490,11 +571,11 @@ class OpcuaSecurityManager:
         """
         try:
             # Load certificate
-            with open(cert_path, 'rb') as cert_file:
+            with open(cert_path, "rb") as cert_file:
                 self.certificate_data = cert_file.read()
 
             # Load private key
-            with open(key_path, 'rb') as key_file:
+            with open(key_path, "rb") as key_file:
                 self.private_key_data = key_file.read()
 
             # Validate certificate format (basic check)
@@ -520,25 +601,26 @@ class OpcuaSecurityManager:
         """
         try:
             # Try to load certificate with ssl module for basic validation
-            ssl.PEM_cert_to_DER_cert(self.certificate_data.decode('utf-8'))
-            
+            ssl.PEM_cert_to_DER_cert(self.certificate_data.decode("utf-8"))
+
             # Enhanced validation using cryptography library
             try:
+                import datetime
+
                 from cryptography import x509
                 from cryptography.hazmat.backends import default_backend
-                import datetime
-                
+
                 cert = x509.load_pem_x509_certificate(self.certificate_data, default_backend())
 
                 # Use timezone-aware datetime for comparison
                 now_utc = datetime.datetime.now(datetime.timezone.utc)
 
                 # Get certificate validity dates (prefer UTC versions if available)
-                not_valid_after = getattr(cert, 'not_valid_after_utc', None)
+                not_valid_after = getattr(cert, "not_valid_after_utc", None)
                 if not_valid_after is None:
                     not_valid_after = cert.not_valid_after.replace(tzinfo=datetime.timezone.utc)
 
-                not_valid_before = getattr(cert, 'not_valid_before_utc', None)
+                not_valid_before = getattr(cert, "not_valid_before_utc", None)
                 if not_valid_before is None:
                     not_valid_before = cert.not_valid_before.replace(tzinfo=datetime.timezone.utc)
 
@@ -556,51 +638,67 @@ class OpcuaSecurityManager:
                 days_until_expiry = (not_valid_after - now_utc).days
                 if days_until_expiry < 30:
                     log_warn(f"Certificate expires in {days_until_expiry} days")
-                
+
                 # Check for Subject Alternative Name extension
                 try:
-                    san_ext = cert.extensions.get_extension_for_oid(x509.ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+                    san_ext = cert.extensions.get_extension_for_oid(
+                        x509.ExtensionOID.SUBJECT_ALTERNATIVE_NAME
+                    )
                     san_names = san_ext.value
-                    
+
                     # Log SAN entries for debugging
                     dns_names = [name.value for name in san_names if isinstance(name, x509.DNSName)]
-                    ip_addresses = [name.value.compressed for name in san_names if isinstance(name, x509.IPAddress)]
-                    uris = [name.value for name in san_names if isinstance(name, x509.UniformResourceIdentifier)]
-                    
+                    ip_addresses = [
+                        name.value.compressed
+                        for name in san_names
+                        if isinstance(name, x509.IPAddress)
+                    ]
+                    uris = [
+                        name.value
+                        for name in san_names
+                        if isinstance(name, x509.UniformResourceIdentifier)
+                    ]
+
                     log_info(f"Certificate SAN DNS names: {dns_names}")
                     log_info(f"Certificate SAN IP addresses: {ip_addresses}")
                     log_info(f"Certificate SAN URIs: {uris}")
-                    
+
                     # Check if we have expected entries
                     system_hostname = socket.gethostname()
                     if system_hostname not in dns_names and system_hostname != "localhost":
-                        log_warn(f"System hostname '{system_hostname}' not found in certificate DNS SANs")
-                    
+                        log_warn(
+                            f"System hostname '{system_hostname}' not found in certificate DNS SANs"
+                        )
+
                     # Check for application URI
                     expected_uri = "urn:autonomy-logic:openplc:opcua:server"
                     if expected_uri not in uris:
-                        log_warn(f"Expected application URI '{expected_uri}' not found in certificate")
-                    
+                        log_warn(
+                            f"Expected application URI '{expected_uri}' not found in certificate"
+                        )
+
                 except x509.ExtensionNotFound:
                     log_warn("Certificate missing Subject Alternative Name extension")
-                
+
                 # Check key usage extensions
                 try:
-                    key_usage = cert.extensions.get_extension_for_oid(x509.ExtensionOID.KEY_USAGE).value
+                    key_usage = cert.extensions.get_extension_for_oid(
+                        x509.ExtensionOID.KEY_USAGE
+                    ).value
                     if not key_usage.digital_signature:
                         log_warn("Certificate lacks digital signature key usage")
                     if not key_usage.key_encipherment:
                         log_warn("Certificate lacks key encipherment usage")
                 except x509.ExtensionNotFound:
                     log_warn("Certificate missing key usage extension")
-                
+
                 log_info("Certificate format and extensions validated")
                 return True
-                
+
             except ImportError:
                 log_warn("cryptography library not available for enhanced validation")
                 return True  # Fall back to basic validation
-                
+
         except Exception:
             try:
                 # Try as DER format
@@ -633,16 +731,14 @@ class OpcuaSecurityManager:
                     cert_der = ssl.PEM_cert_to_DER_cert(cert_pem)
                     cert_hash = hashlib.sha256(cert_der).hexdigest()[:16]  # Short hash for logging
 
-                    self.trusted_certificates.append({
-                        'pem': cert_pem,
-                        'der': cert_der,
-                        'hash': cert_hash
-                    })
+                    self.trusted_certificates.append(
+                        {"pem": cert_pem, "der": cert_der, "hash": cert_hash}
+                    )
 
-                    log_info(f"Loaded trusted certificate {i+1} (SHA256: {cert_hash})")
+                    log_info(f"Loaded trusted certificate {i + 1} (SHA256: {cert_hash})")
 
                 except Exception as e:
-                    log_error(f"Invalid trusted certificate {i+1}: {e}")
+                    log_error(f"Invalid trusted certificate {i + 1}: {e}")
                     return False
 
             log_info(f"Loaded {len(self.trusted_certificates)} trusted client certificates")
@@ -679,7 +775,7 @@ class OpcuaSecurityManager:
 
             # Check if client certificate matches any trusted certificate
             for trusted_cert in self.trusted_certificates:
-                if trusted_cert['der'] == client_cert_der:
+                if trusted_cert["der"] == client_cert_der:
                     log_info(f"Client certificate trusted (SHA256: {client_hash})")
                     return True
 
@@ -690,7 +786,9 @@ class OpcuaSecurityManager:
             log_error(f"Error validating client certificate: {e}")
             return False
 
-    def get_security_settings(self) -> Tuple[Optional[object], int, Optional[bytes], Optional[bytes]]:
+    def get_security_settings(
+        self,
+    ) -> Tuple[Optional[object], int, Optional[bytes], Optional[bytes]]:
         """
         Get security settings for opcua-asyncio server.
 
@@ -701,7 +799,7 @@ class OpcuaSecurityManager:
             self.security_policy,
             self.security_mode,
             self.certificate_data,
-            self.private_key_data
+            self.private_key_data,
         )
 
     async def generate_server_certificate(
@@ -710,8 +808,8 @@ class OpcuaSecurityManager:
         key_path: str,
         common_name: str = "OpenPLC OPC-UA Server",
         key_size: int = 2048,
-        valid_days: int = 365,
-        app_uri: str = None
+        valid_days: int = 3650,
+        app_uri: str = None,
     ) -> bool:
         """
         Generate a self-signed certificate for the server with proper SAN extensions.
@@ -737,7 +835,7 @@ class OpcuaSecurityManager:
 
             # Extract hostname from endpoint if available
             endpoint_hostname = "localhost"  # default
-            if hasattr(self.config, 'endpoint') and self.config.endpoint:
+            if hasattr(self.config, "endpoint") and self.config.endpoint:
                 try:
                     # Convert opc.tcp:// to http:// for parsing
                     endpoint_url = self.config.endpoint.replace("opc.tcp://", "http://")
@@ -793,7 +891,7 @@ class OpcuaSecurityManager:
 
     async def setup_server_security(self, server, security_profiles, app_uri: str = None) -> None:
         """Setup security policies and certificates for asyncua Server.
-        
+
         Args:
             server: asyncua Server instance
             security_profiles: List of security profiles from config
@@ -801,63 +899,82 @@ class OpcuaSecurityManager:
         """
         # Setup security policies
         security_policies = []
-        
+
         for profile in security_profiles:
             if not profile.enabled:
                 continue
-                
+
             policy_key = (profile.security_policy, profile.security_mode)
             policy_type = self.POLICY_TYPE_MAPPING.get(policy_key)
-            
+
             if policy_type is not None:
                 security_policies.append(policy_type)
-                log_info(f"Added security profile '{profile.name}': {profile.security_policy}/{profile.security_mode} -> {policy_type}")
+                log_info(
+                    f"Added security profile '{profile.name}': {profile.security_policy}/{profile.security_mode} -> {policy_type}"
+                )
             else:
-                log_warn(f"Unsupported security policy/mode combination '{profile.security_policy}/{profile.security_mode}' for profile '{profile.name}', skipping")
-        
+                log_warn(
+                    f"Unsupported security policy/mode combination '{profile.security_policy}/{profile.security_mode}' for profile '{profile.name}', skipping"
+                )
+
         # Create custom permission ruleset that allows ModifySubscription for users
         permission_ruleset = OpenPLCRoleRuleset()
 
         if security_policies:
-            log_info(f"=== SECURITY MANAGER DEBUG ===")
+            log_info("=== SECURITY MANAGER DEBUG ===")
             log_info(f"Setting {len(security_policies)} security policies: {security_policies}")
             server.set_security_policy(security_policies, permission_ruleset=permission_ruleset)
-            log_info(f"Security policies applied to server successfully")
-            log_info(f"Using OpenPLCRoleRuleset for subscription permission support")
-            log_info(f"=== END SECURITY MANAGER DEBUG ===")
+            log_info("Security policies applied to server successfully")
+            log_info("Using OpenPLCRoleRuleset for subscription permission support")
+            log_info("=== END SECURITY MANAGER DEBUG ===")
         else:
             # Default to no security if no profiles enabled
             log_warn("No security profiles enabled, defaulting to NoSecurity")
-            server.set_security_policy([ua.SecurityPolicyType.NoSecurity], permission_ruleset=permission_ruleset)
-        
+            server.set_security_policy(
+                [ua.SecurityPolicyType.NoSecurity], permission_ruleset=permission_ruleset
+            )
+
         # Setup server certificates if needed
         log_info("=== CERTIFICATE SETUP DEBUG ===")
         await self._setup_server_certificates_for_asyncua(server, app_uri)
         log_info("=== END CERTIFICATE SETUP DEBUG ===")
-    
+
     async def _setup_server_certificates_for_asyncua(self, server, app_uri: str = None) -> None:
         """Setup server certificates for asyncua Server.
-        
+
         Args:
             server: asyncua Server instance
             app_uri: Application URI for the certificate (from config)
         """
-        if hasattr(self.config, 'security') and self.config.security.server_certificate_strategy == "auto_self_signed":
+        if (
+            hasattr(self.config, "security")
+            and self.config.security.server_certificate_strategy == "auto_self_signed"
+        ):
             # Generate self-signed certificate in persistent directory
             cert_dir = Path(self.plugin_dir) / "certs"
             cert_dir.mkdir(parents=True, exist_ok=True)
-            
+
             key_file = cert_dir / "server_key.pem"
             cert_file = cert_dir / "server_cert.pem"
-            
+
             hostname = socket.gethostname()
             # Use provided app_uri or fallback to config value
             if not app_uri:
-                app_uri = getattr(self.config.server, 'application_uri',
-                                  'urn:autonomy-logic:openplc:opcua:server')
-            
-            # Only generate if files don't exist
+                app_uri = getattr(
+                    self.config.server, "application_uri", "urn:autonomy-logic:openplc:opcua:server"
+                )
+
+            # Check if we need to generate new certificates
+            need_generation = False
             if not cert_file.exists() or not key_file.exists():
+                log_info("Certificate files not found, will generate new ones")
+                need_generation = True
+            elif not self._is_certificate_valid(str(cert_file)):
+                log_info("Certificate is expired or invalid, will regenerate")
+                self._remove_certificate_files(str(cert_file), str(key_file))
+                need_generation = True
+
+            if need_generation:
                 log_info(f"Generating new self-signed certificate in {cert_dir}")
                 log_info(f"Certificate will be created for app_uri: {app_uri}")
                 log_info(f"Certificate will be created for hostname: {hostname}")
@@ -886,26 +1003,31 @@ class OpcuaSecurityManager:
 
                 # Verify files were created
                 if not success or not cert_file.exists() or not key_file.exists():
-                    log_error(f"Certificate files not created: cert={cert_file.exists()}, key={key_file.exists()}")
+                    log_error(
+                        f"Certificate files not created: cert={cert_file.exists()}, key={key_file.exists()}"
+                    )
                     return
 
                 log_info(f"Certificate files created successfully: {cert_file}, {key_file}")
             else:
-                log_info(f"Using existing certificate files: {cert_file}, {key_file}")
-            
+                log_info(f"Using existing valid certificate files: {cert_file}, {key_file}")
+
             # Load and convert certificate from PEM to DER
             log_info(f"Loading server certificate from: {cert_file}")
-            with open(cert_file, 'rb') as f:
+            with open(cert_file, "rb") as f:
                 cert_pem_data = f.read()
             log_info(f"Certificate PEM loaded: {len(cert_pem_data)} bytes")
 
             # Load private key
             log_info(f"Loading server private key from: {key_file}")
-            with open(key_file, 'rb') as f:
+            with open(key_file, "rb") as f:
                 key_pem_data = f.read()
 
             # Convert certificate and key from PEM to DER for asyncua compatibility
-            from cryptography.hazmat.primitives.serialization import load_pem_private_key
+            from cryptography.hazmat.primitives.serialization import (
+                load_pem_private_key,
+            )
+
             try:
                 # Convert certificate PEM to DER
                 cert_obj = x509.load_pem_x509_certificate(cert_pem_data, default_backend())
@@ -917,7 +1039,7 @@ class OpcuaSecurityManager:
                 key_der_data = private_key.private_bytes(
                     encoding=serialization.Encoding.DER,
                     format=serialization.PrivateFormat.PKCS8,
-                    encryption_algorithm=serialization.NoEncryption()
+                    encryption_algorithm=serialization.NoEncryption(),
                 )
                 log_info(f"Private key converted to DER: {len(key_der_data)} bytes")
 
@@ -930,77 +1052,80 @@ class OpcuaSecurityManager:
             except Exception as e:
                 log_error(f"Failed to load certificate/key into asyncua server: {e}")
                 raise
-            
+
             log_info("Self-signed server certificate loaded successfully into asyncua server")
-        
-        elif hasattr(self.config, 'security') and self.config.security.server_certificate_custom:
+
+        elif hasattr(self.config, "security") and self.config.security.server_certificate_custom:
             cert_path = self.config.security.server_certificate_custom
             key_path = self.config.security.server_private_key_custom
             if cert_path and key_path:
                 try:
                     # Carregar certificado
-                    with open(cert_path, 'rb') as f:
+                    with open(cert_path, "rb") as f:
                         cert_data = f.read()
-                    
+
                     # Carregar e converter chave privada de PEM para DER
-                    with open(key_path, 'rb') as f:
+                    with open(key_path, "rb") as f:
                         pem_key_data = f.read()
-                    
-                    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+                    from cryptography.hazmat.primitives.serialization import (
+                        load_pem_private_key,
+                    )
+
                     private_key = load_pem_private_key(pem_key_data, password=None)
                     der_key_data = private_key.private_bytes(
                         encoding=serialization.Encoding.DER,
                         format=serialization.PrivateFormat.PKCS8,
-                        encryption_algorithm=serialization.NoEncryption()
+                        encryption_algorithm=serialization.NoEncryption(),
                     )
-                    
+
                     await server.load_certificate(cert_data)
                     await server.load_private_key(der_key_data)
                     log_info("Custom server certificate loaded (PEM cert + DER key)")
                 except Exception as e:
                     log_error(f"Failed to load custom certificate: {e}")
-        
+
         elif self.certificate_data and self.private_key_data:
             await server.load_certificate(self.certificate_data)
             await server.load_private_key(self.private_key_data)
             log_info("SecurityManager certificates loaded into server")
-    
+
     async def create_trust_store(self, trusted_certificates: List[str]) -> Optional[TrustStore]:
         """Create and configure TrustStore with trusted client certificates.
-        
+
         Args:
             trusted_certificates: List of PEM certificate strings
-            
+
         Returns:
             TrustStore instance or None if failed
         """
         if not trusted_certificates:
             return None
-            
+
         try:
             # Create temporary directory for certificate files
             temp_dir = tempfile.mkdtemp(prefix="opcua_trust_")
             self._trust_store_temp_dir = temp_dir  # Store for cleanup
             cert_files = []
-            
+
             for i, cert_pem in enumerate(trusted_certificates):
                 try:
                     # Load and validate certificate using cryptography
                     cert = x509.load_pem_x509_certificate(cert_pem.encode(), default_backend())
-                    
+
                     # Convert to DER format and save to temporary file
                     cert_der = cert.public_bytes(encoding=serialization.Encoding.DER)
-                    
+
                     cert_file = os.path.join(temp_dir, f"trusted_cert_{i}.der")
-                    with open(cert_file, 'wb') as f:
+                    with open(cert_file, "wb") as f:
                         f.write(cert_der)
-                    
+
                     cert_files.append(cert_file)
-                    log_info(f"Added trusted certificate {i+1} to trust store")
-                    
+                    log_info(f"Added trusted certificate {i + 1} to trust store")
+
                 except Exception as e:
-                    log_warn(f"Failed to process trusted certificate {i+1}: {e}")
-            
+                    log_warn(f"Failed to process trusted certificate {i + 1}: {e}")
+
             if cert_files:
                 # Create TrustStore with certificate files
                 trust_store = TrustStore(cert_files, [])
@@ -1010,7 +1135,7 @@ class OpcuaSecurityManager:
             else:
                 log_warn("No valid trusted certificates processed")
                 return None
-                
+
         except Exception as e:
             log_error(f"Failed to create TrustStore: {e}")
             return None
@@ -1030,14 +1155,14 @@ class OpcuaSecurityManager:
 
     async def setup_certificate_validation(self, server, trusted_certificates) -> None:
         """Setup certificate validation for asyncua Server.
-        
+
         Args:
             server: asyncua Server instance
             trusted_certificates: List of certificate dictionaries with 'id' and 'pem' keys
         """
         if not trusted_certificates:
             return
-            
+
         try:
             # Handle both List[str] and List[Dict[str, str]] formats
             cert_pems = []
@@ -1047,19 +1172,19 @@ class OpcuaSecurityManager:
             else:
                 # Already a list of PEM strings
                 cert_pems = trusted_certificates
-            
+
             # Create trust store
             trust_store = await self.create_trust_store(cert_pems)
             if not trust_store:
                 log_error("Could not create trust store")
                 return
-            
+
             # Create certificate validator
             cert_validator = CertificateValidator(trust_store=trust_store)
-            
+
             # Set validator on server
             server.set_certificate_validator(cert_validator)
             log_info("Certificate validation configured")
-            
+
         except Exception as e:
             log_error(f"Failed to setup certificate validation: {e}")
