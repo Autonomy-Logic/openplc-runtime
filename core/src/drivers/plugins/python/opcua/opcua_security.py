@@ -32,7 +32,6 @@ from asyncua.crypto.truststore import TrustStore
 from asyncua.crypto.validator import CertificateValidator
 from asyncua.server.user_managers import UserRole
 from cryptography import x509
-from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
@@ -133,7 +132,7 @@ def get_local_ip_addresses() -> Set[str]:
     return ip_addresses
 
 
-async def generate_certificate_with_sans(
+def generate_certificate_with_sans(
     cert_path: Path,
     key_path: Path,
     app_uri: str,
@@ -152,6 +151,10 @@ async def generate_certificate_with_sans(
 
     This function creates a certificate suitable for OPC-UA servers with proper
     SAN extensions including multiple DNS names, IP addresses, and URIs.
+
+    The default validity period is 10 years (3650 days) to minimize certificate
+    renewal overhead in industrial/embedded environments where PLCs may run
+    for extended periods without maintenance.
 
     Args:
         cert_path: Path where certificate will be saved (PEM format)
@@ -175,7 +178,6 @@ async def generate_certificate_with_sans(
         private_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=key_size,
-            backend=default_backend(),
         )
 
         # Build subject name
@@ -253,11 +255,12 @@ async def generate_certificate_with_sans(
         )
 
         # Sign the certificate
-        certificate = cert_builder.sign(private_key, hashes.SHA256(), default_backend())
+        certificate = cert_builder.sign(private_key, hashes.SHA256())
 
-        # Write private key to file (PKCS8 format required by asyncua)
+        # Write private key to file with restricted permissions (PKCS8 format required by asyncua)
         key_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(key_path, "wb") as f:
+        fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
             f.write(
                 private_key.private_bytes(
                     encoding=serialization.Encoding.PEM,
@@ -478,7 +481,7 @@ class OpcuaSecurityManager:
             with open(cert_path, "rb") as f:
                 cert_data = f.read()
 
-            cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+            cert = x509.load_pem_x509_certificate(cert_data)
 
             # Use timezone-aware datetime for comparison
             now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -605,12 +608,7 @@ class OpcuaSecurityManager:
 
             # Enhanced validation using cryptography library
             try:
-                import datetime
-
-                from cryptography import x509
-                from cryptography.hazmat.backends import default_backend
-
-                cert = x509.load_pem_x509_certificate(self.certificate_data, default_backend())
+                cert = x509.load_pem_x509_certificate(self.certificate_data)
 
                 # Use timezone-aware datetime for comparison
                 now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -870,7 +868,7 @@ class OpcuaSecurityManager:
             log_info(f"Application URI: {app_uri}")
 
             # Use custom certificate generation with multiple SANs
-            success = await generate_certificate_with_sans(
+            success = generate_certificate_with_sans(
                 cert_path=Path(cert_path),
                 key_path=Path(key_path),
                 app_uri=app_uri,
@@ -992,7 +990,7 @@ class OpcuaSecurityManager:
                 log_info(f"Certificate IP SANs: {ip_addresses}")
 
                 # Use custom certificate generation with multiple SANs
-                success = await generate_certificate_with_sans(
+                success = generate_certificate_with_sans(
                     cert_path=cert_file,
                     key_path=key_file,
                     app_uri=app_uri,
@@ -1030,7 +1028,7 @@ class OpcuaSecurityManager:
 
             try:
                 # Convert certificate PEM to DER
-                cert_obj = x509.load_pem_x509_certificate(cert_pem_data, default_backend())
+                cert_obj = x509.load_pem_x509_certificate(cert_pem_data)
                 cert_der_data = cert_obj.public_bytes(serialization.Encoding.DER)
                 log_info(f"Certificate converted to DER: {len(cert_der_data)} bytes")
 
@@ -1111,7 +1109,7 @@ class OpcuaSecurityManager:
             for i, cert_pem in enumerate(trusted_certificates):
                 try:
                     # Load and validate certificate using cryptography
-                    cert = x509.load_pem_x509_certificate(cert_pem.encode(), default_backend())
+                    cert = x509.load_pem_x509_certificate(cert_pem.encode())
 
                     # Convert to DER format and save to temporary file
                     cert_der = cert.public_bytes(encoding=serialization.Encoding.DER)
