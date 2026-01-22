@@ -16,8 +16,10 @@ import hashlib
 import asyncio
 import tempfile
 import shutil
+import ipaddress
+import datetime
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Set
 from urllib.parse import urlparse
 from asyncua.crypto import uacrypto
 from asyncua.crypto.cert_gen import setup_self_signed_certificate
@@ -27,10 +29,11 @@ from asyncua.crypto.validator import CertificateValidator
 from asyncua.crypto.permission_rules import SimpleRoleRuleset, PermissionRuleset
 from asyncua.server.user_managers import UserRole
 from asyncua import ua
-from cryptography.x509.oid import ExtensionOID, ExtendedKeyUsageOID
+from cryptography.x509.oid import ExtensionOID, ExtendedKeyUsageOID, NameOID
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 # Add directories to path for module access
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -42,6 +45,230 @@ try:
     from .opcua_logging import log_info, log_warn, log_error
 except ImportError:
     from opcua_logging import log_info, log_warn, log_error
+
+
+def get_local_ip_addresses() -> Set[str]:
+    """
+    Get all local IP addresses of the machine.
+
+    Returns:
+        Set of IP address strings (both IPv4 and IPv6)
+    """
+    ip_addresses = set()
+
+    # Always include localhost addresses
+    ip_addresses.add("127.0.0.1")
+    ip_addresses.add("::1")
+
+    try:
+        # Method 1: Get IPs from all network interfaces
+        hostname = socket.gethostname()
+        try:
+            # Get all addresses associated with hostname
+            for info in socket.getaddrinfo(hostname, None):
+                ip = info[4][0]
+                # Filter out link-local and loopback for external access
+                if not ip.startswith("fe80:"):  # Skip IPv6 link-local
+                    ip_addresses.add(ip)
+        except socket.gaierror:
+            pass
+
+        # Method 2: Connect to external address to find default interface IP
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                # Doesn't actually connect, just determines route
+                s.connect(("8.8.8.8", 80))
+                ip_addresses.add(s.getsockname()[0])
+        except Exception:
+            pass
+
+        # Method 3: Try to get all interface IPs using netifaces-like approach
+        try:
+            import fcntl
+            import struct
+            import array
+
+            # Get list of network interfaces
+            max_interfaces = 128
+            buf_size = max_interfaces * 40  # sizeof(struct ifreq) on 64-bit
+            buf = array.array("B", b"\0" * buf_size)
+
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                # SIOCGIFCONF = 0x8912
+                result = fcntl.ioctl(
+                    s.fileno(),
+                    0x8912,
+                    struct.pack("iL", buf_size, buf.buffer_info()[0]),
+                )
+                out_bytes = struct.unpack("iL", result)[0]
+
+                # Parse the buffer for interface addresses
+                offset = 0
+                while offset < out_bytes:
+                    # Interface name is 16 bytes, then sockaddr
+                    iface_name = buf[offset : offset + 16].tobytes().split(b"\0")[0]
+                    # Skip to IP address (offset 20 from start of entry)
+                    ip_offset = offset + 20
+                    if ip_offset + 4 <= len(buf):
+                        ip_bytes = buf[ip_offset : ip_offset + 4].tobytes()
+                        ip = socket.inet_ntoa(ip_bytes)
+                        if ip != "0.0.0.0":
+                            ip_addresses.add(ip)
+                    offset += 40  # Move to next interface
+        except Exception:
+            pass
+
+    except Exception as e:
+        log_warn(f"Error getting local IP addresses: {e}")
+
+    return ip_addresses
+
+
+async def generate_certificate_with_sans(
+    cert_path: Path,
+    key_path: Path,
+    app_uri: str,
+    dns_names: List[str],
+    ip_addresses: List[str],
+    common_name: str = "OpenPLC OPC-UA Server",
+    organization: str = "Autonomy Logic",
+    country: str = "US",
+    state: str = "CA",
+    locality: str = "California",
+    key_size: int = 2048,
+    valid_days: int = 365,
+) -> bool:
+    """
+    Generate a self-signed certificate with multiple Subject Alternative Names.
+
+    This function creates a certificate suitable for OPC-UA servers with proper
+    SAN extensions including multiple DNS names, IP addresses, and URIs.
+
+    Args:
+        cert_path: Path where certificate will be saved (PEM format)
+        key_path: Path where private key will be saved (PEM format)
+        app_uri: Application URI for the certificate
+        dns_names: List of DNS names to include in SAN
+        ip_addresses: List of IP addresses to include in SAN
+        common_name: Certificate common name
+        organization: Organization name
+        country: Country code
+        state: State/Province
+        locality: City/Locality
+        key_size: RSA key size (default 2048)
+        valid_days: Certificate validity in days (default 365)
+
+    Returns:
+        bool: True if certificate generated successfully
+    """
+    try:
+        # Generate RSA private key
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=key_size,
+            backend=default_backend(),
+        )
+
+        # Build subject name
+        subject = issuer = x509.Name(
+            [
+                x509.NameAttribute(NameOID.COUNTRY_NAME, country),
+                x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, state),
+                x509.NameAttribute(NameOID.LOCALITY_NAME, locality),
+                x509.NameAttribute(NameOID.ORGANIZATION_NAME, organization),
+                x509.NameAttribute(NameOID.COMMON_NAME, common_name),
+            ]
+        )
+
+        # Build Subject Alternative Names
+        san_entries = []
+
+        # Add URI (required for OPC-UA)
+        san_entries.append(x509.UniformResourceIdentifier(app_uri))
+
+        # Add DNS names
+        for dns_name in dns_names:
+            if dns_name:  # Skip empty strings
+                san_entries.append(x509.DNSName(dns_name))
+
+        # Add IP addresses
+        for ip_str in ip_addresses:
+            if ip_str:  # Skip empty strings
+                try:
+                    ip_obj = ipaddress.ip_address(ip_str)
+                    san_entries.append(x509.IPAddress(ip_obj))
+                except ValueError as e:
+                    log_warn(f"Invalid IP address '{ip_str}' for SAN: {e}")
+
+        # Build certificate
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cert_builder = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(private_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now)
+            .not_valid_after(now + datetime.timedelta(days=valid_days))
+            .add_extension(
+                x509.SubjectAlternativeName(san_entries),
+                critical=False,
+            )
+            .add_extension(
+                x509.BasicConstraints(ca=False, path_length=None),
+                critical=True,
+            )
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature=True,
+                    key_encipherment=True,
+                    content_commitment=False,
+                    data_encipherment=True,
+                    key_agreement=False,
+                    key_cert_sign=False,
+                    crl_sign=False,
+                    encipher_only=False,
+                    decipher_only=False,
+                ),
+                critical=True,
+            )
+            .add_extension(
+                x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+                critical=False,
+            )
+        )
+
+        # Sign the certificate
+        certificate = cert_builder.sign(
+            private_key, hashes.SHA256(), default_backend()
+        )
+
+        # Write private key to file
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(key_path, "wb") as f:
+            f.write(
+                private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    encryption_algorithm=serialization.NoEncryption(),
+                )
+            )
+
+        # Write certificate to file
+        cert_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cert_path, "wb") as f:
+            f.write(certificate.public_bytes(serialization.Encoding.PEM))
+
+        log_info(f"Generated certificate with {len(san_entries)} SAN entries")
+        log_info(f"  DNS names: {dns_names}")
+        log_info(f"  IP addresses: {ip_addresses}")
+        log_info(f"  URI: {app_uri}")
+
+        return True
+
+    except Exception as e:
+        log_error(f"Failed to generate certificate: {e}")
+        return False
 
 
 class OpenPLCRoleRuleset(PermissionRuleset):
@@ -478,6 +705,10 @@ class OpcuaSecurityManager:
         """
         Generate a self-signed certificate for the server with proper SAN extensions.
 
+        This method auto-detects local IP addresses and includes them in the
+        certificate's Subject Alternative Names (SANs) to prevent hostname
+        validation errors when connecting via IP address.
+
         Args:
             cert_path: Path where certificate will be saved
             key_path: Path where private key will be saved
@@ -492,7 +723,7 @@ class OpcuaSecurityManager:
         try:
             # Get system hostname for proper certificate validation
             system_hostname = socket.gethostname()
-            
+
             # Extract hostname from endpoint if available
             endpoint_hostname = "localhost"  # default
             if hasattr(self.config, 'endpoint') and self.config.endpoint:
@@ -504,11 +735,11 @@ class OpcuaSecurityManager:
                         endpoint_hostname = parsed.hostname
                 except Exception as e:
                     log_warn(f"Could not parse endpoint hostname: {e}")
-            
+
             # Use provided app_uri or fallback to default
             if not app_uri:
                 app_uri = "urn:autonomy-logic:openplc:opcua:server"
-            
+
             # Collect all possible hostnames for SAN DNS entries
             dns_names = []
             # Add system hostname
@@ -520,35 +751,30 @@ class OpcuaSecurityManager:
             # Always include localhost
             if "localhost" not in dns_names:
                 dns_names.append("localhost")
-            
-            # IP addresses for SAN
-            ip_addresses = ["127.0.0.1"]
-            # Add 0.0.0.0 if endpoint uses it (for bind-all scenarios)
-            if hasattr(self.config, 'endpoint') and "0.0.0.0" in self.config.endpoint:
-                ip_addresses.append("0.0.0.0")
-            
+
+            # Auto-detect all local IP addresses for SAN
+            local_ips = get_local_ip_addresses()
+            ip_addresses = list(local_ips)
+
             log_info(f"Generating certificate with DNS SANs: {dns_names}")
             log_info(f"Generating certificate with IP SANs: {ip_addresses}")
             log_info(f"Application URI: {app_uri}")
-            
-            # Use the setup_self_signed_certificate function from asyncua with supported parameters
-            await setup_self_signed_certificate(
-                key_file=Path(key_path),
-                cert_file=Path(cert_path),
+
+            # Use custom certificate generation with multiple SANs
+            success = await generate_certificate_with_sans(
+                cert_path=Path(cert_path),
+                key_path=Path(key_path),
                 app_uri=app_uri,
-                host_name=system_hostname,  # Use actual system hostname
-                cert_use=[ExtendedKeyUsageOID.SERVER_AUTH],
-                subject_attrs={
-                    "countryName": "US",
-                    "stateOrProvinceName": "CA",
-                    "localityName": "California",
-                    "organizationName": "Autonomy Logic",
-                    "commonName": common_name
-                },
+                dns_names=dns_names,
+                ip_addresses=ip_addresses,
+                common_name=common_name,
+                key_size=key_size,
+                valid_days=valid_days,
             )
 
-            log_info(f"Server certificate generated with proper SANs: {cert_path}")
-            return True
+            if success:
+                log_info(f"Server certificate generated with proper SANs: {cert_path}")
+            return success
 
         except Exception as e:
             log_error(f"Failed to generate server certificate: {e}")
@@ -624,20 +850,34 @@ class OpcuaSecurityManager:
                 log_info(f"Generating new self-signed certificate in {cert_dir}")
                 log_info(f"Certificate will be created for app_uri: {app_uri}")
                 log_info(f"Certificate will be created for hostname: {hostname}")
-                await setup_self_signed_certificate(
-                    key_file=key_file,
-                    cert_file=cert_file,
+
+                # Collect DNS names for SAN
+                dns_names = [hostname]
+                if hostname != "localhost":
+                    dns_names.append("localhost")
+
+                # Auto-detect all local IP addresses for SAN
+                local_ips = get_local_ip_addresses()
+                ip_addresses = list(local_ips)
+
+                log_info(f"Certificate DNS SANs: {dns_names}")
+                log_info(f"Certificate IP SANs: {ip_addresses}")
+
+                # Use custom certificate generation with multiple SANs
+                success = await generate_certificate_with_sans(
+                    cert_path=cert_file,
+                    key_path=key_file,
                     app_uri=app_uri,
-                    host_name=hostname,
-                    cert_use=[ExtendedKeyUsageOID.SERVER_AUTH],
-                    subject_attrs={}
+                    dns_names=dns_names,
+                    ip_addresses=ip_addresses,
+                    common_name="OpenPLC OPC-UA Server",
                 )
-                
+
                 # Verify files were created
-                if not cert_file.exists() or not key_file.exists():
+                if not success or not cert_file.exists() or not key_file.exists():
                     log_error(f"Certificate files not created: cert={cert_file.exists()}, key={key_file.exists()}")
                     return
-                
+
                 log_info(f"Certificate files created successfully: {cert_file}, {key_file}")
             else:
                 log_info(f"Using existing certificate files: {cert_file}, {key_file}")
