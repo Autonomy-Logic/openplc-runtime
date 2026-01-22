@@ -233,7 +233,10 @@ async def generate_certificate_with_sans(
                 critical=True,
             )
             .add_extension(
-                x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+                x509.ExtendedKeyUsage([
+                    ExtendedKeyUsageOID.SERVER_AUTH,
+                    ExtendedKeyUsageOID.CLIENT_AUTH,
+                ]),
                 critical=False,
             )
         )
