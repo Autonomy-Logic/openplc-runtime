@@ -243,13 +243,13 @@ async def generate_certificate_with_sans(
             private_key, hashes.SHA256(), default_backend()
         )
 
-        # Write private key to file
+        # Write private key to file (PKCS8 format required by asyncua)
         key_path.parent.mkdir(parents=True, exist_ok=True)
         with open(key_path, "wb") as f:
             f.write(
                 private_key.private_bytes(
                     encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    format=serialization.PrivateFormat.PKCS8,
                     encryption_algorithm=serialization.NoEncryption(),
                 )
             )
