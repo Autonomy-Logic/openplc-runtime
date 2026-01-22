@@ -47,6 +47,12 @@ except ImportError:
     from opcua_logging import log_info, log_warn, log_error
 
 
+# ioctl constants for network interface enumeration (Linux)
+_SIOCGIFCONF = 0x8912  # ioctl request code to get interface configuration
+_SIZEOF_IFREQ = 40  # sizeof(struct ifreq) on 64-bit Linux
+_MAX_INTERFACES = 128  # Maximum number of network interfaces to query
+
+
 def get_local_ip_addresses() -> Set[str]:
     """
     Get all local IP addresses of the machine.
@@ -67,9 +73,13 @@ def get_local_ip_addresses() -> Set[str]:
             # Get all addresses associated with hostname
             for info in socket.getaddrinfo(hostname, None):
                 ip = info[4][0]
-                # Filter out link-local and loopback for external access
-                if not ip.startswith("fe80:"):  # Skip IPv6 link-local
-                    ip_addresses.add(ip)
+                # Filter out link-local addresses using ipaddress module
+                try:
+                    addr = ipaddress.ip_address(ip)
+                    if not addr.is_link_local:
+                        ip_addresses.add(ip)
+                except ValueError:
+                    pass
         except socket.gaierror:
             pass
 
@@ -89,15 +99,13 @@ def get_local_ip_addresses() -> Set[str]:
             import array
 
             # Get list of network interfaces
-            max_interfaces = 128
-            buf_size = max_interfaces * 40  # sizeof(struct ifreq) on 64-bit
+            buf_size = _MAX_INTERFACES * _SIZEOF_IFREQ
             buf = array.array("B", b"\0" * buf_size)
 
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                # SIOCGIFCONF = 0x8912
                 result = fcntl.ioctl(
                     s.fileno(),
-                    0x8912,
+                    _SIOCGIFCONF,
                     struct.pack("iL", buf_size, buf.buffer_info()[0]),
                 )
                 out_bytes = struct.unpack("iL", result)[0]
@@ -114,7 +122,7 @@ def get_local_ip_addresses() -> Set[str]:
                         ip = socket.inet_ntoa(ip_bytes)
                         if ip != "0.0.0.0":
                             ip_addresses.add(ip)
-                    offset += 40  # Move to next interface
+                    offset += _SIZEOF_IFREQ
         except Exception:
             pass
 
