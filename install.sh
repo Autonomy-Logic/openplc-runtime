@@ -521,6 +521,14 @@ echo "Virtual environment created at $VENV_DIR"
 
 setup_plugin_venvs
 
+# Setup discovery service virtual environment (for EtherCAT network scanning)
+log_info "Setting up Discovery Service virtual environment..."
+if bash "$SCRIPTS_DIR/setup_discovery_venv.sh"; then
+    log_success "Discovery Service virtual environment ready"
+else
+    log_warning "Discovery Service setup failed (EtherCAT scanning will not be available)"
+fi
+
 echo "Compiling OpenPLC..."
 if compile_plc; then
     echo "Build process completed successfully!"

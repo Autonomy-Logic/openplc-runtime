@@ -13,6 +13,7 @@ import flask_login
 
 from webserver.credentials import CertGen
 from webserver.debug_websocket import init_debug_websocket
+from webserver.discovery.discovery_routes import discovery_bp
 from webserver.logger import get_logger
 from webserver.plcapp_management import (
     MAX_FILE_SIZE,
@@ -278,6 +279,7 @@ def restapi_callback_post(argument: str, data: dict) -> dict:
 def run_https():
     # rest api register
     app_restapi.register_blueprint(restapi_bp, url_prefix="/api")
+    app_restapi.register_blueprint(discovery_bp)
     register_callback_get(restapi_callback_get)
     register_callback_post(restapi_callback_post)
 
