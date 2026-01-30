@@ -115,9 +115,12 @@ def _extract_slave_info(slave: Any, position: int) -> EtherCATDevice:
     mbx_proto = getattr(slave, "mbx_proto", 0)
     has_coe = bool(mbx_proto & 0x04)  # Bit 2 = CoE
 
+    # Decode name (pysoem may return bytes)
+    slave_name = _decode_if_bytes(slave.name) if slave.name else f"Slave_{position}"
+
     return EtherCATDevice(
         position=position,
-        name=slave.name if slave.name else f"Slave_{position}",
+        name=slave_name,
         vendor_id=slave.man,
         product_code=slave.id,
         revision=slave.rev,
@@ -137,11 +140,24 @@ def output_json(data: dict[str, Any]) -> None:
     print(json.dumps(data, indent=2))
 
 
+def _decode_if_bytes(value: Any) -> str:
+    """Decode bytes to string if necessary."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value) if value else ""
+
+
 def list_interfaces() -> None:
     """List available network interfaces for EtherCAT."""
     try:
         adapters = pysoem.find_adapters()
-        interfaces = [{"name": adapter.name, "description": adapter.desc} for adapter in adapters]
+        interfaces = [
+            {
+                "name": _decode_if_bytes(adapter.name),
+                "description": _decode_if_bytes(adapter.desc),
+            }
+            for adapter in adapters
+        ]
         output_json(
             {
                 "status": DiscoveryStatus.SUCCESS.value,
