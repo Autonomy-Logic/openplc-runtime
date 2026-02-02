@@ -1,11 +1,11 @@
-"""Flask Blueprint for EtherCAT Discovery REST endpoints.
+"""Flask Blueprint for Discovery REST endpoints.
 
 Endpoints:
-    GET  /api/discovery/ethercat/status     - Check if discovery service is available
-    GET  /api/discovery/ethercat/interfaces - List network interfaces
+    GET  /api/discovery/interfaces          - List network interfaces (common)
+    GET  /api/discovery/ethercat/status     - Check if EtherCAT discovery service is available
     POST /api/discovery/ethercat/scan       - Scan network for EtherCAT slaves
-    POST /api/discovery/ethercat/validate   - Validate configuration
-    POST /api/discovery/ethercat/test       - Test connection to specific slave
+    POST /api/discovery/ethercat/validate   - Validate EtherCAT configuration
+    POST /api/discovery/ethercat/test       - Test connection to specific EtherCAT slave
 """
 
 from dataclasses import asdict
@@ -41,10 +41,13 @@ def ethercat_status():
     return jsonify({"available": available, "message": message})
 
 
-@discovery_bp.route("/ethercat/interfaces", methods=["GET"])
+@discovery_bp.route("/interfaces", methods=["GET"])
 @jwt_required()
-def ethercat_interfaces():
-    """List available network interfaces for EtherCAT.
+def network_interfaces():
+    """List available network interfaces.
+
+    This is a common endpoint that can be used by multiple protocols
+    (EtherCAT, Modbus TCP, OPC-UA, etc.) to discover available network interfaces.
 
     Returns:
         JSON with list of interfaces and their descriptions.
