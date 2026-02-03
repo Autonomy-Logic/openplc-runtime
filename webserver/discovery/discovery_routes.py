@@ -28,10 +28,25 @@ discovery_bp = Blueprint("discovery", __name__, url_prefix="/api/discovery")
 @discovery_bp.route("/ethercat/status", methods=["GET"])
 @jwt_required()
 def ethercat_status():
-    """Check if the EtherCAT discovery service is available.
-
-    Returns:
-        JSON with availability status and message.
+    """
+    Check if the EtherCAT discovery service is available.
+    ---
+    tags:
+      - EtherCAT
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Service status retrieved successfully
+        schema:
+          type: object
+          properties:
+            available:
+              type: boolean
+              description: Whether the discovery service is available
+            message:
+              type: string
+              description: Status message
     """
     available = is_discovery_available()
     if available:
@@ -44,13 +59,37 @@ def ethercat_status():
 @discovery_bp.route("/interfaces", methods=["GET"])
 @jwt_required()
 def network_interfaces():
-    """List available network interfaces.
-
-    This is a common endpoint that can be used by multiple protocols
-    (EtherCAT, Modbus TCP, OPC-UA, etc.) to discover available network interfaces.
-
-    Returns:
-        JSON with list of interfaces and their descriptions.
+    """
+    List available network interfaces.
+    ---
+    tags:
+      - Discovery
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Interfaces listed successfully
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              enum:
+                - success
+                - error
+            interfaces:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    example: eth0
+                  description:
+                    type: string
+                    example: Ethernet adapter
+      500:
+        description: Error retrieving interfaces
     """
     result = list_network_interfaces()
     status_code = 200 if result.get("status") == DiscoveryStatus.SUCCESS.value else 500
@@ -60,16 +99,108 @@ def network_interfaces():
 @discovery_bp.route("/ethercat/scan", methods=["POST"])
 @jwt_required()
 def ethercat_scan():
-    """Scan the EtherCAT network for slave devices.
-
-    Request body:
-        {
-            "interface": "eth0",       # Required: network interface name
-            "timeout_ms": 5000         # Optional: scan timeout (default: 5000)
-        }
-
-    Returns:
-        JSON with scan results including discovered devices.
+    """
+    Scan the EtherCAT network for slave devices.
+    ---
+    tags:
+      - EtherCAT
+    security:
+      - BearerAuth: []
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - interface
+          properties:
+            interface:
+              type: string
+              example: eth0
+              description: Network interface name
+            timeout_ms:
+              type: integer
+              default: 5000
+              description: Scan timeout in milliseconds
+    responses:
+      200:
+        description: Scan completed successfully
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              enum:
+                - success
+                - error
+                - timeout
+                - permission_denied
+                - interface_not_found
+                - not_available
+            devices:
+              type: array
+              items:
+                type: object
+                properties:
+                  position:
+                    type: integer
+                    example: 1
+                  name:
+                    type: string
+                    example: EK1100
+                  vendor_id:
+                    type: integer
+                    example: 2
+                  product_code:
+                    type: integer
+                    example: 72100946
+                  revision:
+                    type: integer
+                    example: 1179648
+                  serial_number:
+                    type: integer
+                    example: 0
+                  config_address:
+                    type: integer
+                    example: 0
+                  alias:
+                    type: integer
+                    example: 0
+                  state:
+                    type: string
+                    example: UNKNOWN
+                  al_status_code:
+                    type: integer
+                    example: 0
+                  has_coe:
+                    type: boolean
+                    example: false
+                  input_bytes:
+                    type: integer
+                    example: 0
+                  output_bytes:
+                    type: integer
+                    example: 0
+            message:
+              type: string
+              example: Found 3 EtherCAT slave(s)
+            scan_time_ms:
+              type: integer
+              example: 311
+            interface:
+              type: string
+              example: eth0
+      400:
+        description: Invalid request parameters
+      403:
+        description: Permission denied
+      404:
+        description: Interface not found
+      503:
+        description: Discovery service not available
+      504:
+        description: Scan timeout
     """
     data = request.get_json(silent=True) or {}
 
@@ -105,24 +236,60 @@ def ethercat_scan():
 @discovery_bp.route("/ethercat/validate", methods=["POST"])
 @jwt_required()
 def ethercat_validate():
-    """Validate an EtherCAT configuration before deployment.
-
-    Request body:
-        {
-            "interface": "eth0",
-            "slaves": [
-                {
-                    "position": 1,
-                    "vendor_id": 0x00000002,
-                    "product_code": 0x044c2c52,
-                    "pdo_mapping": {...}
-                }
-            ],
-            "cycle_time_ms": 4
-        }
-
-    Returns:
-        JSON with validation result, errors, and warnings.
+    """
+    Validate an EtherCAT configuration before deployment.
+    ---
+    tags:
+      - EtherCAT
+    security:
+      - BearerAuth: []
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            interface:
+              type: string
+              example: eth0
+            slaves:
+              type: array
+              items:
+                type: object
+                properties:
+                  position:
+                    type: integer
+                    example: 1
+                  vendor_id:
+                    type: integer
+                    example: 2
+                  product_code:
+                    type: integer
+                    example: 72227922
+                  pdo_mapping:
+                    type: object
+            cycle_time_ms:
+              type: integer
+              example: 4
+    responses:
+      200:
+        description: Configuration is valid
+        schema:
+          type: object
+          properties:
+            valid:
+              type: boolean
+            errors:
+              type: array
+              items:
+                type: string
+            warnings:
+              type: array
+              items:
+                type: string
+      400:
+        description: Configuration is invalid or empty
     """
     data = request.get_json(silent=True) or {}
 
@@ -144,17 +311,109 @@ def ethercat_validate():
 @discovery_bp.route("/ethercat/test", methods=["POST"])
 @jwt_required()
 def ethercat_test():
-    """Test connection to a specific EtherCAT slave device.
-
-    Request body:
-        {
-            "interface": "eth0",       # Required: network interface name
-            "position": 1,             # Required: slave position (1-based)
-            "timeout_ms": 3000         # Optional: timeout (default: 3000)
-        }
-
-    Returns:
-        JSON with connection test result and device info if successful.
+    """
+    Test connection to a specific EtherCAT slave device.
+    ---
+    tags:
+      - EtherCAT
+    security:
+      - BearerAuth: []
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - interface
+            - position
+          properties:
+            interface:
+              type: string
+              example: eth0
+              description: Network interface name
+            position:
+              type: integer
+              example: 1
+              description: Slave position (1-based)
+            timeout_ms:
+              type: integer
+              default: 3000
+              description: Connection timeout in milliseconds
+    responses:
+      200:
+        description: Connection test completed
+        schema:
+          type: object
+          properties:
+            status:
+              type: string
+              enum:
+                - success
+                - error
+                - timeout
+                - permission_denied
+                - interface_not_found
+                - not_available
+            connected:
+              type: boolean
+            device:
+              type: object
+              description: Device info (null if not connected)
+              properties:
+                position:
+                  type: integer
+                  example: 1
+                name:
+                  type: string
+                  example: EK1100
+                vendor_id:
+                  type: integer
+                  example: 2
+                product_code:
+                  type: integer
+                  example: 72100946
+                revision:
+                  type: integer
+                  example: 1179648
+                serial_number:
+                  type: integer
+                  example: 0
+                config_address:
+                  type: integer
+                  example: 0
+                alias:
+                  type: integer
+                  example: 0
+                state:
+                  type: string
+                  example: UNKNOWN
+                al_status_code:
+                  type: integer
+                  example: 0
+                has_coe:
+                  type: boolean
+                  example: false
+                input_bytes:
+                  type: integer
+                  example: 0
+                output_bytes:
+                  type: integer
+                  example: 0
+            message:
+              type: string
+            response_time_ms:
+              type: integer
+      400:
+        description: Invalid request parameters
+      403:
+        description: Permission denied
+      404:
+        description: Interface not found
+      503:
+        description: Discovery service not available
+      504:
+        description: Connection timeout
     """
     data = request.get_json(silent=True) or {}
 

@@ -10,3 +10,4 @@ pytest-flask
 pre-commit
 psutil; sys_platform != "cygwin"
 pyserial>=3.5
+flasgger>=0.9.7
