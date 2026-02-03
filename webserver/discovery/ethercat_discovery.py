@@ -6,6 +6,7 @@ Communication is done via subprocess with JSON output.
 """
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
@@ -15,6 +16,11 @@ from typing import Any
 from webserver.logger import get_logger
 
 logger, _ = get_logger("ethercat_discovery")
+
+# Interface name validation
+# Linux interface names: eth0, enp3s0, eno1, wlan0, br-docker0, veth123abc
+INTERFACE_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+MAX_INTERFACE_NAME_LENGTH = 15  # IFNAMSIZ - 1
 
 # Paths relative to project root
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -83,6 +89,50 @@ class EtherCATConnectionTestResult:
     response_time_ms: int = 0
 
 
+def _validate_interface_name(interface: str) -> tuple[bool, str]:
+    """Validate network interface name.
+
+    Args:
+        interface: Network interface name to validate.
+
+    Returns:
+        Tuple of (is_valid, error_message).
+    """
+    if not interface:
+        return False, "Interface name cannot be empty"
+    if len(interface) > MAX_INTERFACE_NAME_LENGTH:
+        return False, f"Interface name too long (max {MAX_INTERFACE_NAME_LENGTH} chars)"
+    if not INTERFACE_NAME_PATTERN.match(interface):
+        return False, "Invalid interface name format"
+    return True, ""
+
+
+def _dict_to_device(dev_dict: dict[str, Any]) -> EtherCATDevice:
+    """Convert a device dictionary to EtherCATDevice dataclass.
+
+    Args:
+        dev_dict: Dictionary with device information from scanner script.
+
+    Returns:
+        EtherCATDevice instance.
+    """
+    return EtherCATDevice(
+        position=dev_dict.get("position", 0),
+        name=dev_dict.get("name", ""),
+        vendor_id=dev_dict.get("vendor_id", 0),
+        product_code=dev_dict.get("product_code", 0),
+        revision=dev_dict.get("revision", 0),
+        serial_number=dev_dict.get("serial_number", 0),
+        config_address=dev_dict.get("config_address", 0),
+        alias=dev_dict.get("alias", 0),
+        state=dev_dict.get("state", "UNKNOWN"),
+        al_status_code=dev_dict.get("al_status_code", 0),
+        has_coe=dev_dict.get("has_coe", False),
+        input_bytes=dev_dict.get("input_bytes", 0),
+        output_bytes=dev_dict.get("output_bytes", 0),
+    )
+
+
 def is_discovery_available() -> bool:
     """Check if the discovery venv and script are available.
 
@@ -109,7 +159,7 @@ def _run_discovery_script(args: list[str], timeout_seconds: int = 30) -> dict[st
         return {
             "status": DiscoveryStatus.NOT_AVAILABLE.value,
             "message": f"Discovery venv not found at {DISCOVERY_VENV}. "
-            "Run: scripts/manage_plugin_venvs.sh create discovery",
+            "Run: scripts/setup_discovery_venv.sh",
         }
 
     if not DISCOVERY_SCRIPT.exists():
@@ -165,7 +215,7 @@ def list_network_interfaces() -> dict[str, Any]:
             "status": DiscoveryStatus.NOT_AVAILABLE.value,
             "interfaces": [],
             "message": "Discovery service not available. "
-            "Run: scripts/manage_plugin_venvs.sh create discovery",
+            "Run: scripts/setup_discovery_venv.sh",
         }
 
     return _run_discovery_script(["list-interfaces"])
@@ -181,11 +231,20 @@ def scan_network(interface: str, timeout_ms: int = 5000) -> EtherCATScanResult:
     Returns:
         EtherCATScanResult containing discovered devices and status.
     """
+    # Validate interface name
+    is_valid, error_msg = _validate_interface_name(interface)
+    if not is_valid:
+        return EtherCATScanResult(
+            status=DiscoveryStatus.ERROR,
+            message=error_msg,
+            interface=interface,
+        )
+
     if not is_discovery_available():
         return EtherCATScanResult(
             status=DiscoveryStatus.NOT_AVAILABLE,
             message="Discovery service not available. "
-            "Run: scripts/manage_plugin_venvs.sh create discovery",
+            "Run: scripts/setup_discovery_venv.sh",
             interface=interface,
         )
 
@@ -198,25 +257,7 @@ def scan_network(interface: str, timeout_ms: int = 5000) -> EtherCATScanResult:
     )
 
     # Convert devices from dict to EtherCATDevice objects
-    devices = []
-    for dev_dict in result.get("devices", []):
-        devices.append(
-            EtherCATDevice(
-                position=dev_dict.get("position", 0),
-                name=dev_dict.get("name", ""),
-                vendor_id=dev_dict.get("vendor_id", 0),
-                product_code=dev_dict.get("product_code", 0),
-                revision=dev_dict.get("revision", 0),
-                serial_number=dev_dict.get("serial_number", 0),
-                config_address=dev_dict.get("config_address", 0),
-                alias=dev_dict.get("alias", 0),
-                state=dev_dict.get("state", "UNKNOWN"),
-                al_status_code=dev_dict.get("al_status_code", 0),
-                has_coe=dev_dict.get("has_coe", False),
-                input_bytes=dev_dict.get("input_bytes", 0),
-                output_bytes=dev_dict.get("output_bytes", 0),
-            )
-        )
+    devices = [_dict_to_device(d) for d in result.get("devices", [])]
 
     return EtherCATScanResult(
         status=DiscoveryStatus(result.get("status", "error")),
@@ -242,17 +283,25 @@ def test_connection(
     Returns:
         EtherCATConnectionTestResult with connection status.
     """
-    if not is_discovery_available():
+    # Validate interface name
+    is_valid, error_msg = _validate_interface_name(interface)
+    if not is_valid:
         return EtherCATConnectionTestResult(
-            status=DiscoveryStatus.NOT_AVAILABLE,
-            message="Discovery service not available. "
-            "Run: scripts/manage_plugin_venvs.sh create discovery",
+            status=DiscoveryStatus.ERROR,
+            message=error_msg,
         )
 
     if device_position < 1:
         return EtherCATConnectionTestResult(
             status=DiscoveryStatus.ERROR,
             message="Device position must be >= 1",
+        )
+
+    if not is_discovery_available():
+        return EtherCATConnectionTestResult(
+            status=DiscoveryStatus.NOT_AVAILABLE,
+            message="Discovery service not available. "
+            "Run: scripts/setup_discovery_venv.sh",
         )
 
     # Calculate subprocess timeout
@@ -272,24 +321,7 @@ def test_connection(
     )
 
     # Convert device dict to EtherCATDevice if present
-    device = None
-    if result.get("device"):
-        dev_dict = result["device"]
-        device = EtherCATDevice(
-            position=dev_dict.get("position", 0),
-            name=dev_dict.get("name", ""),
-            vendor_id=dev_dict.get("vendor_id", 0),
-            product_code=dev_dict.get("product_code", 0),
-            revision=dev_dict.get("revision", 0),
-            serial_number=dev_dict.get("serial_number", 0),
-            config_address=dev_dict.get("config_address", 0),
-            alias=dev_dict.get("alias", 0),
-            state=dev_dict.get("state", "UNKNOWN"),
-            al_status_code=dev_dict.get("al_status_code", 0),
-            has_coe=dev_dict.get("has_coe", False),
-            input_bytes=dev_dict.get("input_bytes", 0),
-            output_bytes=dev_dict.get("output_bytes", 0),
-        )
+    device = _dict_to_device(result["device"]) if result.get("device") else None
 
     return EtherCATConnectionTestResult(
         status=DiscoveryStatus(result.get("status", "error")),

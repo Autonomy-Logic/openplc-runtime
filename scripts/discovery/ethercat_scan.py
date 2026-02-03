@@ -17,13 +17,27 @@ Output is always JSON to stdout. Errors are reported in the JSON response.
 
 import argparse
 import json
+import logging
+import re
 import sys
 import time
-from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
 import pysoem
+
+# Configure logging to stderr (stdout is reserved for JSON output)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(levelname)s: %(message)s",
+    stream=sys.stderr,
+)
+logger = logging.getLogger(__name__)
+
+# Interface name validation
+# Linux interface names: eth0, enp3s0, eno1, wlan0, br-docker0, veth123abc
+INTERFACE_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+MAX_INTERFACE_NAME_LENGTH = 15  # IFNAMSIZ - 1
 
 
 class DiscoveryStatus(str, Enum):
@@ -59,45 +73,25 @@ ETHERCAT_STATE_MAP = {
 }
 
 
-@dataclass
-class EtherCATDevice:
-    """Information about a discovered EtherCAT slave device."""
+def _validate_interface_name(interface: str) -> tuple[bool, str]:
+    """Validate network interface name.
 
-    position: int
-    name: str
-    vendor_id: int = 0
-    product_code: int = 0
-    revision: int = 0
-    serial_number: int = 0
-    config_address: int = 0
-    alias: int = 0
-    state: str = "UNKNOWN"
-    al_status_code: int = 0
-    has_coe: bool = False
-    input_bytes: int = 0
-    output_bytes: int = 0
+    Args:
+        interface: Network interface name to validate.
 
-
-@dataclass
-class ScanResult:
-    """Result of an EtherCAT network scan operation."""
-
-    status: str
-    devices: list[dict[str, Any]] = field(default_factory=list)
-    message: str = ""
-    scan_time_ms: int = 0
-    interface: str = ""
+    Returns:
+        Tuple of (is_valid, error_message).
+    """
+    if not interface:
+        return False, "Interface name cannot be empty"
+    if len(interface) > MAX_INTERFACE_NAME_LENGTH:
+        return False, f"Interface name too long (max {MAX_INTERFACE_NAME_LENGTH} chars)"
+    if not INTERFACE_NAME_PATTERN.match(interface):
+        return False, "Invalid interface name format"
+    return True, ""
 
 
-@dataclass
-class InterfaceInfo:
-    """Network interface information."""
-
-    name: str
-    description: str
-
-
-def _extract_slave_info(slave: Any, position: int) -> EtherCATDevice:
+def _extract_slave_info(slave: Any, position: int) -> dict[str, Any]:
     """Extract device information from a pysoem slave object.
 
     Args:
@@ -105,7 +99,7 @@ def _extract_slave_info(slave: Any, position: int) -> EtherCATDevice:
         position: 1-based position of the slave in the network.
 
     Returns:
-        EtherCATDevice with all extracted information.
+        Dictionary with device information.
     """
     # Get slave state
     state_val = getattr(slave, "state", 0)
@@ -118,21 +112,21 @@ def _extract_slave_info(slave: Any, position: int) -> EtherCATDevice:
     # Decode name (pysoem may return bytes)
     slave_name = _decode_if_bytes(slave.name) if slave.name else f"Slave_{position}"
 
-    return EtherCATDevice(
-        position=position,
-        name=slave_name,
-        vendor_id=getattr(slave, "man", 0),
-        product_code=getattr(slave, "id", 0),
-        revision=getattr(slave, "rev", 0),
-        serial_number=getattr(slave, "serial", 0),
-        config_address=getattr(slave, "configadr", 0) or getattr(slave, "config_address", 0),
-        alias=getattr(slave, "aliasadr", 0) or getattr(slave, "alias", 0),
-        state=state,
-        al_status_code=getattr(slave, "al_status", 0) or getattr(slave, "ALstatuscode", 0),
-        has_coe=has_coe,
-        input_bytes=getattr(slave, "input_bytes", 0) or getattr(slave, "Ibytes", 0),
-        output_bytes=getattr(slave, "output_bytes", 0) or getattr(slave, "Obytes", 0),
-    )
+    return {
+        "position": position,
+        "name": slave_name,
+        "vendor_id": getattr(slave, "man", 0),
+        "product_code": getattr(slave, "id", 0),
+        "revision": getattr(slave, "rev", 0),
+        "serial_number": getattr(slave, "serial", 0),
+        "config_address": getattr(slave, "configadr", 0) or getattr(slave, "config_address", 0),
+        "alias": getattr(slave, "aliasadr", 0) or getattr(slave, "alias", 0),
+        "state": state,
+        "al_status_code": getattr(slave, "al_status", 0) or getattr(slave, "ALstatuscode", 0),
+        "has_coe": has_coe,
+        "input_bytes": getattr(slave, "input_bytes", 0) or getattr(slave, "Ibytes", 0),
+        "output_bytes": getattr(slave, "output_bytes", 0) or getattr(slave, "Obytes", 0),
+    }
 
 
 def output_json(data: dict[str, Any]) -> None:
@@ -178,6 +172,20 @@ def list_interfaces() -> None:
 def scan_network(interface: str, timeout_ms: int = 5000) -> None:
     """Scan the EtherCAT network for slave devices."""
     start_time = time.time()
+
+    # Validate interface name
+    is_valid, error_msg = _validate_interface_name(interface)
+    if not is_valid:
+        output_json(
+            {
+                "status": DiscoveryStatus.ERROR.value,
+                "devices": [],
+                "message": error_msg,
+                "scan_time_ms": int((time.time() - start_time) * 1000),
+                "interface": interface,
+            }
+        )
+        return
 
     try:
         master = pysoem.Master()
@@ -251,7 +259,7 @@ def scan_network(interface: str, timeout_ms: int = 5000) -> None:
 
         for i, slave in enumerate(master.slaves):
             device = _extract_slave_info(slave, i + 1)
-            devices.append(asdict(device))
+            devices.append(device)
 
         master.close()
 
@@ -270,8 +278,8 @@ def scan_network(interface: str, timeout_ms: int = 5000) -> None:
     except Exception as e:
         try:
             master.close()
-        except Exception:
-            pass
+        except Exception as close_error:
+            logger.debug(f"Error closing master connection: {close_error}")
 
         scan_time_ms = int((time.time() - start_time) * 1000)
 
@@ -312,6 +320,20 @@ def test_connection(interface: str, position: int, timeout_ms: int = 3000) -> No
         return
 
     start_time = time.time()
+
+    # Validate interface name
+    is_valid, error_msg = _validate_interface_name(interface)
+    if not is_valid:
+        output_json(
+            {
+                "status": DiscoveryStatus.ERROR.value,
+                "connected": False,
+                "device": None,
+                "message": error_msg,
+                "response_time_ms": int((time.time() - start_time) * 1000),
+            }
+        )
+        return
 
     try:
         master = pysoem.Master()
@@ -389,8 +411,8 @@ def test_connection(interface: str, position: int, timeout_ms: int = 3000) -> No
             {
                 "status": DiscoveryStatus.SUCCESS.value,
                 "connected": True,
-                "device": asdict(device),
-                "message": f"Successfully connected to {device.name} at position {position}",
+                "device": device,
+                "message": f"Successfully connected to {device['name']} at position {position}",
                 "response_time_ms": int((time.time() - start_time) * 1000),
             }
         )
@@ -398,8 +420,8 @@ def test_connection(interface: str, position: int, timeout_ms: int = 3000) -> No
     except Exception as e:
         try:
             master.close()
-        except Exception:
-            pass
+        except Exception as close_error:
+            logger.debug(f"Error closing master connection: {close_error}")
 
         output_json(
             {

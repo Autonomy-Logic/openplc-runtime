@@ -2,6 +2,8 @@
 # Setup script for EtherCAT Discovery Service virtual environment
 # Creates venvs/discovery/ and installs pysoem for network scanning
 # Configures CAP_NET_RAW capability for raw socket access (required by EtherCAT)
+#
+# Note: If a venv already exists, it will be automatically recreated.
 
 set -e
 
@@ -119,21 +121,9 @@ setup_discovery_venv() {
 
     # Check if venv already exists
     if [ -d "$VENV_PATH" ]; then
-        log_warning "Discovery venv already exists at: $VENV_PATH"
-        read -p "Do you want to recreate it? (y/N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Removing existing venv..."
-            rm -rf "$VENV_PATH"
-        else
-            log_info "Keeping existing venv. Running pip install to update dependencies..."
-            "$VENV_PATH/bin/pip" install -r "$REQUIREMENTS_FILE"
-            log_success "Dependencies updated successfully"
-
-            # Reconfigure capabilities in case Python was updated
-            configure_capabilities
-            return 0
-        fi
+        log_info "Discovery venv already exists at: $VENV_PATH"
+        log_info "Removing existing venv to recreate..."
+        rm -rf "$VENV_PATH"
     fi
 
     # Create virtual environment
