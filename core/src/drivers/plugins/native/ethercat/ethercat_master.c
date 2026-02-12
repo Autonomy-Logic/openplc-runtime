@@ -112,11 +112,20 @@ int ecat_master_init(const ecat_config_t *config, plugin_logger_t *logger)
     plugin_logger_info(logger, "Opening network interface: %s", config->master.interface);
 
     if (!ecx_init(&g_ecx_context, config->master.interface)) {
+#if defined(__CYGWIN__) || defined(_WIN32)
+        plugin_logger_error(logger,
+            "Failed to initialize EtherCAT interface '%s'. "
+            "Verify that Npcap (https://npcap.com) is installed and "
+            "the interface name matches a network adapter (use "
+            "'ipconfig' or Npcap's WlanHelper to list adapters).",
+            config->master.interface);
+#else
         plugin_logger_error(logger,
             "Failed to initialize EtherCAT interface '%s'. "
             "Check that the interface exists and the process has "
             "CAP_NET_RAW capability (or is running as root).",
             config->master.interface);
+#endif
         return -1;
     }
 

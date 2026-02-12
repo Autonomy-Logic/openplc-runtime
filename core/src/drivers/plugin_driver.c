@@ -1009,7 +1009,18 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     void *handle = dlopen(plugin->config.path, RTLD_LOCAL | RTLD_NOW);
     if (!handle)
     {
-        fprintf(stderr, "Failed to load native plugin '%s': %s\n", plugin->config.path, dlerror());
+        const char *err = dlerror();
+        fprintf(stderr, "Failed to load native plugin '%s': %s\n",
+                plugin->config.path, err ? err : "unknown error");
+        log_error("Failed to load native plugin '%s': %s",
+                  plugin->config.path, err ? err : "unknown error");
+#if defined(__CYGWIN__) || defined(_WIN32)
+        if (strstr(plugin->config.name, "ethercat") != NULL)
+        {
+            log_error("The EtherCAT plugin requires Npcap (https://npcap.com) to access "
+                      "the network interface. Please install Npcap and restart the runtime.");
+        }
+#endif
         free(native_bundle);
         return -1;
     }
