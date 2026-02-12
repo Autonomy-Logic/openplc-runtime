@@ -262,7 +262,9 @@ install_deps_msys2() {
         python-setuptools \
         python-cryptography \
         git \
-        sqlite3
+        sqlite3 \
+        msys2-w32api-headers \
+        msys2-w32api-runtime
 }
 
 compile_plc() {
