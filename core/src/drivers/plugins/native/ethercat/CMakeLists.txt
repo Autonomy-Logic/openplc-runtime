@@ -58,7 +58,16 @@ target_compile_options(soem PUBLIC\n\
 \n\
 # WIN32 is NOT predefined by MSYS2/Cygwin GCC, but the bundled\n\
 # wpcap headers (pcap/pcap.h:40) need it to route to pcap-stdinc.h.\n\
-target_compile_definitions(soem PUBLIC WIN32)\n\
+# HAVE_U_INT*_T tells bundled bittypes.h to skip its typedefs --\n\
+# MSYS2 POSIX headers (sys/types.h) already provide these types and\n\
+# use different underlying types on LP64 (long vs long long for 64-bit).\n\
+target_compile_definitions(soem PUBLIC\n\
+  WIN32\n\
+  HAVE_U_INT8_T\n\
+  HAVE_U_INT16_T\n\
+  HAVE_U_INT32_T\n\
+  HAVE_U_INT64_T\n\
+)\n\
 \n\
 foreach(target IN ITEMS\n\
     soem\n\
