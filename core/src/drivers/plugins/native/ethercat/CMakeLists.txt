@@ -30,9 +30,8 @@ set(SOEM_BUILD_SAMPLES OFF CACHE BOOL "Disable SOEM samples" FORCE)
 # while the Linux OSHW needs AF_PACKET raw sockets which are unavailable.
 if(CMAKE_SYSTEM_NAME STREQUAL "MSYS" OR CMAKE_SYSTEM_NAME STREQUAL "CYGWIN")
     set(_SOEM_PLATFORM_CMAKE "${SOEM_DIR}/cmake/${CMAKE_SYSTEM_NAME}.cmake")
-    if(NOT EXISTS "${_SOEM_PLATFORM_CMAKE}")
-        message(STATUS "EtherCAT Plugin - Generating ${CMAKE_SYSTEM_NAME}.cmake for SOEM (Win32 OSAL/OSHW via w32api)")
-        file(WRITE "${_SOEM_PLATFORM_CMAKE}" "\
+    message(STATUS "EtherCAT Plugin - Generating ${CMAKE_SYSTEM_NAME}.cmake for SOEM (Win32 OSAL/OSHW via w32api)")
+    file(WRITE "${_SOEM_PLATFORM_CMAKE}" "\
 # Auto-generated for ${CMAKE_SYSTEM_NAME} -- based on Windows.cmake\n\
 # Uses Win32 OSAL/OSHW accessible through w32api on MSYS2/Cygwin.\n\
 \n\
@@ -111,7 +110,6 @@ install(FILES\n\
   DESTINATION include/soem\n\
 )\n\
 ")
-    endif()
     unset(_SOEM_PLATFORM_CMAKE)
 endif()
 
