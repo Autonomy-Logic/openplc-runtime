@@ -21,6 +21,10 @@ __pycache__/
 *.egg-info
 *.pytest_cache/
 
+# Auto-generated SOEM platform cmake files for MSYS2/Cygwin builds
+core/src/drivers/plugins/native/ethercat/libs/soem/cmake/MSYS.cmake
+core/src/drivers/plugins/native/ethercat/libs/soem/cmake/CYGWIN.cmake
+
 # Ignore all object files and shared libraries
 *.o
 *.so
