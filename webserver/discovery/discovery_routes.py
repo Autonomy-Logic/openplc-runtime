@@ -16,6 +16,7 @@ from flask_jwt_extended import jwt_required
 
 from webserver.discovery.ethercat_discovery import (
     DiscoveryStatus,
+    _validate_interface_name,
     list_network_interfaces,
     test_connection,
     validate_config,
@@ -47,10 +48,16 @@ def ethercat_status():
               type: string
               description: Status message
     """
-    # Discovery is now built into the runtime via the native EtherCAT plugin (SOEM).
-    # No external dependency to check — always available. If the runtime is unreachable,
-    # the scan command itself will return a clear error.
-    return jsonify({"available": True, "message": "Discovery service is ready (native SOEM plugin)"})
+    # Discovery is built into the runtime via the native EtherCAT plugin (SOEM).
+    # Verify the runtime is actually reachable before reporting available.
+    from webserver.app import runtime_manager
+
+    ping_response = runtime_manager.ping()
+    if ping_response and ping_response.startswith("PING:OK"):
+        return jsonify(
+            {"available": True, "message": "Discovery service is ready (native SOEM plugin)"}
+        )
+    return jsonify({"available": False, "message": "PLC runtime is not reachable"})
 
 
 @discovery_bp.route("/interfaces", methods=["GET"])
@@ -204,6 +211,10 @@ def ethercat_scan():
     interface = data.get("interface")
     if not interface:
         return jsonify({"status": "error", "message": "Missing required field: 'interface'"}), 400
+
+    is_valid, error_msg = _validate_interface_name(interface)
+    if not is_valid:
+        return jsonify({"status": "error", "message": error_msg}), 400
 
     # Route scan through the native EtherCAT plugin via unix socket
     from webserver.app import runtime_manager
