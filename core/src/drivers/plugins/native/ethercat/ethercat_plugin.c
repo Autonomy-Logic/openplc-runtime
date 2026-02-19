@@ -61,7 +61,9 @@ static inline uint64_t timespec_to_ns(const ec_timet *ts)
  */
 static inline uint64_t elapsed_ns(const ec_timet *start, const ec_timet *end)
 {
-    return timespec_to_ns(end) - timespec_to_ns(start);
+    uint64_t s = timespec_to_ns(start);
+    uint64_t e = timespec_to_ns(end);
+    return (e > s) ? (e - s) : 0;
 }
 
 /*
@@ -210,7 +212,8 @@ void stop_loop(void)
 
     plugin_logger_info(&g_logger, "Stopping EtherCAT master...");
 
-    /* Log final diagnostics */
+    /* Log final diagnostics (covers the current reporting window only,
+     * since accumulators are reset every ECAT_DIAG_REPORT_INTERVAL cycles) */
     if (g_diag.cycle_count > 0) {
         uint64_t avg_us = (g_diag.sum_total_ns / g_diag.cycle_count) / 1000;
         plugin_logger_info(&g_logger,
@@ -344,6 +347,12 @@ void cycle_end(void)
             (unsigned long long)(g_diag.exchange_ns / 1000),
             (unsigned long long)(g_diag.io_read_ns / 1000),
             (unsigned long long)(g_diag.io_write_ns / 1000));
+
+        /* Reset accumulators to prevent uint64_t overflow on long runs */
+        g_diag.sum_total_ns = 0;
+        g_diag.cycle_count = 0;
+        g_diag.max_exchange_ns = 0;
+        g_diag.max_total_ns = 0;
     }
 }
 
