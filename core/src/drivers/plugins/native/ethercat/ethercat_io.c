@@ -314,6 +314,11 @@ int ecat_io_build_channel_map(const ecat_config_t *config,
  * =============================================================================
  */
 
+/**
+ * @note Thread safety: buffer_mutex must be held by the caller.
+ * This is guaranteed by plc_cycle_thread() in plc_state_manager.c
+ * which holds buffer_mutex across the entire scan cycle.
+ */
 void ecat_io_read_inputs(const ecat_channel_map_t *map,
                          plugin_runtime_args_t *args)
 {
@@ -357,6 +362,11 @@ void ecat_io_read_inputs(const ecat_channel_map_t *map,
     }
 }
 
+/**
+ * @note Thread safety: buffer_mutex must be held by the caller.
+ * This is guaranteed by plc_cycle_thread() in plc_state_manager.c
+ * which holds buffer_mutex across the entire scan cycle.
+ */
 void ecat_io_write_outputs(const ecat_channel_map_t *map,
                            plugin_runtime_args_t *args)
 {

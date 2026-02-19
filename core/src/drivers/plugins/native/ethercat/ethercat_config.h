@@ -136,6 +136,10 @@ typedef struct {
  * @brief Top-level EtherCAT configuration
  *
  * Contains the master settings, flat list of slaves, and diagnostics config.
+ *
+ * WARNING: This struct is approximately 7 MB due to the inline slave array
+ * with nested PDOs. It must be allocated statically or on the heap -- never
+ * on the stack, as it would overflow most thread stacks.
  */
 typedef struct {
     ecat_master_config_t      master;

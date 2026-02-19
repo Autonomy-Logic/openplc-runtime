@@ -133,6 +133,9 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
     else if (strncmp(command, "PLUGIN_CMD:", 11) == 0)
     {
         // Format: PLUGIN_CMD:<plugin_name>:<json_payload>
+        // NOTE: This handler is BLOCKING -- plugin commands like EtherCAT scan
+        // may take several seconds. The unix socket thread is single-client,
+        // so the caller must wait for the response.
         const char *rest = &command[11];
         const char *colon = strchr(rest, ':');
         if (!colon || !g_plugin_driver)
@@ -151,7 +154,12 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
 
             const char *json_payload = colon + 1;
 
-            // Use a large buffer for plugin output
+            log_info("Executing plugin command: plugin='%s'", plugin_name);
+
+            // Stack-allocated buffer for plugin output.
+            // MAX_RESPONSE_SIZE is 64KB; this leaves 256 bytes for the
+            // "PLUGIN_CMD:OK:" prefix. Fits comfortably in the default
+            // 8MB thread stack.
             char plugin_response[MAX_RESPONSE_SIZE - 256];
             memset(plugin_response, 0, sizeof(plugin_response));
 
