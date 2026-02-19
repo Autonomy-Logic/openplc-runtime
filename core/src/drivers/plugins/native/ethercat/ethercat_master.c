@@ -170,6 +170,17 @@ int ecat_master_init(const ecat_config_t *config, plugin_logger_t *logger)
     ecx_config_map_group(&g_ecx_context, &g_iomap, 0);
 
     ec_groupt *grp = &g_ecx_context.grouplist[0];
+
+    /* Check that total I/O fits in the IOmap buffer */
+    uint32_t total_io = (uint32_t)grp->Obytes + (uint32_t)grp->Ibytes;
+    if (total_io > ECAT_IOMAP_SIZE) {
+        plugin_logger_error(logger, "IOmap overflow: need %u bytes, have %d",
+                            total_io, ECAT_IOMAP_SIZE);
+        ecx_close(&g_ecx_context);
+        g_soem_initialized = 0;
+        return -1;
+    }
+
     plugin_logger_info(logger, "IO map: %d output bytes, %d input bytes, %d segments",
                        grp->Obytes, grp->Ibytes, grp->nsegments);
 

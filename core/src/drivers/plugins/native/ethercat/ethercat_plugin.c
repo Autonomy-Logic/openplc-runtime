@@ -10,6 +10,7 @@
  * Phase 2: Process data exchange in cycle_start/cycle_end
  */
 
+#include <ctype.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -376,6 +377,25 @@ static int handle_scan_command(cJSON *root, char *response, size_t response_size
     if (!iface || !cJSON_IsString(iface)) {
         snprintf(response, response_size, "{\"error\":\"missing 'interface' param\"}");
         return -1;
+    }
+
+    /* Validate interface name (mirrors _validate_interface_name in Python) */
+    const char *ifname = iface->valuestring;
+    size_t ifname_len = strlen(ifname);
+    if (ifname_len == 0 || ifname_len > 15) { /* IFNAMSIZ - 1 */
+        snprintf(response, response_size, "{\"error\":\"invalid interface name length\"}");
+        return -1;
+    }
+    if (!isalpha((unsigned char)ifname[0])) {
+        snprintf(response, response_size, "{\"error\":\"invalid interface name format\"}");
+        return -1;
+    }
+    for (size_t i = 0; i < ifname_len; i++) {
+        unsigned char c = (unsigned char)ifname[i];
+        if (!isalnum(c) && c != '_' && c != '-') {
+            snprintf(response, response_size, "{\"error\":\"invalid interface name format\"}");
+            return -1;
+        }
     }
 
     /* Refuse scan while master is actively running on the bus */
