@@ -10,6 +10,7 @@
  * Phase 2: Process data exchange in cycle_start/cycle_end
  */
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,8 +72,8 @@ static inline uint64_t elapsed_ns(const ec_timet *start, const ec_timet *end)
 static plugin_logger_t g_logger;
 static plugin_runtime_args_t g_runtime_args;
 static ecat_config_t g_config;
-static bool g_initialized = false;
-static bool g_running = false;
+static _Atomic(bool) g_initialized = false;
+static _Atomic(bool) g_running = false;
 static ecat_channel_map_t g_channel_map;
 static int g_consecutive_wkc_errors = 0;
 static int g_expected_wkc = 0;
