@@ -1198,11 +1198,11 @@ int plugin_driver_execute_command(plugin_driver_t *driver, const char *plugin_na
         }
 
         snprintf(response, response_size,
-                 "{\"error\":\"plugin '%s' does not support execute_command\"}", plugin_name);
+                 "{\"error\":\"plugin does not support execute_command\"}");
         return -1;
     }
 
-    snprintf(response, response_size, "{\"error\":\"plugin '%s' not found\"}", plugin_name);
+    snprintf(response, response_size, "{\"error\":\"plugin not found\"}");
     return -1;
 }
 

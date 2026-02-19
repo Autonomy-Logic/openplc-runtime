@@ -483,7 +483,7 @@ int execute_command(const char *command_json, char *response, size_t response_si
     if (strcmp(cmd->valuestring, "scan") == 0) {
         result = handle_scan_command(root, response, response_size);
     } else {
-        snprintf(response, response_size, "{\"error\":\"unknown command '%s'\"}", cmd->valuestring);
+        snprintf(response, response_size, "{\"error\":\"unknown command\"}");
     }
 
     cJSON_Delete(root);
