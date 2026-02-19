@@ -88,8 +88,6 @@ int main(int argc, char *argv[])
     plugin_driver = plugin_driver_create();
     if (plugin_driver)
     {
-        // Make plugin driver available to unix socket for PLUGIN_CMD routing
-        unix_socket_set_plugin_driver(plugin_driver);
         log_info("[PLUGIN]: Plugin driver system created");
         // Load plugin configuration
         if (plugin_driver_load_config(plugin_driver, "./plugins.conf") == 0)
@@ -97,6 +95,11 @@ int main(int argc, char *argv[])
             // Start plugins
             plugin_driver_init(plugin_driver);
             plugin_driver_start(plugin_driver);
+            // Make plugin driver available to unix socket for PLUGIN_CMD routing
+            // only after all plugins are fully initialized and started.
+            // The unix socket handler checks for NULL g_plugin_driver, so
+            // commands arriving during init get a clean error response.
+            unix_socket_set_plugin_driver(plugin_driver);
             log_info("[PLUGIN]: Plugin driver system initialized");
         }
         else
