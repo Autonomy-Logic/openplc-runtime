@@ -11,7 +11,7 @@ Endpoints:
 import json
 from dataclasses import asdict
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
 
 from webserver.discovery.ethercat_discovery import (
@@ -50,7 +50,7 @@ def ethercat_status():
     """
     # Discovery is built into the runtime via the native EtherCAT plugin (SOEM).
     # Verify the runtime is actually reachable before reporting available.
-    from webserver.app import runtime_manager
+    runtime_manager = current_app.config["RUNTIME_MANAGER"]
 
     ping_response = runtime_manager.ping()
     if ping_response and ping_response.startswith("PING:OK"):
@@ -217,7 +217,7 @@ def ethercat_scan():
         return jsonify({"status": "error", "message": error_msg}), 400
 
     # Route scan through the native EtherCAT plugin via unix socket
-    from webserver.app import runtime_manager
+    runtime_manager = current_app.config["RUNTIME_MANAGER"]
 
     result = runtime_manager.send_plugin_command(
         "ethercat",

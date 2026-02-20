@@ -48,6 +48,11 @@ runtime_manager = RuntimeManager(
 
 runtime_manager.start()
 
+# Store in Flask app config so blueprints can access via current_app
+# without triggering a re-import of this module (which would create
+# a duplicate RuntimeManager when run with python -m webserver.app).
+app_restapi.config["RUNTIME_MANAGER"] = runtime_manager
+
 BASE_DIR: Final[Path] = Path(__file__).parent
 CERT_FILE: Final[Path] = (BASE_DIR / "certOPENPLC.pem").resolve()
 KEY_FILE: Final[Path] = (BASE_DIR / "keyOPENPLC.pem").resolve()
