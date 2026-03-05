@@ -496,31 +496,23 @@ int plugin_driver_stop(plugin_driver_t *driver)
         local_gstate = PyGILState_Ensure();
     }
 
-    // Signal all plugins to stop
+    // Signal all running plugins to stop.
+    // Stop based on the running flag, not the enabled flag, because a plugin
+    // may have been disabled via config update while still running.
     for (int i = 0; i < driver->plugin_count; i++)
     {
         plugin_instance_t *plugin = &driver->plugins[i];
-        
-        // Skip disabled plugins
-        if (!plugin->config.enabled)
+
+        if (!plugin->running)
         {
-            log_info("Skipping disabled plugin during stop: %s", plugin->config.name);
             continue;
         }
-        
-        log_info("Stopping plugin %d/%d: %s", i + 1, driver->plugin_count,
-                 driver->plugins[i].config.name);
-        if (plugin->python_plugin && plugin->python_plugin->pFuncStop &&
-            plugin->running)
-        {
-            plugin_instance_t *plugin = &driver->plugins[i];
-            if (plugin->config.enabled == 0)
-            {
-                log_info("Plugin %s is disabled, skipping stop", plugin->config.name);
-                continue;
-            }
 
-            PyObject *res = PyObject_CallNoArgs(driver->plugins[i].python_plugin->pFuncStop);
+        log_info("Stopping plugin %d/%d: %s", i + 1, driver->plugin_count,
+                 plugin->config.name);
+        if (plugin->python_plugin && plugin->python_plugin->pFuncStop)
+        {
+            PyObject *res = PyObject_CallNoArgs(plugin->python_plugin->pFuncStop);
             if (!res)
             {
                 PyErr_Print();
@@ -529,20 +521,16 @@ int plugin_driver_stop(plugin_driver_t *driver)
             else
             {
                 log_info("Plugin %s stopped successfully", plugin->config.name);
+                Py_DECREF(res);
             }
-            Py_DECREF(res);
-            log_info("Plugin %s stopped", driver->plugins[i].config.name);
             plugin->running = 0;
         }
-
-        else if (plugin->native_plugin && plugin->native_plugin->stop &&
-                 plugin->running)
+        else if (plugin->native_plugin && plugin->native_plugin->stop)
         {
             plugin->native_plugin->stop();
             log_info("Native plugin %s stopped successfully", plugin->config.name);
             plugin->running = 0;
         }
-        // Plugin manager only handles destruction, not stopping
     }
 
     if (need_gil)
