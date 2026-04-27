@@ -73,9 +73,11 @@ void *plc_cycle_thread(void *arg)
         log_error("Failed to initialize scan cycle manager");
     }
 
-    // Initialize PLC with real-time optimizations
-    set_realtime_priority();
+    // Lock memory eagerly so any allocation done during plugin/program init
+    // is already pinned. mlockall is process-wide and idempotent, so it does
+    // not need to wait for the RT-priority elevation below.
     lock_memory();
+
     symbols_init(pm);
     ext_config_init__();
     ext_glueVars();
@@ -119,6 +121,16 @@ void *plc_cycle_thread(void *arg)
         plugin_driver_start(plugin_driver);
         log_info("[PLUGIN]: Enabled plugins started");
     }
+
+    // Promote THIS thread to SCHED_FIFO 20 + isolated CPU only AFTER all
+    // plugin/I/O threads have been spawned. Linux pthreads default to
+    // PTHREAD_INHERIT_SCHED, so any pthread_create() called before this
+    // point inherits the calling (still SCHED_OTHER) thread, leaving the
+    // scan as the only RT thread on the isolated CPU. Calling this earlier
+    // caused housekeeping threads (unix socket, log streamer, plugin
+    // helpers) to silently inherit FIFO 20 and queue against the cyclic
+    // exchange, costing ~120us of jitter.
+    set_realtime_priority();
 
     // Install signal handlers for crash recovery BEFORE entering the main loop.
     // This allows SIGFPE (e.g. division by zero) and SIGSEGV (e.g. bad array

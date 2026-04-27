@@ -24,6 +24,7 @@
  */
 
 #include <ctype.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -31,6 +32,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <pthread.h>
+#include <sys/wait.h>
 #include <time.h>
 
 #include "plugin_logger.h"
@@ -129,6 +131,148 @@ static void safe_strcpy_local(char *dest, const char *src, size_t max_len)
     if (src == NULL) { dest[0] = '\0'; return; }
     strncpy(dest, src, max_len - 1);
     dest[max_len - 1] = '\0';
+}
+
+/*
+ * =============================================================================
+ * Network Interface Isolation (per-master, lifecycle-bound)
+ * =============================================================================
+ *
+ * SOEM uses AF_PACKET with an EtherType filter for 0x88A4, so the userspace
+ * only sees EtherCAT frames. But the kernel still processes ARP, IPv6-NS,
+ * multicast, broadcast, etc. on any interface that has IP enabled, costing
+ * a few microseconds of softirq work per stray packet -- contributing to
+ * worst-case jitter on the cyclic exchange.
+ *
+ * On start_loop we silence the IP stack on the EtherCAT NIC by:
+ *   1. Setting disable_ipv6 (only if it was previously enabled).
+ *   2. Inserting an iptables INPUT DROP rule for the interface.
+ * Both are tracked per-master and reverted in stop_loop only if we applied
+ * them, so we never clobber configuration the operator already had.
+ *
+ * Requires root, which the plugin already has (raw AF_PACKET socket).
+ */
+
+/**
+ * @brief Run a shell command via system(); returns process exit code or -1
+ */
+static int run_shell_cmd(const char *fmt, ...)
+{
+    char cmd[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(cmd, sizeof(cmd), fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= sizeof(cmd))
+        return -1;
+
+    int rc = system(cmd);
+    if (rc == -1)
+        return -1;
+    return WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+}
+
+/**
+ * @brief Read /proc/sys/net/ipv6/conf/<iface>/disable_ipv6 ; returns 0/1 or -1
+ */
+static int read_ipv6_disabled(const char *iface)
+{
+    char path[160];
+    snprintf(path, sizeof(path),
+             "/proc/sys/net/ipv6/conf/%s/disable_ipv6", iface);
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    int v = -1;
+    if (fscanf(f, "%d", &v) != 1) v = -1;
+    fclose(f);
+    return v;
+}
+
+/**
+ * @brief Write disable_ipv6 sysctl for the given interface
+ */
+static int write_ipv6_disabled(const char *iface, int value)
+{
+    char path[160];
+    snprintf(path, sizeof(path),
+             "/proc/sys/net/ipv6/conf/%s/disable_ipv6", iface);
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+    int rc = (fprintf(f, "%d\n", value) > 0) ? 0 : -1;
+    fclose(f);
+    return rc;
+}
+
+/**
+ * @brief Apply IP-stack isolation to the master's interface
+ */
+static void apply_iface_isolation(ecat_master_instance_t *inst,
+                                  plugin_logger_t *logger)
+{
+    const char *iface = inst->config.master.interface;
+    if (iface[0] == '\0')
+        return;
+
+    inst->iface_iptables_added = false;
+    inst->iface_ipv6_disabled_by_us = false;
+
+    /* IPv6: only flip if currently enabled (don't undo a user setting). */
+    int ipv6 = read_ipv6_disabled(iface);
+    if (ipv6 == 0) {
+        if (write_ipv6_disabled(iface, 1) == 0) {
+            inst->iface_ipv6_disabled_by_us = true;
+            plugin_logger_info(logger,
+                "Master '%s': disabled IPv6 on %s (jitter isolation)",
+                inst->name, iface);
+        } else {
+            plugin_logger_warn(logger,
+                "Master '%s': could not disable IPv6 on %s",
+                inst->name, iface);
+        }
+    } else if (ipv6 == 1) {
+        plugin_logger_debug(logger,
+            "Master '%s': IPv6 already disabled on %s", inst->name, iface);
+    }
+
+    /* iptables: delete any stale rule first (idempotent), then insert at top
+     * so we win against any pre-existing ACCEPT rules above. */
+    run_shell_cmd("iptables -D INPUT -i %s -j DROP 2>/dev/null", iface);
+    int rc = run_shell_cmd("iptables -I INPUT 1 -i %s -j DROP 2>/dev/null", iface);
+    if (rc == 0) {
+        inst->iface_iptables_added = true;
+        plugin_logger_info(logger,
+            "Master '%s': inserted iptables INPUT DROP for %s "
+            "(jitter isolation)", inst->name, iface);
+    } else {
+        plugin_logger_warn(logger,
+            "Master '%s': iptables -I INPUT failed for %s (rc=%d) -- "
+            "isolation skipped", inst->name, iface, rc);
+    }
+}
+
+/**
+ * @brief Revert IP-stack isolation -- only what we applied.
+ */
+static void revert_iface_isolation(ecat_master_instance_t *inst,
+                                   plugin_logger_t *logger)
+{
+    const char *iface = inst->config.master.interface;
+    if (iface[0] == '\0')
+        return;
+
+    if (inst->iface_iptables_added) {
+        run_shell_cmd("iptables -D INPUT -i %s -j DROP 2>/dev/null", iface);
+        plugin_logger_info(logger,
+            "Master '%s': removed iptables INPUT DROP for %s",
+            inst->name, iface);
+        inst->iface_iptables_added = false;
+    }
+    if (inst->iface_ipv6_disabled_by_us) {
+        write_ipv6_disabled(iface, 0);
+        plugin_logger_info(logger,
+            "Master '%s': re-enabled IPv6 on %s", inst->name, iface);
+        inst->iface_ipv6_disabled_by_us = false;
+    }
 }
 
 /*
@@ -513,6 +657,9 @@ static int start_single_master(ecat_master_instance_t *inst)
     }
 #endif
 
+    /* Silence the IP stack on the EtherCAT NIC. Reverted in stop_single_master. */
+    apply_iface_isolation(inst, &g_logger);
+
     plugin_logger_info(&g_logger,
         "Master '%s': [state: OPERATIONAL] EtherCAT master started "
         "(synchronous exchange, monitor=%s)",
@@ -567,6 +714,9 @@ static void stop_single_master(ecat_master_instance_t *inst)
             (unsigned long long)(inst->diag.min_total_ns / 1000),
             (unsigned long long)(inst->diag.max_total_ns / 1000));
     }
+
+    /* Undo IP-stack isolation only if we applied it -- safe to call always. */
+    revert_iface_isolation(inst, &g_logger);
 
     memset(&inst->channel_map, 0, sizeof(inst->channel_map));
     memset(&inst->transfer_list, 0, sizeof(inst->transfer_list));

@@ -551,6 +551,13 @@ typedef struct {
     _Atomic(bool) soem_paused;
     _Atomic(uint64_t) exchange_skips;
 #endif
+
+    /* Network interface isolation state (set by start_single_master,
+     * cleared by stop_single_master). Tracks whether we toggled each
+     * setting so we only revert what we actually applied -- avoids
+     * clobbering user configuration that was already in place. */
+    bool iface_iptables_added;     /* we inserted an INPUT DROP rule */
+    bool iface_ipv6_disabled_by_us;/* we flipped disable_ipv6 from 0->1 */
 } ecat_master_instance_t;
 
 /**

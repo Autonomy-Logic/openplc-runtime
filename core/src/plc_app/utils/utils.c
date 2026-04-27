@@ -15,6 +15,7 @@
 #if !defined(__CYGWIN__) && !defined(__MSYS__)
 #include <sched.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #define HAS_REALTIME_FEATURES 1
 #else
 #define HAS_REALTIME_FEATURES 0
@@ -128,6 +129,21 @@ void set_realtime_priority(void)
                 }
             }
         }
+    }
+
+    // Reduce timer slack from the kernel default (50us) to 1ns. The slack is
+    // a window the kernel can delay a timer wakeup within to coalesce wakeups
+    // for power saving; for the cyclic PLC thread waiting on
+    // clock_nanosleep(TIMER_ABSTIME) it directly translates to jitter on the
+    // cycle boundary. PR_SET_TIMERSLACK is per-thread, so this only affects
+    // the calling (PLC scan) thread.
+    if (prctl(PR_SET_TIMERSLACK, 1UL, 0, 0, 0) != 0)
+    {
+        log_warn("PR_SET_TIMERSLACK failed: %s", strerror(errno));
+    }
+    else
+    {
+        log_info("Timer slack reduced to 1ns for PLC thread");
     }
 #else
     // Real-time scheduling not available on MSYS2/Cygwin
