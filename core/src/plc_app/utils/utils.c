@@ -73,7 +73,14 @@ void timespec_diff(struct timespec *a, struct timespec *b, struct timespec *resu
     }
 }
 
-// configure SCHED_FIFO priority and pin to the highest-numbered CPU core
+// Configure SCHED_FIFO priority and reduce timer slack on the PLC scan thread.
+//
+// CPU affinity / pinning is intentionally NOT applied here. Pinning to a
+// specific core is a deployment concern (which CPU is isolated, whether the
+// host has multiple physical packages, container cpuset restrictions, etc.)
+// and the runtime should stay hardware-agnostic. Operators control affinity
+// at deployment time via taskset, cgroup cpuset, container --cpuset-cpus, or
+// the `CPUAffinity=` directive of the systemd service unit.
 void set_realtime_priority(void)
 {
 #if HAS_REALTIME_FEATURES
@@ -87,48 +94,6 @@ void set_realtime_priority(void)
     else
     {
         log_info("Scheduler set to SCHED_FIFO, priority %d", param.sched_priority);
-    }
-
-    // Pin PLC thread to the highest-numbered CPU core.
-    // On a 4-core system (0-3) this selects core 3, which is the best
-    // candidate for isolation (isolcpus= boot parameter).
-    // If the core is not available (e.g. Docker --cpuset-cpus restricts
-    // the set), fall back to the last available core in the affinity mask.
-    int num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
-    if (num_cpus > 1)
-    {
-        cpu_set_t available;
-        CPU_ZERO(&available);
-        if (sched_getaffinity(0, sizeof(available), &available) == 0)
-        {
-            // Find the highest available core
-            int target_cpu = -1;
-            for (int i = num_cpus - 1; i >= 0; i--)
-            {
-                if (CPU_ISSET(i, &available))
-                {
-                    target_cpu = i;
-                    break;
-                }
-            }
-
-            if (target_cpu >= 0)
-            {
-                cpu_set_t cpuset;
-                CPU_ZERO(&cpuset);
-                CPU_SET(target_cpu, &cpuset);
-                if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) == 0)
-                {
-                    log_info("PLC thread pinned to CPU %d (of %d available)",
-                             target_cpu, num_cpus);
-                }
-                else
-                {
-                    log_warn("Failed to pin PLC thread to CPU %d: %s",
-                             target_cpu, strerror(errno));
-                }
-            }
-        }
     }
 
     // Reduce timer slack from the kernel default (50us) to 1ns. The slack is
