@@ -73,19 +73,13 @@ void timespec_diff(struct timespec *a, struct timespec *b, struct timespec *resu
     }
 }
 
-// Configure SCHED_FIFO priority and reduce timer slack on the PLC scan thread.
-//
-// CPU affinity / pinning is intentionally NOT applied here. Pinning to a
-// specific core is a deployment concern (which CPU is isolated, whether the
-// host has multiple physical packages, container cpuset restrictions, etc.)
-// and the runtime should stay hardware-agnostic. Operators control affinity
-// at deployment time via taskset, cgroup cpuset, container --cpuset-cpus, or
-// the `CPUAffinity=` directive of the systemd service unit.
+// CPU affinity is left to deployment (taskset, cgroup cpuset, systemd
+// CPUAffinity=) so the runtime stays hardware-agnostic.
 void set_realtime_priority(void)
 {
 #if HAS_REALTIME_FEATURES
     struct sched_param param;
-    param.sched_priority = 20; // Priority between 1 and 99
+    param.sched_priority = 20;
 
     if (sched_setscheduler(0, SCHED_FIFO, &param) != 0)
     {
@@ -96,12 +90,8 @@ void set_realtime_priority(void)
         log_info("Scheduler set to SCHED_FIFO, priority %d", param.sched_priority);
     }
 
-    // Reduce timer slack from the kernel default (50us) to 1ns. The slack is
-    // a window the kernel can delay a timer wakeup within to coalesce wakeups
-    // for power saving; for the cyclic PLC thread waiting on
-    // clock_nanosleep(TIMER_ABSTIME) it directly translates to jitter on the
-    // cycle boundary. PR_SET_TIMERSLACK is per-thread, so this only affects
-    // the calling (PLC scan) thread.
+    // Default timer slack (50us) directly becomes wake-up jitter on
+    // clock_nanosleep(TIMER_ABSTIME). PR_SET_TIMERSLACK is per-thread.
     if (prctl(PR_SET_TIMERSLACK, 1UL, 0, 0, 0) != 0)
     {
         log_warn("PR_SET_TIMERSLACK failed: %s", strerror(errno));

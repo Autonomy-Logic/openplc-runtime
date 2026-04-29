@@ -138,19 +138,8 @@ static void safe_strcpy_local(char *dest, const char *src, size_t max_len)
  * Network Interface Isolation (per-master, lifecycle-bound)
  * =============================================================================
  *
- * SOEM uses AF_PACKET with an EtherType filter for 0x88A4, so the userspace
- * only sees EtherCAT frames. But the kernel still processes ARP, IPv6-NS,
- * multicast, broadcast, etc. on any interface that has IP enabled, costing
- * a few microseconds of softirq work per stray packet -- contributing to
- * worst-case jitter on the cyclic exchange.
- *
- * On start_loop we silence the IP stack on the EtherCAT NIC by:
- *   1. Setting disable_ipv6 (only if it was previously enabled).
- *   2. Inserting an iptables INPUT DROP rule for the interface.
- * Both are tracked per-master and reverted in stop_loop only if we applied
- * them, so we never clobber configuration the operator already had.
- *
- * Requires root, which the plugin already has (raw AF_PACKET socket).
+ * Silences IP traffic on the EtherCAT NIC for the duration of the master.
+ * State flags ensure we revert only what we applied.
  */
 
 /**
@@ -216,7 +205,7 @@ static void apply_iface_isolation(ecat_master_instance_t *inst,
     inst->iface_iptables_added = false;
     inst->iface_ipv6_disabled_by_us = false;
 
-    /* IPv6: only flip if currently enabled (don't undo a user setting). */
+    /* Only flip IPv6 if it was on, so we never undo an operator setting. */
     int ipv6 = read_ipv6_disabled(iface);
     if (ipv6 == 0) {
         if (write_ipv6_disabled(iface, 1) == 0) {
@@ -234,8 +223,7 @@ static void apply_iface_isolation(ecat_master_instance_t *inst,
             "Master '%s': IPv6 already disabled on %s", inst->name, iface);
     }
 
-    /* iptables: delete any stale rule first (idempotent), then insert at top
-     * so we win against any pre-existing ACCEPT rules above. */
+    /* Delete-then-insert keeps the rule unique across re-runs. */
     run_shell_cmd("iptables -D INPUT -i %s -j DROP 2>/dev/null", iface);
     int rc = run_shell_cmd("iptables -I INPUT 1 -i %s -j DROP 2>/dev/null", iface);
     if (rc == 0) {
