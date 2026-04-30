@@ -1,5 +1,7 @@
 # Ignore all files in the build output directory
 /build*/
+# Per-plugin standalone CMake build dirs (e.g. ethercat, s7comm)
+core/src/drivers/plugins/native/*/build/
 /core/generated/
 /memory-bank
 
