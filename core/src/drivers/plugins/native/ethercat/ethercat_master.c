@@ -11,6 +11,7 @@
  */
 
 #include "ethercat_master.h"
+#include "ethercat_proc.h"
 #include "soem/soem.h"
 
 #include <ctype.h>
@@ -180,50 +181,6 @@ static int parse_ethtool_bool(const char *output, const char *key, int *value)
     return 0;
 }
 
-/**
- * @brief Run a command and capture its stdout into a buffer.
- *
- * @return 0 on success, -1 on failure
- */
-static int run_capture(const char *cmd, char *buf, size_t buf_size)
-{
-    FILE *fp = popen(cmd, "r");
-    if (!fp)
-        return -1;
-    size_t total = 0;
-    while (total < buf_size - 1) {
-        size_t n = fread(buf + total, 1, buf_size - 1 - total, fp);
-        if (n == 0)
-            break;
-        total += n;
-    }
-    buf[total] = '\0';
-    int status = pclose(fp);
-    return (status == 0) ? 0 : -1;
-}
-
-/**
- * @brief Validate interface name contains only safe characters (alnum, _ , -).
- *
- * Prevents command injection when the name is interpolated into shell commands.
- *
- * @return 1 if safe, 0 if invalid
- */
-static int validate_iface_name(const char *iface)
-{
-    size_t len = strlen(iface);
-    if (len == 0 || len >= NIC_IFNAME_MAX)
-        return 0;
-    if (!isalpha((unsigned char)iface[0]))
-        return 0;
-    for (size_t i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)iface[i];
-        if (!isalnum(c) && c != '_' && c != '-')
-            return 0;
-    }
-    return 1;
-}
-
 /* ------------------------------------------------------------------ */
 /*  Persistence: write / read / remove the save file                   */
 /* ------------------------------------------------------------------ */
@@ -369,7 +326,7 @@ static nic_saved_settings_t *load_nic_settings_from_file(const char *iface, plug
 
     fclose(fp);
 
-    if (tmp.iface[0] == '\0' || !validate_iface_name(tmp.iface)) {
+    if (tmp.iface[0] == '\0' || !ecat_is_valid_iface_name(tmp.iface)) {
         plugin_logger_warn(logger,
             "Invalid or empty interface in %s - discarding", save_file);
         remove_nic_save_file(iface, logger);
@@ -418,38 +375,41 @@ static void save_nic_settings(const char *iface, plugin_logger_t *logger)
     strncpy(local.iface, iface, NIC_IFNAME_MAX - 1);
     local.iface[NIC_IFNAME_MAX - 1] = '\0';
 
-    char cmd[128];
     char output[2048];
 
     /* Capture coalescing settings */
-    snprintf(cmd, sizeof(cmd), "ethtool -c %s 2>/dev/null", iface);
-    if (run_capture(cmd, output, sizeof(output)) == 0) {
-        int ok = 0;
-        ok += (parse_ethtool_int(output, "rx-usecs", &local.rx_usecs) == 0);
-        ok += (parse_ethtool_int(output, "tx-usecs", &local.tx_usecs) == 0);
-        if (ok > 0) {
-            local.coalescing_saved = 1;
-            plugin_logger_info(logger,
-                "%s: saved coalescing (rx-usecs=%d, tx-usecs=%d)",
-                iface, local.rx_usecs, local.tx_usecs);
+    {
+        char *argv[] = { "ethtool", "-c", (char *)iface, NULL };
+        if (ecat_run_argv("ethtool", argv, output, sizeof(output)) == 0) {
+            int ok = 0;
+            ok += (parse_ethtool_int(output, "rx-usecs", &local.rx_usecs) == 0);
+            ok += (parse_ethtool_int(output, "tx-usecs", &local.tx_usecs) == 0);
+            if (ok > 0) {
+                local.coalescing_saved = 1;
+                plugin_logger_info(logger,
+                    "%s: saved coalescing (rx-usecs=%d, tx-usecs=%d)",
+                    iface, local.rx_usecs, local.tx_usecs);
+            }
         }
     }
 
     /* Capture offload settings */
-    snprintf(cmd, sizeof(cmd), "ethtool -k %s 2>/dev/null", iface);
-    if (run_capture(cmd, output, sizeof(output)) == 0) {
-        int ok = 0;
-        ok += (parse_ethtool_bool(output, "generic-receive-offload", &local.gro) == 0);
-        ok += (parse_ethtool_bool(output, "generic-segmentation-offload", &local.gso) == 0);
-        ok += (parse_ethtool_bool(output, "tcp-segmentation-offload", &local.tso) == 0);
-        if (ok > 0) {
-            local.offloads_saved = 1;
-            plugin_logger_info(logger,
-                "%s: saved offloads (gro=%s, gso=%s, tso=%s)",
-                iface,
-                local.gro ? "on" : "off",
-                local.gso ? "on" : "off",
-                local.tso ? "on" : "off");
+    {
+        char *argv[] = { "ethtool", "-k", (char *)iface, NULL };
+        if (ecat_run_argv("ethtool", argv, output, sizeof(output)) == 0) {
+            int ok = 0;
+            ok += (parse_ethtool_bool(output, "generic-receive-offload", &local.gro) == 0);
+            ok += (parse_ethtool_bool(output, "generic-segmentation-offload", &local.gso) == 0);
+            ok += (parse_ethtool_bool(output, "tcp-segmentation-offload", &local.tso) == 0);
+            if (ok > 0) {
+                local.offloads_saved = 1;
+                plugin_logger_info(logger,
+                    "%s: saved offloads (gro=%s, gso=%s, tso=%s)",
+                    iface,
+                    local.gro ? "on" : "off",
+                    local.gso ? "on" : "off",
+                    local.tso ? "on" : "off");
+            }
         }
     }
 
@@ -486,14 +446,18 @@ static void restore_nic_settings(const char *iface, plugin_logger_t *logger)
     ns->saved = 0;
     pthread_mutex_unlock(&g_nic_saved_mutex);
 
-    /* Restore NIC settings (slow shell calls -- run without lock) */
-    char cmd[128];
-
+    /* Restore NIC settings (slow exec calls -- run without lock) */
     if (local.coalescing_saved) {
-        snprintf(cmd, sizeof(cmd),
-            "ethtool -C %s rx-usecs %d tx-usecs %d 2>/dev/null",
-            iface, local.rx_usecs, local.tx_usecs);
-        if (system(cmd) == 0) {
+        char rx_str[16], tx_str[16];
+        snprintf(rx_str, sizeof(rx_str), "%d", local.rx_usecs);
+        snprintf(tx_str, sizeof(tx_str), "%d", local.tx_usecs);
+        char *argv[] = {
+            "ethtool", "-C", (char *)iface,
+            "rx-usecs", rx_str,
+            "tx-usecs", tx_str,
+            NULL
+        };
+        if (ecat_run_argv("ethtool", argv, NULL, 0) == 0) {
             plugin_logger_info(logger,
                 "%s: restored coalescing (rx-usecs=%d, tx-usecs=%d)",
                 iface, local.rx_usecs, local.tx_usecs);
@@ -501,13 +465,14 @@ static void restore_nic_settings(const char *iface, plugin_logger_t *logger)
     }
 
     if (local.offloads_saved) {
-        snprintf(cmd, sizeof(cmd),
-            "ethtool -K %s gro %s gso %s tso %s 2>/dev/null",
-            iface,
-            local.gro ? "on" : "off",
-            local.gso ? "on" : "off",
-            local.tso ? "on" : "off");
-        if (system(cmd) == 0) {
+        char *argv[] = {
+            "ethtool", "-K", (char *)iface,
+            "gro", local.gro ? "on" : "off",
+            "gso", local.gso ? "on" : "off",
+            "tso", local.tso ? "on" : "off",
+            NULL
+        };
+        if (ecat_run_argv("ethtool", argv, NULL, 0) == 0) {
             plugin_logger_info(logger,
                 "%s: restored offloads (gro=%s, gso=%s, tso=%s)",
                 iface,
@@ -649,9 +614,7 @@ int ecat_master_validate_topology(ecat_master_instance_t *inst, plugin_logger_t 
 static void tune_nic(const char *iface, plugin_logger_t *logger)
 {
 #if !defined(__CYGWIN__) && !defined(_WIN32)
-    char cmd[128];
-
-    if (!validate_iface_name(iface)) {
+    if (!ecat_is_valid_iface_name(iface)) {
         plugin_logger_warn(logger, "Skipping NIC tuning: invalid interface name '%s'", iface);
         return;
     }
@@ -663,17 +626,31 @@ static void tune_nic(const char *iface, plugin_logger_t *logger)
     save_nic_settings(iface, logger);
 
     /* Disable IRQ coalescing - deliver frames immediately */
-    snprintf(cmd, sizeof(cmd), "ethtool -C %s rx-usecs 0 tx-usecs 0 2>/dev/null", iface);
-    if (system(cmd) == 0)
     {
-        plugin_logger_info(logger, "%s: IRQ coalescing disabled (rx-usecs=0 tx-usecs=0)", iface);
+        char *argv[] = {
+            "ethtool", "-C", (char *)iface,
+            "rx-usecs", "0",
+            "tx-usecs", "0",
+            NULL
+        };
+        if (ecat_run_argv("ethtool", argv, NULL, 0) == 0) {
+            plugin_logger_info(logger,
+                "%s: IRQ coalescing disabled (rx-usecs=0 tx-usecs=0)", iface);
+        }
     }
 
     /* Disable receive offloads that batch/merge packets */
-    snprintf(cmd, sizeof(cmd), "ethtool -K %s gro off gso off tso off 2>/dev/null", iface);
-    if (system(cmd) == 0)
     {
-        plugin_logger_info(logger, "%s: GRO/GSO/TSO offloads disabled", iface);
+        char *argv[] = {
+            "ethtool", "-K", (char *)iface,
+            "gro", "off",
+            "gso", "off",
+            "tso", "off",
+            NULL
+        };
+        if (ecat_run_argv("ethtool", argv, NULL, 0) == 0) {
+            plugin_logger_info(logger, "%s: GRO/GSO/TSO offloads disabled", iface);
+        }
     }
 #else
     (void)iface;

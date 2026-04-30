@@ -276,6 +276,17 @@ int ecat_config_parse(const char *config_path, ecat_config_t *config);
 int ecat_config_validate(const ecat_config_t *config);
 
 /**
+ * @brief Check whether an interface name is a safe Linux iface identifier.
+ *
+ * Accepts only alphanumeric characters plus '_' and '-', must start with an
+ * alpha, length 1..IFNAMSIZ-1 (15). Used as a precondition before passing
+ * the name to external binaries (ethtool, iptables) or kernel /proc paths.
+ *
+ * @return true if safe, false otherwise.
+ */
+bool ecat_is_valid_iface_name(const char *iface);
+
+/**
  * @brief Initialize configuration with default values
  *
  * @param config Configuration structure to initialize

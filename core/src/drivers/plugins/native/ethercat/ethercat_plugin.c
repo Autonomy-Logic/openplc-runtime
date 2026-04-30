@@ -24,7 +24,7 @@
  */
 
 #include <ctype.h>
-#include <stdarg.h>
+#include <errno.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -32,8 +32,9 @@
 #include <string.h>
 #include <stdbool.h>
 #include <pthread.h>
-#include <sys/wait.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "plugin_logger.h"
 #include "plugin_types.h"
@@ -41,6 +42,7 @@
 #include "ethercat_config.h"
 #include "ethercat_master.h"
 #include "ethercat_io.h"
+#include "ethercat_proc.h"
 #include "soem/soem.h"   /* osal_get_monotonic_time, ec_timet */
 #include "cjson/cJSON.h"  /* JSON parsing for execute_command */
 
@@ -139,27 +141,13 @@ static void safe_strcpy_local(char *dest, const char *src, size_t max_len)
  * =============================================================================
  *
  * Silences IP traffic on the EtherCAT NIC for the duration of the master.
- * State flags ensure we revert only what we applied.
+ * State flags ensure we revert only what we applied. State is also
+ * persisted to /run/runtime/ so a crashed runtime does not leak iptables
+ * rules or IPv6 sysctl flips into the next boot's environment.
  */
 
-/**
- * @brief Run a shell command via system(); returns process exit code or -1
- */
-static int run_shell_cmd(const char *fmt, ...)
-{
-    char cmd[256];
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(cmd, sizeof(cmd), fmt, ap);
-    va_end(ap);
-    if (n < 0 || (size_t)n >= sizeof(cmd))
-        return -1;
-
-    int rc = system(cmd);
-    if (rc == -1)
-        return -1;
-    return WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
-}
+#define ECAT_ISO_STATE_DIR  "/run/runtime"
+#define ECAT_ISO_STATE_FMT  "/run/runtime/ecat_iface_iso_%s.state"
 
 /**
  * @brief Read /proc/sys/net/ipv6/conf/<iface>/disable_ipv6 ; returns 0/1 or -1
@@ -193,6 +181,153 @@ static int write_ipv6_disabled(const char *iface, int value)
 }
 
 /**
+ * @brief Run `iptables -D INPUT -i <iface> -j DROP`
+ */
+static int iptables_delete(const char *iface)
+{
+    char *argv[] = {
+        "iptables", "-D", "INPUT", "-i", (char *)iface, "-j", "DROP", NULL
+    };
+    return ecat_run_argv("iptables", argv, NULL, 0);
+}
+
+/**
+ * @brief Run `iptables -I INPUT 1 -i <iface> -j DROP`
+ */
+static int iptables_insert(const char *iface)
+{
+    char *argv[] = {
+        "iptables", "-I", "INPUT", "1", "-i", (char *)iface, "-j", "DROP", NULL
+    };
+    return ecat_run_argv("iptables", argv, NULL, 0);
+}
+
+/**
+ * @brief Build the per-iface persistence file path.
+ */
+static void iso_state_path(const char *iface, char *buf, size_t size)
+{
+    snprintf(buf, size, ECAT_ISO_STATE_FMT, iface);
+}
+
+/**
+ * @brief Persist the in-memory isolation state for an interface to disk.
+ *
+ * Atomic write via temp + rename, mirroring the NIC-settings persistence.
+ * On a crash, the state file lets the next start undo what we applied.
+ */
+static void persist_iso_state(const char *iface,
+                              bool iptables_added, bool ipv6_disabled,
+                              plugin_logger_t *logger)
+{
+    if (mkdir(ECAT_ISO_STATE_DIR, 0755) != 0 && errno != EEXIST) {
+        plugin_logger_warn(logger,
+            "Cannot create %s: %s - iface isolation will not survive a crash",
+            ECAT_ISO_STATE_DIR, strerror(errno));
+        return;
+    }
+
+    char path[160];
+    iso_state_path(iface, path, sizeof(path));
+
+    char tmp[176];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+
+    FILE *fp = fopen(tmp, "w");
+    if (!fp) {
+        plugin_logger_warn(logger,
+            "Cannot write %s: %s - iface isolation will not survive a crash",
+            tmp, strerror(errno));
+        return;
+    }
+    fprintf(fp, "iface=%s\n", iface);
+    fprintf(fp, "iptables_added=%d\n", iptables_added ? 1 : 0);
+    fprintf(fp, "ipv6_disabled_by_us=%d\n", ipv6_disabled ? 1 : 0);
+    fflush(fp);
+    fclose(fp);
+
+    if (rename(tmp, path) != 0) {
+        plugin_logger_warn(logger, "Cannot rename %s -> %s: %s",
+                           tmp, path, strerror(errno));
+        unlink(tmp);
+    }
+}
+
+/**
+ * @brief Remove the persistence file (no-op if it doesn't exist).
+ */
+static void remove_iso_state(const char *iface)
+{
+    char path[160];
+    iso_state_path(iface, path, sizeof(path));
+    unlink(path);
+}
+
+/**
+ * @brief Load persisted isolation state for an interface, if present.
+ *
+ * @return true if a valid state file was found and parsed.
+ */
+static bool load_iso_state(const char *iface,
+                           bool *iptables_added, bool *ipv6_disabled)
+{
+    char path[160];
+    iso_state_path(iface, path, sizeof(path));
+    FILE *fp = fopen(path, "r");
+    if (!fp)
+        return false;
+
+    *iptables_added = false;
+    *ipv6_disabled = false;
+
+    char line[128];
+    while (fgets(line, sizeof(line), fp)) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n')
+            line[len - 1] = '\0';
+        char *eq = strchr(line, '=');
+        if (!eq)
+            continue;
+        *eq = '\0';
+        const char *key = line;
+        const char *val = eq + 1;
+        if (strcmp(key, "iptables_added") == 0) {
+            *iptables_added = (atoi(val) != 0);
+        } else if (strcmp(key, "ipv6_disabled_by_us") == 0) {
+            *ipv6_disabled = (atoi(val) != 0);
+        }
+    }
+    fclose(fp);
+    return true;
+}
+
+/**
+ * @brief Recover isolation state left over from a previous crashed run.
+ *
+ * Mirrors recover_nic_settings() in ethercat_master.c. Called from
+ * apply_iface_isolation before applying fresh state.
+ */
+static void recover_iso_state(const char *iface, plugin_logger_t *logger)
+{
+    bool ipt = false, ipv6 = false;
+    if (!load_iso_state(iface, &ipt, &ipv6))
+        return;
+
+    plugin_logger_warn(logger,
+        "Found stale iface-isolation state for %s "
+        "(iptables=%d ipv6=%d) - previous process likely crashed. "
+        "Reverting before re-applying.",
+        iface, (int)ipt, (int)ipv6);
+
+    if (ipt)
+        iptables_delete(iface);
+    if (ipv6)
+        write_ipv6_disabled(iface, 0);
+
+    remove_iso_state(iface);
+}
+
+/**
  * @brief Apply IP-stack isolation to the master's interface
  */
 static void apply_iface_isolation(ecat_master_instance_t *inst,
@@ -205,11 +340,23 @@ static void apply_iface_isolation(ecat_master_instance_t *inst,
     inst->iface_iptables_added = false;
     inst->iface_ipv6_disabled_by_us = false;
 
+    if (!ecat_is_valid_iface_name(iface)) {
+        plugin_logger_warn(logger,
+            "Master '%s': interface '%s' is not a valid Linux iface name - "
+            "skipping IP-stack isolation", inst->name, iface);
+        return;
+    }
+
+    /* If a previous process crashed, undo whatever it left behind first. */
+    recover_iso_state(iface, logger);
+
     /* Only flip IPv6 if it was on, so we never undo an operator setting. */
     int ipv6 = read_ipv6_disabled(iface);
     if (ipv6 == 0) {
         if (write_ipv6_disabled(iface, 1) == 0) {
             inst->iface_ipv6_disabled_by_us = true;
+            persist_iso_state(iface, inst->iface_iptables_added,
+                              inst->iface_ipv6_disabled_by_us, logger);
             plugin_logger_info(logger,
                 "Master '%s': disabled IPv6 on %s (jitter isolation)",
                 inst->name, iface);
@@ -224,10 +371,12 @@ static void apply_iface_isolation(ecat_master_instance_t *inst,
     }
 
     /* Delete-then-insert keeps the rule unique across re-runs. */
-    run_shell_cmd("iptables -D INPUT -i %s -j DROP 2>/dev/null", iface);
-    int rc = run_shell_cmd("iptables -I INPUT 1 -i %s -j DROP 2>/dev/null", iface);
+    iptables_delete(iface);
+    int rc = iptables_insert(iface);
     if (rc == 0) {
         inst->iface_iptables_added = true;
+        persist_iso_state(iface, inst->iface_iptables_added,
+                          inst->iface_ipv6_disabled_by_us, logger);
         plugin_logger_info(logger,
             "Master '%s': inserted iptables INPUT DROP for %s "
             "(jitter isolation)", inst->name, iface);
@@ -236,6 +385,10 @@ static void apply_iface_isolation(ecat_master_instance_t *inst,
             "Master '%s': iptables -I INPUT failed for %s (rc=%d) -- "
             "isolation skipped", inst->name, iface, rc);
     }
+
+    /* If we ended up doing nothing, do not leave a stale state file. */
+    if (!inst->iface_iptables_added && !inst->iface_ipv6_disabled_by_us)
+        remove_iso_state(iface);
 }
 
 /**
@@ -249,7 +402,7 @@ static void revert_iface_isolation(ecat_master_instance_t *inst,
         return;
 
     if (inst->iface_iptables_added) {
-        run_shell_cmd("iptables -D INPUT -i %s -j DROP 2>/dev/null", iface);
+        iptables_delete(iface);
         plugin_logger_info(logger,
             "Master '%s': removed iptables INPUT DROP for %s",
             inst->name, iface);
@@ -261,6 +414,9 @@ static void revert_iface_isolation(ecat_master_instance_t *inst,
             "Master '%s': re-enabled IPv6 on %s", inst->name, iface);
         inst->iface_ipv6_disabled_by_us = false;
     }
+
+    /* Drop the persistence file so the next start does not see stale state. */
+    remove_iso_state(iface);
 }
 
 /*

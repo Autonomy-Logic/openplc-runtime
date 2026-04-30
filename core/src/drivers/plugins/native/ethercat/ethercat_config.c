@@ -15,6 +15,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+/** Linux IFNAMSIZ is 16; valid iface names are 1..15 chars. */
+#define ECAT_LINUX_IFNAME_MAX 16
+
+bool ecat_is_valid_iface_name(const char *iface)
+{
+    if (iface == NULL)
+        return false;
+    size_t len = strlen(iface);
+    if (len == 0 || len >= ECAT_LINUX_IFNAME_MAX)
+        return false;
+    if (!isalpha((unsigned char)iface[0]))
+        return false;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)iface[i];
+        if (!isalnum(c) && c != '_' && c != '-')
+            return false;
+    }
+    return true;
+}
+
 /*
  * =============================================================================
  * Helper Functions
