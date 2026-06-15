@@ -335,14 +335,22 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
     """
     script_path: str = "./scripts/compile.sh"
 
-    build_state.status = BuildStatus.COMPILING
-    build_state.log(f"[INFO] Starting compilation\n")
-
     def stream_output(pipe, prefix):
-        for line in iter(pipe.readline, ''):
-            msg = f"{prefix}{line}"
-            build_state.log(msg)
-        pipe.close()
+        # If the drainer dies mid-stream (e.g. UnicodeDecodeError on a
+        # non-UTF8 byte from g++ stderr, transient I/O error), the
+        # subprocess eventually fills its pipe buffer and blocks on its
+        # next write — which means compile_proc.wait() never returns and
+        # the build is silently stuck in COMPILING forever. Catch here so
+        # the operator sees the drainer error, and the finally{} pipe
+        # close lets the child see EOF instead of blocking.
+        try:
+            for line in iter(pipe.readline, ''):
+                msg = f"{prefix}{line}"
+                build_state.log(msg)
+        except Exception as e:
+            build_state.log(f"[WARNING] Log drainer crashed: {e}\n")
+        finally:
+            pipe.close()
 
     def wait_step(proc: subprocess.Popen, step_name: str) -> bool:
         """Wait for a subprocess and log the result. Returns True on
@@ -357,128 +365,157 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
         build_state.log(f"[ERROR] {step_name} failed (exit={exit_code})\n")
         return False
 
-    # --- Optional clean step ---
-    if clean:
-        build_state.log("[INFO] Clean build requested — wiping core/build/ and ccache\n")
-        # Wipe the per-project object cache. shutil.rmtree avoids needing
-        # `make clean` (which would require the Makefile to be in cwd).
-        build_dir = "core/build"
-        if os.path.exists(build_dir):
+    # Wrap the entire orchestration body in try/except so any unhandled
+    # exception flips status to FAILED instead of leaving it pinned at
+    # COMPILING. Without this guard, a raise inside run_compile (e.g.
+    # Popen FileNotFoundError on a missing script, OSError on a
+    # full disk, or the inner update_plugin_configurations catch
+    # re-raising) propagates out of the daemon thread that
+    # run_compile is invoked on. The thread dies silently and the
+    # /api/compilation-status endpoint keeps reporting COMPILING
+    # indefinitely; the editor only recovers via its TCP
+    # connection-timeout safety net several minutes later (after the
+    # runtime stops responding at the network layer for unrelated
+    # reasons). Catching here makes the runtime fail-closed: any crash
+    # transitions to a terminal status the editor can observe on its
+    # next poll.
+    try:
+        build_state.status = BuildStatus.COMPILING
+        build_state.log(f"[INFO] Starting compilation\n")
+
+        # --- Optional clean step ---
+        if clean:
+            build_state.log("[INFO] Clean build requested — wiping core/build/ and ccache\n")
+            # Wipe the per-project object cache. shutil.rmtree avoids needing
+            # `make clean` (which would require the Makefile to be in cwd).
+            build_dir = "core/build"
+            if os.path.exists(build_dir):
+                try:
+                    shutil.rmtree(build_dir)
+                except OSError as e:
+                    build_state.log(f"[WARNING] Failed to remove {build_dir}: {e}\n")
+            # Wipe ccache. Failures here are non-fatal — `ccache -C` returning
+            # non-zero (e.g. ccache not installed) shouldn't abort the build,
+            # since the build folder wipe alone already invalidates per-file
+            # caches that live in build/.
             try:
-                shutil.rmtree(build_dir)
-            except OSError as e:
-                build_state.log(f"[WARNING] Failed to remove {build_dir}: {e}\n")
-        # Wipe ccache. Failures here are non-fatal — `ccache -C` returning
-        # non-zero (e.g. ccache not installed) shouldn't abort the build,
-        # since the build folder wipe alone already invalidates per-file
-        # caches that live in build/.
-        try:
-            ccache_proc = subprocess.run(
-                ["ccache", "-C"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-            )
-            if ccache_proc.returncode == 0:
-                build_state.log("[INFO] ccache cleared\n")
-            else:
-                build_state.log(
-                    f"[WARNING] ccache -C exited {ccache_proc.returncode}: "
-                    f"{ccache_proc.stderr.strip() or 'no error output'}\n"
+                ccache_proc = subprocess.run(
+                    ["ccache", "-C"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
                 )
-        except FileNotFoundError:
-            build_state.log("[INFO] ccache not installed — skipping cache wipe\n")
+                if ccache_proc.returncode == 0:
+                    build_state.log("[INFO] ccache cleared\n")
+                else:
+                    build_state.log(
+                        f"[WARNING] ccache -C exited {ccache_proc.returncode}: "
+                        f"{ccache_proc.stderr.strip() or 'no error output'}\n"
+                    )
+            except FileNotFoundError:
+                build_state.log("[INFO] ccache not installed — skipping cache wipe\n")
 
-    # --- Compile step ---
-    compile_proc = subprocess.Popen(
-        ["bash", script_path],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1
-    )
-
-    threading.Thread(target=stream_output, args=(compile_proc.stdout, ""), daemon=True).start()
-    threading.Thread(target=stream_output, args=(compile_proc.stderr, "[ERROR] "), daemon=True).start()
-
-    # Block until compile finishes.
-    compile_ok = wait_step(compile_proc, "Build")
-
-    # Stop the running PLC before swapping the .so. stop_plc() returns
-    # as soon as the runtime ACKs over the socket, but the actual task
-    # / plugin / .so teardown continues asynchronously — wait for the
-    # runtime to settle (not in a transition) before letting the
-    # cleanup script touch build/new_libplc.so. Otherwise the new .so
-    # could be moved into place (or the old one held open) while
-    # teardown is still in progress. _wait_for_plc_idle returns
-    # immediately for the "PLC was never started" case (state == INIT
-    # / EMPTY) — there's no transition to wait for.
-    runtime_manager.stop_plc()
-    if not _wait_for_plc_idle(runtime_manager, timeout_s=30.0):
-        build_state.log(
-            "[WARNING] Runtime stayed in TRANSITIONING for 30s; "
-            "proceeding with cleanup anyway\n"
+        # --- Compile step ---
+        # errors='replace' so a non-UTF8 byte in g++ stderr (rare with
+        # the C locale but possible with i18n locales or files that
+        # carry non-UTF8 identifiers) is replaced with U+FFFD instead of
+        # raising UnicodeDecodeError inside the drainer thread.
+        compile_proc = subprocess.Popen(
+            ["bash", script_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors='replace',
+            bufsize=1
         )
 
-    # --- Cleanup step ---
-    cleanup_proc = subprocess.Popen(
-        ["bash", "./scripts/compile-clean.sh"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1
-    )
+        threading.Thread(target=stream_output, args=(compile_proc.stdout, ""), daemon=True).start()
+        threading.Thread(target=stream_output, args=(compile_proc.stderr, "[ERROR] "), daemon=True).start()
 
-    threading.Thread(target=stream_output, args=(cleanup_proc.stdout, ""), daemon=True).start()
-    threading.Thread(target=stream_output, args=(cleanup_proc.stderr, "[ERROR] "), daemon=True).start()
+        # Block until compile finishes.
+        compile_ok = wait_step(compile_proc, "Build")
 
-    cleanup_ok = wait_step(cleanup_proc, "Cleanup")
+        # Stop the running PLC before swapping the .so. stop_plc() returns
+        # as soon as the runtime ACKs over the socket, but the actual task
+        # / plugin / .so teardown continues asynchronously — wait for the
+        # runtime to settle (not in a transition) before letting the
+        # cleanup script touch build/new_libplc.so. Otherwise the new .so
+        # could be moved into place (or the old one held open) while
+        # teardown is still in progress. _wait_for_plc_idle returns
+        # immediately for the "PLC was never started" case (state == INIT
+        # / EMPTY) — there's no transition to wait for.
+        runtime_manager.stop_plc()
+        if not _wait_for_plc_idle(runtime_manager, timeout_s=30.0):
+            build_state.log(
+                "[WARNING] Runtime stayed in TRANSITIONING for 30s; "
+                "proceeding with cleanup anyway\n"
+            )
 
-    # Update build_state.status from the COMBINED result. Previously,
-    # only the cleanup result mattered (the second wait_and_finish
-    # overwrote whatever the compile set), so a failed compile + a
-    # successful cleanup would have been reported as SUCCESS, and a
-    # successful compile + a failed cleanup as FAILED — neither
-    # matches what actually happened.
-    if compile_ok and cleanup_ok:
-        build_state.status = BuildStatus.SUCCESS
-        build_state.exit_code = 0
-    else:
-        build_state.status = BuildStatus.FAILED
-        build_state.exit_code = 1
+        # --- Cleanup step ---
+        cleanup_proc = subprocess.Popen(
+            ["bash", "./scripts/compile-clean.sh"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors='replace',
+            bufsize=1
+        )
 
-    if build_state.status == BuildStatus.SUCCESS:
-        # Re-run plugin configuration now that compile.sh has produced any
-        # VPP plugin .so files. The pre-compile call at upload time can only
-        # register pre-built plugins; VPP plugins are compiled on-target
-        # during run_compile, so their entries in plugins.conf have to be
-        # written after the compile step succeeds.
-        #
-        # Hold status back in COMPILING while we finalize plugins.conf so
-        # the editor doesn't poll SUCCESS and send START before the VPP
-        # plugin entry is written.
-        #
-        # Wrap in try/except: if update_plugin_configurations raises (e.g.,
-        # malformed plugins.conf, OS error rewriting it), we MUST flip
-        # status to FAILED. Without this, a raised exception bubbles out
-        # of run_compile leaving build_state.status pinned at COMPILING,
-        # and the editor's polling loop hangs forever waiting for a
-        # terminal status.
-        build_state.status = BuildStatus.COMPILING
-        try:
-            update_plugin_configurations(cwd)
+        threading.Thread(target=stream_output, args=(cleanup_proc.stdout, ""), daemon=True).start()
+        threading.Thread(target=stream_output, args=(cleanup_proc.stderr, "[ERROR] "), daemon=True).start()
+
+        cleanup_ok = wait_step(cleanup_proc, "Cleanup")
+
+        # Update build_state.status from the COMBINED result. Previously,
+        # only the cleanup result mattered (the second wait_and_finish
+        # overwrote whatever the compile set), so a failed compile + a
+        # successful cleanup would have been reported as SUCCESS, and a
+        # successful compile + a failed cleanup as FAILED — neither
+        # matches what actually happened.
+        if compile_ok and cleanup_ok:
             build_state.status = BuildStatus.SUCCESS
-            # Reset crash tracking after a successful build — the program
-            # changed, so any previous crash pattern no longer applies. Do
-            # NOT auto-start the PLC here: the editor is responsible for
-            # sending START once it has confirmed a clean build, which
-            # gives it control over retries when the previous STOP
-            # transition is still finishing (COMMAND:BUSY window).
-            runtime_manager.reset_crash_tracking()
-        except Exception as e:
-            build_state.log(f"[ERROR] Failed to update plugin configurations: {e}\n")
+            build_state.exit_code = 0
+        else:
             build_state.status = BuildStatus.FAILED
             build_state.exit_code = 1
-    else:
-        build_state.log("[WARNING] PLC program has not been updated because the build failed\n")
+
+        if build_state.status == BuildStatus.SUCCESS:
+            # Re-run plugin configuration now that compile.sh has produced any
+            # VPP plugin .so files. The pre-compile call at upload time can only
+            # register pre-built plugins; VPP plugins are compiled on-target
+            # during run_compile, so their entries in plugins.conf have to be
+            # written after the compile step succeeds.
+            #
+            # Hold status back in COMPILING while we finalize plugins.conf so
+            # the editor doesn't poll SUCCESS and send START before the VPP
+            # plugin entry is written.
+            #
+            # The inner try/except is kept (instead of relying on the outer
+            # guard) so update_plugin_configurations failures produce a
+            # specific log line that operators can grep for, while still
+            # flipping status to FAILED.
+            build_state.status = BuildStatus.COMPILING
+            try:
+                update_plugin_configurations(cwd)
+                build_state.status = BuildStatus.SUCCESS
+                # Reset crash tracking after a successful build — the program
+                # changed, so any previous crash pattern no longer applies. Do
+                # NOT auto-start the PLC here: the editor is responsible for
+                # sending START once it has confirmed a clean build, which
+                # gives it control over retries when the previous STOP
+                # transition is still finishing (COMMAND:BUSY window).
+                runtime_manager.reset_crash_tracking()
+            except Exception as e:
+                build_state.log(f"[ERROR] Failed to update plugin configurations: {e}\n")
+                build_state.status = BuildStatus.FAILED
+                build_state.exit_code = 1
+        else:
+            build_state.log("[WARNING] PLC program has not been updated because the build failed\n")
+    except Exception as e:
+        # Outer fail-closed guard. exit_code = -1 distinguishes an
+        # orchestrator crash from a build-step non-zero exit (which uses
+        # exit_code = 1).
+        build_state.log(f"[ERROR] Compile orchestrator crashed: {e}\n")
+        build_state.status = BuildStatus.FAILED
+        build_state.exit_code = -1
