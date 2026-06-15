@@ -433,42 +433,64 @@ class ModbusSlaveDevice(threading.Thread):
         self._stop_event.set()
 
 
-class ModbusRtuBusHandler(threading.Thread):
+class ModbusBusHandler(threading.Thread):
     """
-    Handles multiple Modbus RTU devices on a single serial port (multi-drop).
-    One thread per serial bus, managing multiple slave IDs.
+    Handles multiple Modbus devices that share ONE connection, multiplexed by
+    slave/unit ID. One thread per bus, managing multiple slave IDs over a single
+    connection. Used for two cases:
+      - RTU multi-drop: several devices on one serial port (different slave IDs).
+      - TCP gateway (TCP-to-RTU converter): several serial slaves behind one
+        IP:port, distinguished by their unit/slave ID.
 
-    This differs from ModbusSlaveDevice in that:
-    - A single serial connection is shared by multiple devices
-    - Each device has a unique slave_id
-    - IO operations include the slave_id to route to the correct device
+    This differs from ModbusSlaveDevice (one connection per device) in that:
+    - A single connection is shared by multiple devices.
+    - Each device has a unique slave_id.
+    - Each IO operation carries that slave_id (device_id / MBAP unit byte) so the
+      gateway or bus routes it to the correct slave.
+
+    The run() loop is transport-agnostic; only the connection setup differs.
     """
 
     def __init__(
         self,
-        serial_config: dict,  # {serial_port, baud_rate, parity, stop_bits, data_bits, timeout_ms}
-        devices: List[Any],  # List of ModbusDeviceConfig on this bus
+        transport: str,            # "tcp" or "rtu"
+        connection_config: dict,   # tcp: {host, port, timeout_ms};
+                                   # rtu: {serial_port, baud_rate, parity, stop_bits, data_bits, timeout_ms}
+        devices: List[Any],        # List of ModbusDeviceConfig sharing this connection
         sba: SafeBufferAccess,
         plugin_logger: PluginLogger,
     ):
         super().__init__(daemon=True)
-        self.serial_config = serial_config
+        self.transport = transport
+        self.connection_config = connection_config
         self.devices = devices
         self.sba = sba
         self.logger = plugin_logger
         self._stop_event = threading.Event()
 
-        # Create single connection for the entire bus
-        self.connection_manager = ModbusConnectionManager(
-            transport="rtu",
-            serial_port=serial_config["serial_port"],
-            baud_rate=serial_config["baud_rate"],
-            parity=serial_config["parity"],
-            stop_bits=serial_config["stop_bits"],
-            data_bits=serial_config["data_bits"],
-            timeout_ms=serial_config["timeout_ms"],
-            slave_id=1,  # Default, will use device-specific slave_id per operation
-        )
+        # Single shared connection for the whole bus/gateway. slave_id here is a
+        # placeholder; every request uses its device-specific slave_id below.
+        if transport == "tcp":
+            self.connection_manager = ModbusConnectionManager(
+                transport="tcp",
+                host=connection_config["host"],
+                port=connection_config["port"],
+                timeout_ms=connection_config["timeout_ms"],
+                slave_id=1,
+            )
+            self.name = f"ModbusTcpGateway-{connection_config['host']}:{connection_config['port']}"
+        else:
+            self.connection_manager = ModbusConnectionManager(
+                transport="rtu",
+                serial_port=connection_config["serial_port"],
+                baud_rate=connection_config["baud_rate"],
+                parity=connection_config["parity"],
+                stop_bits=connection_config["stop_bits"],
+                data_bits=connection_config["data_bits"],
+                timeout_ms=connection_config["timeout_ms"],
+                slave_id=1,  # Default, will use device-specific slave_id per operation
+            )
+            self.name = f"ModbusRtuBus-{connection_config['serial_port']}"
 
         # Build consolidated IO point list with slave_id
         # Each entry: {"point": io_point, "slave_id": device.slave_id, "device_name": device.name}
@@ -488,9 +510,8 @@ class ModbusRtuBusHandler(threading.Thread):
         ) if all_cycle_times else 1000
 
         device_names = ", ".join([d.name for d in devices])
-        self.name = f"ModbusRtuBus-{serial_config['serial_port']}"
         self.logger.info(
-            f"[{self.name}] RTU bus handler created for devices: {device_names} "
+            f"[{self.name}] bus handler created for devices: {device_names} "
             f"({len(self.all_io_points)} total IO points, GCD cycle: {self.gcd_cycle_time_ms}ms)"
         )
 
@@ -812,6 +833,10 @@ class ModbusRtuBusHandler(threading.Thread):
         self._stop_event.set()
 
 
+# Backward-compatible alias: the bus handler used to be RTU-only.
+ModbusRtuBusHandler = ModbusBusHandler
+
+
 def group_rtu_devices_by_bus(devices: List[Any]) -> dict:
     """
     Group RTU devices by serial port configuration (forming unique "buses").
@@ -861,6 +886,52 @@ def group_rtu_devices_by_bus(devices: List[Any]) -> dict:
     return buses
 
 
+def group_tcp_devices_by_endpoint(devices: List[Any]) -> dict:
+    """
+    Group TCP devices by (host, port) endpoint.
+
+    Several devices may share one endpoint when it is a Modbus gateway
+    (TCP-to-RTU converter): one IP:port fronts multiple serial slaves, each with
+    a distinct slave/unit ID. Devices on the same endpoint share a single TCP
+    connection (one ModbusBusHandler thread) and are routed by slave_id; a lone
+    device on an endpoint keeps the simpler one-thread ModbusSlaveDevice path.
+
+    Args:
+        devices: List of ModbusDeviceConfig with transport="tcp"
+
+    Returns:
+        Dictionary keyed by "host:port":
+        {
+            "host:port": {
+                "config": {host, port, timeout_ms},
+                "devices": [list of devices on this endpoint],
+            }
+        }
+    """
+    endpoints = {}
+
+    for device in devices:
+        endpoint_key = f"{device.host}:{device.port}"
+
+        if endpoint_key not in endpoints:
+            endpoints[endpoint_key] = {
+                "config": {
+                    "host": device.host,
+                    "port": device.port,
+                    "timeout_ms": device.timeout_ms,
+                },
+                "devices": [],
+            }
+
+        endpoints[endpoint_key]["devices"].append(device)
+
+        # Use minimum timeout across all devices sharing the endpoint
+        if device.timeout_ms < endpoints[endpoint_key]["config"]["timeout_ms"]:
+            endpoints[endpoint_key]["config"]["timeout_ms"] = device.timeout_ms
+
+    return endpoints
+
+
 def init(args_capsule):
     """
     Initialize the Modbus Master plugin.
@@ -896,8 +967,11 @@ def start_loop():
     Start the main loop for all configured Modbus devices.
     This function is called after successful initialization.
 
-    TCP devices: One thread per device (ModbusSlaveDevice)
-    RTU devices: One thread per serial bus (ModbusRtuBusHandler), supporting multi-drop
+    TCP devices: grouped by (host, port). A lone device on an endpoint runs as
+      ModbusSlaveDevice (one connection); multiple devices on one endpoint (a
+      Modbus gateway / TCP-to-RTU converter) share one connection via
+      ModbusBusHandler, multiplexed by slave/unit ID.
+    RTU devices: One thread per serial bus (ModbusBusHandler), supporting multi-drop.
     """
     global slave_threads, modbus_master_config, safe_buffer_accessor, logger
 
@@ -937,18 +1011,44 @@ def start_loop():
 
         logger.info(f"Found {len(tcp_devices)} TCP device(s) and {len(rtu_devices)} RTU device(s)")
 
-        # Start TCP devices (one thread per device - existing behavior)
-        for device_config in tcp_devices:
-            try:
-                device_thread = ModbusSlaveDevice(device_config, safe_buffer_accessor, logger)
-                device_thread.start()
-                slave_threads.append(device_thread)
-                logger.info(
-                    f"Started TCP thread for device: {device_config.name} "
-                    f"({device_config.host}:{device_config.port}, slave_id={device_config.slave_id})"
-                )
-            except Exception as e:
-                logger.error(f"Failed to start TCP thread for device {device_config.name}: {e}")
+        # Group TCP devices by (host, port). A lone device on an endpoint keeps
+        # the simple one-thread-per-device path; multiple devices on one endpoint
+        # (a Modbus gateway / TCP-to-RTU converter) share a single TCP connection
+        # and are multiplexed by slave/unit ID via ModbusBusHandler.
+        if tcp_devices:
+            tcp_endpoints = group_tcp_devices_by_endpoint(tcp_devices)
+            logger.info(f"TCP devices grouped into {len(tcp_endpoints)} endpoint(s)")
+
+            for endpoint_key, endpoint_info in tcp_endpoints.items():
+                endpoint_devices = endpoint_info["devices"]
+                try:
+                    if len(endpoint_devices) == 1:
+                        device_config = endpoint_devices[0]
+                        device_thread = ModbusSlaveDevice(device_config, safe_buffer_accessor, logger)
+                        device_thread.start()
+                        slave_threads.append(device_thread)
+                        logger.info(
+                            f"Started TCP thread for device: {device_config.name} "
+                            f"({device_config.host}:{device_config.port}, slave_id={device_config.slave_id})"
+                        )
+                    else:
+                        gateway_thread = ModbusBusHandler(
+                            transport="tcp",
+                            connection_config=endpoint_info["config"],
+                            devices=endpoint_devices,
+                            sba=safe_buffer_accessor,
+                            plugin_logger=logger,
+                        )
+                        gateway_thread.start()
+                        slave_threads.append(gateway_thread)
+                        device_names = ", ".join([d.name for d in endpoint_devices])
+                        slave_ids = ", ".join([str(d.slave_id) for d in endpoint_devices])
+                        logger.info(
+                            f"Started TCP gateway thread: {endpoint_key} "
+                            f"(devices: {device_names}, slave_ids: {slave_ids})"
+                        )
+                except Exception as e:
+                    logger.error(f"Failed to start TCP thread(s) for endpoint {endpoint_key}: {e}")
 
         # Group RTU devices by serial port configuration
         if rtu_devices:
@@ -958,8 +1058,9 @@ def start_loop():
             # Start RTU bus handlers (one thread per serial port)
             for bus_key, bus_info in rtu_buses.items():
                 try:
-                    bus_thread = ModbusRtuBusHandler(
-                        serial_config=bus_info["config"],
+                    bus_thread = ModbusBusHandler(
+                        transport="rtu",
+                        connection_config=bus_info["config"],
                         devices=bus_info["devices"],
                         sba=safe_buffer_accessor,
                         plugin_logger=logger,

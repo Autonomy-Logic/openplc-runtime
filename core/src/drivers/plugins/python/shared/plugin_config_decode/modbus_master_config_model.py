@@ -236,10 +236,20 @@ class ModbusMasterConfig(PluginConfigContract):
         tcp_devices = [d for d in self.devices if d.transport == "tcp"]
         rtu_devices = [d for d in self.devices if d.transport == "rtu"]
 
-        # Check for duplicate host:port combinations for TCP devices
-        host_port_combinations = [(device.host, device.port) for device in tcp_devices]
-        if len(host_port_combinations) != len(set(host_port_combinations)):
-            raise ValueError("Duplicate host:port combinations found for TCP devices. Each TCP device must have a unique host:port combination.")
+        # Multiple TCP devices may share the same host:port — that is exactly how
+        # an Ethernet-to-Modbus gateway (TCP-to-RTU converter) is addressed: one IP,
+        # several serial slaves distinguished by their unit/slave ID. So we key TCP
+        # devices by (host, port, slave_id) and reject only TRUE duplicates (same
+        # endpoint AND slave ID), which would be ambiguous. The runtime routes each
+        # device's slave_id into the MBAP unit-ID byte and shares one TCP connection
+        # per host:port (see group_tcp_devices_by_endpoint / ModbusBusHandler).
+        tcp_endpoints = [(device.host, device.port, device.slave_id) for device in tcp_devices]
+        if len(tcp_endpoints) != len(set(tcp_endpoints)):
+            raise ValueError(
+                "Duplicate (host, port, slave_id) found for TCP devices. Multiple "
+                "devices may share a host:port (a Modbus gateway) only if their "
+                "slave IDs differ."
+            )
 
         # Check for duplicate slave IDs on the same serial bus for RTU devices
         # Group RTU devices by serial bus (serial_port + baud_rate + parity + stop_bits + data_bits)
