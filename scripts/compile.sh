@@ -55,18 +55,50 @@ check_required_files
 
 # Build the program — actual rules live in scripts/Makefile.strucpp.
 #
-# Leave one core free for the rest of the system. On a 4-core Pi 4
-# (the smallest target we ship to), `-j$(nproc)` saturates every core
-# with g++ and starves the webserver / runtime monitor of CPU during
-# the compile; combined with the Pi's slow SD-card swap, that's been
-# observed to make port-8443 RST new connections for 60+ seconds while
-# the compile thrashes. `nproc - 1` keeps one core reserved for the
-# Flask webserver, the runtime monitor thread, and any plugins still
-# running — only ~25 % slower per build on a Pi 4, but the device stays
-# responsive throughout. Floor at 1 so single-core targets don't end up
-# with `-j0` (which means "unlimited" in GNU make, i.e. fork-bomb).
-JOBS=$(nproc)
-[ "$JOBS" -gt 1 ] && JOBS=$((JOBS - 1))
+# Pick the build parallelism (`-j`) as min(CPU cap, memory cap). Both
+# are real constraints on the Pi-class targets we ship to, and either
+# bound alone has caused field outages.
+#
+# CPU cap = nproc - 1.  On a 4-core Pi 4 `-j$(nproc)` saturates every
+# core with g++ and starves the webserver / runtime monitor of CPU
+# during the compile; combined with the Pi's slow SD-card swap, that
+# made port-8443 RST new connections for 60+ seconds while the compile
+# thrashed. Reserving one core for the Flask webserver, the runtime
+# monitor thread, and any plugins keeps the device responsive
+# throughout — only ~25 % slower per build on a Pi 4.
+#
+# Memory cap = total RAM (rounded to nearest GB) — one parallel job
+# per gigabyte.  Each cc1plus invocation on OpenPLC-generated TUs
+# peaks at ~500–700 MB on a Pi 4.  With `-j3` on a 2 GB device,
+# three concurrent cc1pluses exhaust RAM + swap and the system enters
+# a swap-thrash deadlock where no compile process makes progress —
+# requires a physical reboot to recover on a headless target.
+# Capping at one job per GB gives ~500 MB per cc1plus + headroom for
+# the kernel, the webserver, the PLC core, and the plugins.  The
+# `+512` before dividing rounds MemTotal to the nearest GB so a 2 GB
+# Pi (which reports ~1.8 GiB usable after kernel reserves) doesn't
+# get wrongly demoted to -j1.
+#
+# Floor at 1 so single-core or sub-GB targets don't end up with `-j0`
+# (which means "unlimited" in GNU make, i.e. fork-bomb).
+#
+# Worked examples:
+#   Pi 4 2 GB (nproc=4): cpu=3, mem=2 → -j2
+#   Pi 4 4 GB (nproc=4): cpu=3, mem=4 → -j3
+#   Pi 4 8 GB (nproc=4): cpu=3, mem=8 → -j3
+#   1 GB / 1 core VM:    cpu=1, mem=1 → -j1
+#   Workstation 8c/16GB: cpu=7, mem=16 → -j7
+CPU_JOBS=$(nproc)
+[ "$CPU_JOBS" -gt 1 ] && CPU_JOBS=$((CPU_JOBS - 1))
+MEM_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+MEM_MB=$((MEM_KB / 1024))
+MEM_JOBS=$(( (MEM_MB + 512) / 1024 ))
+[ "$MEM_JOBS" -lt 1 ] && MEM_JOBS=1
+if [ "$CPU_JOBS" -lt "$MEM_JOBS" ]; then
+    JOBS=$CPU_JOBS
+else
+    JOBS=$MEM_JOBS
+fi
 make -j"$JOBS" -f scripts/Makefile.strucpp
 
 # -----------------------------------------------------------------------
