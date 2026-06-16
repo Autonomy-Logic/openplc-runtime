@@ -50,15 +50,20 @@ static void *transition_worker(void *arg)
 // Start a background thread that performs the (potentially slow) state
 // transition. Returns true if the thread was spawned, false otherwise.
 //
-// Two safety guards on the entry path, both targeting plugin-initiated
-// stops (which are unsynchronised relative to the unix-socket dispatcher):
+// This is the single authoritative entry point for all state transitions:
+// socket START/STOP commands, plugin-initiated stops, AND the boot auto-start
+// in plc_main.c (which calls this instead of plc_set_state() directly so that
+// all paths share the same guard). That last point closes the race where the
+// socket listener accepts a START while the auto-start is still in flight,
+// which previously could spawn two concurrent load_plc_program() calls.
+//
+// Two safety guards on the entry path:
 //
 //   1. CAS on `is_transitioning` 0→1: collapses concurrent calls. A
-//      misbehaving plugin spinning on plugin_request_plc_stop would
-//      otherwise pile up detached pthread workers — each one mallocing,
-//      cloning a thread, and racing for the state mutex. The CAS gate
-//      means only the first call fires the worker; everything else is a
-//      cheap return.
+//      misbehaving plugin spinning on plugin_request_plc_stop, or the boot
+//      path racing with a socket START, would otherwise pile up detached
+//      pthread workers. The CAS means only the first call fires the worker;
+//      everything else is a cheap return.
 //
 //   2. Re-check current state AFTER the CAS wins: closes the
 //      check-then-call race where the caller sees RUNNING, calls in,
