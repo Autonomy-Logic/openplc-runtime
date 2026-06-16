@@ -230,28 +230,39 @@ Keep as fallback if the one context-switch hop ever proves intolerable.
 
 ## 6. Time semantics — dispatcher stamps the snapshot at dispatch
 
-`__CURRENT_TIME_NS` is a single `inline int64_t` in the `.so` (one instance for
-all threads). Rather than let any worker read that global, **the dispatcher
-stamps each due task's time snapshot at the moment it dispatches it**:
+The generated program reads IEC `TIME()` from a single global
+`__CURRENT_TIME_NS` in the `.so`. With parallel multi-rate tasks a single shared
+global cannot give each task a scan-stable time (a value set for task A is
+overwritten before/while task B reads it). The fix has two halves:
+
+1. **`__CURRENT_TIME_NS` is `thread_local`** under `STRUCPP_THREADED`
+   (`iec_std_lib.hpp`) so every worker thread has its own IEC clock. It stays a
+   plain global on single-threaded targets (Arduino), which have no TLS runtime
+   and don't need it. The shim exports `strucpp_set_current_time(int64_t)`,
+   which sets the **calling thread's** instance.
+2. **The dispatcher stamps; the worker applies:**
 
 ```c
-// dispatcher, tick N, for each due+alive task:
-ctx->time_at_dispatch = master_time;   // == N * base_tick
+// dispatcher, tick N, each due+alive task that is idle:
+ctx->time_at_dispatch = master_time;        // == N * base_tick
 sem_post(&ctx->go);
-// worker on wake: program TIME slot = ctx->time_at_dispatch; run body
+// worker on wake — runs ON the worker thread so the thread_local lands right:
+ext_strucpp_set_current_time(ctx->time_at_dispatch);
+run_body();
 ```
 
 Result:
-- The global is written by **exactly one** thread (the dispatcher) and read by
-  **none** across threads — the data race is gone by construction. No atomics,
-  no strucpp change.
-- A **slow** worker keeps reading its own `time_at_dispatch` until it finishes;
-  the dispatcher bumps the master clock freely in the meantime. No coupling.
-- Correct IEC semantics for free: `TIME()` is *constant within a scan* and
-  equals the time at scan start, which is what 61131-3 expects.
-- Pinning the value at dispatch (not at worker wake) also means a late wake or
-  an overrun that consumed a stale release token still gets the time of the
-  activation it's servicing, not whatever the global happens to read later.
+- Each task's `TIME()` is **constant for its whole scan** and equals the time at
+  which the dispatcher released it — correct 61131-3 semantics.
+- A **slow/overrunning** worker keeps reading its own thread_local snapshot
+  until it finishes; the dispatcher's master clock advances freely for the other
+  tasks. No coupling, no cross-thread race on the global.
+- The master clock (`master_time = tick · base`) lives only in the dispatcher;
+  it never touches the `.so` global directly.
+
+This needs a small strucpp change — the `thread_local` qualifier plus the
+`strucpp_set_current_time` shim. `strucpp_advance_time` is retained for
+single-threaded hosts but unused by the dispatcher.
 
 ---
 
@@ -442,8 +453,9 @@ monitoring live on one thread that is, by construction, the time authority.
 3. **Idle-tick fast path + cycle-hook mapping** (§7), with the plugin-contract
    doc change.
 4. **Per-task watchdog** (§9); retire the anchor concept.
-5. **(No strucpp touch needed.)** Time is handled by the dispatcher stamping
-   `time_at_dispatch` (§6); the `.so`'s time global is never read cross-thread.
+5. **Strucpp touch (small).** `__CURRENT_TIME_NS` becomes `thread_local` under
+   `STRUCPP_THREADED` and the shim gains `strucpp_set_current_time()` (§6); the
+   worker calls it at dispatch. Plain global on single-threaded targets.
 
 Each phase is independently testable; #1 alone is shippable and fixes the timing
 bug even before the dispatcher drives workers.

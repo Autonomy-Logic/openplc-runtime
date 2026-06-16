@@ -67,6 +67,7 @@ namespace {
 // Resolved .so symbols
 // ---------------------------------------------------------------------------
 void (*ext_strucpp_advance_time)(uint64_t) = nullptr;
+void (*ext_strucpp_set_current_time)(int64_t) = nullptr;
 
 uint8_t  (*ext_strucpp_debug_array_count)(void)                          = nullptr;
 uint16_t (*ext_strucpp_debug_elem_count) (uint8_t)                       = nullptr;
@@ -202,7 +203,8 @@ static void compute_base_tick_from_config(strucpp::ConfigurationInstance *cfg)
 
 extern "C" int symbols_init(PluginManager *pm)
 {
-    *(void **)&ext_strucpp_advance_time = resolve(pm, "strucpp_advance_time", true);
+    *(void **)&ext_strucpp_advance_time      = resolve(pm, "strucpp_advance_time",      true);
+    *(void **)&ext_strucpp_set_current_time  = resolve(pm, "strucpp_set_current_time",  true);
 
     *(void **)&ext_strucpp_program_md5 = plugin_manager_get_symbol(pm, "strucpp_program_md5");
 
@@ -218,7 +220,7 @@ extern "C" int symbols_init(PluginManager *pm)
     *(void **)&ext_strucpp_debug_read        = resolve(pm, "strucpp_debug_read",        true);
     *(void **)&ext_strucpp_debug_write       = resolve(pm, "strucpp_debug_write",       true);
 
-    if (!ext_strucpp_advance_time ||
+    if (!ext_strucpp_advance_time || !ext_strucpp_set_current_time ||
         !ext_strucpp_get_config ||
         !ext_strucpp_get_located_vars || !ext_strucpp_get_located_var_count ||
         !ext_strucpp_debug_array_count || !ext_strucpp_debug_elem_count ||
@@ -499,8 +501,9 @@ void image_tables_clear_null_pointers(void)
     std::memset(lint_memory,  0, sizeof(lint_memory));
     std::memset(bool_memory,  0, sizeof(bool_memory));
 
-    ext_strucpp_advance_time = nullptr;
-    ext_strucpp_program_md5  = nullptr;
+    ext_strucpp_advance_time     = nullptr;
+    ext_strucpp_set_current_time = nullptr;
+    ext_strucpp_program_md5      = nullptr;
     ext_strucpp_get_config   = nullptr;
     ext_strucpp_debug_array_count = nullptr;
     ext_strucpp_debug_elem_count  = nullptr;

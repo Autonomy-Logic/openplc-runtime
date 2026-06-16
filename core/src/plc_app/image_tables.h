@@ -48,13 +48,19 @@ extern "C"
     /* -------------------------------------------------------------------------
      * Resolved .so symbols (populated by symbols_init).
      *
-     * strucpp_advance_time is called once per scan cycle by
-     * plc_run_io_cycle_threaded_post; it bumps the per-.so __CURRENT_TIME_NS by the
-     * runtime-supplied tick. base_tick_ns is owned runtime-side (utils.c)
-     * and computed in symbols_init by walking the loaded configuration.
+     * strucpp_set_current_time sets the per-.so __CURRENT_TIME_NS (thread_local
+     * under STRUCPP_THREADED) for the calling thread; the GCD master-tick
+     * dispatcher stamps each task's dispatch time and the worker thread calls
+     * this at the top of its scan so IEC TIME() is stable within a scan.
+     * strucpp_advance_time is retained for compatibility (unused by the
+     * dispatcher). base_tick_ns is owned runtime-side (utils.c) and computed in
+     * symbols_init by walking the loaded configuration.
      * --------------------------------------------------------------------- */
 
     extern void (*ext_strucpp_advance_time)(uint64_t tick_ns);
+    /* Sets IEC TIME() for the CALLING thread. Call on the worker thread at the
+     * top of its scan with the dispatch-stamped time. */
+    extern void (*ext_strucpp_set_current_time)(int64_t ns);
 
     /* Hierarchical debug PDU shims (defined inside the .so by
      * debug_dispatch.hpp under STRUCPP_V4_DEBUG_EXPORTS_DEFINE). */

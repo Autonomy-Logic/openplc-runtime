@@ -84,13 +84,26 @@ extern "C" {
 char strucpp_program_md5[] = PROGRAM_MD5;
 }
 
-// Advances the strucpp runtime's scan-cycle clock. Called by the runtime
-// once per cycle (the fastest task's housekeeping window invokes it via
-// plc_run_io_cycle_post). CODESYS semantics: TIME() returns the same
-// value for the duration of a cycle. The tick is supplied by the runtime
-// because base_tick_ns is owned runtime-side now.
+// Advances the strucpp runtime's scan-cycle clock by `tick_ns` on the CALLING
+// thread. Retained for compatibility (and for any single-threaded host); the
+// GCD master-tick dispatcher does NOT use it — under STRUCPP_THREADED
+// __CURRENT_TIME_NS is thread_local, so a dispatcher-side increment would only
+// bump the dispatcher's own (unused) copy. The dispatcher uses
+// strucpp_set_current_time() on each worker instead.
 extern "C" void strucpp_advance_time(uint64_t tick_ns) {
     strucpp::__CURRENT_TIME_NS += static_cast<int64_t>(tick_ns);
+}
+
+// Sets the IEC TIME() base for the CALLING thread. Under STRUCPP_THREADED
+// __CURRENT_TIME_NS is thread_local (see iec_std_lib.hpp), so each task worker
+// thread that calls this gets its own scan-stable time. The GCD master-tick
+// dispatcher stamps each task's dispatch time and the worker calls this at the
+// top of its scan, before run() — giving correct multi-rate IEC timing
+// (TIME() constant within a scan, no cross-task interference, slow tasks keep
+// their own snapshot while the master clock advances). Must be called ON the
+// worker thread for the thread_local to land where the body reads it.
+extern "C" void strucpp_set_current_time(int64_t ns) {
+    strucpp::__CURRENT_TIME_NS = ns;
 }
 
 // NOTE: the runtime no longer probes a "threaded ABI" capability symbol. It
