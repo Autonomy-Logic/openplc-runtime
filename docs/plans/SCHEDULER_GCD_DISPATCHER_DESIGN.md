@@ -226,24 +226,30 @@ Keep as fallback if the one context-switch hop ever proves intolerable.
 
 ---
 
-## 6. Time semantics — snapshot at release
+## 6. Time semantics — dispatcher stamps the snapshot at dispatch
 
 `__CURRENT_TIME_NS` is a single `inline int64_t` in the `.so` (one instance for
-all threads). The dispatcher is the sole writer; it bumps it *before* posting a
-worker's `go`. Because `sem_post`/`sem_wait` establish happens-before, a worker
-released this tick sees the freshly bumped value.
+all threads). Rather than let any worker read that global, **the dispatcher
+stamps each due task's time snapshot at the moment it dispatches it**:
 
-But a **slow** worker from a previous tick may still be running when the
-dispatcher bumps the next tick — a concurrent read of the non-atomic global by
-that worker while the dispatcher writes is a data race. Two clean fixes; we take
-the second:
+```c
+// dispatcher, tick N, for each due+alive task:
+ctx->time_at_dispatch = master_time;   // == N * base_tick
+sem_post(&ctx->go);
+// worker on wake: program TIME slot = ctx->time_at_dispatch; run body
+```
 
-1. Make the time global `std::atomic<int64_t>` — a small strucpp-runtime change.
-2. **Snapshot the master time into the program's private time slot at the top of
-   the worker's scan** (right after `sem_wait`, before the body). The body reads
-   the snapshot, not the live global. This (a) removes the race entirely and
-   (b) gives correct IEC semantics — `TIME()` is *constant within a scan*, which
-   is what 61131-3 expects anyway. This is the recommended approach.
+Result:
+- The global is written by **exactly one** thread (the dispatcher) and read by
+  **none** across threads — the data race is gone by construction. No atomics,
+  no strucpp change.
+- A **slow** worker keeps reading its own `time_at_dispatch` until it finishes;
+  the dispatcher bumps the master clock freely in the meantime. No coupling.
+- Correct IEC semantics for free: `TIME()` is *constant within a scan* and
+  equals the time at scan start, which is what 61131-3 expects.
+- Pinning the value at dispatch (not at worker wake) also means a late wake or
+  an overrun that consumed a stale release token still gets the time of the
+  activation it's servicing, not whatever the global happens to read later.
 
 ---
 
@@ -293,20 +299,40 @@ thread, not to make the scheduler frame it.
 
 ### `cycle_start` / `cycle_end` mapping
 
-`cycle_start` fires at the top of a task-bearing tick (after the drain, before
-releasing workers) as an optional "scan starting" notification. Because the
-dispatcher does not wait for bodies (§5), there is no post-body barrier on which
-to hang a meaningful `cycle_end`; output commit is journal-deferred. Options to
-settle during implementation:
+In a multi-rate threaded model **there is no single "end of cycle"** — each task
+is its own cycle with its own boundary, and the dispatcher must not wait for
+bodies (§5; waiting penalizes every task for the slowest one). The key insight
+is that we don't *need* a scan-end barrier: `cycle_end` historically existed to
+commit outputs after the logic ran, and **the journal already does that,
+continuously and lock-free** — each worker journals its outputs at `copy_out`
+the instant its body ends, and self-pacing plugins (EtherCAT's bus thread) drain
+and push on their own cadence. The output **data path** therefore needs no
+global barrier; outputs commit when each task produces them.
 
-- (a) Fire `cycle_end` on the *next* task-bearing tick's drain (fold it into the
-  "frame" at the top of the tick) — outputs have one-tick latency, no barrier.
-- (b) Keep `cycle_end` as a pure notification fired immediately after releasing
-  workers (semantically "scan dispatched"), documented as non-blocking.
+That collapses `cycle_end` from a synchronization point to (at most) a
+notification. Design decisions:
 
-Recommendation: (a), and document that plugins must not assume `cycle_end`
-means "all task bodies for this scan have finished" — that assumption never held
-across multi-rate tasks anyway.
+- **No dispatcher-side `cycle_end` barrier, and no `GCD/2` timer.** A `GCD/2`
+  pulse was considered (fire mid-tick assuming fast bodies are done) and
+  rejected: it doesn't *guarantee* completion (a body legitimately > GCD/2 fires
+  it mid-scan), and it adds a second timer wake every tick to approximate
+  something the journal already handles.
+- **`cycle_start`** stays as the per-tick (task-bearing) "frame opening"
+  notification, fired after the drain and before releasing workers. The drain
+  at this point also applies the *previous* frame's journaled outputs — i.e. it
+  *is* the effective "previous cycle ended" point, folded in, and it is exact
+  (the drain really happened) at no extra timer cost.
+- **Per-task completion hook (opt-in).** The only *exact* scan boundary in a
+  threaded model is per-task body completion — and the worker is right there
+  when it happens, knowing its own task id. A plugin that genuinely needs "task
+  T finished a scan" implements an optional `task_scan_complete(task_id)`
+  callback the worker fires after its body. N well-defined per-task boundaries
+  replace one undefined global one; plugins that don't care implement nothing.
+
+Document that no plugin may assume a global `cycle_end` means "every task this
+scan has finished" — that assumption never held across multi-rate tasks. The
+dispatcher thus only ever sleeps, bumps time, drains, and releases: it never
+blocks on a body and never arms a second timer.
 
 ---
 
@@ -405,8 +431,8 @@ monitoring live on one thread that is, by construction, the time authority.
 3. **Idle-tick fast path + cycle-hook mapping** (§7), with the plugin-contract
    doc change.
 4. **Per-task watchdog** (§9); retire the anchor concept.
-5. **Strucpp touch** if we choose atomic time instead of snapshot (we prefer
-   snapshot → no strucpp change needed).
+5. **(No strucpp touch needed.)** Time is handled by the dispatcher stamping
+   `time_at_dispatch` (§6); the `.so`'s time global is never read cross-thread.
 
 Each phase is independently testable; #1 alone is shippable and fixes the timing
 bug even before the dispatcher drives workers.
@@ -415,7 +441,8 @@ bug even before the dispatcher drives workers.
 
 ## 12. Open questions
 
-- `cycle_end` mapping (a) vs (b) in §7 — pick during phase 3 with a plugin pass.
+- Per-task `task_scan_complete` hook (§7): confirm during phase 3 whether any
+  current plugin actually needs it, or whether `cycle_start`'s drain suffices.
 - Hard-reject threshold for sub-µs base ticks, or warn-only?
 - Should the *drop* watchdog policy be the default (graceful) or *escalate*
   (safe)? Likely per-deployment config with a safe default.
