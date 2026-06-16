@@ -64,23 +64,25 @@ at the GCD** that *drives* the workers, rather than running beside them.
 ```
             ┌──────────────────────────────────────────────┐
             │  master-tick dispatcher  (was: bootstrap)     │
-            │  clock_nanosleep(TIMER_ABSTIME) @ base_tick    │
-            │  anchored on a single t0                       │
+            │  cond_timedwait(done_cond) @ absolute deadline │
+            │  CLOCK_MONOTONIC, anchored on a single t0      │
             │                                                │
-            │  every tick N:                                 │
-            │    __CURRENT_TIME_NS += base_tick   (always)   │
-            │    plc_heartbeat = now              (always)   │
+            │  Phase B — at the deadline (tick N):           │
+            │    plc_heartbeat = now                         │
             │    due = { task : N % task.divisor == 0 }      │
             │    if due not empty:                           │
-            │        journal drain (image_lock/unlock)       │
-            │        cycle_end()   (prev frame committed)*   │
-            │        cycle_start() (new frame opening)       │
-            │        stamp time + release due & alive tasks  │
-            │        scan_counter++                          │
-            │        (NO wait — see §5)                      │
-            │    * cycle_end skipped on the first frame      │
+            │        if cycle_end_pending: drain;cycle_end() │  ← forced (overrun only)
+            │        cycle_start()                           │
+            │        stamp time; g_tasks_running += released │
+            │        release due&alive tasks; scan_counter++ │
+            │        cycle_end_pending = (released > 0)       │
+            │  Phase A — wait out the period to next deadline:│
+            │    wake early on done-signal (all tasks fin.): │
+            │        drain; cycle_end()  ← OFF the hot path   │
+            │    else cond_timedwait(deadline)               │
             └───────────────┬────────────────────────────────┘
-                            │ release = sem_post / cond signal
+                            │ release = sem_post; done = cond_signal when
+                            │ g_tasks_running hits 0 (last worker)
               ┌─────────────┼─────────────┬───────────────┐
               ▼             ▼             ▼               ▼
         ┌──────────┐  ┌──────────┐  ┌──────────┐    ┌──────────┐
@@ -323,38 +325,69 @@ and push on their own cadence. The output **data path** therefore needs no
 global barrier; outputs commit when each task produces them.
 
 That collapses `cycle_end` from a synchronization point to a notification.
-Both hooks stay **global** and are fired back-to-back by the dispatcher at the
-top of every task-bearing tick, in this order:
+Both hooks stay **global**, but `cycle_end` is fired **off the task-wake hot
+path** — the instant the frame's tasks all finish — rather than at the next
+tick's frame top. The hot path (where tasks are about to wake) must not be
+delayed by whatever a plugin does in `cycle_end`.
+
+**Completion-signal mechanism.** The dispatcher counts in-flight scans in an
+atomic `g_tasks_running`: incremented once per release, decremented once by
+every worker when it leaves a scan (by ANY path — completion, exception, or
+hardware-signal recovery), and the worker that drives it to 0 signals a
+condvar. The dispatcher's per-period wait is a `pthread_cond_timedwait` on the
+**same absolute `CLOCK_MONOTONIC` deadline** as before (so the steady tick
+pacing is unchanged) — it just now also wakes early when the frame completes:
 
 ```
-task-bearing tick:
-    drain journal            # apply prev frame's journaled %Q (+ plugin %I) to image
-    cycle_end()              # "the previous frame's outputs are now drained/committed"
-    cycle_start()            # "a new frame is beginning"
-    stamp time + release due&alive workers
-    scan_counter++
+tick (deadline reached, Phase B):
+    if cycle_end_pending:                 # previous frame overran — worst case
+        drain; cycle_end()                # forced here, before cycle_start
+    cycle_start()
+    release due&alive workers; g_tasks_running += released; scan_counter++
+    cycle_end_pending = (released > 0)
+
+wait until next deadline (Phase A), but wake early on the done-signal:
+    if cycle_end_pending && g_tasks_running == 0:
+        drain; cycle_end()                # OFF the hot path, as soon as done
+        cycle_end_pending = false
+    else cond_timedwait(done_cond, deadline)
 ```
 
-So **`cycle_end` is fired at the *next* tick's frame top, right after the drain
-that commits the previous frame's outputs** — its contract is precisely "the
-previous frame's outputs are now drained." This is exact (the drain really
-happened), needs no barrier, and costs no extra timer. `cycle_start` then opens
-the new frame. The very first task-bearing tick has no prior frame, so
-`cycle_end` is skipped on tick 0 (a `frame_started` latch gates it).
+- **No-overrun case (incl. single task / GCD == period):** the frame's tasks
+  finish microseconds after release, the last one signals, the dispatcher wakes
+  mid-period and fires `cycle_end` *there*, then waits out the rest of the
+  period purely for the deadline. At the next tick `cycle_end_pending` is
+  already false, so the hot path is just `cycle_start → release`. `cycle_end`
+  never touches the wake path.
+- **Overrun case (worst case):** the done-signal doesn't arrive before the
+  deadline, so `cycle_end_pending` is still set at the next tick and `cycle_end`
+  is forced before `cycle_start`. The task already overran, so its timing is
+  degraded regardless, and the cycle_end-before-cycle_start ordering is kept.
+
+**Race (fast task finishes before the dispatcher waits):** the predicate
+`g_tasks_running == 0` is checked under `done_mutex` *before* `cond_timedwait`,
+and the worker takes `done_mutex` to signal — the textbook condvar pattern. If
+the task finishes first, the dispatcher sees 0 on its pre-wait check and fires
+`cycle_end` without ever waiting; if it's already waiting, the signal wakes it.
+No wakeup can be lost.
+
+**Leak safety:** every worker exit path decrements `g_tasks_running` exactly
+once, so a faulting/crashing task can't leave a permanent in-flight count that
+would force `cycle_end` onto the hot path every cycle forever. `g_tasks_running`
+is also reset to 0 at each program load, so a STOP-time remnant never carries
+over.
 
 Rejected alternatives:
-- **Waiting for all bodies** before `cycle_end` — penalizes every task for the
-  slowest one; also impossible without stalling the time base (§5).
-- **A `GCD/2` timer** — doesn't *guarantee* bodies finished (a body legitimately
-  > GCD/2 fires it mid-scan) and adds a second timer wake every tick to
-  approximate what the journal already gives us exactly.
+- **Waiting for all bodies at the next tick** — penalizes every task for the
+  slowest one; also stalls the time base (§5).
+- **A `GCD/2` timer** — doesn't *guarantee* bodies finished and adds a second
+  timer wake every tick.
+- **Firing `cycle_end` at the next tick's frame top (earlier design)** — correct
+  but lands `cycle_end`'s cost on the task-wake hot path; the completion-signal
+  approach moves it to the moment the frame actually finishes.
 
-Plugins must not assume `cycle_end` means "every task body this scan has
-finished" — it means "the previous frame's outputs are committed to the image."
-That weaker (but exact) contract is all a multi-rate threaded model can
-honestly offer, and it's what self-pacing plugins actually need. The dispatcher
-thus only ever sleeps, bumps time, drains, fires the two global hooks, and
-releases: it never blocks on a body and never arms a second timer.
+Plugins must not assume `cycle_end` means "every task body this scan finished"
+in the overrun case — but in the common case it fires exactly when they did.
 
 ---
 

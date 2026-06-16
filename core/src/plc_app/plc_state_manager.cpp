@@ -73,6 +73,56 @@ extern "C" void plc_tasks_reader_unlock(void)
     pthread_mutex_unlock(&plc_tasks_lock);
 }
 
+/* -----------------------------------------------------------------------
+ * Task-completion signalling (for off-hot-path cycle_end).
+ *
+ * g_tasks_running = number of task scans currently in flight (released by
+ * the dispatcher but not yet finished). The dispatcher increments it once
+ * per release; every worker decrements it exactly once when it leaves a scan
+ * — via ANY exit path (normal completion, C++ exception, hardware-signal
+ * recovery) — and the worker that brings it to 0 signals done_cond.
+ *
+ * The dispatcher waits on done_cond with the next tick's ABSOLUTE
+ * CLOCK_MONOTONIC deadline (pthread_cond_timedwait). It therefore wakes on
+ * whichever comes first: all-tasks-done (fire cycle_end now, off the
+ * task-wake hot path) or the deadline (start the next tick). The condvar's
+ * clock is set to CLOCK_MONOTONIC so its deadline shares the dispatcher's
+ * timeline. g_tasks_running is reset to 0 at each program load, so a stale
+ * count left by a STOP (a worker woken to exit without finishing a scan)
+ * never carries into the next run.
+ * --------------------------------------------------------------------- */
+static std::atomic<int> g_tasks_running{0};
+static pthread_mutex_t  done_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t   done_cond;   /* initialised once, CLOCK_MONOTONIC */
+static pthread_once_t   done_cond_once = PTHREAD_ONCE_INIT;
+
+/* One-time init of done_cond on the CLOCK_MONOTONIC clock (the default is
+ * CLOCK_REALTIME, which would mismatch the dispatcher's monotonic deadline and
+ * jump under NTP). Init-once (not per-load) so a crash that skips teardown
+ * never leaves a destroyed-then-reinitialised cond. */
+static void init_done_cond(void)
+{
+    pthread_condattr_t cattr;
+    pthread_condattr_init(&cattr);
+    pthread_condattr_setclock(&cattr, CLOCK_MONOTONIC);
+    pthread_cond_init(&done_cond, &cattr);
+    pthread_condattr_destroy(&cattr);
+}
+
+/* Called by a worker when it leaves a scan by any path. Decrements the
+ * in-flight count and, if it was the last, wakes the dispatcher so it can
+ * retire cycle_end. Cheap: one atomic; the mutex+signal only on the 1->0
+ * edge. */
+static void worker_scan_done(void)
+{
+    if (g_tasks_running.fetch_sub(1, std::memory_order_acq_rel) == 1)
+    {
+        pthread_mutex_lock(&done_mutex);
+        pthread_cond_signal(&done_cond);
+        pthread_mutex_unlock(&done_mutex);
+    }
+}
+
 /* The bootstrap thread doesn't run any IEC task body — it does setup,
  * spawns task threads, waits, and joins. We still want crash recovery
  * on it via a separate jmp pair. The active task's ctx is in __thread
@@ -194,6 +244,10 @@ static void *plc_task_thread(void *arg)
     {
         plc_task_release_locks(ctx);
         ctx->alive.store(0, std::memory_order_release);
+        /* A hardware fault only fires from a scan body, so this thread held an
+         * in-flight slot — release it (and wake the dispatcher if last) so the
+         * completion count never leaks. */
+        worker_scan_done();
         log_error("[task %s] terminated by signal %d — other tasks keep running",
                   ctx->name, ctx->crash_sig);
         return nullptr;
@@ -283,6 +337,7 @@ static void *plc_task_thread(void *arg)
         {
             plc_task_release_locks(ctx);
             ctx->alive.store(0, std::memory_order_release);
+            worker_scan_done();   /* release the in-flight slot before exiting */
             log_error("[task %s] terminated by unhandled exception: %s — "
                       "other tasks keep running", ctx->name, e.what());
             return nullptr;
@@ -291,6 +346,7 @@ static void *plc_task_thread(void *arg)
         {
             plc_task_release_locks(ctx);
             ctx->alive.store(0, std::memory_order_release);
+            worker_scan_done();   /* release the in-flight slot before exiting */
             log_error("[task %s] terminated by unknown exception — "
                       "other tasks keep running", ctx->name);
             return nullptr;
@@ -304,6 +360,10 @@ static void *plc_task_thread(void *arg)
          * completed vs released to decide whether this worker is idle (safe to
          * re-release) or still in its scan (overrun — skip). */
         ctx->completed.fetch_add(1, std::memory_order_release);
+        /* Release this scan's in-flight slot; if we're the last task still
+         * running this frame, wake the dispatcher so it retires cycle_end off
+         * the hot path. */
+        worker_scan_done();
     }
 
     log_info("[task %s] stopped after %llu scans", ctx->name,
@@ -681,16 +741,24 @@ void *plc_cycle_thread(void *arg)
             log_warn("dispatcher SCHED_FIFO(99) failed: %s", strerror(errno));
     }
 
+    /* Completion-signal condvar shares the CLOCK_MONOTONIC timeline with the
+     * tick deadline (init-once). Reset the in-flight count so a STOP-time
+     * remnant from the previous run can't make this run think a task is forever
+     * outstanding. */
+    pthread_once(&done_cond_once, init_done_cond);
+    g_tasks_running.store(0, std::memory_order_relaxed);
+
     log_info("GCD master-tick dispatcher running (base tick %llu ns)",
              (unsigned long long)base_ns);
 
-    uint64_t master_tick   = 0;
-    bool     frame_started = false;
+    uint64_t master_tick      = 0;
+    bool     cycle_end_pending = false;   /* a frame's cycle_end not yet fired */
     timespec next_tick;
     clock_gettime(CLOCK_MONOTONIC, &next_tick);
 
     while (plc_get_state() == PLC_STATE_RUNNING)
     {
+        /* ---- Phase B: the tick (runs at the absolute deadline) ---- */
         const int64_t master_time = (int64_t)master_tick * (int64_t)base_ns;
 
         /* Always: feed the global watchdog. */
@@ -711,16 +779,21 @@ void *plc_cycle_thread(void *arg)
 
         if (any_due)
         {
-            /* Frame top. Drain the journal so the previous frame's journaled
-             * outputs (and any plugin inputs) are committed to the image; then
-             * fire the global cycle hooks. cycle_end means "the previous frame's
-             * outputs are now drained" — skipped on the very first frame. */
-            image_lock();
-            image_unlock();
-            if (frame_started && plugin_driver) plugin_driver_cycle_end(plugin_driver);
+            /* Worst case: the previous frame's tasks didn't all finish before
+             * this tick (overrun), so its cycle_end was never retired in Phase A
+             * below. Fire it now — drain to commit those outputs, then cycle_end
+             * — before opening the new frame with cycle_start. This is the only
+             * path where cycle_end lands on the task-wake hot path. */
+            if (cycle_end_pending)
+            {
+                image_lock();
+                image_unlock();
+                if (plugin_driver) plugin_driver_cycle_end(plugin_driver);
+                cycle_end_pending = false;
+            }
             if (plugin_driver) plugin_driver_cycle_start(plugin_driver);
-            frame_started = true;
 
+            bool released_any = false;
             for (size_t i = 0; i < plc_task_count; ++i)
             {
                 PlcTaskCtx *c = &plc_tasks[i];
@@ -731,10 +804,15 @@ void *plc_cycle_thread(void *arg)
                 long cc = c->completed.load(std::memory_order_acquire);
                 if (r == cc)
                 {
-                    /* Worker idle (caught up) → stamp time and release. */
+                    /* Worker idle (caught up) → stamp time, count it in flight,
+                     * and release. The fetch_add must happen-before sem_post so
+                     * the worker's matching worker_scan_done() can never drive
+                     * g_tasks_running negative. */
                     c->time_at_dispatch = master_time;
                     c->released.store(r + 1, std::memory_order_relaxed);
+                    g_tasks_running.fetch_add(1, std::memory_order_acq_rel);
                     sem_post(&c->go);
+                    released_any = true;
                 }
                 else
                 {
@@ -752,12 +830,23 @@ void *plc_cycle_thread(void *arg)
                 }
             }
 
+            /* This frame owes a cycle_end once its released tasks all finish. */
+            if (released_any) cycle_end_pending = true;
             ++scan_counter;
         }
 
         ++master_tick;
 
-        /* Absolute-deadline sleep to the next tick (no drift accumulation). */
+        /* ---- Phase A: wait out the period on the absolute deadline, waking
+         * early to retire cycle_end the instant the frame's tasks all finish.
+         *
+         * pthread_cond_timedwait wakes on whichever comes first: the
+         * completion signal (g_tasks_running hit 0) or the deadline. When the
+         * frame is done we drain + fire cycle_end here — OFF the task-wake hot
+         * path — then keep waiting (cycle_end_pending now false) purely for the
+         * deadline. The predicate (g_tasks_running == 0) is checked under
+         * done_mutex BEFORE waiting, so a task that finishes before we reach the
+         * wait can't lose its wakeup. ---- */
         next_tick.tv_nsec += (long)(base_ns % 1000000000ULL);
         next_tick.tv_sec  += (time_t)(base_ns / 1000000000ULL);
         if (next_tick.tv_nsec >= 1000000000L)
@@ -765,10 +854,31 @@ void *plc_cycle_thread(void *arg)
             next_tick.tv_nsec -= 1000000000L;
             next_tick.tv_sec  += 1;
         }
-        int rc;
-        do {
-            rc = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_tick, nullptr);
-        } while (rc == EINTR && plc_get_state() == PLC_STATE_RUNNING);
+
+        pthread_mutex_lock(&done_mutex);
+        for (;;)
+        {
+            /* Break out promptly on STOP/ERROR instead of waiting for the
+             * deadline (a finishing worker's signal, or a spurious wake, gives
+             * us the chance; worst case is still one base tick via ETIMEDOUT). */
+            if (plc_get_state() != PLC_STATE_RUNNING) break;
+
+            if (cycle_end_pending &&
+                g_tasks_running.load(std::memory_order_acquire) == 0)
+            {
+                pthread_mutex_unlock(&done_mutex);
+                image_lock();          /* drain: commit this frame's outputs */
+                image_unlock();
+                if (plugin_driver) plugin_driver_cycle_end(plugin_driver);
+                cycle_end_pending = false;
+                pthread_mutex_lock(&done_mutex);
+                continue;              /* now just wait out the deadline */
+            }
+            int rc = pthread_cond_timedwait(&done_cond, &done_mutex, &next_tick);
+            if (rc == ETIMEDOUT) break;   /* deadline reached → next tick */
+            /* rc == 0 (signalled) or spurious → loop and re-check the predicate */
+        }
+        pthread_mutex_unlock(&done_mutex);
     }
 
     log_info("Stopping %zu PLC task thread(s)", plc_task_count);
