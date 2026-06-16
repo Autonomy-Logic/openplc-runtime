@@ -73,10 +73,12 @@ at the GCD** that *drives* the workers, rather than running beside them.
             │    due = { task : N % task.divisor == 0 }      │
             │    if due not empty:                           │
             │        journal drain (image_lock/unlock)       │
-            │        cycle_start  (optional plugin hook)     │
-            │        for t in due & t.alive: release(t)      │
+            │        cycle_end()   (prev frame committed)*   │
+            │        cycle_start() (new frame opening)       │
+            │        stamp time + release due & alive tasks  │
             │        scan_counter++                          │
             │        (NO wait — see §5)                      │
+            │    * cycle_end skipped on the first frame      │
             └───────────────┬────────────────────────────────┘
                             │ release = sem_post / cond signal
               ┌─────────────┼─────────────┬───────────────┐
@@ -309,30 +311,39 @@ the instant its body ends, and self-pacing plugins (EtherCAT's bus thread) drain
 and push on their own cadence. The output **data path** therefore needs no
 global barrier; outputs commit when each task produces them.
 
-That collapses `cycle_end` from a synchronization point to (at most) a
-notification. Design decisions:
+That collapses `cycle_end` from a synchronization point to a notification.
+Both hooks stay **global** and are fired back-to-back by the dispatcher at the
+top of every task-bearing tick, in this order:
 
-- **No dispatcher-side `cycle_end` barrier, and no `GCD/2` timer.** A `GCD/2`
-  pulse was considered (fire mid-tick assuming fast bodies are done) and
-  rejected: it doesn't *guarantee* completion (a body legitimately > GCD/2 fires
-  it mid-scan), and it adds a second timer wake every tick to approximate
-  something the journal already handles.
-- **`cycle_start`** stays as the per-tick (task-bearing) "frame opening"
-  notification, fired after the drain and before releasing workers. The drain
-  at this point also applies the *previous* frame's journaled outputs — i.e. it
-  *is* the effective "previous cycle ended" point, folded in, and it is exact
-  (the drain really happened) at no extra timer cost.
-- **Per-task completion hook (opt-in).** The only *exact* scan boundary in a
-  threaded model is per-task body completion — and the worker is right there
-  when it happens, knowing its own task id. A plugin that genuinely needs "task
-  T finished a scan" implements an optional `task_scan_complete(task_id)`
-  callback the worker fires after its body. N well-defined per-task boundaries
-  replace one undefined global one; plugins that don't care implement nothing.
+```
+task-bearing tick:
+    drain journal            # apply prev frame's journaled %Q (+ plugin %I) to image
+    cycle_end()              # "the previous frame's outputs are now drained/committed"
+    cycle_start()            # "a new frame is beginning"
+    stamp time + release due&alive workers
+    scan_counter++
+```
 
-Document that no plugin may assume a global `cycle_end` means "every task this
-scan has finished" — that assumption never held across multi-rate tasks. The
-dispatcher thus only ever sleeps, bumps time, drains, and releases: it never
-blocks on a body and never arms a second timer.
+So **`cycle_end` is fired at the *next* tick's frame top, right after the drain
+that commits the previous frame's outputs** — its contract is precisely "the
+previous frame's outputs are now drained." This is exact (the drain really
+happened), needs no barrier, and costs no extra timer. `cycle_start` then opens
+the new frame. The very first task-bearing tick has no prior frame, so
+`cycle_end` is skipped on tick 0 (a `frame_started` latch gates it).
+
+Rejected alternatives:
+- **Waiting for all bodies** before `cycle_end` — penalizes every task for the
+  slowest one; also impossible without stalling the time base (§5).
+- **A `GCD/2` timer** — doesn't *guarantee* bodies finished (a body legitimately
+  > GCD/2 fires it mid-scan) and adds a second timer wake every tick to
+  approximate what the journal already gives us exactly.
+
+Plugins must not assume `cycle_end` means "every task body this scan has
+finished" — it means "the previous frame's outputs are committed to the image."
+That weaker (but exact) contract is all a multi-rate threaded model can
+honestly offer, and it's what self-pacing plugins actually need. The dispatcher
+thus only ever sleeps, bumps time, drains, fires the two global hooks, and
+releases: it never blocks on a body and never arms a second timer.
 
 ---
 
@@ -439,12 +450,28 @@ bug even before the dispatcher drives workers.
 
 ---
 
-## 12. Open questions
+## 12. Build / test flow
 
-- Per-task `task_scan_complete` hook (§7): confirm during phase 3 whether any
-  current plugin actually needs it, or whether `cycle_start`'s drain suffices.
-- Hard-reject threshold for sub-µs base ticks, or warn-only?
+The runtime is validated end-to-end via its installer, **not** by compiling
+objects by hand:
+
+```
+sudo systemctl stop openplc-runtime     # stop the running service
+sudo ./install.sh                        # rebuild + reinstall the daemon
+sudo systemctl start openplc-runtime     # (installer may start it itself)
+```
+
+Functional validation uploads multi-task projects (via the OpenPLC Runtime v4
+CLI utility) and inspects the runtime log for tick timing, per-task scan
+period/jitter, and overrun behavior when a task body exceeds its interval.
+
+---
+
+## 13. Open questions
+
+- Hard-reject threshold for sub-µs base ticks, or warn-only? (Current: warn.)
 - Should the *drop* watchdog policy be the default (graceful) or *escalate*
-  (safe)? Likely per-deployment config with a safe default.
+  (safe)? Likely per-deployment config with a safe default. (Current: *flag*.)
 - Worker priority vs dispatcher priority ordering on a non-isolated CPU — verify
   the dispatcher tick can't be starved by a busy worker at equal priority.
+  (Current: dispatcher runs at SCHED_FIFO 99, above workers.)
