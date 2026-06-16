@@ -6,31 +6,15 @@ extern "C" {
 #endif
 
 /*
- * I/O cycle helpers.
+ * I/O cycle helpers — threaded (process-image) model housekeeping.
  *
  * Encapsulates the work that has to happen once per scan around the
- * highest-priority task's body:
- *
- *   plc_run_io_cycle_pre()   — runs BEFORE the task body
- *     drain journal, fire plugin cycle_start
- *
- *   plc_run_io_cycle_post()  — runs AFTER the task body
- *     advance __CURRENT_TIME, fire plugin cycle_end, update heartbeat,
- *     increment scan_counter
- *
- * Both are called inside the image-tables critical section. The
- * fastest task's thread (Phase 6 picks it; ctx->is_fastest_task) calls
- * these around its body. Other task threads just run their bodies
- * without housekeeping.
+ * highest-priority task's body. The fastest task's thread (Phase 6 picks it;
+ * ctx->is_fastest_task) calls the pre/post halves around its body; every task
+ * calls the drain at its copy-in. Other task threads just run their bodies.
  *
  * See docs/strucpp-migration/07-runtime-v4-plugin-and-io.md for the
  * topology rationale.
- */
-void plc_run_io_cycle_pre(void);
-void plc_run_io_cycle_post(void);
-
-/*
- * Threaded (process-image) model housekeeping.
  *
  *   plc_run_io_cycle_threaded_drain() — apply pending journal entries to the
  *     image. Called at EVERY task's copy-in, under the image mutex, so each

@@ -93,19 +93,6 @@ extern "C" void strucpp_advance_time(uint64_t tick_ns) {
     strucpp::__CURRENT_TIME_NS += static_cast<int64_t>(tick_ns);
 }
 
-// Capability flag. Present (== 1) only when this .so was compiled with
-// STRUCPP_THREADED (the threaded runtime's compile.sh defines it). The runtime
-// dlsyms this optional symbol to decide whether the loaded program supports the
-// process-image execution model (per-task copy-in/out of located vars +
-// sync_in()/sync_out() of globals on private working copies), which lets it run
-// task bodies without the global image lock. When the symbol is absent the
-// runtime falls back to the shared-image + whole-body-lock path, so older
-// programs still run.
-#ifdef STRUCPP_THREADED
-// NOT const: a namespace-scope `const` has internal linkage in C++ and would
-// be hidden from the runtime's dlsym (the same trap documented for
-// strucpp_program_md5 above). A plain int has external linkage.
-extern "C" {
-int strucpp_threaded_abi = 1;
-}
-#endif
+// NOTE: the runtime no longer probes a "threaded ABI" capability symbol. It
+// compiles every .so itself with -DSTRUCPP_THREADED, so the threaded
+// process-image model is the only one; there is nothing to detect.

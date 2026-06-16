@@ -49,7 +49,7 @@ extern "C"
      * Resolved .so symbols (populated by symbols_init).
      *
      * strucpp_advance_time is called once per scan cycle by
-     * plc_run_io_cycle_post; it bumps the per-.so __CURRENT_TIME_NS by the
+     * plc_run_io_cycle_threaded_post; it bumps the per-.so __CURRENT_TIME_NS by the
      * runtime-supplied tick. base_tick_ns is owned runtime-side (utils.c)
      * and computed in symbols_init by walking the loaded configuration.
      * --------------------------------------------------------------------- */
@@ -133,20 +133,19 @@ extern "C"
     void image_unlock(void);
 
     /* -------------------------------------------------------------------------
-     * Threaded process-image model.
+     * Threaded process-image model (the only execution model — the runtime
+     * compiles every .so itself with -DSTRUCPP_THREADED).
      *
-     * image_is_threaded() reports whether the loaded .so was built for the
-     * threaded model (exports strucpp_threaded_abi). global_mutex() guards
-     * per-task global sync_in()/sync_out(). The copy_in/out functions move a
-     * program's located slice [offset, offset+count) of locatedVars[] between
-     * the runtime-owned image and the program's private storage:
+     * global_mutex() guards per-task global sync_in()/sync_out(). The
+     * copy_in/out functions move a program's located slice
+     * [offset, offset+count) of locatedVars[] between the runtime-owned image
+     * and the program's private storage:
      *   - copy_in  : image -> program members (called before run(), under the
      *                image mutex, after the journal drain).
      *   - copy_out : changed program members -> journal (dirty-diff, lock-free;
      *                applied to the image on the next drain). %I is never
      *                committed.
      * --------------------------------------------------------------------- */
-    int  image_is_threaded(void);
     pthread_mutex_t *global_mutex(void);
     void image_tables_threaded_copy_in(uint32_t offset, uint32_t count);
     void image_tables_threaded_copy_out(uint32_t offset, uint32_t count);

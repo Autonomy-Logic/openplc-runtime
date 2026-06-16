@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <exception>
 
 #include <pthread.h>
 #include <sched.h>
@@ -108,12 +109,31 @@ static void plc_crash_handler(int sig)
     raise(sig);
 }
 
+/* Drop whichever runtime lock this task thread currently holds. Mirrors the
+ * signal-handler recovery (the sigsetjmp block below) so a C++ exception
+ * thrown mid-scan can't leave the image or global mutex locked when the thread
+ * unwinds and exits. holding_global/holding_mutex are set only inside their
+ * respective locked windows, so at most the matching lock is released. */
+static void plc_task_release_locks(PlcTaskCtx *ctx)
+{
+    if (ctx->holding_global)
+    {
+        ctx->holding_global = 0;
+        pthread_mutex_unlock(global_mutex());
+    }
+    if (ctx->holding_mutex)
+    {
+        ctx->holding_mutex = 0;
+        pthread_mutex_unlock(image_tables_mutex());
+    }
+}
+
 /* -----------------------------------------------------------------------
  * Per-task thread function.
  *
  * Phase 6 keeps this minimal: SCHED_FIFO priority elevation, optional
  * CPU affinity, per-thread crash recovery, then a clock_nanosleep loop
- * that calls task->programs[]->run() under the image-tables lock.
+ * that runs task->programs[]->run() under the process-image protocol.
  * Phase 7 specializes the fastest task by adding housekeeping pre/post.
  * --------------------------------------------------------------------- */
 static void *plc_task_thread(void *arg)
@@ -184,11 +204,6 @@ static void *plc_task_thread(void *arg)
 
     auto *task = static_cast<strucpp::TaskInstance *>(ctx->task_handle);
 
-    /* Cached once: the loaded .so either supports the threaded process-image
-     * model (copy-in/out + global sync, parallel bodies) or it doesn't (legacy
-     * whole-body lock). g_threaded is fixed before any task thread starts. */
-    const bool threaded = (image_is_threaded() != 0);
-
     timespec next_wakeup;
     clock_gettime(CLOCK_MONOTONIC, &next_wakeup);
 
@@ -196,13 +211,22 @@ static void *plc_task_thread(void *arg)
     {
         scan_cycle_tracker_start(&ctx->tracker);
 
-        if (threaded)
+        /* Process-image model: short locked windows for I/O and global sync;
+         * the body runs lock-free on the program's private storage, so task
+         * bodies execute in parallel. holding_mutex/holding_global gate the
+         * crash-handler unlock of whichever lock is held.
+         *
+         * The whole scan body runs under try/catch. On this hosted,
+         * exceptions-enabled build the STruC++ runtime THROWS on an
+         * unrecoverable fault (null IEC reference, array index out of bounds,
+         * bad located address). If that throw escaped this pthread entry
+         * function it would hit std::terminate -> abort the whole process ->
+         * the daemon would bounce every task. Instead we catch it here: this
+         * one task logs the fault and terminates; the other task threads keep
+         * scanning. The PLC stays RUNNING (minus the faulted task) rather than
+         * dying wholesale. */
+        try
         {
-            /* Process-image model: short locked windows for I/O and global
-             * sync; the body runs lock-free on the program's private storage,
-             * so task bodies execute in parallel. holding_mutex/holding_global
-             * gate the crash-handler unlock of whichever lock is held. */
-
             /* 1. Copy-in: snapshot this task's located inputs from the image
              *    into program storage. image_lock() takes the image mutex and
              *    drains the journal (flush-on-lock) so we read fresh committed
@@ -253,20 +277,19 @@ static void *plc_task_thread(void *arg)
 
             if (ctx->is_fastest_task) plc_run_io_cycle_threaded_post();
         }
-        else
+        catch (const std::exception &e)
         {
-            /* Legacy shared-image model: the whole body runs under the image
-             * mutex (serializes task bodies). Used for .so that predate the
-             * threaded ABI. Set holding_mutex AFTER the lock so a fatal signal
-             * between flag and lock can't unlock a mutex we don't own. */
-            pthread_mutex_lock(image_tables_mutex());
-            ctx->holding_mutex = 1;
-            if (ctx->is_fastest_task) plc_run_io_cycle_pre();
-            for (size_t p = 0; p < task->program_count; ++p)
-                task->programs[p]->run();
-            if (ctx->is_fastest_task) plc_run_io_cycle_post();
-            ctx->holding_mutex = 0;
-            pthread_mutex_unlock(image_tables_mutex());
+            plc_task_release_locks(ctx);
+            log_error("[task %s] terminated by unhandled exception: %s — "
+                      "other tasks keep running", ctx->name, e.what());
+            return nullptr;
+        }
+        catch (...)
+        {
+            plc_task_release_locks(ctx);
+            log_error("[task %s] terminated by unknown exception — "
+                      "other tasks keep running", ctx->name);
+            return nullptr;
         }
 
         scan_cycle_tracker_end(&ctx->tracker);
