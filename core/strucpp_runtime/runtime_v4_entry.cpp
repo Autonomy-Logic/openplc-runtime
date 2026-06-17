@@ -56,6 +56,37 @@ extern "C" uint32_t strucpp_get_located_var_count(void) {
     return strucpp::locatedVarsCount;
 }
 
+// Located-variable classifier for the unified external-write path.
+//
+// Given a debug (arr, elem) leaf, report whether it is a LOCATED variable
+// and, if so, its image location (area / size / byte_index / bit_index).
+// The runtime's runtime_external_write() uses this to route a write/force
+// targeting a located var through the image journal (and the forced-slot
+// bitmap) — copy_in would otherwise clobber a direct IECVar poke. Globals
+// and program-internal leaves return 0 (applied straight to the IECVar via
+// the debug-write journal).
+//
+// The match is by storage pointer: read_entry(arr,elem).ptr is the leaf's
+// IECVar raw_ptr(), the same pointer recorded in locatedVars[].pointer — a
+// pure pointer-identity check, no memory-layout assumption.
+extern "C" int strucpp_debug_locate(uint8_t arr, uint16_t elem,
+                                    uint8_t *area, uint8_t *size,
+                                    uint16_t *byte_index, uint8_t *bit_index) {
+    void *p = strucpp::debug::read_entry(arr, elem).ptr;
+    if (p == nullptr) return 0;
+    for (uint32_t i = 0; i < strucpp::locatedVarsCount; ++i) {
+        if (strucpp::locatedVars[i].pointer == p) {
+            const strucpp::LocatedVar &v = strucpp::locatedVars[i];
+            if (area)       *area       = static_cast<uint8_t>(v.area);
+            if (size)       *size       = static_cast<uint8_t>(v.size);
+            if (byte_index) *byte_index = v.byte_index;
+            if (bit_index)  *bit_index  = v.bit_index;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 // Project MD5. Used by FC 0x45 to let the editor verify it's debugging
 // the program it has the source for. The editor emits
 // core/generated/defines.h next to generated.cpp during compile,
