@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "debug_handler.h"
+#include "debug_write_journal.h"
 #include "image_tables.h"
 #include "utils/log.h"
 #include "utils/utils.h"
@@ -150,7 +151,15 @@ static void debugSetTrace(uint8_t *frame, size_t *frame_len, size_t length)
         return;
     }
 
-    uint8_t status = ext_strucpp_debug_set(arr, elem, force != 0, val_ptr, val_len);
+    /* Do NOT poke the IECVar from this socket thread — that races the IEC task
+     * workers (OpenPLC bug #3). Enqueue the force/unforce; the dispatcher
+     * applies it at the no-task-running window (race-free, ~1 scan later). The
+     * editor polls continuously, so the small latency is invisible. */
+    uint8_t op = (force != 0) ? (uint8_t)DBGW_OP_FORCE : (uint8_t)DBGW_OP_UNFORCE;
+    const uint8_t *vp = (force != 0) ? val_ptr : NULL;
+    uint16_t       vl = (force != 0) ? val_len : 0;
+    int rc = runtime_external_write(arr, elem, op, vp, vl);
+    uint8_t status = (rc == 0) ? MB_DEBUG_SUCCESS : MB_DEBUG_ERROR_OUT_OF_MEMORY;
     respond_short(frame, frame_len, MB_FC_DEBUG_SET, status);
 }
 
