@@ -67,6 +67,23 @@ static void apply_entry(const journal_entry_t *entry)
         return;
     }
 
+    /* bit_index is only meaningful for the three BOOL cases, where it indexes
+     * the inner [8] dimension of the bool_* pointer rows. A non-bool write sets
+     * the 0xFF sentinel (journal_write_byte/int/dint/lint), and the lock-free
+     * path can hand the consumer a torn or stale-recycled slot whose
+     * buffer_type reads as BOOL while bit_index carries that sentinel. An
+     * unchecked bool_*[idx][0xFF] reads a pointer 247 slots past the row,
+     * harvesting a wild pointer that the store below would write through --
+     * corrupting unrelated storage (observed: VAR_GLOBALs in the .so). Reject
+     * any bool entry whose bit_index is out of range so a torn/stale entry can
+     * never escalate into an out-of-bounds pointer write. */
+    if ((entry->buffer_type == JOURNAL_BOOL_INPUT ||
+         entry->buffer_type == JOURNAL_BOOL_OUTPUT ||
+         entry->buffer_type == JOURNAL_BOOL_MEMORY) &&
+        entry->bit_index >= 8) {
+        return;
+    }
+
     switch ((journal_buffer_type_t)entry->buffer_type) {
         case JOURNAL_BOOL_INPUT: {
             IEC_BOOL *ptr = g_buffer_ptrs.bool_input[idx][entry->bit_index];
