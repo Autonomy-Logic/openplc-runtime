@@ -83,6 +83,18 @@ extern "C"
                                                      const uint8_t *bytes,
                                                      uint16_t len);
 
+    /* Located-variable classifier. Reports whether a debug (arr, elem) leaf is
+     * a LOCATED variable and, if so, its image location (area / size /
+     * byte_index / bit_index). Returns 1 + fills the out-params if located, 0
+     * otherwise. The debug-write drain uses it to route located writes/forces
+     * through the image journal + forced-slot bitmap (copy_in would clobber a
+     * direct IECVar poke). OPTIONAL: an older .so without it leaves the pointer
+     * NULL, and the drain treats every leaf as a global (IECVar) write. */
+    extern int      (*ext_strucpp_debug_locate)     (uint8_t arr, uint16_t elem,
+                                                     uint8_t *area, uint8_t *size,
+                                                     uint16_t *byte_index,
+                                                     uint8_t *bit_index);
+
     /* -------------------------------------------------------------------------
      * Symbol resolution.
      *

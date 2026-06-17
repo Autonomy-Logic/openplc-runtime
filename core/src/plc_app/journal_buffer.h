@@ -203,6 +203,38 @@ int journal_write_lint(journal_buffer_type_t type, uint16_t index,
                        uint64_t value);
 
 /**
+ * @brief Pin an image slot to a forced value (force locks out external writes)
+ *
+ * Seeds the slot with @p value and marks it forced. Until journal_force_clear,
+ * every journal write to that slot (the program's own copy_out AND any plugin)
+ * is dropped at apply time, so the forced value owns the slot for the whole
+ * cycle. This is the located/image leg of variable forcing; globals and
+ * program-internal leaves are forced in the IECVar instead.
+ *
+ * @param type  Buffer type (same enum as journal_write_*)
+ * @param index Buffer array index
+ * @param bit   Bit index (0-7) for BOOL types; ignored otherwise
+ * @param value Forced value (sized for the largest type)
+ *
+ * @note MUST be called only from the dispatcher's debug-write drain, under the
+ *       image lock — the same serialization domain as journal_apply_and_clear.
+ */
+void journal_force_set(journal_buffer_type_t type, uint16_t index,
+                       uint8_t bit, uint64_t value);
+
+/**
+ * @brief Release a forced image slot (writes flow through again)
+ *
+ * @param type  Buffer type
+ * @param index Buffer array index
+ * @param bit   Bit index (0-7) for BOOL types; ignored otherwise
+ *
+ * @note Same calling constraint as journal_force_set.
+ */
+void journal_force_clear(journal_buffer_type_t type, uint16_t index,
+                         uint8_t bit);
+
+/**
  * @brief Apply all pending journal entries to image tables and clear the journal
  *
  * This function should be called at the start of each PLC scan cycle,

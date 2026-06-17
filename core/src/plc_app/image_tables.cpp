@@ -77,6 +77,8 @@ uint8_t  (*ext_strucpp_debug_set)        (uint8_t, uint16_t, bool,
 uint16_t (*ext_strucpp_debug_read)       (uint8_t, uint16_t, uint8_t *)  = nullptr;
 uint8_t  (*ext_strucpp_debug_write)      (uint8_t, uint16_t,
                                           const uint8_t *, uint16_t)     = nullptr;
+int      (*ext_strucpp_debug_locate)     (uint8_t, uint16_t, uint8_t *,
+                                          uint8_t *, uint16_t *, uint8_t *) = nullptr;
 
 namespace {
     using GetConfigFn = strucpp::ConfigurationInstance *(*)(void);
@@ -219,6 +221,9 @@ extern "C" int symbols_init(PluginManager *pm)
     *(void **)&ext_strucpp_debug_set         = resolve(pm, "strucpp_debug_set",         true);
     *(void **)&ext_strucpp_debug_read        = resolve(pm, "strucpp_debug_read",        true);
     *(void **)&ext_strucpp_debug_write       = resolve(pm, "strucpp_debug_write",       true);
+    /* Optional: present only on .so's built with strucpp_capabilities bit 2.
+     * When NULL the debug-write drain routes every leaf as a global write. */
+    *(void **)&ext_strucpp_debug_locate      = resolve(pm, "strucpp_debug_locate",      false);
 
     if (!ext_strucpp_advance_time || !ext_strucpp_set_current_time ||
         !ext_strucpp_get_config ||
@@ -510,6 +515,8 @@ void image_tables_clear_null_pointers(void)
     ext_strucpp_debug_size        = nullptr;
     ext_strucpp_debug_set         = nullptr;
     ext_strucpp_debug_read        = nullptr;
+    ext_strucpp_debug_write       = nullptr;
+    ext_strucpp_debug_locate      = nullptr;
     ext_strucpp_get_located_vars      = nullptr;
     ext_strucpp_get_located_var_count = nullptr;
     g_config_ptr = nullptr;

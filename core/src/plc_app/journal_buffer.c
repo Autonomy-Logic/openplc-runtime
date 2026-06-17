@@ -58,7 +58,46 @@ static int journal_add(uint8_t type, uint16_t index, uint8_t bit, uint64_t value
  * =============================================================================
  */
 
-static void apply_entry(const journal_entry_t *entry)
+/* ---------------------------------------------------------------------------
+ * Forced-slot bitmap.
+ *
+ * A located variable that the debugger / OPC-UA has FORCED must keep its
+ * forced value in the image regardless of what plugins (or the program's own
+ * copy_out) write to that slot. journal_force_set() seeds the slot with the
+ * forced value and marks it; every subsequent journal write to a forced slot
+ * is then DROPPED at apply time, so the force wins 100% of the cycle — the
+ * proper "force locks out external writes" semantic. (For globals/internals
+ * forcing lives in the IECVar; this bitmap is the located/image leg.)
+ *
+ * Mutated only from the dispatcher's debug-write drain and read only from
+ * apply_entry() — both under image_lock — so no atomics are required.
+ * JBUF_FORCE_SIZE mirrors the image BUFFER_SIZE; a runtime guard keeps this
+ * safe even if the two ever diverge.
+ * --------------------------------------------------------------------------- */
+#define JBUF_FORCE_SIZE 1024
+static uint8_t g_forced[JOURNAL_TYPE_COUNT][JBUF_FORCE_SIZE];
+static int     g_force_count = 0;
+
+static inline int type_is_bool(uint8_t t)
+{
+    return t == JOURNAL_BOOL_INPUT || t == JOURNAL_BOOL_OUTPUT ||
+           t == JOURNAL_BOOL_MEMORY;
+}
+
+static inline int is_slot_forced(uint8_t type, uint16_t idx, uint8_t bit)
+{
+    if (g_force_count == 0) return 0;          /* fast path: nothing forced */
+    if (type >= JOURNAL_TYPE_COUNT || idx >= JBUF_FORCE_SIZE) return 0;
+    if (type_is_bool(type)) {
+        if (bit >= 8) return 0;
+        return (g_forced[type][idx] >> bit) & 1;
+    }
+    return g_forced[type][idx] != 0;
+}
+
+/* Write a value straight into the image slot — NO forced-slot check. Shared
+ * by apply_entry (after its drop check) and journal_force_set (the seed). */
+static void apply_write_raw(const journal_entry_t *entry)
 {
     uint16_t idx = entry->index;
 
@@ -157,6 +196,66 @@ static void apply_entry(const journal_entry_t *entry)
         }
         default:
             break;
+    }
+}
+
+/* Apply one drained journal entry, honoring the forced-slot bitmap: a write
+ * to a forced slot is dropped so the force owns the slot for the whole cycle.
+ * (copy_out's journal writes and plugin journal writes both flow through here,
+ * so a forced located output stays pinned no matter who writes it.) */
+static void apply_entry(const journal_entry_t *entry)
+{
+    if (is_slot_forced(entry->buffer_type, entry->index, entry->bit_index)) {
+        return;
+    }
+    apply_write_raw(entry);
+}
+
+/* Pin an image slot to `value` and mark it forced. Seeds the slot immediately
+ * (bypassing the drop), then every later journal write to it is dropped until
+ * journal_force_clear. Called only from the dispatcher's debug-write drain,
+ * under image_lock — the same serialization domain as apply_entry. */
+void journal_force_set(journal_buffer_type_t type, uint16_t index,
+                       uint8_t bit, uint64_t value)
+{
+    if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= JBUF_FORCE_SIZE) {
+        return;
+    }
+    if (type_is_bool((uint8_t)type) && bit >= 8) {
+        return;
+    }
+    uint8_t mask = type_is_bool((uint8_t)type) ? (uint8_t)(1u << bit)
+                                               : (uint8_t)0x01;
+    if (!(g_forced[type][index] & mask)) {
+        g_forced[type][index] |= mask;
+        g_force_count++;
+    }
+    journal_entry_t e;
+    e.sequence    = 0;
+    e.buffer_type = (uint8_t)type;
+    e.bit_index   = type_is_bool((uint8_t)type) ? bit : (uint8_t)0xFF;
+    e.index       = index;
+    e.value       = value;
+    apply_write_raw(&e); /* seed — must land, so it bypasses the drop check */
+}
+
+/* Release a forced image slot. The next journal write (program copy_out or a
+ * plugin) is no longer dropped, so the slot tracks the live value again. */
+void journal_force_clear(journal_buffer_type_t type, uint16_t index, uint8_t bit)
+{
+    if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= JBUF_FORCE_SIZE) {
+        return;
+    }
+    if (type_is_bool((uint8_t)type) && bit >= 8) {
+        return;
+    }
+    uint8_t mask = type_is_bool((uint8_t)type) ? (uint8_t)(1u << bit)
+                                               : (uint8_t)0x01;
+    if (g_forced[type][index] & mask) {
+        g_forced[type][index] &= (uint8_t)~mask;
+        if (g_force_count > 0) {
+            g_force_count--;
+        }
     }
 }
 
