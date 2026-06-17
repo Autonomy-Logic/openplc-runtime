@@ -31,6 +31,7 @@ extern "C" {
 // Runtime-side strucpp ABI mirror — see core/src/lib/strucpp_abi.hpp
 #include "../lib/strucpp_abi.hpp"
 
+#include "debug_write_journal.h"
 #include "image_tables.h"
 #include "journal_buffer.h"
 #include "plc_state_manager.h"
@@ -868,6 +869,10 @@ void *plc_cycle_thread(void *arg)
             {
                 pthread_mutex_unlock(&done_mutex);
                 image_lock();          /* drain: commit this frame's outputs */
+                /* Apply queued external writes/forces (debugger, OPC-UA) here:
+                 * g_tasks_running == 0 so no worker is mid-scan, and we hold
+                 * image_lock. Cheap no-op when nothing is queued. */
+                debug_write_journal_drain();
                 image_unlock();
                 if (plugin_driver) plugin_driver_cycle_end(plugin_driver);
                 cycle_end_pending = false;
@@ -1043,6 +1048,7 @@ extern "C" int unload_plc_program(PluginManager *pm)
         pthread_join(plc_thread, NULL);
 
         journal_cleanup();
+        debug_write_journal_reset();
         log_info("Journal buffer cleaned up");
 
         plugin_driver_stop(plugin_driver);
