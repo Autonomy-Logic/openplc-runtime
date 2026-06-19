@@ -19,20 +19,6 @@ extern "C" {
 extern std::atomic<long>  plc_heartbeat;
 extern plugin_driver_t   *plugin_driver;
 
-extern "C" void plc_run_io_cycle_pre(void)
-{
-    journal_apply_and_clear();
-    if (plugin_driver) plugin_driver_cycle_start(plugin_driver);
-}
-
-extern "C" void plc_run_io_cycle_post(void)
-{
-    if (ext_strucpp_advance_time) ext_strucpp_advance_time(base_tick_ns);
-    if (plugin_driver) plugin_driver_cycle_end(plugin_driver);
-    plc_heartbeat.store((long)time(nullptr));
-    ++scan_counter;
-}
-
 // --- Threaded (process-image) model housekeeping ---------------------------
 // The drain runs at every task's copy-in (under the image mutex) so each task
 // sees freshly-applied plugin/peer writes. The pre/post halves run only on the

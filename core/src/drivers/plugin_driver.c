@@ -13,6 +13,7 @@
 #pragma GCC diagnostic pop
 #endif
 
+#include "../plc_app/debug_write_journal.h"
 #include "../plc_app/image_tables.h"
 #include "../plc_app/journal_buffer.h"
 #include "../plc_app/plc_state_manager.h"
@@ -120,20 +121,32 @@ static uint16_t plugin_debug_read(uint8_t arr, uint16_t elem, uint8_t *dest)
     return ext_strucpp_debug_read ? ext_strucpp_debug_read(arr, elem, dest) : 0;
 }
 
+// debug_set / debug_write are called from the PLUGIN's own thread (the OPC-UA
+// asyncio thread, the BACnet poll thread, ...). Poking the IECVar there races
+// the IEC task workers (OpenPLC bug #3, and the mechanism behind the OPC-UA
+// global-variable corruption). Both now ENQUEUE through the debug-write
+// journal; the dispatcher applies them at the no-task-running window —
+// race-free, and (for located vars) through the image journal + forced-slot
+// bitmap. Return 0x7E (SUCCESS) once queued, 0x82 (OUT_OF_MEMORY) if the queue
+// is momentarily full, 0x81 (OUT_OF_BOUNDS) when no program is loaded.
+
 static uint8_t plugin_debug_set(uint8_t arr, uint16_t elem, bool forcing,
                                 const uint8_t *bytes, uint16_t len)
 {
-    return ext_strucpp_debug_set
-               ? ext_strucpp_debug_set(arr, elem, forcing, bytes, len)
-               : 0x81; // STATUS_OUT_OF_BOUNDS
+    if (!ext_strucpp_debug_set) return 0x81; // no program loaded
+    uint8_t op = forcing ? (uint8_t)DBGW_OP_FORCE : (uint8_t)DBGW_OP_UNFORCE;
+    int rc = runtime_external_write(arr, elem, op,
+                                    forcing ? bytes : NULL,
+                                    forcing ? len : 0);
+    return (rc == 0) ? 0x7E : 0x82;
 }
 
 static uint8_t plugin_debug_write(uint8_t arr, uint16_t elem,
                                   const uint8_t *bytes, uint16_t len)
 {
-    return ext_strucpp_debug_write
-               ? ext_strucpp_debug_write(arr, elem, bytes, len)
-               : 0x81; // STATUS_OUT_OF_BOUNDS
+    if (!ext_strucpp_debug_write) return 0x81; // no program loaded
+    int rc = runtime_external_write(arr, elem, (uint8_t)DBGW_OP_WRITE, bytes, len);
+    return (rc == 0) ? 0x7E : 0x82;
 }
 
 // Plugin-invoked async PLC stop. Logs the reason at error level and kicks

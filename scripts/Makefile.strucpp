@@ -38,9 +38,13 @@ CC     := $(if $(CCACHE),$(CCACHE) gcc,gcc)
 # as for an additional 5–10% win.
 # -DSTRUCPP_THREADED selects the threaded process-image codegen: per-program
 # private working copies of VAR_EXTERNAL globals (with sync_in/sync_out) and a
-# located_range() override, plus the strucpp_threaded_abi capability flag in
-# the shim. This runtime supports that model (per-task copy-in/out, no global
-# image lock across task bodies), so every program it compiles is built for it.
+# located_range() override. This is the ONLY execution model the runtime
+# supports (per-task copy-in/out, no global image lock across task bodies) and
+# the runtime compiles every program itself, so the flag is unconditional.
+# It is NOT a capability the runtime probes at load time: the daemon assumes
+# threaded codegen because it built the .so. (Freestanding MCU targets — the
+# Arduino firmware build — omit this flag and run the single-threaded model;
+# that distinction is why STRUCPP_THREADED still exists in strucpp's codegen.)
 # -MMD -MP: emit a .d file next to each .o listing every header the TU
 # pulled in (-MMD), with phony targets for each header (-MP) so a later
 # removed/renamed header doesn't break the build. These .d files are
