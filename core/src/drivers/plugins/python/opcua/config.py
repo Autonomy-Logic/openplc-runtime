@@ -33,6 +33,7 @@ from shared.plugin_config_decode.opcua_config_model import (
     AddressSpace,
     SecurityProfile,
     User,
+    OPCUA_CONFIG_MIN_FORMAT_VERSION,
 )
 
 
@@ -147,6 +148,7 @@ def get_default_config() -> OpcuaConfig:
         Default OpcuaConfig instance
     """
     default_dict = {
+        "format_version": OPCUA_CONFIG_MIN_FORMAT_VERSION,
         "server": {
             "name": "OpenPLC OPC-UA Server",
             "application_uri": "urn:autonomy-logic:openplc:opcua:server",

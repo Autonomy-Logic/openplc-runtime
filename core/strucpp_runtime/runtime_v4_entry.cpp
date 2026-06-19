@@ -56,6 +56,37 @@ extern "C" uint32_t strucpp_get_located_var_count(void) {
     return strucpp::locatedVarsCount;
 }
 
+// Located-variable classifier for the unified external-write path.
+//
+// Given a debug (arr, elem) leaf, report whether it is a LOCATED variable
+// and, if so, its image location (area / size / byte_index / bit_index).
+// The runtime's runtime_external_write() uses this to route a write/force
+// targeting a located var through the image journal (and the forced-slot
+// bitmap) — copy_in would otherwise clobber a direct IECVar poke. Globals
+// and program-internal leaves return 0 (applied straight to the IECVar via
+// the debug-write journal).
+//
+// The match is by storage pointer: read_entry(arr,elem).ptr is the leaf's
+// IECVar raw_ptr(), the same pointer recorded in locatedVars[].pointer — a
+// pure pointer-identity check, no memory-layout assumption.
+extern "C" int strucpp_debug_locate(uint8_t arr, uint16_t elem,
+                                    uint8_t *area, uint8_t *size,
+                                    uint16_t *byte_index, uint8_t *bit_index) {
+    void *p = strucpp::debug::read_entry(arr, elem).ptr;
+    if (p == nullptr) return 0;
+    for (uint32_t i = 0; i < strucpp::locatedVarsCount; ++i) {
+        if (strucpp::locatedVars[i].pointer == p) {
+            const strucpp::LocatedVar &v = strucpp::locatedVars[i];
+            if (area)       *area       = static_cast<uint8_t>(v.area);
+            if (size)       *size       = static_cast<uint8_t>(v.size);
+            if (byte_index) *byte_index = v.byte_index;
+            if (bit_index)  *bit_index  = v.bit_index;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 // Project MD5. Used by FC 0x45 to let the editor verify it's debugging
 // the program it has the source for. The editor emits
 // core/generated/defines.h next to generated.cpp during compile,
@@ -84,28 +115,28 @@ extern "C" {
 char strucpp_program_md5[] = PROGRAM_MD5;
 }
 
-// Advances the strucpp runtime's scan-cycle clock. Called by the runtime
-// once per cycle (the fastest task's housekeeping window invokes it via
-// plc_run_io_cycle_post). CODESYS semantics: TIME() returns the same
-// value for the duration of a cycle. The tick is supplied by the runtime
-// because base_tick_ns is owned runtime-side now.
+// Advances the strucpp runtime's scan-cycle clock by `tick_ns` on the CALLING
+// thread. Retained for compatibility (and for any single-threaded host); the
+// GCD master-tick dispatcher does NOT use it — under STRUCPP_THREADED
+// __CURRENT_TIME_NS is thread_local, so a dispatcher-side increment would only
+// bump the dispatcher's own (unused) copy. The dispatcher uses
+// strucpp_set_current_time() on each worker instead.
 extern "C" void strucpp_advance_time(uint64_t tick_ns) {
     strucpp::__CURRENT_TIME_NS += static_cast<int64_t>(tick_ns);
 }
 
-// Capability flag. Present (== 1) only when this .so was compiled with
-// STRUCPP_THREADED (the threaded runtime's compile.sh defines it). The runtime
-// dlsyms this optional symbol to decide whether the loaded program supports the
-// process-image execution model (per-task copy-in/out of located vars +
-// sync_in()/sync_out() of globals on private working copies), which lets it run
-// task bodies without the global image lock. When the symbol is absent the
-// runtime falls back to the shared-image + whole-body-lock path, so older
-// programs still run.
-#ifdef STRUCPP_THREADED
-// NOT const: a namespace-scope `const` has internal linkage in C++ and would
-// be hidden from the runtime's dlsym (the same trap documented for
-// strucpp_program_md5 above). A plain int has external linkage.
-extern "C" {
-int strucpp_threaded_abi = 1;
+// Sets the IEC TIME() base for the CALLING thread. Under STRUCPP_THREADED
+// __CURRENT_TIME_NS is thread_local (see iec_std_lib.hpp), so each task worker
+// thread that calls this gets its own scan-stable time. The GCD master-tick
+// dispatcher stamps each task's dispatch time and the worker calls this at the
+// top of its scan, before run() — giving correct multi-rate IEC timing
+// (TIME() constant within a scan, no cross-task interference, slow tasks keep
+// their own snapshot while the master clock advances). Must be called ON the
+// worker thread for the thread_local to land where the body reads it.
+extern "C" void strucpp_set_current_time(int64_t ns) {
+    strucpp::__CURRENT_TIME_NS = ns;
 }
-#endif
+
+// NOTE: the runtime no longer probes a "threaded ABI" capability symbol. It
+// compiles every .so itself with -DSTRUCPP_THREADED, so the threaded
+// process-image model is the only one; there is nothing to detect.

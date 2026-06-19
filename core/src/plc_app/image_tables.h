@@ -48,13 +48,19 @@ extern "C"
     /* -------------------------------------------------------------------------
      * Resolved .so symbols (populated by symbols_init).
      *
-     * strucpp_advance_time is called once per scan cycle by
-     * plc_run_io_cycle_post; it bumps the per-.so __CURRENT_TIME_NS by the
-     * runtime-supplied tick. base_tick_ns is owned runtime-side (utils.c)
-     * and computed in symbols_init by walking the loaded configuration.
+     * strucpp_set_current_time sets the per-.so __CURRENT_TIME_NS (thread_local
+     * under STRUCPP_THREADED) for the calling thread; the GCD master-tick
+     * dispatcher stamps each task's dispatch time and the worker thread calls
+     * this at the top of its scan so IEC TIME() is stable within a scan.
+     * strucpp_advance_time is retained for compatibility (unused by the
+     * dispatcher). base_tick_ns is owned runtime-side (utils.c) and computed in
+     * symbols_init by walking the loaded configuration.
      * --------------------------------------------------------------------- */
 
     extern void (*ext_strucpp_advance_time)(uint64_t tick_ns);
+    /* Sets IEC TIME() for the CALLING thread. Call on the worker thread at the
+     * top of its scan with the dispatch-stamped time. */
+    extern void (*ext_strucpp_set_current_time)(int64_t ns);
 
     /* Hierarchical debug PDU shims (defined inside the .so by
      * debug_dispatch.hpp under STRUCPP_V4_DEBUG_EXPORTS_DEFINE). */
@@ -76,6 +82,18 @@ extern "C"
     extern uint8_t  (*ext_strucpp_debug_write)      (uint8_t arr, uint16_t elem,
                                                      const uint8_t *bytes,
                                                      uint16_t len);
+
+    /* Located-variable classifier. Reports whether a debug (arr, elem) leaf is
+     * a LOCATED variable and, if so, its image location (area / size /
+     * byte_index / bit_index). Returns 1 + fills the out-params if located, 0
+     * otherwise. The debug-write drain uses it to route located writes/forces
+     * through the image journal + forced-slot bitmap (copy_in would clobber a
+     * direct IECVar poke). OPTIONAL: an older .so without it leaves the pointer
+     * NULL, and the drain treats every leaf as a global (IECVar) write. */
+    extern int      (*ext_strucpp_debug_locate)     (uint8_t arr, uint16_t elem,
+                                                     uint8_t *area, uint8_t *size,
+                                                     uint16_t *byte_index,
+                                                     uint8_t *bit_index);
 
     /* -------------------------------------------------------------------------
      * Symbol resolution.
@@ -133,20 +151,19 @@ extern "C"
     void image_unlock(void);
 
     /* -------------------------------------------------------------------------
-     * Threaded process-image model.
+     * Threaded process-image model (the only execution model — the runtime
+     * compiles every .so itself with -DSTRUCPP_THREADED).
      *
-     * image_is_threaded() reports whether the loaded .so was built for the
-     * threaded model (exports strucpp_threaded_abi). global_mutex() guards
-     * per-task global sync_in()/sync_out(). The copy_in/out functions move a
-     * program's located slice [offset, offset+count) of locatedVars[] between
-     * the runtime-owned image and the program's private storage:
+     * global_mutex() guards per-task global sync_in()/sync_out(). The
+     * copy_in/out functions move a program's located slice
+     * [offset, offset+count) of locatedVars[] between the runtime-owned image
+     * and the program's private storage:
      *   - copy_in  : image -> program members (called before run(), under the
      *                image mutex, after the journal drain).
      *   - copy_out : changed program members -> journal (dirty-diff, lock-free;
      *                applied to the image on the next drain). %I is never
      *                committed.
      * --------------------------------------------------------------------- */
-    int  image_is_threaded(void);
     pthread_mutex_t *global_mutex(void);
     void image_tables_threaded_copy_in(uint32_t offset, uint32_t count);
     void image_tables_threaded_copy_out(uint32_t offset, uint32_t count);

@@ -12,6 +12,17 @@ except ImportError:
 # Permission types for variables
 PermissionType = Literal["r", "w", "rw"]
 
+# opcua.json contract version this runtime understands. v2 introduced
+# compiler-canonical per-leaf `datatype` + `size` (sourced from the same
+# STruC++ compile that builds the .so) so the runtime encodes the exact
+# byte width instead of re-deriving it from a drift-prone stored datatype.
+# A config without `format_version` (or below this) is an older editor's
+# output: we refuse it gracefully (OPC-UA stays down; the rest of the PLC
+# runs) rather than risk writing the wrong number of bytes to a variable.
+# Mirror of OPCUA_CONFIG_FORMAT_VERSION in openplc-editor's
+# generate-opcua-config.ts.
+OPCUA_CONFIG_MIN_FORMAT_VERSION = 2
+
 # Valid datatypes for OPC-UA variables (IEC 61131-3 base types)
 # This list must match the base types supported by openplc-editor
 VALID_DATATYPES = frozenset([
@@ -26,7 +37,7 @@ VALID_DATATYPES = frozenset([
     # Bit strings
     "BYTE", "WORD", "DWORD", "LWORD",
     # String
-    "STRING",
+    "STRING", "WSTRING",
     # Time-related types
     "TIME", "DATE", "TOD", "DT",
     # Legacy/alternative names (for backward compatibility)
@@ -184,6 +195,10 @@ class VariableField:
     arr: Optional[int]
     elem: Optional[int]
     permissions: VariablePermissions
+    # Canonical leaf byte width from the compiler (debug-map.json). None
+    # for complex parents (containers with nested fields), present for
+    # leaves. The encode/decode path uses this exact width.
+    size: Optional[int] = None
     fields: Optional[List['VariableField']] = None  # Nested fields for complex types
 
     @classmethod
@@ -205,12 +220,19 @@ class VariableField:
         if "fields" in data and data["fields"]:
             nested_fields = [VariableField.from_dict(f) for f in data["fields"]]
 
+        # Leaf fields carry a canonical size; complex parents (with nested
+        # fields) carry null. A leaf missing `size` is a malformed v2 config.
+        size = data.get("size")
+        if nested_fields is None and size is None:
+            raise ValueError(f"Missing required 'size' for leaf field '{name}'")
+
         return cls(
             name=name,
             datatype=datatype,
             arr=arr,
             elem=elem,
             permissions=permissions,
+            size=size,
             fields=nested_fields
         )
 
@@ -257,6 +279,8 @@ class ArrayVariable:
     arr: int
     elem: int
     permissions: VariablePermissions
+    # Canonical byte width of ONE element from the compiler (debug-map.json).
+    size: int = 0
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ArrayVariable':
@@ -270,6 +294,7 @@ class ArrayVariable:
             arr = data["arr"]
             elem = data["elem"]
             permissions_data = data["permissions"]
+            size = data["size"]
         except KeyError as e:
             raise ValueError(f"Missing required field in array variable: {e}")
 
@@ -283,7 +308,8 @@ class ArrayVariable:
             length=length,
             arr=arr,
             elem=elem,
-            permissions=permissions
+            permissions=permissions,
+            size=size
         )
 
 @dataclass
@@ -298,6 +324,9 @@ class SimpleVariable:
     arr: int
     elem: int
     permissions: VariablePermissions
+    # Canonical byte width from the compiler (debug-map.json) — the exact
+    # number of bytes the encode/decode path moves for this leaf.
+    size: int = 0
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'SimpleVariable':
@@ -311,6 +340,7 @@ class SimpleVariable:
             arr = data["arr"]
             elem = data["elem"]
             permissions_data = data["permissions"]
+            size = data["size"]
         except KeyError as e:
             raise ValueError(f"Missing required field in simple variable: {e}")
 
@@ -324,7 +354,8 @@ class SimpleVariable:
             description=description,
             arr=arr,
             elem=elem,
-            permissions=permissions
+            permissions=permissions,
+            size=size
         )
 
 @dataclass
@@ -365,10 +396,25 @@ class OpcuaConfig:
     users: List[User]
     address_space: AddressSpace
     cycle_time_ms: int = 100  # Default cycle time in milliseconds
+    format_version: int = 0  # opcua.json contract version (see gate in from_dict)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'OpcuaConfig':
         """Creates an OpcuaConfig instance from a dictionary."""
+        # Contract gate FIRST, before parsing variables: an older editor's
+        # config omits per-leaf `size`, so reject it with a clear message
+        # instead of a confusing "missing size" KeyError. Raising here makes
+        # load_config() return None -> the OPC-UA server simply doesn't start
+        # while the rest of the runtime keeps running.
+        format_version = data.get("format_version", 0)
+        if not isinstance(format_version, int) or format_version < OPCUA_CONFIG_MIN_FORMAT_VERSION:
+            raise ValueError(
+                f"Unsupported opcua.json format_version {format_version!r} "
+                f"(this runtime requires >= {OPCUA_CONFIG_MIN_FORMAT_VERSION}). The config was "
+                f"generated by an older OpenPLC Editor that omits per-variable byte sizes; "
+                f"re-upload the project from a current editor to regenerate conf/opcua.json."
+            )
+
         try:
             server_data = data["server"]
             security_data = data["security"]
@@ -388,7 +434,8 @@ class OpcuaConfig:
             security=security,
             users=users,
             address_space=address_space,
-            cycle_time_ms=cycle_time_ms
+            cycle_time_ms=cycle_time_ms,
+            format_version=format_version
         )
 
 @dataclass

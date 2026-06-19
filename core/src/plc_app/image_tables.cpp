@@ -67,6 +67,7 @@ namespace {
 // Resolved .so symbols
 // ---------------------------------------------------------------------------
 void (*ext_strucpp_advance_time)(uint64_t) = nullptr;
+void (*ext_strucpp_set_current_time)(int64_t) = nullptr;
 
 uint8_t  (*ext_strucpp_debug_array_count)(void)                          = nullptr;
 uint16_t (*ext_strucpp_debug_elem_count) (uint8_t)                       = nullptr;
@@ -76,6 +77,8 @@ uint8_t  (*ext_strucpp_debug_set)        (uint8_t, uint16_t, bool,
 uint16_t (*ext_strucpp_debug_read)       (uint8_t, uint16_t, uint8_t *)  = nullptr;
 uint8_t  (*ext_strucpp_debug_write)      (uint8_t, uint16_t,
                                           const uint8_t *, uint16_t)     = nullptr;
+int      (*ext_strucpp_debug_locate)     (uint8_t, uint16_t, uint8_t *,
+                                          uint8_t *, uint16_t *, uint8_t *) = nullptr;
 
 namespace {
     using GetConfigFn = strucpp::ConfigurationInstance *(*)(void);
@@ -90,10 +93,6 @@ namespace {
     // the loaded .so's Configuration object.
     pthread_mutex_t g_global_mutex;
     bool            g_locks_initialized = false;
-    // Set when the loaded .so exports strucpp_threaded_abi (compiled with
-    // STRUCPP_THREADED). Selects per-task copy-in/out + global sync over the
-    // legacy shared-image + whole-body-lock path.
-    bool            g_threaded         = false;
     // Per-located-var value snapshot taken at copy-in, used by copy-out to
     // commit only changed outputs (dirty-diff). Sized to locatedVarsCount.
     uint64_t       *g_located_snapshot = nullptr;
@@ -138,11 +137,6 @@ extern "C" pthread_mutex_t *image_tables_mutex(void)
 extern "C" pthread_mutex_t *global_mutex(void)
 {
     return &g_global_mutex;
-}
-
-extern "C" int image_is_threaded(void)
-{
-    return g_threaded ? 1 : 0;
 }
 
 // Flush-on-lock read lock. This is the canonical entry for any consumer that
@@ -211,7 +205,8 @@ static void compute_base_tick_from_config(strucpp::ConfigurationInstance *cfg)
 
 extern "C" int symbols_init(PluginManager *pm)
 {
-    *(void **)&ext_strucpp_advance_time = resolve(pm, "strucpp_advance_time", true);
+    *(void **)&ext_strucpp_advance_time      = resolve(pm, "strucpp_advance_time",      true);
+    *(void **)&ext_strucpp_set_current_time  = resolve(pm, "strucpp_set_current_time",  true);
 
     *(void **)&ext_strucpp_program_md5 = plugin_manager_get_symbol(pm, "strucpp_program_md5");
 
@@ -226,8 +221,11 @@ extern "C" int symbols_init(PluginManager *pm)
     *(void **)&ext_strucpp_debug_set         = resolve(pm, "strucpp_debug_set",         true);
     *(void **)&ext_strucpp_debug_read        = resolve(pm, "strucpp_debug_read",        true);
     *(void **)&ext_strucpp_debug_write       = resolve(pm, "strucpp_debug_write",       true);
+    /* Optional: present only on .so's built with strucpp_capabilities bit 2.
+     * When NULL the debug-write drain routes every leaf as a global write. */
+    *(void **)&ext_strucpp_debug_locate      = resolve(pm, "strucpp_debug_locate",      false);
 
-    if (!ext_strucpp_advance_time ||
+    if (!ext_strucpp_advance_time || !ext_strucpp_set_current_time ||
         !ext_strucpp_get_config ||
         !ext_strucpp_get_located_vars || !ext_strucpp_get_located_var_count ||
         !ext_strucpp_debug_array_count || !ext_strucpp_debug_elem_count ||
@@ -238,16 +236,11 @@ extern "C" int symbols_init(PluginManager *pm)
         return -1;
     }
 
-    // Optional capability symbol: present (== 1) only when the .so was built
-    // with STRUCPP_THREADED. Selects the process-image execution model
-    // (per-task copy-in/out + global sync, no whole-body image lock).
-    {
-        const int *threaded =
-            (const int *)plugin_manager_get_symbol(pm, "strucpp_threaded_abi");
-        g_threaded = (threaded != nullptr && *threaded == 1);
-        log_info("[strucpp] execution model: %s",
-                 g_threaded ? "threaded process-image" : "legacy shared-image");
-    }
+    // The runtime compiles every program's .so itself, always with
+    // -DSTRUCPP_THREADED, so the only execution model is the threaded
+    // process-image one (per-task copy-in/out + global sync, no whole-body
+    // image lock). There is no legacy shared-image path and nothing to detect.
+    log_info("[strucpp] execution model: threaded process-image");
 
     if (!g_locks_initialized)
     {
@@ -294,132 +287,18 @@ void image_tables_bind_located_vars(void)
         return;
     }
 
-    const strucpp::LocatedVar *lv_array = ext_strucpp_get_located_vars();
-    uint32_t lv_count                   = ext_strucpp_get_located_var_count();
-    uint32_t bound = 0, skipped = 0;
+    uint32_t lv_count = ext_strucpp_get_located_var_count();
 
-    // Threaded model: the runtime OWNS the image (temp_* backing buffers,
-    // installed by image_tables_fill_null_pointers) and copies image<->program
-    // storage per task. So we deliberately do NOT alias image slots to the .so
-    // located-var members here; we only size the dirty-diff snapshot buffer.
-    if (g_threaded)
-    {
-        g_located_count = lv_count;
-        free(g_located_snapshot);
-        g_located_snapshot =
-            (uint64_t *)calloc(lv_count ? lv_count : 1, sizeof(uint64_t));
-        log_info("[image_tables] threaded mode: %u located var(s) via copy-in/out "
-                 "(image kept private from program storage)", lv_count);
-        return;
-    }
-
-    for (uint32_t i = 0; i < lv_count; ++i)
-    {
-        const strucpp::LocatedVar &lv = lv_array[i];
-
-        if (lv.pointer == nullptr)
-        {
-            log_warn("[image_tables] locatedVars[%u] has NULL pointer "
-                     "(area=%u size=%u byte=%u bit=%u)",
-                     i, (unsigned)lv.area, (unsigned)lv.size,
-                     (unsigned)lv.byte_index, (unsigned)lv.bit_index);
-            ++skipped;
-            continue;
-        }
-
-        if (lv.byte_index >= BUFFER_SIZE)
-        {
-            log_warn("[image_tables] locatedVars[%u] byte_index %u exceeds "
-                     "BUFFER_SIZE %d — skipping",
-                     i, (unsigned)lv.byte_index, BUFFER_SIZE);
-            ++skipped;
-            continue;
-        }
-
-        // strucpp stores raw_ptr() pointing at IECVar's underlying primitive
-        // storage (the value_ field), which is layout-compatible with the
-        // runtime's plain ::IEC_* typedefs in core/src/lib/iec_types.h.
-        // Cast unconditionally; the layout is guaranteed by IECVar's
-        // raw_ptr() contract.
-        switch (lv.area)
-        {
-        case strucpp::LocatedArea::Input:
-            switch (lv.size)
-            {
-            case strucpp::LocatedSize::Bit:
-                if (lv.bit_index < 8)
-                    bool_input[lv.byte_index][lv.bit_index] = (::IEC_BOOL *)lv.pointer;
-                break;
-            case strucpp::LocatedSize::Byte:
-                byte_input[lv.byte_index] = (::IEC_BYTE *)lv.pointer;
-                break;
-            case strucpp::LocatedSize::Word:
-                int_input[lv.byte_index] = (::IEC_UINT *)lv.pointer;
-                break;
-            case strucpp::LocatedSize::DWord:
-                dint_input[lv.byte_index] = (::IEC_UDINT *)lv.pointer;
-                break;
-            case strucpp::LocatedSize::LWord:
-                lint_input[lv.byte_index] = (::IEC_ULINT *)lv.pointer;
-                break;
-            }
-            break;
-
-        case strucpp::LocatedArea::Output:
-            switch (lv.size)
-            {
-            case strucpp::LocatedSize::Bit:
-                if (lv.bit_index < 8)
-                    bool_output[lv.byte_index][lv.bit_index] = (::IEC_BOOL *)lv.pointer;
-                break;
-            case strucpp::LocatedSize::Byte:
-                byte_output[lv.byte_index] = (::IEC_BYTE *)lv.pointer;
-                break;
-            case strucpp::LocatedSize::Word:
-                int_output[lv.byte_index] = (::IEC_UINT *)lv.pointer;
-                break;
-            case strucpp::LocatedSize::DWord:
-                dint_output[lv.byte_index] = (::IEC_UDINT *)lv.pointer;
-                break;
-            case strucpp::LocatedSize::LWord:
-                lint_output[lv.byte_index] = (::IEC_ULINT *)lv.pointer;
-                break;
-            }
-            break;
-
-        case strucpp::LocatedArea::Memory:
-            switch (lv.size)
-            {
-            case strucpp::LocatedSize::Bit:
-                if (lv.bit_index < 8)
-                    bool_memory[lv.byte_index][lv.bit_index] = (::IEC_BOOL *)lv.pointer;
-                break;
-            case strucpp::LocatedSize::Word:
-                int_memory[lv.byte_index] = (::IEC_UINT *)lv.pointer;
-                break;
-            case strucpp::LocatedSize::DWord:
-                dint_memory[lv.byte_index] = (::IEC_UDINT *)lv.pointer;
-                break;
-            case strucpp::LocatedSize::LWord:
-                lint_memory[lv.byte_index] = (::IEC_ULINT *)lv.pointer;
-                break;
-            default:
-                ++skipped;
-                continue;
-            }
-            break;
-
-        default:
-            log_warn("[image_tables] locatedVars[%u] unknown area %u — skipping",
-                     i, (unsigned)lv.area);
-            ++skipped;
-            continue;
-        }
-        ++bound;
-    }
-
-    log_info("[image_tables] bound %u located variables (%u skipped of %u)",
-             bound, skipped, lv_count);
+    // The runtime OWNS the image (temp_* backing buffers, installed by
+    // image_tables_fill_null_pointers) and copies image<->program storage per
+    // task. So we deliberately do NOT alias image slots to the .so located-var
+    // members here; we only size the dirty-diff snapshot buffer.
+    g_located_count = lv_count;
+    free(g_located_snapshot);
+    g_located_snapshot =
+        (uint64_t *)calloc(lv_count ? lv_count : 1, sizeof(uint64_t));
+    log_info("[image_tables] %u located var(s) via copy-in/out "
+             "(image kept private from program storage)", lv_count);
 }
 
 // ---------------------------------------------------------------------------
@@ -508,7 +387,7 @@ uint64_t threaded_image_read(const strucpp::LocatedVar &v)
 
 extern "C" void image_tables_threaded_copy_in(uint32_t offset, uint32_t count)
 {
-    if (!g_threaded || !ext_strucpp_get_located_vars) return;
+    if (!ext_strucpp_get_located_vars) return;
     const strucpp::LocatedVar *lv = ext_strucpp_get_located_vars();
     uint32_t end = offset + count;
     if (end > g_located_count) end = g_located_count;
@@ -522,7 +401,7 @@ extern "C" void image_tables_threaded_copy_in(uint32_t offset, uint32_t count)
 
 extern "C" void image_tables_threaded_copy_out(uint32_t offset, uint32_t count)
 {
-    if (!g_threaded || !ext_strucpp_get_located_vars) return;
+    if (!ext_strucpp_get_located_vars) return;
     const strucpp::LocatedVar *lv = ext_strucpp_get_located_vars();
     uint32_t end = offset + count;
     if (end > g_located_count) end = g_located_count;
@@ -606,13 +485,11 @@ void image_tables_fill_null_pointers(void)
 
 void image_tables_clear_null_pointers(void)
 {
-    // Threaded process-image state: free the dirty-diff snapshot and reset the
-    // capability flag so a subsequent program load re-detects it. (The mutexes
+    // Threaded process-image state: free the dirty-diff snapshot. (The mutexes
     // persist across loads via g_locks_initialized.)
     free(g_located_snapshot);
     g_located_snapshot = nullptr;
     g_located_count    = 0;
-    g_threaded         = false;
 
     std::memset(bool_input,   0, sizeof(bool_input));
     std::memset(bool_output,  0, sizeof(bool_output));
@@ -629,14 +506,17 @@ void image_tables_clear_null_pointers(void)
     std::memset(lint_memory,  0, sizeof(lint_memory));
     std::memset(bool_memory,  0, sizeof(bool_memory));
 
-    ext_strucpp_advance_time = nullptr;
-    ext_strucpp_program_md5  = nullptr;
+    ext_strucpp_advance_time     = nullptr;
+    ext_strucpp_set_current_time = nullptr;
+    ext_strucpp_program_md5      = nullptr;
     ext_strucpp_get_config   = nullptr;
     ext_strucpp_debug_array_count = nullptr;
     ext_strucpp_debug_elem_count  = nullptr;
     ext_strucpp_debug_size        = nullptr;
     ext_strucpp_debug_set         = nullptr;
     ext_strucpp_debug_read        = nullptr;
+    ext_strucpp_debug_write       = nullptr;
+    ext_strucpp_debug_locate      = nullptr;
     ext_strucpp_get_located_vars      = nullptr;
     ext_strucpp_get_located_var_count = nullptr;
     g_config_ptr = nullptr;

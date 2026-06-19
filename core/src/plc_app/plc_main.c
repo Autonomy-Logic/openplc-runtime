@@ -152,15 +152,23 @@ int main(int argc, char *argv[])
     }
 
     // Start PLC (skip in safe mode to allow program upload without loading the
-    // faulty program that may have caused repeated crashes)
+    // faulty program that may have caused repeated crashes).
+    //
+    // Use plc_begin_transition() rather than plc_set_state() directly so the
+    // auto-start goes through the same is_transitioning CAS gate as any
+    // socket-originated START command. This prevents a race where the socket
+    // listener (already running above) accepts a START before the auto-start
+    // finishes, causing two concurrent load_plc_program() calls — and two
+    // dispatcher threads. plc_begin_transition() also makes the start
+    // asynchronous, which is fine: the main thread just sleeps below.
     if (safe_mode)
     {
         log_info("Runtime started in SAFE MODE - PLC program will not be loaded");
         log_info("Upload a corrected program to recover");
     }
-    else if (plc_set_state(PLC_STATE_RUNNING) != true)
+    else if (!plc_begin_transition(PLC_STATE_RUNNING))
     {
-        log_error("Failed to set PLC state to RUNNING");
+        log_error("Failed to initiate PLC start");
     }
 
     while (keep_running)

@@ -4,6 +4,7 @@
 #include "plcapp_manager.h"
 #include "scan_cycle_manager.h"
 #include <pthread.h>
+#include <semaphore.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -51,10 +52,39 @@ typedef struct PlcTaskCtx
     int64_t               interval_ns;
     int                   priority;           /* IEC TASK priority, mapped to SCHED_FIFO */
     uint64_t              cpu_affinity_mask;  /* 0 = no pinning, kernel decides */
-    bool                  is_fastest_task;    /* anchor for housekeeping (Phase 7) */
+    bool                  is_fastest_task;    /* retained for STATS; housekeeping is on the dispatcher */
     void                 *task_handle;        /* opaque strucpp::TaskInstance* */
     pthread_t             thread;
     char                  name[32];
+
+    /* -------------------------------------------------------------------------
+     * GCD master-tick dispatcher plumbing.
+     *
+     * The dispatcher releases this worker by posting `go`; the worker blocks on
+     * sem_wait(go) between scans. `divisor` = interval_ns / base_tick_ns, so the
+     * worker is due on master tick N iff N % divisor == 0.
+     *
+     * Binary release + overrun detection use released/completed: the dispatcher
+     * bumps `released` and posts only when released == completed (worker idle);
+     * if released > completed at a due tick the worker is still in its previous
+     * scan (overrun) and is NOT re-posted, so activations never queue. The
+     * worker bumps `completed` at the end of each scan.
+     *
+     * `time_at_dispatch` is stamped by the dispatcher at release and applied by
+     * the worker via ext_strucpp_set_current_time() before run() — giving each
+     * task a scan-stable IEC TIME() snapshot (§ scheduler design doc).
+     *
+     * `alive` (1/0): a worker that hits an unrecoverable fault sets this to 0
+     * and returns; the dispatcher then never releases it again (the faulted task
+     * drops out of the schedule while the others keep running).
+     * --------------------------------------------------------------------- */
+    sem_t                 go;
+    uint64_t              divisor;
+    int64_t               time_at_dispatch;
+    plc_atomic_long_t     alive;
+    plc_atomic_long_t     released;
+    plc_atomic_long_t     completed;
+    plc_atomic_long_t     overrun_count;
 
     sigjmp_buf            crash_jmp;
     volatile sig_atomic_t crash_sig;
