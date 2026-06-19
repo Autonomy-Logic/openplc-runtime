@@ -56,6 +56,42 @@ check_python() {
     log_info "Using Python version: $python_version"
 }
 
+# Install a plugin's requirements into its venv.
+#
+# On MSYS2/Cygwin the Python interpreter is the cygwin build
+# (SOABI cpython-3xx-x86_64-cygwin). Rust-backed wheels (cryptography) cannot
+# be compiled there — maturin aborts with "Unsupported platform: x86_64-cygwin".
+# install.sh therefore installs python-cryptography via pacman and the venv is
+# created with --system-site-packages so the pre-built copy is importable.
+#
+# That alone is not enough: even though the system cryptography satisfies the
+# direct requirement, pip's resolver (dragged along by pyopenssl) still selects
+# the newest cryptography release and tries to build its sdist from source,
+# which fails. Pin cryptography to the exact version already present in the
+# system site-packages so pip reuses the pacman build instead of compiling.
+pip_install_requirements() {
+    local venv_path="$1"
+    local requirements_file="$2"
+
+    if is_msys2; then
+        local constraints crypto_ver rc
+        constraints="$(mktemp)"
+        crypto_ver="$("$venv_path/bin/python" -c "import cryptography; print(cryptography.__version__)" 2>/dev/null || true)"
+        if [ -n "$crypto_ver" ]; then
+            echo "cryptography==$crypto_ver" >> "$constraints"
+            log_info "MSYS2: pinning cryptography==$crypto_ver (pre-built system package) to avoid Rust/maturin build"
+        else
+            log_warning "MSYS2: cryptography not found in system site-packages; pip may attempt an unsupported source build"
+        fi
+        "$venv_path/bin/pip" install -c "$constraints" -r "$requirements_file"
+        rc=$?
+        rm -f "$constraints"
+        return $rc
+    fi
+
+    "$venv_path/bin/pip" install -r "$requirements_file"
+}
+
 # Create virtual environment for a plugin
 create_plugin_venv() {
     local plugin_name="$1"
@@ -107,7 +143,7 @@ create_plugin_venv() {
     # Install requirements if they exist
     if [ -f "$requirements_file" ]; then
         log_info "Installing dependencies from: $requirements_file"
-        "$venv_path/bin/pip" install -r "$requirements_file"
+        pip_install_requirements "$venv_path" "$requirements_file"
         log_success "Dependencies installed successfully"
     else
         log_warning "No requirements.txt found at: $requirements_file"
@@ -146,7 +182,7 @@ install_dependencies() {
     fi
     
     log_info "Installing dependencies for plugin: $plugin_name"
-    "$venv_path/bin/pip" install -r "$requirements_file"
+    pip_install_requirements "$venv_path" "$requirements_file"
     log_success "Dependencies installed successfully"
 }
 
