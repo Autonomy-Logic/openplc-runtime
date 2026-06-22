@@ -34,11 +34,11 @@ from shared import (  # noqa: E402
 
 try:
     from .client import OpcuaClientManager
-    from .config import load_client_config
+    from .opcua_client_config import load_client_config
     from .opcua_client_logging import get_logger, log_error, log_info, log_warn
 except ImportError:
     from client import OpcuaClientManager
-    from config import load_client_config
+    from opcua_client_config import load_client_config
     from opcua_client_logging import get_logger, log_error, log_info, log_warn
 
 
