@@ -1,0 +1,47 @@
+[
+  {
+    "name": "opcua_client",
+    "protocol": "OPC-UA-Client",
+    "config": {
+      "format_version": 1,
+      "servers": [
+        {
+          "name": "RemotePLC_A",
+          "endpoint_url": "opc.tcp://192.168.0.50:4840/freeopcua/server/",
+          "security": {
+            "security_policy": "Basic256Sha256",
+            "security_mode": "SignAndEncrypt",
+            "auth_mode": "username",
+            "username": "operator",
+            "password": "changeme",
+            "client_cert_pem": null,
+            "client_key_pem": null,
+            "server_cert_pem": null
+          },
+          "session_timeout_ms": 60000,
+          "reconnect": true,
+          "mappings": [
+            {
+              "remote_node_id": "ns=2;i=5",
+              "arr": 0,
+              "elem": 3,
+              "datatype": "INT",
+              "size": 2,
+              "direction": "remote_to_plc",
+              "cycle_time_ms": 100
+            },
+            {
+              "remote_node_id": "ns=2;s=Setpoint",
+              "arr": 0,
+              "elem": 7,
+              "datatype": "REAL",
+              "size": 4,
+              "direction": "plc_to_remote",
+              "cycle_time_ms": 200
+            }
+          ]
+        }
+      ]
+    }
+  }
+]
