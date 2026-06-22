@@ -1,0 +1,9 @@
+# OPC-UA Client plugin dependencies.
+# Same OPC-UA stack version as the server plugin (core/.../opcua) so the
+# shared.opcua_common helpers behave identically across both plugins.
+asyncua==1.1.8
+
+# Pulled in transitively by asyncua for secure channels; pinned-free here so
+# the resolver matches asyncua's constraint. Used by client certificate
+# generation (shared.opcua_common.opcua_security_common).
+cryptography
