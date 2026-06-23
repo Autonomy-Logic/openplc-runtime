@@ -312,25 +312,14 @@ def convert_value_for_plc(datatype: str, value: Any) -> Any:
             clamped_value = max(0, min(18446744073709551615, int(value)))
             return ctypes.c_uint64(clamped_value).value
 
-        elif datatype.upper() in ["FLOAT", "REAL"]:
-            # Convert float to int representation for storage
-            if isinstance(value, float):
-                try:
-                    return struct.unpack("I", struct.pack("f", value))[0]
-                except struct.error:
-                    return int(value)
-            else:
-                return int(float(value))
-
-        elif datatype.upper() == "LREAL":
-            # Convert double to int representation for storage (64-bit)
-            if isinstance(value, float):
-                try:
-                    return struct.unpack("Q", struct.pack("d", value))[0]
-                except struct.error:
-                    return int(value)
-            else:
-                return int(float(value))
+        elif datatype.upper() in ["FLOAT", "REAL", "LREAL"]:
+            # Return the actual float value. The STruC++ debug-write surface
+            # (debug_write_value) encodes it via ctypes c_float / c_double, so
+            # it expects the real value here, NOT the integer IEEE-754 bit
+            # pattern. The old MatIEC raw-bytes surface needed the bit-packed
+            # int; double-packing it here corrupted REAL/LREAL writes
+            # (e.g. 280.0 was written as ~1.13e9).
+            return float(value)
 
         elif datatype.upper() in ["STRING", "WSTRING"]:
             return str(value)
