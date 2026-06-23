@@ -157,9 +157,13 @@ class AddressSpaceBuilder:
         # the node — no `initial_value` config field anymore.
         initial_value = convert_value_for_opcua(var.datatype, _type_default(var.datatype))
 
-        # Create the variable node
+        # Create the variable node with an explicit STRING NodeId derived from
+        # the configured node_id (ns=<idx>;s=<node_id>). This makes the exposed
+        # NodeId stable and human-readable so clients can address it directly,
+        # instead of asyncua's auto-numeric id (ns=<idx>;i=N) which depends on
+        # creation order and isn't knowable without browsing.
         node = await parent_node.add_variable(
-            self.namespace_idx,
+            ua.NodeId(var.node_id, self.namespace_idx),
             var.browse_name,
             ua.Variant(initial_value, opcua_type),
             datatype=opcua_type
@@ -218,9 +222,10 @@ class AddressSpaceBuilder:
             parent_node: Parent node (typically Objects folder)
             struct: StructVariable configuration
         """
-        # Create parent object for the struct
+        # Create parent object for the struct with an explicit string NodeId
+        # (ns=<idx>;s=<node_id>) so clients can address it deterministically.
         struct_obj = await parent_node.add_object(
-            self.namespace_idx,
+            ua.NodeId(struct.node_id, self.namespace_idx),
             struct.browse_name
         )
 
@@ -268,9 +273,10 @@ class AddressSpaceBuilder:
 
         # Check if this is a complex type with nested fields
         if field.fields and len(field.fields) > 0:
-            # Create an Object node for complex types (FB instances, nested structs)
+            # Create an Object node for complex types (FB instances, nested structs).
+            # String NodeId from the dotted field path (struct.node_id.field.name).
             field_obj = await parent_node.add_object(
-                self.namespace_idx,
+                ua.NodeId(field_node_id, self.namespace_idx),
                 field.name
             )
 
@@ -294,9 +300,10 @@ class AddressSpaceBuilder:
         opcua_type = map_plc_to_opcua_type(field.datatype)
         initial_value = convert_value_for_opcua(field.datatype, _type_default(field.datatype))
 
-        # Create the variable node
+        # Create the variable node with a string NodeId from the dotted field
+        # path (ns=<idx>;s=<struct.node_id>.<field.name>).
         node = await parent_node.add_variable(
-            self.namespace_idx,
+            ua.NodeId(field_node_id, self.namespace_idx),
             field.name,
             ua.Variant(initial_value, opcua_type),
             datatype=opcua_type
@@ -357,9 +364,10 @@ class AddressSpaceBuilder:
         array_values = [initial_value] * arr.length
         array_variant = ua.Variant(array_values, opcua_type)
 
-        # Create the variable node
+        # Create the variable node with a string NodeId from the configured
+        # node_id (ns=<idx>;s=<node_id>) so clients can address it directly.
         node = await parent_node.add_variable(
-            self.namespace_idx,
+            ua.NodeId(arr.node_id, self.namespace_idx),
             arr.browse_name,
             array_variant,
             datatype=opcua_type
