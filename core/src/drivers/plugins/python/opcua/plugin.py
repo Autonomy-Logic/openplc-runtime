@@ -62,9 +62,10 @@ class _PermissionDenialFilter(logging.Filter):
     the underlying cause is a UaError raised by our pre-read /
     pre-write permission callback.
 
-    The permission system in callbacks.py raises ua.UaError to deny a
-    write — that's the documented asyncua API for rejecting a request.
-    The wire response is the protocol-correct BadUserAccessDenied
+    The permission system in callbacks.py raises
+    ua.UaStatusCodeError(BadUserAccessDenied) to deny a read/write —
+    that's the documented asyncua API for rejecting a request, and the
+    wire response carries the protocol-correct BadUserAccessDenied
     status code. asyncua's process_message however catches the
     exception with logger.exception(), so the runtime log gets a full
     Python traceback for what is really an expected, well-handled
@@ -78,12 +79,11 @@ class _PermissionDenialFilter(logging.Filter):
     requests, etc.) keep their traceback.
     """
 
+    # callbacks.py denies a read/write by raising
+    # ua.UaStatusCodeError(BadUserAccessDenied); its str() ends in
+    # "(BadUserAccessDenied)". Match that to drop the noisy traceback.
     _DENIAL_MARKERS = (
-        "Access denied:",
-        "anonymous read not allowed",
-        "anonymous write not allowed",
-        "insufficient write permissions",
-        "no permissions configured",
+        "BadUserAccessDenied",
     )
 
     def filter(self, record: logging.LogRecord) -> bool:

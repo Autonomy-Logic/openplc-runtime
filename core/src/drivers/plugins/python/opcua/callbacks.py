@@ -129,7 +129,7 @@ class PermissionCallbackHandler:
         Callback for pre-read operations with permission enforcement.
 
         Checks if the user has read permission ('r') for the requested node.
-        Raises ua.UaError to deny access.
+        Raises ua.UaStatusCodeError(BadUserAccessDenied) to deny access.
 
         Args:
             event: The callback event containing user and request params
@@ -166,20 +166,20 @@ class PermissionCallbackHandler:
                 if "r" not in str(role_permission):
                     log_warn(f"DENY read for user {username} "
                              f"(role: {user_role}) on node {simple_node_id}")
-                    raise ua.UaError("Access denied: insufficient read permissions")
+                    raise ua.UaStatusCodeError(ua.StatusCodes.BadUserAccessDenied)
             else:
                 # Anonymous or unauthenticated client - check viewer permissions
                 viewer_perm = getattr(permissions, 'viewer', '')
                 if "r" not in str(viewer_perm):
                     log_warn(f"DENY read for anonymous client on node {simple_node_id}")
-                    raise ua.UaError("Access denied: anonymous read not allowed")
+                    raise ua.UaStatusCodeError(ua.StatusCodes.BadUserAccessDenied)
 
     async def _on_pre_write(self, event: Any, dispatcher: Any) -> None:
         """
         Callback for pre-write operations with permission enforcement.
 
         Checks if the user has write permission ('w') for the requested node.
-        Raises ua.UaError to deny access.
+        Raises ua.UaStatusCodeError(BadUserAccessDenied) to deny access.
 
         Server-internal writes (is_external=False) are allowed without
         permission checks as they are privileged runtime operations.
@@ -230,7 +230,7 @@ class PermissionCallbackHandler:
                     if "w" not in str(role_permission):
                         log_warn(f"DENY write for user {username} "
                                  f"(role: {user_role}) on node {simple_node_id}: {value}")
-                        raise ua.UaError("Access denied: insufficient write permissions")
+                        raise ua.UaStatusCodeError(ua.StatusCodes.BadUserAccessDenied)
                     else:
                         log_debug(f"ALLOW write for user {username} "
                                   f"(role: {user_role}) on node {simple_node_id}: {value}")
@@ -239,20 +239,20 @@ class PermissionCallbackHandler:
                     log_warn(f"DENY write for user {username} "
                              f"(role: {user_role}) on node {simple_node_id}: {value} "
                              f"(no permissions configured)")
-                    raise ua.UaError("Access denied: no permissions configured for this node")
+                    raise ua.UaStatusCodeError(ua.StatusCodes.BadUserAccessDenied)
             else:
                 # Anonymous external client user
                 if permissions:
                     viewer_perm = getattr(permissions, 'viewer', '')
                     if "w" not in str(viewer_perm):
                         log_warn(f"DENY write for anonymous client on node {simple_node_id}")
-                        raise ua.UaError("Access denied: anonymous write not allowed")
+                        raise ua.UaStatusCodeError(ua.StatusCodes.BadUserAccessDenied)
                     log_debug(f"ALLOW write for anonymous client on node {simple_node_id}: {value}")
                 else:
                     # No permissions configured - deny by default (fail-closed)
                     log_warn(f"DENY write for anonymous client on node {simple_node_id}: {value} "
                              f"(no permissions configured)")
-                    raise ua.UaError("Access denied: no permissions configured for this node")
+                    raise ua.UaStatusCodeError(ua.StatusCodes.BadUserAccessDenied)
 
     def _resolve_node_id(self, node_id: Any) -> Optional[str]:
         """
