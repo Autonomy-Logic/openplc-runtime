@@ -38,20 +38,14 @@ except ImportError:
     from opcua_logging import log_debug, log_error, log_warn
 
 
-# TIME-related datatypes are stored on disk as IEC_TIMESPEC: two signed
-# 32-bit fields (tv_sec, tv_nsec), 8 bytes total. This is NOT an int64 of
-# nanoseconds. tv_sec holds whole seconds (since epoch for DATE/DT, since
-# midnight for TOD, or a raw duration for TIME) and tv_nsec the sub-second
-# remainder. They cross the debug surface as a (tv_sec, tv_nsec) tuple,
-# which is exactly what opcua_utils.convert_value_for_opcua/_for_plc expect.
+# TIME-family datatypes are stored by strucpp as a single signed 64-bit
+# integer, 8 bytes, but the UNIT differs per type: TIME and TOD are
+# nanoseconds (duration / since midnight), DT is nanoseconds since the 1970
+# epoch, and DATE is *days* since the 1970 epoch. The debug surface moves the
+# raw int64; opcua_utils.convert_value_for_opcua/_for_plc apply the per-type
+# unit. (The old "int64 nanoseconds" assumption was wrong for DATE, and the
+# matiec IEC_TIMESPEC two-int32 layout does not apply to strucpp.)
 TIME_DATATYPES = frozenset(["TIME", "DATE", "TOD", "DT"])
-
-
-class _IecTimespec(ctypes.Structure):
-    """On-disk layout of strucpp's IEC_TIMESPEC (TIME/DATE/TOD/DT)."""
-
-    _fields_ = [("tv_sec", ctypes.c_int32), ("tv_nsec", ctypes.c_int32)]
-
 
 # Maximum byte size for read buffers. Generous bound so a STRING
 # (126 bytes + 1 length byte = 127) plus future variable-length
@@ -90,33 +84,12 @@ def _ctype_for(datatype: str) -> Optional[Any]:
     if t == "LREAL":
         return ctypes.c_double
     if t in TIME_DATATYPES:
-        # 8-byte leaf, but decoded/encoded as an IEC_TIMESPEC tuple by the
-        # read/write helpers below (not as this scalar). c_int64 is returned
-        # only so the "is this type supported?" gate (ctype is None) passes.
+        # strucpp stores TIME/DATE/TOD/DT as a single int64; the per-type
+        # unit (ns vs days) is applied by the conversion layer, not here.
         return ctypes.c_int64
     if t in ("STRING", "WSTRING"):
         return None  # variable-length, not yet supported by debug surface
     return None
-
-
-def _pack_timespec(value: Any) -> Optional[bytes]:
-    """Pack a (tv_sec, tv_nsec) tuple — as produced by
-    convert_value_for_plc for TIME/DATE/TOD/DT — into the 8-byte
-    IEC_TIMESPEC layout. Returns None if value is not a usable timespec."""
-    if isinstance(value, tuple) and len(value) == 2:
-        tv_sec, tv_nsec = value
-    elif isinstance(value, int):
-        tv_sec, tv_nsec = value, 0
-    else:
-        return None
-    try:
-        ts = _IecTimespec(
-            ctypes.c_int32(int(tv_sec)).value,
-            ctypes.c_int32(int(tv_nsec)).value,
-        )
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return bytes(ts)
 
 
 def debug_read_value(args: Any, arr: int, elem: int, datatype: str) -> Optional[Any]:
@@ -147,12 +120,8 @@ def debug_read_value(args: Any, arr: int, elem: int, datatype: str) -> Optional[
         # Out-of-bounds, no program, or string-stub — skip.
         return None
 
-    if (datatype or "").upper() in TIME_DATATYPES:
-        # Decode the 8-byte leaf as IEC_TIMESPEC -> (tv_sec, tv_nsec).
-        ts = ctypes.cast(buf, ctypes.POINTER(_IecTimespec)).contents
-        return (int(ts.tv_sec), int(ts.tv_nsec))
-
-    # Reinterpret the leading bytes as the typed scalar.
+    # Reinterpret the leading bytes as the typed scalar (TIME-family is a
+    # plain int64 here; the unit is applied by the conversion layer).
     typed = ctypes.cast(buf, ctypes.POINTER(ctype)).contents
     return typed.value
 
@@ -171,19 +140,13 @@ def debug_write_value(args: Any, arr: int, elem: int, datatype: str, value: Any)
     if ctype is None:
         return False
 
-    if (datatype or "").upper() in TIME_DATATYPES:
-        raw = _pack_timespec(value)
-        if raw is None:
-            log_warn(f"debug_write({arr}, {elem}, {datatype}): bad timespec {value!r}")
-            return False
-    else:
-        try:
-            encoded = ctype(value)
-        except (TypeError, ValueError) as e:
-            log_warn(f"debug_write({arr}, {elem}, {datatype}): cannot encode {value!r}: {e}")
-            return False
-        raw = bytes(encoded)
+    try:
+        encoded = ctype(value)
+    except (TypeError, ValueError) as e:
+        log_warn(f"debug_write({arr}, {elem}, {datatype}): cannot encode {value!r}: {e}")
+        return False
 
+    raw = bytes(encoded)
     buf = (ctypes.c_uint8 * len(raw))(*raw)
     try:
         status = args.debug_write(
@@ -207,20 +170,13 @@ def debug_force_value(args: Any, arr: int, elem: int, datatype: str, value: Any)
     ctype = _ctype_for(datatype)
     if ctype is None:
         return False
+    try:
+        encoded = ctype(value)
+    except (TypeError, ValueError) as e:
+        log_warn(f"debug_force({arr}, {elem}, {datatype}): cannot encode {value!r}: {e}")
+        return False
 
-    if (datatype or "").upper() in TIME_DATATYPES:
-        raw = _pack_timespec(value)
-        if raw is None:
-            log_warn(f"debug_force({arr}, {elem}, {datatype}): bad timespec {value!r}")
-            return False
-    else:
-        try:
-            encoded = ctype(value)
-        except (TypeError, ValueError) as e:
-            log_warn(f"debug_force({arr}, {elem}, {datatype}): cannot encode {value!r}: {e}")
-            return False
-        raw = bytes(encoded)
-
+    raw = bytes(encoded)
     buf = (ctypes.c_uint8 * len(raw))(*raw)
     try:
         status = args.debug_set(

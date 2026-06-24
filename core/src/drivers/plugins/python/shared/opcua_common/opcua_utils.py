@@ -2,7 +2,8 @@
 
 import ctypes
 import struct
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
 from asyncua import ua
 
@@ -13,8 +14,22 @@ except ImportError:
     from opcua_logging import log_warn
 
 
-# TIME-related datatypes that use IEC_TIMESPEC structure
+# TIME-family datatypes. strucpp stores each as a single int64, but the unit
+# differs: TIME and TOD are nanoseconds (duration / since midnight), DT is
+# nanoseconds since the 1970 epoch, and DATE is *days* since the 1970 epoch.
 TIME_DATATYPES = frozenset(["TIME", "DATE", "TOD", "DT"])
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _as_utc(value: Any) -> Optional[datetime]:
+    """Normalize an OPC-UA DateTime to an aware UTC datetime (asyncua may hand
+    back naive UTC datetimes). Returns None if value is not a datetime."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    return None
 
 
 def map_plc_to_opcua_type(plc_type: str) -> ua.VariantType:
@@ -159,88 +174,25 @@ def convert_value_for_opcua(datatype: str, value: Any) -> Any:
             return str(value)
 
         elif datatype.upper() == "TIME":
-            # TIME values are stored as IEC_TIMESPEC (tv_sec, tv_nsec)
-            # Convert to milliseconds for OPC-UA Int64 representation
-            if isinstance(value, tuple) and len(value) == 2:
-                tv_sec, tv_nsec = value
-                return timespec_to_milliseconds(tv_sec, tv_nsec)
-            elif isinstance(value, int):
-                # If already an integer, assume it's milliseconds
-                return value
-            return 0
+            # strucpp TIME = int64 nanoseconds (duration). Exposed as Int64 ns.
+            return int(value)
 
         elif datatype.upper() == "TOD":
-            # TOD (Time of Day) - use current date + time from timespec
-            # IEC_TIMESPEC stores seconds since midnight for TOD
-            from datetime import datetime, timezone
-
-            if isinstance(value, tuple) and len(value) == 2:
-                tv_sec, tv_nsec = value
-                # tv_sec contains seconds since midnight
-                hours = tv_sec // 3600
-                minutes = (tv_sec % 3600) // 60
-                seconds = tv_sec % 60
-                microseconds = tv_nsec // 1000
-
-                # Use current date (today) + time from timespec
-                today = datetime.now(timezone.utc).date()
-                try:
-                    dt = datetime(
-                        today.year,
-                        today.month,
-                        today.day,
-                        hours,
-                        minutes,
-                        seconds,
-                        microseconds,
-                        tzinfo=timezone.utc,
-                    )
-                    return dt
-                except (ValueError, OverflowError) as e:
-                    # Invalid time, return today at midnight
-                    log_warn(f"Invalid TOD value (hours={hours}), using midnight: {e}")
-                    return datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
-            elif isinstance(value, datetime):
-                return value
-            # Default: today at midnight
+            # strucpp TOD = int64 nanoseconds since midnight. Expose as a
+            # DateTime anchored on today's (UTC) date.
+            ns = int(value)
             today = datetime.now(timezone.utc).date()
-            return datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+            base = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+            return base + timedelta(microseconds=ns // 1000)
 
         elif datatype.upper() == "DATE":
-            # DATE - use date from timespec, set time to 00:00:00
-            # IEC_TIMESPEC stores seconds since epoch (1970-01-01)
-            from datetime import datetime, timezone
-
-            if isinstance(value, tuple) and len(value) == 2:
-                tv_sec, tv_nsec = value
-                try:
-                    # Convert to datetime and extract date only
-                    dt = datetime.fromtimestamp(tv_sec, tz=timezone.utc)
-                    # Set time to 00:00:00 (ignore time portion)
-                    dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-                    return dt
-                except (OSError, OverflowError, ValueError):
-                    return datetime(1970, 1, 1, tzinfo=timezone.utc)
-            elif isinstance(value, datetime):
-                # Zero out time portion
-                return value.replace(hour=0, minute=0, second=0, microsecond=0)
-            return datetime(1970, 1, 1, tzinfo=timezone.utc)
+            # strucpp DATE = int64 DAYS since the 1970 epoch.
+            return _EPOCH + timedelta(days=int(value))
 
         elif datatype.upper() == "DT":
-            # DT (Date and Time) - full DateTime conversion
-            from datetime import datetime, timezone
-
-            if isinstance(value, tuple) and len(value) == 2:
-                tv_sec, tv_nsec = value
-                try:
-                    dt = datetime.fromtimestamp(tv_sec, tz=timezone.utc)
-                    dt = dt.replace(microsecond=tv_nsec // 1000)
-                    return dt
-                except (OSError, OverflowError, ValueError):
-                    return datetime(1970, 1, 1, tzinfo=timezone.utc)
-            elif isinstance(value, datetime):
-                return value
-            return datetime(1970, 1, 1, tzinfo=timezone.utc)
+            # strucpp DT = int64 nanoseconds since the 1970 epoch.
+            sec, ns_rem = divmod(int(value), 1_000_000_000)
+            return _EPOCH + timedelta(seconds=sec, microseconds=ns_rem // 1000)
 
         else:
             return value
@@ -254,8 +206,10 @@ def convert_value_for_opcua(datatype: str, value: Any) -> Any:
             return 0.0
         elif datatype.upper() in ["STRING", "WSTRING"]:
             return ""
-        elif datatype.upper() in TIME_DATATYPES:
+        elif datatype.upper() == "TIME":
             return 0
+        elif datatype.upper() in TIME_DATATYPES:
+            return _EPOCH
         else:
             return 0
 
@@ -325,51 +279,34 @@ def convert_value_for_plc(datatype: str, value: Any) -> Any:
             return str(value)
 
         elif datatype.upper() == "TIME":
-            # Convert OPC-UA milliseconds (Int64) to IEC_TIMESPEC tuple
-            ms = int(value)
-            return milliseconds_to_timespec(ms)
+            # OPC-UA Int64 ns -> strucpp int64 ns (identity duration).
+            return int(value)
 
         elif datatype.upper() == "TOD":
-            # TOD (Time of Day) - extract time portion only (seconds since midnight)
-            from datetime import datetime, timezone
-
-            if isinstance(value, datetime):
-                # Calculate seconds since midnight
-                tv_sec = value.hour * 3600 + value.minute * 60 + value.second
-                tv_nsec = value.microsecond * 1000
-                return (tv_sec, tv_nsec)
-            elif isinstance(value, (int, float)):
-                # Assume it's seconds since midnight
-                return (int(value), 0)
-            return (0, 0)
+            # DateTime -> strucpp int64 nanoseconds since midnight.
+            dt = _as_utc(value)
+            if dt is None:
+                return int(value) if isinstance(value, (int, float)) else 0
+            return (
+                (dt.hour * 3600 + dt.minute * 60 + dt.second) * 1_000_000_000
+                + dt.microsecond * 1000
+            )
 
         elif datatype.upper() == "DATE":
-            # DATE - extract date only, set time to 00:00:00
-            from datetime import datetime, timezone
-
-            if isinstance(value, datetime):
-                # Create datetime at midnight for the date, then get timestamp
-                dt_midnight = value.replace(hour=0, minute=0, second=0, microsecond=0)
-                tv_sec = int(dt_midnight.timestamp())
-                return (tv_sec, 0)
-            elif isinstance(value, (int, float)):
-                # Assume it's a timestamp, zero out time portion
-                dt = datetime.fromtimestamp(int(value), tz=timezone.utc)
-                dt_midnight = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-                return (int(dt_midnight.timestamp()), 0)
-            return (0, 0)
+            # DateTime -> strucpp int64 DAYS since the 1970 epoch.
+            dt = _as_utc(value)
+            if dt is None:
+                return int(value) if isinstance(value, (int, float)) else 0
+            return (dt - _EPOCH).days
 
         elif datatype.upper() == "DT":
-            # DT (Date and Time) - full DateTime conversion
-            from datetime import datetime, timezone
-
-            if isinstance(value, datetime):
-                tv_sec = int(value.timestamp())
-                tv_nsec = value.microsecond * 1000
-                return (tv_sec, tv_nsec)
-            elif isinstance(value, (int, float)):
-                return (int(value), 0)
-            return (0, 0)
+            # DateTime -> strucpp int64 nanoseconds since the 1970 epoch.
+            dt = _as_utc(value)
+            if dt is None:
+                return int(value) if isinstance(value, (int, float)) else 0
+            delta = dt - _EPOCH
+            total_us = (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
+            return total_us * 1000
 
         else:
             # For unknown types, try to preserve the value
@@ -385,7 +322,7 @@ def convert_value_for_plc(datatype: str, value: Any) -> Any:
         elif datatype.upper() in ["STRING", "WSTRING"]:
             return ""
         elif datatype.upper() in TIME_DATATYPES:
-            return (0, 0)
+            return 0
         else:
             return 0
 
