@@ -20,26 +20,13 @@ for _p in (_current_dir, _python_dir):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from shared.opcua_common.opcua_memory import (  # noqa: E402
-    TIME_DATATYPES,
-    debug_write_value,
-    timespec_to_time,
-)
+from shared.opcua_common.opcua_memory import debug_write_value  # noqa: E402
 from shared.opcua_common.opcua_utils import convert_value_for_plc  # noqa: E402
 
 try:
     from .opcua_client_logging import log_debug, log_error
 except ImportError:
     from opcua_client_logging import log_debug, log_error
-
-
-def encode_plc_value(datatype: str, plc_value: Any) -> Any:
-    """TIME-family values arrive as (tv_sec, tv_nsec) tuples from
-    convert_value_for_plc; recombine into the int64 nanosecond form the
-    debug surface expects."""
-    if datatype.upper() in TIME_DATATYPES and isinstance(plc_value, tuple):
-        return timespec_to_time(plc_value[0], plc_value[1])
-    return plc_value
 
 
 class SubscriptionDataHandler:
@@ -68,8 +55,10 @@ class SubscriptionDataHandler:
                 return
             if not self.is_plc_loaded():
                 return
+            # convert_value_for_plc yields a (tv_sec, tv_nsec) tuple for
+            # TIME-family types, which debug_write_value packs into the
+            # IEC_TIMESPEC leaf directly — no int64-ns bridge needed.
             plc_value = convert_value_for_plc(mapping.datatype, val)
-            plc_value = encode_plc_value(mapping.datatype, plc_value)
             ok = debug_write_value(
                 self.args, mapping.arr, mapping.elem, mapping.datatype, plc_value
             )

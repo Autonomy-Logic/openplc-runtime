@@ -43,7 +43,6 @@ from asyncua import Server, ua
 try:
     from .opcua_logging import log_debug, log_error, log_info, log_warn
     from .opcua_memory import (
-        TIME_DATATYPES,
         debug_read_value,
         debug_write_value,
         initialize_variable_cache,
@@ -57,7 +56,6 @@ try:
 except ImportError:
     from opcua_logging import log_debug, log_error, log_info, log_warn
     from opcua_memory import (
-        TIME_DATATYPES,
         debug_read_value,
         debug_write_value,
         initialize_variable_cache,
@@ -318,12 +316,9 @@ class SynchronizationManager:
         enqueues it on the debug-write journal — race-free).
 
         TIME-family values arrive as (tv_sec, tv_nsec) tuples from
-        convert_value_for_plc; recombine into the int64 nanosecond
-        representation strucpp uses on the wire.
+        convert_value_for_plc; debug_write_value packs them straight into the
+        IEC_TIMESPEC leaf, so no int64-ns recombination is needed here.
         """
-        if datatype.upper() in TIME_DATATYPES and isinstance(plc_value, tuple):
-            tv_sec, tv_nsec = plc_value
-            plc_value = int(tv_sec) * 1_000_000_000 + int(tv_nsec)
         ok = debug_write_value(self.args, addr[0], addr[1], datatype, plc_value)
         if not ok:
             log_error(f"debug_write({addr[0]}, {addr[1]}) failed")
