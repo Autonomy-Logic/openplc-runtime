@@ -37,12 +37,12 @@ from shared.opcua_common.opcua_utils import convert_value_for_plc  # noqa: E402
 try:
     from .connection import ClientConnectionManager
     from .opcua_client_logging import log_debug, log_error, log_info
-    from .subscription_handler import SubscriptionDataHandler, encode_plc_value
+    from .subscription_handler import SubscriptionDataHandler
     from .writer import RuntimeToRemoteWriter
 except ImportError:
     from connection import ClientConnectionManager
     from opcua_client_logging import log_debug, log_error, log_info
-    from subscription_handler import SubscriptionDataHandler, encode_plc_value
+    from subscription_handler import SubscriptionDataHandler
     from writer import RuntimeToRemoteWriter
 
 
@@ -189,7 +189,9 @@ class OpcuaClientManager:
             try:
                 node = client.get_node(m.remote_node_id)
                 val = await node.read_value()
-                plc_value = encode_plc_value(m.datatype, convert_value_for_plc(m.datatype, val))
+                # TIME-family yields a (tv_sec, tv_nsec) tuple that
+                # debug_write_value packs into the IEC_TIMESPEC leaf directly.
+                plc_value = convert_value_for_plc(m.datatype, val)
                 debug_write_value(self.args, m.arr, m.elem, m.datatype, plc_value)
             except Exception as e:
                 log_debug(f"prime read of {m.remote_node_id} skipped: {e}")
