@@ -25,11 +25,7 @@ sudo ./build/plc_main --print-logs
 ## Testing
 
 ```bash
-# Setup test environment and run tests
-sudo bash scripts/setup-tests-env.sh
-pytest tests/
-
-# Or use the test script
+# Sets up the test venv and runs the suite
 bash scripts/run-pytest.sh
 ```
 

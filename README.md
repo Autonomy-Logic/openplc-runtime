@@ -394,8 +394,7 @@ sudo ./install.sh
 ### Running Tests
 
 ```bash
-sudo bash scripts/setup-tests-env.sh
-pytest tests/
+bash scripts/run-pytest.sh
 ```
 
 ### Pre-commit Hooks

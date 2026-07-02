@@ -307,11 +307,8 @@ make -j$(nproc)
 ### Run Tests
 
 ```bash
-# Setup test environment
-sudo bash scripts/setup-tests-env.sh
-
-# Run tests (if test suite exists)
-pytest tests/
+# Sets up the test venv and runs the suite
+bash scripts/run-pytest.sh
 ```
 
 ### Development Container
