@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Bash(python3:*)",
+      "Bash(pytest:*)",
+      "Bash(bash scripts/run-pytest.sh)",
+      "Bash(cmake:*)",
+      "Bash(make:*)",
+      "Bash(pre-commit:*)"
+    ]
+  }
+}
