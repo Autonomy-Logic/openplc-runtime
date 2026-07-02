@@ -72,7 +72,7 @@ Editor.
 ### 1.4 Discovery Service (JA IMPLEMENTADO - Compartilhado)
 
 O Discovery Service e compartilhado com o plugin SOEM e ja esta implementado.
-Ver documentacao completa em `docs/ethercat-plugin-development-plan.md` secao 1.0.2.
+Ver documentacao completa em `docs/old_docs/ethercat-plugin-development-plan.md` secao 1.0.2.
 
 ---
 
@@ -110,13 +110,13 @@ ethercat,./build/plugins/libethercat_plugin.so,1,1,./core/src/drivers/plugins/na
 ```
 
 **Nota:** Ambos os plugins usam o **mesmo arquivo de configuracao** (`ethercat_config.json`),
-gerado pelo Editor. O JSON segue o contrato definido em `docs/ethercat-plugin-development-plan.md`
+gerado pelo Editor. O JSON segue o contrato definido em `docs/old_docs/ethercat-plugin-development-plan.md`
 secao 3.
 
 ### 2.3 Formato JSON de Configuracao
 
 O formato JSON e **identico** ao definido no plano SOEM. Ver secao 3 do documento
-`docs/ethercat-plugin-development-plan.md` para a especificacao completa.
+`docs/old_docs/ethercat-plugin-development-plan.md` para a especificacao completa.
 
 Resumo da estrutura (lista flat de slaves, alinhada com `ec_slave[]` da SOEM):
 ```json
@@ -784,5 +784,5 @@ fi
 - eBPF Documentation: https://ebpf.io/
 - XDP Tutorial: https://github.com/xdp-project/xdp-tutorial
 - Plugin Python existente (modbus_master): `core/src/drivers/plugins/python/modbus_master/`
-- JSON config spec: `docs/ethercat-plugin-development-plan.md` secao 3
+- JSON config spec: `docs/old_docs/ethercat-plugin-development-plan.md` secao 3
 - Discovery Service (ja implementado): `webserver/discovery/`

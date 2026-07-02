@@ -9,10 +9,10 @@ This guide covers setting up a development environment for OpenPLC Runtime v4, u
 ### Prerequisites
 
 **Required:**
-- Linux (Ubuntu 20.04+, Debian 11+, Fedora, CentOS, RHEL)
+- Linux (any distribution using apt, dnf, yum, pacman, zypper, or apk)
 - GCC/G++ compiler
-- CMake 3.10+
-- Python 3.8+
+- CMake 3.28+ (install.sh installs a newer version automatically if the system one is older)
+- Python 3.10+
 - Git
 
 **Optional:**
@@ -37,11 +37,12 @@ sudo ./install.sh
 ```
 
 This will:
-1. Detect your Linux distribution
+1. Detect your system package manager
 2. Install system dependencies (gcc, cmake, python3, etc.)
 3. Create Python virtual environment at `venvs/runtime/`
 4. Install Python dependencies from `requirements.txt`
-5. Compile the PLC runtime core (`build/plc_main`)
+5. Compile the PLC runtime core (`build/plc_main`) and native plugins
+6. Install and start a systemd service (`openplc-runtime`) when systemd is available
 
 ### Manual Dependency Installation
 
@@ -98,7 +99,7 @@ openplc-runtime/
 │   ├── src/
 │   │   ├── plc_app/       # PLC runtime source (C/C++)
 │   │   │   ├── plc_main.c # Main entry point
-│   │   │   ├── plc_state_manager.c/h # State management
+│   │   │   ├── plc_state_manager.cpp/h # State management
 │   │   │   ├── unix_socket.c/h # IPC server
 │   │   │   ├── debug_handler.c/h # Debug protocol
 │   │   │   ├── plcapp_manager.c/h # Program loading
@@ -138,7 +139,7 @@ openplc-runtime/
 **Build Configuration:**
 - `CMakeLists.txt` - CMake configuration for C/C++ compilation
 - `requirements.txt` - Python dependencies
-- `setup.py` - Python package configuration
+- `pyproject.toml` - Python package configuration
 
 **Entry Points:**
 - `webserver/app.py` - Web server main entry
@@ -147,7 +148,7 @@ openplc-runtime/
 
 **Configuration:**
 - `plugins.conf` - Plugin configuration
-- `/var/run/runtime/.env` - Runtime environment variables
+- `.env` in the persistent data directory (`/var/lib/openplc-runtime` on native Linux, `/var/run/runtime` in Docker) - Runtime environment variables
 
 ## Running for Development
 
@@ -184,6 +185,8 @@ sudo ./build/plc_main
 
 **Options:**
 - `--print-logs` - Print logs to stdout in addition to socket
+- `--print-debug` - Enable debug-level logging
+- `--safe-mode` - Start in safe mode
 
 ### Development Mode
 
@@ -194,14 +197,14 @@ For faster iteration during development:
    // Comment out set_realtime_priority() call
    ```
 
-2. **Enable debug symbols** (edit `scripts/compile.sh`):
-   ```bash
-   FLAGS="-g -O0 -fPIC"  # Debug symbols, no optimization
+2. **Enable debug symbols** (edit `CXXFLAGS` in `scripts/Makefile.strucpp`):
+   ```make
+   CXXFLAGS := -std=c++17 -g -O0 -pipe -fPIC ...  # Debug symbols, no optimization
    ```
 
-3. **Increase log verbosity** (edit `core/src/plc_app/plc_main.c`):
-   ```c
-   log_set_level(LOG_LEVEL_DEBUG);
+3. **Increase log verbosity** (run with the debug flag):
+   ```bash
+   sudo ./build/plc_main --print-logs --print-debug
    ```
 
 ## Code Style and Standards
@@ -483,7 +486,7 @@ The web server and PLC runtime communicate via Unix domain sockets:
 **Command Socket:** `/run/runtime/plc_runtime.socket`
 - Synchronous request-response
 - Text-based protocol
-- Commands: start, stop, status, ping, load, unload
+- Commands: START, STOP, STATUS, PING, STATS, DEBUG:<hex>, PLUGIN_CMD:<json>
 
 **Log Socket:** `/run/runtime/log_runtime.socket`
 - Asynchronous log streaming
@@ -498,7 +501,7 @@ PLC lifecycle states:
 EMPTY → INIT → RUNNING ⟷ STOPPED → ERROR
 ```
 
-State transitions are validated and logged. See `core/src/plc_app/plc_state_manager.c`.
+State transitions are validated and logged. See `core/src/plc_app/plc_state_manager.cpp`.
 
 ### Plugin System
 

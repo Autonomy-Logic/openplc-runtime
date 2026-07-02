@@ -69,7 +69,7 @@ EMPTY → INIT → RUNNING ⟷ STOPPED → ERROR
 - **STOPPED**: Program loaded but not executing
 - **ERROR**: Recoverable error state
 
-**State Manager:** `core/src/plc_app/plc_state_manager.c`
+**State Manager:** `core/src/plc_app/plc_state_manager.cpp`
 
 ## Threading Model
 
@@ -94,12 +94,12 @@ EMPTY → INIT → RUNNING ⟷ STOPPED → ERROR
 The PLC cycle thread runs with SCHED_FIFO priority to ensure deterministic timing:
 
 1. **Read Inputs**: Plugin drivers read from hardware
-2. **Execute Logic**: Run compiled PLC program (`ext_config_run__()`)
+2. **Execute Logic**: Run compiled PLC program tasks (loaded via the `strucpp_get_config()` entry point)
 3. **Write Outputs**: Plugin drivers write to hardware
 4. **Sleep Until Next Cycle**: Precise timing using `clock_nanosleep()`
 
 **Timing Configuration:**
-- Scan cycle duration: Defined by `ext_common_ticktime__` (typically 50ms)
+- Scan cycle duration: Defined per task by the task interval in the compiled program configuration
 - Timing stats tracked: min/max/avg scan time, cycle time, latency, overruns
 
 ## Plugin System
@@ -122,7 +122,7 @@ The runtime supports dynamically loaded plugins for hardware I/O:
 
 ### Authentication
 - JWT tokens for API and WebSocket access
-- Secret key stored in `/var/run/runtime/.env`
+- Secret key stored in `.env` under the persistent data directory (see Data Persistence)
 - 256-bit cryptographic pepper for password hashing
 
 ### File Upload Security
@@ -136,12 +136,17 @@ The runtime supports dynamically loaded plugins for hardware I/O:
 ## Data Persistence
 
 ### Runtime Data Directory
-**Location:** `/var/run/runtime/`
+**Location:** `/var/run/runtime/` (ephemeral)
+
+Contains:
+- Socket files (created at runtime)
+
+### Persistent Data Directory
+**Location:** `/var/lib/openplc-runtime/` on native Linux; `/var/run/runtime/` in Docker (mounted as a persistent volume)
 
 Contains:
 - `.env` - Environment variables (JWT secret, database URI, pepper)
 - `restapi.db` - SQLite database for user accounts
-- Socket files (created at runtime)
 
 ### Docker Volumes
 When running in Docker, mount `/var/run/runtime` as a named volume for persistence:
@@ -201,7 +206,7 @@ openplc-runtime/
 ├── core/
 │   ├── src/plc_app/       # PLC runtime source
 │   │   ├── plc_main.c     # Main entry point
-│   │   ├── plc_state_manager.c/h # State management
+│   │   ├── plc_state_manager.cpp/h # State management
 │   │   ├── unix_socket.c/h # IPC server
 │   │   ├── debug_handler.c/h # Debug protocol
 │   │   └── utils/         # Utilities (log, watchdog, timing)
@@ -243,7 +248,7 @@ openplc-runtime/
 - [Compilation Flow](COMPILATION_FLOW.md) - Build pipeline details
 - [API Reference](API.md) - REST endpoints and responses
 - [Debug Protocol](DEBUG_PROTOCOL.md) - WebSocket debug interface
-- [Plugin System](PLUGINS.md) - Hardware I/O plugins
+- [Plugin System](PLUGIN_VENV_GUIDE.md) - Hardware I/O plugins
 - [Security](SECURITY.md) - Authentication and file validation
 - [Docker Deployment](DOCKER.md) - Container usage
 - [Troubleshooting](TROUBLESHOOTING.md) - Common issues

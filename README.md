@@ -52,20 +52,20 @@ sudo ./start_openplc.sh
 
 The runtime will start and listen on port 8443. Connect to it from the OpenPLC Editor desktop application by configuring the runtime IP address and logging in from the Editor.
 
-**Supported Distributions:** Ubuntu, Debian, Fedora, CentOS, RHEL
+**Supported Distributions:** Any distribution using apt, dnf, yum, pacman, zypper, or apk (Ubuntu, Debian, Fedora, CentOS, RHEL, Arch, openSUSE, Alpine, etc.)
 
 **Requirements:**
 - GCC compiler
-- CMake
-- Python 3.8+
+- CMake 3.28+ (installed automatically by install.sh if the system version is older)
+- Python 3.10+
 - Root privileges (for real-time scheduling and port binding)
 
 ## How It Works
 
 1. **Create Program** - Design your PLC program in OpenPLC Editor v4 using Ladder Logic, FBD, ST, or other IEC 61131-3 languages
-2. **Compile in Editor** - The Editor compiles locally (JSON → XML → ST → C files) and packages sources into program.zip
+2. **Compile in Editor** - The Editor compiles locally (STruC++ pipeline generating C++ sources) and packages them into program.zip
 3. **Upload** - The Editor uploads the ZIP file to the runtime via HTTPS POST to `/api/upload-file` with JWT authentication
-4. **Compile on Runtime** - Runtime validates, extracts, and compiles the program using CMake (Editor polls `/api/compilation-status` for progress)
+4. **Compile on Runtime** - Runtime validates, extracts, and compiles the program using Make (`scripts/Makefile.strucpp`; Editor polls `/api/compilation-status` for progress)
 5. **Control** - The Editor controls PLC execution via `/api/start-plc` and `/api/stop-plc` endpoints
 6. **Debug** - The Editor connects to the WebSocket debug interface at `/api/debug` for real-time variable monitoring
 
@@ -242,11 +242,13 @@ sudo ./install.sh
 ```
 
 The installation script will:
-1. Detect your Linux distribution
+1. Detect your system package manager (apt, dnf, yum, pacman, zypper, or apk)
 2. Install system dependencies
 3. Create Python virtual environment at `venvs/runtime/`
 4. Install Python dependencies
 5. Compile the PLC runtime core with CMake
+6. Build native plugins (e.g., EtherCAT, S7comm)
+7. Install and start a systemd service (`openplc-runtime`) when systemd is available
 
 ### Manual Build
 
@@ -297,7 +299,7 @@ OpenPLC Runtime supports plugins for hardware I/O:
 **Example:**
 ```
 # name,path,enabled,type,config_path,venv_path
-modbus_slave,./core/src/drivers/plugins/python/modbus_slave_plugin/simple_modbus.py,1,0,./config.json,./venvs/modbus_slave
+modbus_slave,./core/src/drivers/plugins/python/modbus_slave/simple_modbus.py,1,0,./core/src/drivers/plugins/python/modbus_slave/modbus_slave_config.json,./venvs/modbus_slave
 ```
 
 **Managing Plugin Virtual Environments:**
@@ -339,7 +341,7 @@ The runtime uses JWT-based authentication:
 - First user creation via `POST /api/create-user` (no auth required)
 - Login via `POST /api/login` returns JWT access token
 - All subsequent requests require `Authorization: Bearer <token>` header
-- Secrets stored in `/var/run/runtime/.env`
+- Secrets stored in `.env` under the persistent data directory (`/var/lib/openplc-runtime` on native Linux, `/var/run/runtime` in Docker)
 - Password hashing with PBKDF2-SHA256 (600,000 iterations), salt, and pepper
 
 **For complete security documentation, see [docs/SECURITY.md](docs/SECURITY.md).**
@@ -431,7 +433,7 @@ openplc-runtime/
 ├── core/
 │   ├── src/plc_app/       # PLC runtime source (C/C++)
 │   │   ├── plc_main.c     # Main entry point
-│   │   ├── plc_state_manager.c/h # State management
+│   │   ├── plc_state_manager.cpp/h # State management
 │   │   ├── unix_socket.c/h # IPC server
 │   │   └── utils/         # Utilities (log, watchdog, timing)
 │   └── src/drivers/       # Plugin driver system

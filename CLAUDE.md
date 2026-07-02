@@ -67,7 +67,7 @@ OpenPLC Runtime v4 is a **dual-process industrial PLC runtime**:
 ```
 EMPTY -> INIT -> RUNNING <-> STOPPED -> ERROR
 ```
-State management: `core/src/plc_app/plc_state_manager.c`
+State management: `core/src/plc_app/plc_state_manager.cpp`
 
 ### Plugin System
 - **Config**: `plugins.conf`
@@ -79,7 +79,7 @@ State management: `core/src/plc_app/plc_state_manager.c`
 - **Scan cycle manager**: `core/src/plc_app/scan_cycle_manager.c` - deterministic timing
 - **Debug handler**: `core/src/plc_app/debug_handler.c` - WebSocket debug protocol
 - **Watchdog**: `core/src/plc_app/utils/watchdog.c` - health monitoring
-- **Image tables**: `core/src/plc_app/image_tables.c` - I/O buffer management
+- **Image tables**: `core/src/plc_app/image_tables.cpp` - I/O buffer management
 
 ## Code Style
 
