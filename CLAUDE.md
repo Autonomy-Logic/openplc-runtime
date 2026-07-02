@@ -108,3 +108,7 @@ State management: `core/src/plc_app/plc_state_manager.c`
 2. Runtime validates, extracts to `core/generated/`
 3. `scripts/compile.sh` compiles to `build/libplc_*.so`
 4. Runtime loads shared library dynamically via `plcapp_manager.c`
+
+## Issue Tracker
+
+Jira, project key `RTOP`. Fetch and update tickets via the Atlassian MCP tools. Reference the ticket key (`RTOP-<n>`) in branch names and PR descriptions.

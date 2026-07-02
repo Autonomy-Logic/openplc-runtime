@@ -458,7 +458,7 @@ Implement rate limiting using Flask-Limiter to prevent
 abuse of API endpoints. Limits are configurable via
 environment variables.
 
-Closes #123
+RTOP-123
 ```
 
 ### Pull Request Guidelines
