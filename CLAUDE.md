@@ -109,6 +109,12 @@ State management: `core/src/plc_app/plc_state_manager.c`
 3. `scripts/compile.sh` compiles to `build/libplc_*.so`
 4. Runtime loads shared library dynamically via `plcapp_manager.c`
 
+## Git Workflow
+
+- Base branch: `development` — feature branches start from it and PRs target it.
+- Branch naming: `RTOP-<n>-<kebab-slug>` (e.g. `RTOP-129-discovery-service-infrastructure`). Non-ticket maintenance uses `chore/`, `fix/`, `docs/`.
+- Commit messages: Conventional Commits (spec in `docs/DEVELOPMENT.md`), concise and focused on why.
+
 ## Issue Tracker
 
 Jira, project key `RTOP`. Fetch and update tickets via the Atlassian MCP tools. Reference the ticket key (`RTOP-<n>`) in branch names and PR descriptions.
