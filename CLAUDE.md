@@ -87,6 +87,22 @@ State management: `core/src/plc_app/plc_state_manager.cpp`
 - **Python**: PEP 8, type hints, 100 char lines
 - **No emojis** anywhere in code, comments, or documentation (project standard)
 
+### C/C++ Best Practices
+
+- Check every return value that can fail (allocations, IO, pthread calls); handle every error path — no silent failures.
+- Bounded string/buffer operations only (`snprintf`, explicit lengths); never `strcpy`, `sprintf`, or unchecked `memcpy` sizes.
+- Every allocation has one clear owner responsible for freeing it, including on error paths.
+- Real-time scan path: no allocation, blocking calls, file IO, or logging inside the PLC cycle.
+- Shared state between the scan thread and other threads goes through the documented mutexes — no unsynchronized access.
+- `const`-correct signatures; `static` for file-internal functions; in C++ prefer RAII over manual new/delete.
+
+### Python Best Practices
+
+- Type hints on every function signature; use dataclasses or TypedDict for structured data instead of loose dicts.
+- Catch specific exceptions; never bare `except:` and never swallow errors silently — log with context.
+- No mutable default arguments; use context managers (`with`) for files, sockets, and locks.
+- Keep the ctypes mirror (`shared/plugin_runtime_args.py`) byte-compatible with the C structs it mirrors — changes on either side must update both.
+
 ## Key Directories
 
 - `webserver/` - Flask REST API and WebSocket debug interface
