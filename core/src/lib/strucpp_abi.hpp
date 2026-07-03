@@ -74,10 +74,13 @@ struct ProgramBase {
     virtual void run() = 0;
     virtual const RetainVarInfo *getRetainVars() const { return nullptr; }
     virtual size_t getRetainCount() const { return 0; }
-    // Threaded-runtime hooks (vtable slots 4,5,6). MUST match the order in
-    // strucpp's iec_std_lib.hpp. The runtime calls these on .so built by a
-    // matching (threaded) strucpp; programs override them under
-    // STRUCPP_THREADED, otherwise they are no-ops.
+    // RESERVED vtable slots 4,5 (formerly sync_in / sync_out). The shared-global
+    // model moved from runtime-orchestrated per-task copy-in/out to per-global
+    // mutexes owned by strucpp's GlobalVar<V>, so the runtime no longer calls
+    // these and current strucpp no longer overrides them. They are KEPT as
+    // no-op base slots — never renumber the vtable, or every program built
+    // against an older ABI would mis-dispatch run()/located_range() on a newer
+    // runtime (and vice versa).
     virtual void sync_in() {}
     virtual void sync_out() {}
     virtual void located_range(uint32_t *offset, uint32_t *count) const {
