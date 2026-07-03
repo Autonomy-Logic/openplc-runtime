@@ -161,16 +161,17 @@ static void plc_crash_handler(int sig)
 
 /* Drop whichever runtime lock this task thread currently holds. Mirrors the
  * signal-handler recovery (the sigsetjmp block below) so a C++ exception
- * thrown mid-scan can't leave the image or global mutex locked when the thread
- * unwinds and exits. holding_global/holding_mutex are set only inside their
- * respective locked windows, so at most the matching lock is released. */
+ * thrown mid-scan can't leave the image mutex locked when the thread unwinds
+ * and exits. holding_mutex is set only inside the locked window, so at most
+ * that lock is released.
+ *
+ * Shared globals are no longer synced under a single runtime-owned mutex:
+ * each shared global carries its own std::mutex inside the .so (strucpp's
+ * GlobalVar<V>), taken and released around each access within run(). Those
+ * fine-grained locks are always released before run() returns, so there is
+ * nothing global for the crash path to unwind here. */
 static void plc_task_release_locks(PlcTaskCtx *ctx)
 {
-    if (ctx->holding_global)
-    {
-        ctx->holding_global = 0;
-        pthread_mutex_unlock(global_mutex());
-    }
     if (ctx->holding_mutex)
     {
         ctx->holding_mutex = 0;
@@ -279,9 +280,13 @@ static void *plc_task_thread(void *arg)
 
         scan_cycle_tracker_start(&ctx->tracker);
 
-        /* Process-image model: short locked windows for I/O and global sync;
-         * the body runs lock-free on private storage, so task bodies execute in
-         * parallel. holding_mutex/holding_global gate the crash-handler unlock.
+        /* Process-image model: a short locked window drains located inputs into
+         * the image; the body then runs against the .so storage directly.
+         * Shared globals are NOT copied to private per-task storage — each
+         * global's own mutex (strucpp GlobalVar<V>) serializes concurrent
+         * access inside run(), so task bodies still execute in parallel and only
+         * contend on the specific globals they touch. holding_mutex gates the
+         * crash-handler unlock of the image lock.
          *
          * The whole scan body runs under try/catch. On this hosted,
          * exceptions-enabled build the STruC++ runtime THROWS on an
@@ -305,27 +310,13 @@ static void *plc_task_thread(void *arg)
             ctx->holding_mutex = 0;
             image_unlock();
 
-            /* 2. Global sync-in: canonical globals -> private working copies. */
-            pthread_mutex_lock(global_mutex());
-            ctx->holding_global = 1;
-            for (size_t p = 0; p < task->program_count; ++p)
-                task->programs[p]->sync_in();
-            ctx->holding_global = 0;
-            pthread_mutex_unlock(global_mutex());
-
-            /* 3. Run the bodies on private storage -- NO lock held. */
+            /* 2. Run the bodies. Shared-global access self-serializes on each
+             *    global's own mutex inside run() (strucpp GlobalVar<V>); no
+             *    runtime-owned global lock and no private copy-in/out. */
             for (size_t p = 0; p < task->program_count; ++p)
                 task->programs[p]->run();
 
-            /* 4. Global sync-out: commit changed externals back. */
-            pthread_mutex_lock(global_mutex());
-            ctx->holding_global = 1;
-            for (size_t p = 0; p < task->program_count; ++p)
-                task->programs[p]->sync_out();
-            ctx->holding_global = 0;
-            pthread_mutex_unlock(global_mutex());
-
-            /* 5. Copy-out: journal changed located outputs (lock-free; applied
+            /* 3. Copy-out: journal changed located outputs (lock-free; applied
              *    to the image on the next drain — the dispatcher's frame top). */
             for (size_t p = 0; p < task->program_count; ++p)
             {
@@ -794,6 +785,20 @@ void *plc_cycle_thread(void *arg)
             }
             if (plugin_driver) plugin_driver_cycle_start(plugin_driver);
 
+            /* Config-scope shared globals: prime the canonical storage from the
+             * freshly-read input image before releasing this frame's tasks. Only
+             * when quiescent (g_tasks_running == 0): if a previous frame's task
+             * is still overrunning it is accessing the canonical storage under
+             * its own per-global mutex, so a raw copy here would race — skip the
+             * refresh for this frame (bounded staleness under overrun, matching
+             * the "sync only on the guarded no-overrun path" contract). */
+            if (g_tasks_running.load(std::memory_order_acquire) == 0)
+            {
+                image_lock();
+                image_tables_copy_config_globals_in();
+                image_unlock();
+            }
+
             bool released_any = false;
             for (size_t i = 0; i < plc_task_count; ++i)
             {
@@ -869,6 +874,12 @@ void *plc_cycle_thread(void *arg)
             {
                 pthread_mutex_unlock(&done_mutex);
                 image_lock();          /* drain: commit this frame's outputs */
+                /* Config-scope shared globals (VAR_GLOBAL ... AT): g_tasks_running
+                 * == 0 so no worker is mid-scan touching the canonical storage —
+                 * journal changed output/memory globals here, before the drain
+                 * applies them to the image. Safe without the per-global mutex
+                 * (quiescence is the synchronization). */
+                image_tables_copy_config_globals_out();
                 /* Apply queued external writes/forces (debugger, OPC-UA) here:
                  * g_tasks_running == 0 so no worker is mid-scan, and we hold
                  * image_lock. Cheap no-op when nothing is queued. */
