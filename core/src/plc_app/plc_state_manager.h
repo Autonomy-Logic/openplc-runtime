@@ -89,7 +89,6 @@ typedef struct PlcTaskCtx
     sigjmp_buf            crash_jmp;
     volatile sig_atomic_t crash_sig;
     volatile sig_atomic_t holding_mutex;   /* image-tables mutex held (crash unlock) */
-    volatile sig_atomic_t holding_global;  /* global mutex held (threaded; crash unlock) */
 
     plc_atomic_long_t     heartbeat;
     plc_atomic_u64_t      local_tick;

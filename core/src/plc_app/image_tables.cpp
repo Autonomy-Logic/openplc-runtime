@@ -88,15 +88,20 @@ namespace {
     strucpp::ConfigurationInstance *g_config_ptr = nullptr;
 
     pthread_mutex_t g_image_tables_mutex;
-    // Threaded (process-image) model only: serializes per-task global
-    // sync_in()/sync_out() against each other; the canonical globals live in
-    // the loaded .so's Configuration object.
-    pthread_mutex_t g_global_mutex;
     bool            g_locks_initialized = false;
     // Per-located-var value snapshot taken at copy-in, used by copy-out to
     // commit only changed outputs (dirty-diff). Sized to locatedVarsCount.
     uint64_t       *g_located_snapshot = nullptr;
     uint32_t        g_located_count    = 0;
+
+    // Config-scope located slice: the tail of locatedVars[] that belongs to
+    // CONFIGURATION VAR_GLOBAL ... AT (strucpp emits program-local located vars
+    // first, then the shared globals). These are NOT covered by any program's
+    // located_range(), so the per-task copy-in/out never touches them; the
+    // dispatcher copies this slice at the quiescent frame boundary instead (see
+    // image_tables_copy_config_globals_in/out). [offset, offset+count).
+    uint32_t        g_config_located_offset = 0;
+    uint32_t        g_config_located_count  = 0;
 
     int init_recursive_pi_mutex(pthread_mutex_t *m)
     {
@@ -132,11 +137,6 @@ namespace {
 extern "C" pthread_mutex_t *image_tables_mutex(void)
 {
     return &g_image_tables_mutex;
-}
-
-extern "C" pthread_mutex_t *global_mutex(void)
-{
-    return &g_global_mutex;
 }
 
 // Flush-on-lock read lock. This is the canonical entry for any consumer that
@@ -238,14 +238,15 @@ extern "C" int symbols_init(PluginManager *pm)
 
     // The runtime compiles every program's .so itself, always with
     // -DSTRUCPP_THREADED, so the only execution model is the threaded
-    // process-image one (per-task copy-in/out + global sync, no whole-body
-    // image lock). There is no legacy shared-image path and nothing to detect.
+    // process-image one: per-task located copy-in/out for program-local
+    // `VAR AT`, dispatcher-boundary copy for config-scope located globals, and
+    // per-global mutexes (strucpp GlobalVar<V>) for shared-global access. There
+    // is no legacy shared-image path and nothing to detect.
     log_info("[strucpp] execution model: threaded process-image");
 
     if (!g_locks_initialized)
     {
-        if (init_recursive_pi_mutex(&g_image_tables_mutex) != 0 ||
-            init_recursive_pi_mutex(&g_global_mutex) != 0)
+        if (init_recursive_pi_mutex(&g_image_tables_mutex) != 0)
         {
             log_error("[strucpp] failed to initialize runtime mutexes");
             return -1;
@@ -297,8 +298,39 @@ void image_tables_bind_located_vars(void)
     free(g_located_snapshot);
     g_located_snapshot =
         (uint64_t *)calloc(lv_count ? lv_count : 1, sizeof(uint64_t));
+
+    // Determine the config-scope located slice = the entries not covered by any
+    // program's located_range(). strucpp lays out locatedVars[] as
+    // [program-local ... ][config globals ... ], so the covered part is the
+    // prefix [0, covered_end) and the config globals are the tail
+    // [covered_end, lv_count). Compute covered_end as the max end over every
+    // program's range (robust to a program declaring zero located vars).
+    uint32_t covered_end = 0;
+    if (g_config_ptr)
+    {
+        strucpp::ResourceInstance *res = g_config_ptr->get_resources();
+        size_t rc = g_config_ptr->get_resource_count();
+        for (size_t r = 0; r < rc; ++r)
+        {
+            for (size_t t = 0; t < res[r].task_count; ++t)
+            {
+                strucpp::TaskInstance &tk = res[r].tasks[t];
+                for (size_t p = 0; p < tk.program_count; ++p)
+                {
+                    uint32_t off = 0, cnt = 0;
+                    tk.programs[p]->located_range(&off, &cnt);
+                    if (cnt && off + cnt > covered_end) covered_end = off + cnt;
+                }
+            }
+        }
+    }
+    if (covered_end > lv_count) covered_end = lv_count;
+    g_config_located_offset = covered_end;
+    g_config_located_count  = lv_count - covered_end;
+
     log_info("[image_tables] %u located var(s) via copy-in/out "
-             "(image kept private from program storage)", lv_count);
+             "(%u program-local, %u config-scope shared globals)",
+             lv_count, covered_end, g_config_located_count);
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +471,29 @@ extern "C" void image_tables_threaded_copy_out(uint32_t offset, uint32_t count)
     }
 }
 
+// Config-scope located globals (CONFIGURATION VAR_GLOBAL ... AT). These are the
+// tail slice of locatedVars[] that no program's located_range() covers, so the
+// per-task copy-in/out never reaches them. The dispatcher calls these at the
+// quiescent frame boundary (g_tasks_running == 0) so there is no concurrent
+// task access to the shared canonical storage — the copy is safe WITHOUT the
+// per-global mutex (quiescence is the synchronization). copy_in primes the
+// canonical globals from the image (inputs get fresh hardware values); copy_out
+// journals changed output/memory globals back to the image (drained by the
+// dispatcher). No-ops when there are no located globals.
+extern "C" void image_tables_copy_config_globals_in(void)
+{
+    if (g_config_located_count)
+        image_tables_threaded_copy_in(g_config_located_offset,
+                                      g_config_located_count);
+}
+
+extern "C" void image_tables_copy_config_globals_out(void)
+{
+    if (g_config_located_count)
+        image_tables_threaded_copy_out(g_config_located_offset,
+                                       g_config_located_count);
+}
+
 // ---------------------------------------------------------------------------
 // Backing storage for slots not covered by located variables.
 // ---------------------------------------------------------------------------
@@ -490,6 +545,8 @@ void image_tables_clear_null_pointers(void)
     free(g_located_snapshot);
     g_located_snapshot = nullptr;
     g_located_count    = 0;
+    g_config_located_offset = 0;
+    g_config_located_count  = 0;
 
     std::memset(bool_input,   0, sizeof(bool_input));
     std::memset(bool_output,  0, sizeof(bool_output));

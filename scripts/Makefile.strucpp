@@ -36,11 +36,13 @@ CC     := $(if $(CCACHE),$(CCACHE) gcc,gcc)
 # scan-cycle housekeeping) live in the plc_app/ tree built separately
 # at higher optimization. -pipe avoids temp files between cc1plus and
 # as for an additional 5–10% win.
-# -DSTRUCPP_THREADED selects the threaded process-image codegen: per-program
-# private working copies of VAR_EXTERNAL globals (with sync_in/sync_out) and a
-# located_range() override. This is the ONLY execution model the runtime
-# supports (per-task copy-in/out, no global image lock across task bodies) and
-# the runtime compiles every program itself, so the flag is unconditional.
+# -DSTRUCPP_THREADED selects the threaded codegen: each VAR_EXTERNAL access
+# locks that shared global's own std::mutex (strucpp GlobalVar<V>) instead of
+# copying to per-program private storage, plus a located_range() override. This
+# is the ONLY execution model the runtime supports (per-task located copy-in/out
+# for program-local VAR AT, dispatcher-boundary copy for config-scope located
+# globals, no global image lock across task bodies) and the runtime compiles
+# every program itself, so the flag is unconditional.
 # It is NOT a capability the runtime probes at load time: the daemon assumes
 # threaded codegen because it built the .so. (Freestanding MCU targets — the
 # Arduino firmware build — omit this flag and run the single-threaded model;

@@ -154,19 +154,22 @@ extern "C"
      * Threaded process-image model (the only execution model — the runtime
      * compiles every .so itself with -DSTRUCPP_THREADED).
      *
-     * global_mutex() guards per-task global sync_in()/sync_out(). The
-     * copy_in/out functions move a program's located slice
-     * [offset, offset+count) of locatedVars[] between the runtime-owned image
-     * and the program's private storage:
-     *   - copy_in  : image -> program members (called before run(), under the
-     *                image mutex, after the journal drain).
-     *   - copy_out : changed program members -> journal (dirty-diff, lock-free;
-     *                applied to the image on the next drain). %I is never
-     *                committed.
+     * The copy_in/out functions move a located slice [offset, offset+count) of
+     * locatedVars[] between the runtime-owned image and the program's storage:
+     *   - copy_in  : image -> members (called before run(), under the image
+     *                mutex, after the journal drain).
+     *   - copy_out : changed members -> journal (dirty-diff, lock-free; applied
+     *                to the image on the next drain). %I is never committed.
+     *
+     * Shared globals no longer use a runtime-owned mutex — each carries its own
+     * std::mutex inside the .so (strucpp GlobalVar<V>), taken per access in
+     * run(). The config-scope helpers copy the shared-global tail slice at the
+     * dispatcher's quiescent frame boundary (see image_tables.cpp).
      * --------------------------------------------------------------------- */
-    pthread_mutex_t *global_mutex(void);
     void image_tables_threaded_copy_in(uint32_t offset, uint32_t count);
     void image_tables_threaded_copy_out(uint32_t offset, uint32_t count);
+    void image_tables_copy_config_globals_in(void);
+    void image_tables_copy_config_globals_out(void);
 
     /* -------------------------------------------------------------------------
      * Returns the cached strucpp::ConfigurationInstance* (as void* — the
