@@ -96,6 +96,73 @@ class AddressSpaceBuilder:
         self.node_permissions: Dict[str, VariablePermissions] = {}
         self.nodeid_to_variable: Dict[Any, str] = {}
 
+        # Tracks every string identifier already assigned in this
+        # namespace so we can detect config collisions and auto-rename.
+        # OPC-UA requires NodeIds to be unique within a namespace.
+        self._used_identifiers: set = set()
+
+    def _resolve_identifier(self, desired: str, kind: str) -> Optional[str]:
+        """
+        Return a collision-free string identifier for the namespace.
+
+        The identifier comes from the config's `node_id` (set by the
+        Editor). The Editor already enforces uniqueness, but we re-check
+        here as a belt-and-suspenders guard against malformed configs:
+        on a collision we emit a warning and append a numeric suffix
+        (_1, _2, ...) until the identifier is unique.
+
+        Args:
+            desired: The requested identifier (config node_id).
+            kind: Human-readable node kind for log messages.
+
+        Returns:
+            A unique identifier string, or None when `desired` is empty
+            (caller then falls back to a server-assigned numeric NodeId).
+        """
+        if desired is None or not str(desired).strip():
+            log_warn(
+                f"Empty node_id for {kind}; falling back to a "
+                f"server-assigned numeric NodeId"
+            )
+            return None
+
+        candidate = str(desired)
+        if candidate in self._used_identifiers:
+            original = candidate
+            suffix = 1
+            while f"{original}_{suffix}" in self._used_identifiers:
+                suffix += 1
+            candidate = f"{original}_{suffix}"
+            log_warn(
+                f"Duplicate OPC-UA node_id '{original}' in config for "
+                f"{kind}; auto-renaming to '{candidate}' to avoid a "
+                f"NodeId collision"
+            )
+
+        self._used_identifiers.add(candidate)
+        return candidate
+
+    def _node_args(self, desired: str, browse_name: str, kind: str):
+        """
+        Build the (nodeid, browsename) arguments for add_variable/add_object.
+
+        When a config node_id is present, produces an explicit string
+        NodeId (ns=<idx>;s=<node_id>) so clients see stable, meaningful
+        identifiers. The browse name is passed as an explicit
+        QualifiedName in the same namespace — required by asyncua, which
+        would otherwise default a bare string browse name to namespace 0.
+
+        When node_id is empty, returns the bare namespace index so
+        asyncua assigns a numeric NodeId (legacy behavior).
+        """
+        identifier = self._resolve_identifier(desired, kind)
+        if identifier is None:
+            return self.namespace_idx, browse_name
+        return (
+            ua.NodeId(identifier, self.namespace_idx),
+            ua.QualifiedName(browse_name, self.namespace_idx),
+        )
+
     async def build(self) -> bool:
         """
         Create all nodes from configuration.
@@ -157,10 +224,14 @@ class AddressSpaceBuilder:
         # the node — no `initial_value` config field anymore.
         initial_value = convert_value_for_opcua(var.datatype, _type_default(var.datatype))
 
-        # Create the variable node
+        # Create the variable node with a string NodeId derived from
+        # the config node_id (falls back to auto-numeric if empty).
+        nodeid_arg, browse_arg = self._node_args(
+            var.node_id, var.browse_name, "variable"
+        )
         node = await parent_node.add_variable(
-            self.namespace_idx,
-            var.browse_name,
+            nodeid_arg,
+            browse_arg,
             ua.Variant(initial_value, opcua_type),
             datatype=opcua_type
         )
@@ -219,9 +290,12 @@ class AddressSpaceBuilder:
             struct: StructVariable configuration
         """
         # Create parent object for the struct
+        nodeid_arg, browse_arg = self._node_args(
+            struct.node_id, struct.browse_name, "struct"
+        )
         struct_obj = await parent_node.add_object(
-            self.namespace_idx,
-            struct.browse_name
+            nodeid_arg,
+            browse_arg
         )
 
         # Set display name and description
@@ -269,9 +343,12 @@ class AddressSpaceBuilder:
         # Check if this is a complex type with nested fields
         if field.fields and len(field.fields) > 0:
             # Create an Object node for complex types (FB instances, nested structs)
+            nodeid_arg, browse_arg = self._node_args(
+                field_node_id, field.name, "struct field"
+            )
             field_obj = await parent_node.add_object(
-                self.namespace_idx,
-                field.name
+                nodeid_arg,
+                browse_arg
             )
 
             # Set display name
@@ -294,10 +371,14 @@ class AddressSpaceBuilder:
         opcua_type = map_plc_to_opcua_type(field.datatype)
         initial_value = convert_value_for_opcua(field.datatype, _type_default(field.datatype))
 
-        # Create the variable node
+        # Create the variable node with a string NodeId built from the
+        # struct path (parent node_id + field name).
+        nodeid_arg, browse_arg = self._node_args(
+            field_node_id, field.name, "struct field"
+        )
         node = await parent_node.add_variable(
-            self.namespace_idx,
-            field.name,
+            nodeid_arg,
+            browse_arg,
             ua.Variant(initial_value, opcua_type),
             datatype=opcua_type
         )
@@ -357,10 +438,14 @@ class AddressSpaceBuilder:
         array_values = [initial_value] * arr.length
         array_variant = ua.Variant(array_values, opcua_type)
 
-        # Create the variable node
+        # Create the variable node with a string NodeId derived from
+        # the config node_id (falls back to auto-numeric if empty).
+        nodeid_arg, browse_arg = self._node_args(
+            arr.node_id, arr.browse_name, "array"
+        )
         node = await parent_node.add_variable(
-            self.namespace_idx,
-            arr.browse_name,
+            nodeid_arg,
+            browse_arg,
             array_variant,
             datatype=opcua_type
         )
