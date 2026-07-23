@@ -5,11 +5,14 @@ from flask import Blueprint, Flask, jsonify, request
 from flask_jwt_extended import (
     JWTManager,
     create_access_token,
+    current_user,
     get_jwt,
     jwt_required,
     verify_jwt_in_request,
 )
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import text as sa_text
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import webserver.config
@@ -74,6 +77,14 @@ db = SQLAlchemy(app_restapi)
 
 jwt_blacklist = set()
 
+# Role-based access control.  For now there are exactly two roles: ``admin``
+# (may manage every account) and ``user`` (may edit only its own account and
+# cannot create or delete accounts).  Enforcement lives server-side in the
+# endpoints below — the editor UI mirrors it but is never the boundary.
+ADMIN_ROLE = "admin"
+USER_ROLE = "user"
+ROLES = (ADMIN_ROLE, USER_ROLE)
+
 
 @jwt.token_in_blocklist_loader
 def check_if_token_revoked(jwt_header, jwt_payload):
@@ -93,6 +104,10 @@ class User(db.Model):  # type: ignore[name-defined]
     id: int = db.Column(db.Integer, primary_key=True)
     username: str = db.Column(db.Text, nullable=False, unique=True)
     password_hash: str = db.Column(db.Text, nullable=False)
+    # RBAC role. Defaults to ``admin`` so that databases predating this column
+    # (migrated in place) and any insert that omits the role resolve to the
+    # privileged role — the pre-RBAC runtime treated every user as an admin.
+    role: str = db.Column(db.Text, nullable=False, default=ADMIN_ROLE, server_default=ADMIN_ROLE)
 
     # Use PBKDF2 with SHA256 and 600,000 iterations for password hashing
     derivation_method: str = "pbkdf2:sha256:600000"
@@ -106,8 +121,37 @@ class User(db.Model):  # type: ignore[name-defined]
         password = password + app_restapi.config["PEPPER"]
         return check_password_hash(self.password_hash, password)
 
+    def is_admin(self) -> bool:
+        return self.role == ADMIN_ROLE
+
     def to_dict(self):
-        return {"id": self.id, "username": self.username}
+        return {"id": self.id, "username": self.username, "role": self.role}
+
+
+def admin_count() -> int:
+    """Number of accounts holding the admin role (used by last-admin guards)."""
+    return User.query.filter_by(role=ADMIN_ROLE).count()
+
+
+def apply_user_schema_migrations():
+    """Add the ``role`` column to a pre-RBAC ``users`` table in place.
+
+    ``db.create_all()`` only creates missing tables — it never alters an
+    existing one — so a runtime upgraded from a build without RBAC keeps its
+    old schema.  Add the column idempotently and backfill existing rows to
+    ``admin`` (they were the sole managing account before roles existed).
+    Safe to call on every boot; a no-op once the column exists.
+    """
+    inspector = sa_inspect(db.engine)
+    if "users" not in inspector.get_table_names():
+        return
+    columns = {col["name"] for col in inspector.get_columns("users")}
+    if "role" in columns:
+        return
+    with db.engine.begin() as conn:
+        conn.execute(
+            sa_text(f"ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT '{ADMIN_ROLE}'")
+        )
 
 
 @jwt.user_identity_loader
@@ -182,9 +226,19 @@ def create_user():
         logger.error("Error checking for users: %s", e)
         return jsonify({"msg": f"User creation error: {e}"}), 401
 
-    # if there are no users, we don't need to verify JWT
-    if users_exist and verify_jwt_in_request(optional=True) is None:
-        return jsonify({"msg": "User already created!"}), 401
+    # Bootstrap: with no users yet, anyone may create the FIRST account and it
+    # is always an admin (someone has to be able to manage accounts). Once any
+    # user exists, only an authenticated admin may create further accounts.
+    if not users_exist:
+        role = ADMIN_ROLE
+    else:
+        if verify_jwt_in_request(optional=True) is None:
+            return jsonify({"msg": "Authentication required"}), 401
+        if not (current_user and current_user.is_admin()):
+            return jsonify({"msg": "Admin privileges required"}), 403
+        role = (request.get_json() or {}).get("role", USER_ROLE)
+        if role not in ROLES:
+            return jsonify({"msg": f"Invalid role. Must be one of: {', '.join(ROLES)}"}), 400
 
     data = request.get_json()
     username = data.get("username")
@@ -197,12 +251,12 @@ def create_user():
         return jsonify({"msg": "Username already exists"}), 409
 
     # Create a new user
-    user = User(username=username)
+    user = User(username=username, role=role)
     user.set_password(password)
     db.session.add(user)
     db.session.commit()
 
-    return jsonify({"msg": "User created", "id": user.id}), 201
+    return jsonify({"msg": "User created", "id": user.id, "role": user.role}), 201
 
 
 # verify existing users individually
@@ -301,6 +355,148 @@ def get_users_info():
         return jsonify({"msg": "User retrieval error"}), 500
 
     return jsonify([user.to_dict() for user in users]), 200
+
+
+@restapi_bp.route("/whoami", methods=["GET"])
+@jwt_required()
+def whoami():
+    """
+    Return the currently authenticated user (id, username, role).
+    ---
+    tags:
+      - Users
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Current user information
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+            username:
+              type: string
+            role:
+              type: string
+      401:
+        description: Authentication required
+    """
+    return jsonify(current_user.to_dict()), 200
+
+
+# Unified user update: rename, change password and/or change role in one call.
+# Only the fields present in the body are applied.  Authorization:
+#   - admin may update ANY user (username, password, role);
+#   - a non-admin may update ONLY its own account and may never change its role;
+#   - changing YOUR OWN password requires the current password (blocks a stolen
+#     token / unlocked session from silently resetting the password); an admin
+#     resetting ANOTHER user's password does not need it.
+@restapi_bp.route("/update-user/<int:user_id>", methods=["PUT"])
+@jwt_required()
+def update_user(user_id):
+    """
+    Update a user's username, password and/or role.
+    ---
+    tags:
+      - Users
+    security:
+      - BearerAuth: []
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        type: integer
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            username:
+              type: string
+            password:
+              type: string
+            current_password:
+              type: string
+              description: Required when changing your own password
+            role:
+              type: string
+              enum: [admin, user]
+    responses:
+      200:
+        description: User updated
+      400:
+        description: Invalid or missing fields
+      403:
+        description: Not permitted / current password incorrect
+      404:
+        description: User not found
+      409:
+        description: Username taken or last-admin protection
+    """
+    data = request.get_json() or {}
+    target = User.query.get(user_id)
+    if not target:
+        return jsonify({"msg": "User not found"}), 404
+
+    caller = current_user
+    caller_is_admin = bool(caller and caller.is_admin())
+    is_self = bool(caller and caller.id == target.id)
+
+    if not caller_is_admin and not is_self:
+        return jsonify({"msg": "You can only edit your own account"}), 403
+
+    new_username = data.get("username")
+    new_password = data.get("password")
+    new_role = data.get("role")
+
+    if new_username is None and new_password is None and new_role is None:
+        return jsonify({"msg": "No fields to update"}), 400
+
+    # Role change — admin only, with last-admin protection.
+    if new_role is not None:
+        if not caller_is_admin:
+            return jsonify({"msg": "Only an admin can change roles"}), 403
+        if new_role not in ROLES:
+            return jsonify({"msg": f"Invalid role. Must be one of: {', '.join(ROLES)}"}), 400
+        if target.is_admin() and new_role != ADMIN_ROLE and admin_count() <= 1:
+            return jsonify({"msg": "Cannot demote the last remaining admin"}), 409
+        target.role = new_role
+
+    # Username change — must be non-empty and unique.
+    if new_username is not None:
+        new_username = new_username.strip()
+        if not new_username:
+            return jsonify({"msg": "Username cannot be empty"}), 400
+        clash = User.query.filter_by(username=new_username).first()
+        if clash and clash.id != target.id:
+            return jsonify({"msg": "Username already exists"}), 409
+        target.username = new_username
+
+    # Password change — self-change requires the current password.
+    self_password_changed = False
+    if new_password is not None:
+        if not new_password:
+            return jsonify({"msg": "Password cannot be empty"}), 400
+        if is_self:
+            current_password = data.get("current_password")
+            if not current_password:
+                return jsonify({"msg": "Current password is required"}), 400
+            if not target.check_password(current_password):
+                return jsonify({"msg": "Current password is incorrect"}), 403
+            self_password_changed = True
+        target.set_password(new_password)
+
+    db.session.commit()
+
+    # Changing your own password invalidates your current session: revoke the
+    # token used for this request so a stolen/old token can't outlive the
+    # change. The client must re-authenticate with the new password.
+    if self_password_changed:
+        revoke_jwt()
+
+    return jsonify({"msg": "User updated successfully", "user": target.to_dict()}), 200
 
 
 # password change for specific user by any authenticated user
@@ -405,6 +601,8 @@ def delete_user(user_id):
             msg:
               type: string
               example: User admin deleted successfully
+      403:
+        description: Admin privileges required or cannot delete own account
       404:
         description: User not found
       500:
@@ -419,9 +617,18 @@ def delete_user(user_id):
     if not user:
         return jsonify({"msg": "User not found"}), 404
 
+    # Only admins may delete accounts.
+    if not (current_user and current_user.is_admin()):
+        return jsonify({"msg": "Admin privileges required"}), 403
+
+    # You cannot delete your own account. This also guarantees the "never remove
+    # all users" invariant: only an admin can delete, an admin can't delete
+    # itself, so the acting admin always survives the operation.
+    if current_user.id == user.id:
+        return jsonify({"msg": "You cannot delete your own account"}), 403
+
     db.session.delete(user)
     db.session.commit()
-    revoke_jwt()
     return jsonify({"msg": f"User {user.username} deleted successfully"}), 200
 
 

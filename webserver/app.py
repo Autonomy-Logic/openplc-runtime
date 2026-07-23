@@ -38,6 +38,7 @@ from webserver.plcapp_management import (
 )
 from webserver.restapi import (
     app_restapi,
+    apply_user_schema_migrations,
     db,
     register_callback_get,
     register_callback_post,
@@ -333,6 +334,9 @@ def run_https():
     with app_restapi.app_context():
         try:
             db.create_all()
+            # Bring a pre-RBAC database up to the current schema (adds the
+            # users.role column in place; no-op once present).
+            apply_user_schema_migrations()
             db.session.commit()
             # logger.info("Database tables created successfully.")
         except Exception:

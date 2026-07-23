@@ -55,8 +55,14 @@ def get_runtime_dir():
     On MSYS2/Cygwin, use /run/runtime (which maps to a Windows path).
     On Linux in containers, use /var/run/runtime for Docker volume compatibility.
     On native Linux, use /var/run/runtime for ephemeral data (sockets).
+
+    ``OPENPLC_RUNTIME_DIR`` overrides the platform default (used by tests and
+    non-standard deployments so the path is not hard-coded to a read-only root).
     """
-    if platform.system() != "Linux":
+    override = os.environ.get("OPENPLC_RUNTIME_DIR")
+    if override:
+        runtime_dir = Path(override)
+    elif platform.system() != "Linux":
         runtime_dir = Path("/run/runtime")
     else:
         runtime_dir = Path("/var/run/runtime")
@@ -72,8 +78,14 @@ def get_persistent_data_dir():
     On containers (Docker), use /var/run/runtime (mounted as persistent volume).
     On native Linux, use /var/lib/openplc-runtime (survives reboot).
     On MSYS2/Windows, use /run/runtime.
+
+    ``OPENPLC_PERSISTENT_DATA_DIR`` overrides the platform default (used by tests
+    and non-standard deployments so the path is not hard-coded to a read-only root).
     """
-    if platform.system() != "Linux":
+    override = os.environ.get("OPENPLC_PERSISTENT_DATA_DIR")
+    if override:
+        data_dir = Path(override)
+    elif platform.system() != "Linux":
         # MSYS2/Windows: use /run/runtime
         data_dir = Path("/run/runtime")
     elif is_running_in_container():
