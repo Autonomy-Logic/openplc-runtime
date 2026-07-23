@@ -38,6 +38,7 @@ def app():
         restapi.db.drop_all()
         restapi.db.create_all()
         restapi.apply_user_schema_migrations()
+        restapi.jwt_blacklist.clear()
         yield app
         restapi.db.session.remove()
         restapi.db.drop_all()

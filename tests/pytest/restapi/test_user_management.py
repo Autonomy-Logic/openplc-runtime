@@ -169,6 +169,29 @@ def test_self_password_change_succeeds_with_current_password(client, admin_token
     assert login(client, "admin", "new-pass").status_code == 200
 
 
+def test_self_password_change_revokes_current_token(client, admin_token):
+    admin_id = _id_of(client, admin_token, "admin")
+    # Token works before the change.
+    assert client.get("/api/whoami", headers=auth(admin_token)).status_code == 200
+    resp = client.put(
+        f"/api/update-user/{admin_id}",
+        json={"password": "new-pass", "current_password": "admin-pass"},
+        headers=auth(admin_token),
+    )
+    assert resp.status_code == 200
+    # The old token is now revoked — the client must log in again.
+    assert client.get("/api/whoami", headers=auth(admin_token)).status_code == 401
+
+
+def test_admin_reset_of_other_user_does_not_revoke_admin_token(client, admin_token):
+    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
+    bob_id = _id_of(client, admin_token, "bob")
+    resp = client.put(f"/api/update-user/{bob_id}", json={"password": "reset"}, headers=auth(admin_token))
+    assert resp.status_code == 200
+    # Admin's own token stays valid after resetting someone else's password.
+    assert client.get("/api/whoami", headers=auth(admin_token)).status_code == 200
+
+
 # --- update-user: authorization & roles -----------------------------------
 
 

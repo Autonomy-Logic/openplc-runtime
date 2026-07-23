@@ -475,6 +475,7 @@ def update_user(user_id):
         target.username = new_username
 
     # Password change — self-change requires the current password.
+    self_password_changed = False
     if new_password is not None:
         if not new_password:
             return jsonify({"msg": "Password cannot be empty"}), 400
@@ -484,9 +485,17 @@ def update_user(user_id):
                 return jsonify({"msg": "Current password is required"}), 400
             if not target.check_password(current_password):
                 return jsonify({"msg": "Current password is incorrect"}), 403
+            self_password_changed = True
         target.set_password(new_password)
 
     db.session.commit()
+
+    # Changing your own password invalidates your current session: revoke the
+    # token used for this request so a stolen/old token can't outlive the
+    # change. The client must re-authenticate with the new password.
+    if self_password_changed:
+        revoke_jwt()
+
     return jsonify({"msg": "User updated successfully", "user": target.to_dict()}), 200
 
 
