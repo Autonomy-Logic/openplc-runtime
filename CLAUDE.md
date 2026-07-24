@@ -25,11 +25,7 @@ sudo ./build/plc_main --print-logs
 ## Testing
 
 ```bash
-# Setup test environment and run tests
-sudo bash scripts/setup-tests-env.sh
-pytest tests/
-
-# Or use the test script
+# Sets up the test venv and runs the suite
 bash scripts/run-pytest.sh
 ```
 
@@ -71,7 +67,7 @@ OpenPLC Runtime v4 is a **dual-process industrial PLC runtime**:
 ```
 EMPTY -> INIT -> RUNNING <-> STOPPED -> ERROR
 ```
-State management: `core/src/plc_app/plc_state_manager.c`
+State management: `core/src/plc_app/plc_state_manager.cpp`
 
 ### Plugin System
 - **Config**: `plugins.conf`
@@ -83,13 +79,29 @@ State management: `core/src/plc_app/plc_state_manager.c`
 - **Scan cycle manager**: `core/src/plc_app/scan_cycle_manager.c` - deterministic timing
 - **Debug handler**: `core/src/plc_app/debug_handler.c` - WebSocket debug protocol
 - **Watchdog**: `core/src/plc_app/utils/watchdog.c` - health monitoring
-- **Image tables**: `core/src/plc_app/image_tables.c` - I/O buffer management
+- **Image tables**: `core/src/plc_app/image_tables.cpp` - I/O buffer management
 
 ## Code Style
 
 - **C/C++**: 4-space indent, no tabs, `snake_case` functions, `snake_case_t` types, `UPPER_CASE` macros
 - **Python**: PEP 8, type hints, 100 char lines
 - **No emojis** anywhere in code, comments, or documentation (project standard)
+
+### C/C++ Best Practices
+
+- Check every return value that can fail (allocations, IO, pthread calls); handle every error path — no silent failures.
+- Bounded string/buffer operations only (`snprintf`, explicit lengths); never `strcpy`, `sprintf`, or unchecked `memcpy` sizes.
+- Every allocation has one clear owner responsible for freeing it, including on error paths.
+- Real-time scan path: no allocation, blocking calls, file IO, or logging inside the PLC cycle.
+- Shared state between the scan thread and other threads goes through the documented mutexes — no unsynchronized access.
+- `const`-correct signatures; `static` for file-internal functions; in C++ prefer RAII over manual new/delete.
+
+### Python Best Practices
+
+- Type hints on every function signature; use dataclasses or TypedDict for structured data instead of loose dicts.
+- Catch specific exceptions; never bare `except:` and never swallow errors silently — log with context.
+- No mutable default arguments; use context managers (`with`) for files, sockets, and locks.
+- Keep the ctypes mirror (`shared/plugin_runtime_args.py`) byte-compatible with the C structs it mirrors — changes on either side must update both.
 
 ## Key Directories
 
@@ -108,3 +120,13 @@ State management: `core/src/plc_app/plc_state_manager.c`
 2. Runtime validates, extracts to `core/generated/`
 3. `scripts/compile.sh` compiles to `build/libplc_*.so`
 4. Runtime loads shared library dynamically via `plcapp_manager.c`
+
+## Git Workflow
+
+- Base branch: `development` — feature branches start from it and PRs target it.
+- Branch naming: `RTOP-<n>-<kebab-slug>` (e.g. `RTOP-129-discovery-service-infrastructure`). Non-ticket maintenance uses `chore/`, `fix/`, `docs/`.
+- Commit messages: Conventional Commits (spec in `docs/DEVELOPMENT.md`), concise and focused on why.
+
+## Issue Tracker
+
+Jira, project key `RTOP`. Fetch and update tickets via the Atlassian MCP tools. Reference the ticket key (`RTOP-<n>`) in branch names and PR descriptions.
