@@ -40,3 +40,6 @@ core/src/drivers/plugins/native/ethercat/libs/soem/cmake/CYGWIN.cmake
 *.o
 *.so
 .DS_Store
+
+# transient SBOM build output (canonical copy lives in security/<YYYY-MM>/sbom/)
+/sbom/
