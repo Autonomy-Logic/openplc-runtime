@@ -72,12 +72,42 @@ def _read_anchor() -> bytes:
     return raw.rstrip(b"\x00\r\n\t ")
 
 
+def derive_license_path(config_path: str) -> str:
+    """The ``.license`` sibling of a plugin's config_path: drop a trailing
+    ``.json``, append ``.license``. MUST mirror ``derive_license_path()`` in
+    the plugin's C source (rpi_plugin.c) exactly, or the .so reads the wrong
+    path and falls back to demo.
+    """
+    base = config_path[:-5] if config_path.endswith(".json") else config_path
+    return base + ".license"
+
+
+def resolve_license_path(config_path: str, runtime_root: Optional[str] = None) -> Optional[str]:
+    """``derive_license_path()`` plus the anti-traversal guard: never resolve
+    to a path outside the runtime root, even if a forged ``vpp_plugins.conf``
+    carries an escaping ``config_path``. 0x49 writes 98 bytes as root, and
+    ``apply_vpp_plugin_conf`` copies an upload-supplied blob, so both refuse an
+    escaping target rather than trust the conf. Returns None when it escapes.
+
+    A bare ``.startswith(root)`` is not enough: a sibling directory that merely
+    shares the root as a *string* prefix (e.g. root ``/opt/runtime`` vs. an
+    escaping ``/opt/runtime-evil/x``) would wrongly pass. Anchoring on
+    ``root + os.sep`` requires the escaping path to actually be a child of the
+    root directory, not just share its name as a prefix.
+    """
+    root = os.path.abspath(runtime_root) if runtime_root else os.path.abspath(".")
+    path = derive_license_path(config_path)
+    if not os.path.abspath(path).startswith(root + os.sep):
+        return None
+    return path
+
+
 def _license_path() -> Optional[str]:
     """The ``.license`` sibling of the installed licensed plugin's config_path,
-    mirroring ``apply_vpp_plugin_conf``/derive_license_path so 0x49 and the
-    bundle write the SAME file the .so reads. None when no VPP plugin config is
-    installed yet (no upload). Multi-plugin disambiguation by vppId is a future
-    extension (the PDU carries no plugin id); the common case is one VPP plugin.
+    mirroring ``apply_vpp_plugin_conf`` so 0x49 and the bundle write the SAME
+    file the .so reads. None when no VPP plugin config is installed yet (no
+    upload). Multi-plugin disambiguation by vppId is a future extension (the
+    PDU carries no plugin id); the common case is one VPP plugin.
     """
     if not os.path.exists(VPP_CONF):
         return None
@@ -88,17 +118,7 @@ def _license_path() -> Optional[str]:
     candidates = [p for p in conf.plugins if getattr(p, "config_path", None)]
     if not candidates:
         return None
-    config_path = candidates[0].config_path
-    base = config_path[:-5] if config_path.endswith(".json") else config_path
-    path = base + ".license"
-    # Anti-traversal (mirror the guard apply_vpp_plugin_conf applies to the same
-    # config_path): never read/write outside the runtime root, even if a forged
-    # vpp_plugins.conf carries an escaping config_path. 0x49 writes 98 bytes as
-    # root, so refuse an escaping target rather than trust the conf.
-    runtime_root = os.path.abspath(".")
-    if not os.path.abspath(path).startswith(runtime_root + os.sep):
-        return None
-    return path
+    return resolve_license_path(candidates[0].config_path)
 
 
 def handle_license_command(command_hex: str) -> Optional[str]:

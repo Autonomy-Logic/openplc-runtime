@@ -12,6 +12,7 @@ from typing import Final
 from webserver.runtimemanager import RuntimeManager
 from webserver.logger import get_logger, LogParser
 from webserver.plugin_config_model import PluginsConfiguration, PluginConfig, PluginType
+from webserver.vpp_license_debug import derive_license_path
 
 logger, _ = get_logger("runtime", use_buffer=True)
 
@@ -309,8 +310,13 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
                 build_state.log(f"[WARNING] VPP: conf/{p.name}.json not found in upload, skipping\n")
                 continue
             dest_config = os.path.normpath(p.config_path)
-            # Guard against path traversal in editor-generated vpp_plugins.conf
-            if not os.path.abspath(dest_config).startswith(runtime_root):
+            # Guard against path traversal in editor-generated vpp_plugins.conf.
+            # `+ os.sep` matters: a bare prefix check would wrongly accept a
+            # sibling directory that merely shares runtime_root as a string
+            # prefix (e.g. runtime_root "/opt/runtime" vs. an escaping
+            # "/opt/runtime-evil/x") -- anchoring on the separator requires the
+            # escaping path to actually be a child of the runtime directory.
+            if not os.path.abspath(dest_config).startswith(runtime_root + os.sep):
                 build_state.log(f"[WARNING] VPP: config_path '{p.config_path}' escapes runtime root, skipping\n")
                 continue
             os.makedirs(os.path.dirname(dest_config), exist_ok=True)
@@ -319,14 +325,14 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
 
             # Deliver the optional device license blob alongside the config, at
             # the sibling path the licensed plugin derives from its config path
-            # (drop a trailing ".json", append ".license" -- must mirror
-            # derive_license_path() in the plugin exactly, or the .so reads the
-            # wrong path and falls to demo). Present only for a licensed VPP whose
-            # device was activated; absent for free VPPs or demo devices.
+            # (derive_license_path, shared with vpp_license_debug.py's 0x49
+            # handler so both write the SAME file the .so reads). Present only
+            # for a licensed VPP whose device was activated; absent for free
+            # VPPs or demo devices. dest_config already passed the traversal
+            # guard above, so no need to re-check its .license sibling.
             src_license = os.path.join(conf_dir, f"{p.name}.license")
             if os.path.exists(src_license):
-                base = dest_config[:-5] if dest_config.endswith(".json") else dest_config
-                dest_license = base + ".license"
+                dest_license = derive_license_path(dest_config)
                 shutil.copy2(src_license, dest_license)
                 build_state.log(f"[INFO] VPP: copied {p.name}.license to {dest_license}\n")
     else:
