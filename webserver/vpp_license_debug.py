@@ -77,27 +77,68 @@ def derive_license_path(config_path: str) -> str:
     ``.json``, append ``.license``. MUST mirror ``derive_license_path()`` in
     the plugin's C source (rpi_plugin.c) exactly, or the .so reads the wrong
     path and falls back to demo.
+
+    Two details are copied from the C rather than written the idiomatic way,
+    because "exactly" is the whole contract:
+
+    * The C strips the extension only when ``len > strlen(".json")``, so a
+      config_path of literally ``".json"`` keeps it and becomes
+      ``".json.license"``. A plain ``endswith`` would strip it and yield
+      ``".license"`` -- the runtime would write one file and the .so read
+      another.
+    * The C leaves ``out`` empty for a NULL/empty config_path; an empty string
+      in, an empty string out.
     """
-    base = config_path[:-5] if config_path.endswith(".json") else config_path
+    if not config_path:
+        return ""
+    ext = ".json"
+    base = config_path[: -len(ext)] if len(config_path) > len(ext) and config_path.endswith(ext) else config_path
     return base + ".license"
+
+
+def is_inside_root(path: str, runtime_root: Optional[str] = None) -> bool:
+    """True when ``path`` really resolves to a location under the runtime root.
+
+    Shared by every write path that trusts an editor-supplied ``config_path``
+    (0x49 writes 98 bytes as root; ``apply_vpp_plugin_conf`` copies an
+    upload-supplied blob), so all of them agree on one definition of
+    "contained".
+
+    Two traps this avoids:
+
+    * A bare ``.startswith(root)`` accepts a sibling that merely shares the
+      root as a *string* prefix -- root ``/opt/runtime`` vs. an escaping
+      ``/opt/runtime-evil/x``.
+    * ``abspath`` normalises lexically only, so it does NOT follow symlinks. If
+      any component inside the root is a link out (a deploy link, a data volume
+      mounted under ``build/``), a perfectly innocent-looking relative path
+      resolves outside the root and the guard still reports success.
+      ``realpath`` resolves the links; on a path that does not exist yet it
+      resolves the existing prefix and appends the remainder, which is exactly
+      what a not-yet-written ``.license`` needs.
+
+    ``commonpath`` is used instead of a separator-anchored prefix so that a
+    root of ``/`` (``abspath`` yields ``"/"``, and ``"/" + os.sep`` is ``"//"``,
+    which nothing starts with) does not silently refuse every write.
+    """
+    root = os.path.realpath(runtime_root) if runtime_root else os.path.realpath(".")
+    try:
+        return os.path.commonpath([root, os.path.realpath(path)]) == root
+    except ValueError:
+        # Raised for paths that share no root at all (different drives on
+        # Windows, or a mix of absolute and relative that cannot be compared).
+        return False
 
 
 def resolve_license_path(config_path: str, runtime_root: Optional[str] = None) -> Optional[str]:
     """``derive_license_path()`` plus the anti-traversal guard: never resolve
     to a path outside the runtime root, even if a forged ``vpp_plugins.conf``
-    carries an escaping ``config_path``. 0x49 writes 98 bytes as root, and
-    ``apply_vpp_plugin_conf`` copies an upload-supplied blob, so both refuse an
-    escaping target rather than trust the conf. Returns None when it escapes.
-
-    A bare ``.startswith(root)`` is not enough: a sibling directory that merely
-    shares the root as a *string* prefix (e.g. root ``/opt/runtime`` vs. an
-    escaping ``/opt/runtime-evil/x``) would wrongly pass. Anchoring on
-    ``root + os.sep`` requires the escaping path to actually be a child of the
-    root directory, not just share its name as a prefix.
+    carries an escaping ``config_path``. Returns None when it escapes.
     """
-    root = os.path.abspath(runtime_root) if runtime_root else os.path.abspath(".")
     path = derive_license_path(config_path)
-    if not os.path.abspath(path).startswith(root + os.sep):
+    # An empty derivation (empty config_path) would resolve to the cwd, which
+    # IS inside the root -- refuse it rather than let it through as a target.
+    if not path or not is_inside_root(path, runtime_root):
         return None
     return path
 

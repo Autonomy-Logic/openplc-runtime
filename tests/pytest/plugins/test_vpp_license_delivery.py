@@ -14,18 +14,37 @@ import shutil
 
 import pytest
 
+_lic = pytest.importorskip(
+    "webserver.vpp_license_debug",
+    reason="runtime webserver package not importable (no venv)",
+)
+
 
 def _plugin_license_path(config_path: str) -> str:
     """Mirror of derive_license_path() in the licensed rpi_plugin.c: the .so's
-    view of where its license lives, given its config path."""
-    base = config_path[:-5] if config_path.endswith(".json") else config_path
+    view of where its license lives, given its config path.
+
+    This is the ONLY hand-written copy in the test -- it stands in for the C,
+    which we cannot call from here, so it must track rpi_plugin.c line by line:
+    empty in, empty out; and the extension is stripped only when the path is
+    strictly LONGER than ".json" (`len > elen` in the C), so a path of exactly
+    ".json" keeps it.
+    """
+    if not config_path:
+        return ""
+    ext = ".json"
+    base = config_path[: -len(ext)] if len(config_path) > len(ext) and config_path.endswith(ext) else config_path
     return base + ".license"
 
 
 def _runtime_license_dest(dest_config: str) -> str:
-    """Mirror of the delivery rule in apply_vpp_plugin_conf (kept identical)."""
-    base = dest_config[:-5] if dest_config.endswith(".json") else dest_config
-    return base + ".license"
+    """The runtime's real derivation -- NOT a copy.
+
+    A second hand-written mirror here would make this a comparison of two
+    transcriptions: it would stay green even if the shipped function drifted,
+    which is precisely the drift the test exists to catch.
+    """
+    return _lic.derive_license_path(dest_config)
 
 
 @pytest.mark.parametrize(
@@ -35,6 +54,9 @@ def _runtime_license_dest(dest_config: str) -> str:
         "build/vpp/rpi_gpio.json",
         "rpi_gpio",  # no extension
         "a/b.c/rpi_gpio.json",
+        ".json",  # exactly the extension: the C's `len > elen` keeps it
+        "",  # empty in, empty out
+        "rpi_gpio.JSON",  # case-sensitive on both sides: kept, not stripped
     ],
 )
 def test_delivery_path_matches_plugin_derivation(config_path):

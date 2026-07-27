@@ -12,7 +12,7 @@ from typing import Final
 from webserver.runtimemanager import RuntimeManager
 from webserver.logger import get_logger, LogParser
 from webserver.plugin_config_model import PluginsConfiguration, PluginConfig, PluginType
-from webserver.vpp_license_debug import derive_license_path
+from webserver.vpp_license_debug import derive_license_path, is_inside_root
 
 logger, _ = get_logger("runtime", use_buffer=True)
 
@@ -145,8 +145,14 @@ def safe_extract(zip_path, dest_dir, valid_files):
             out_path = os.path.join(dest_dir, filename)
             out_path = os.path.abspath(out_path)
 
-            # Ensure extraction stays inside destination
-            if not out_path.startswith(os.path.abspath(dest_dir)):
+            # Ensure extraction stays inside destination. Same containment rule
+            # as the VPP config copy below: a bare prefix check accepts a
+            # sibling sharing dest_dir as a string prefix (dest_dir
+            # "core/generated" vs. an entry resolving to "core/generatedX/..."),
+            # and it ignores symlinks entirely. analyze_zip() already rejects
+            # entries containing ".." before we get here, so this is defence in
+            # depth -- but it is the same bug class, so it gets the same fix.
+            if not is_inside_root(out_path, dest_dir):
                 # logger.warning("Skipping suspicious path: %s", filename)
                 continue
 
@@ -311,12 +317,12 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
                 continue
             dest_config = os.path.normpath(p.config_path)
             # Guard against path traversal in editor-generated vpp_plugins.conf.
-            # `+ os.sep` matters: a bare prefix check would wrongly accept a
-            # sibling directory that merely shares runtime_root as a string
-            # prefix (e.g. runtime_root "/opt/runtime" vs. an escaping
-            # "/opt/runtime-evil/x") -- anchoring on the separator requires the
-            # escaping path to actually be a child of the runtime directory.
-            if not os.path.abspath(dest_config).startswith(runtime_root + os.sep):
+            # Shares one containment definition with the 0x49 write path (see
+            # is_inside_root): rejects a sibling that merely shares runtime_root
+            # as a string prefix, AND resolves symlinks, which a lexical
+            # abspath check does not -- a link out of the tree would otherwise
+            # let an innocent-looking relative path write outside the root.
+            if not is_inside_root(dest_config, runtime_root):
                 build_state.log(f"[WARNING] VPP: config_path '{p.config_path}' escapes runtime root, skipping\n")
                 continue
             os.makedirs(os.path.dirname(dest_config), exist_ok=True)
