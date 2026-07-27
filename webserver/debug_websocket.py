@@ -11,6 +11,7 @@ from flask_jwt_extended import verify_jwt_in_request
 from flask_socketio import SocketIO, emit
 
 from webserver.logger import get_logger
+from webserver.vpp_license_debug import handle_license_command
 
 logger, _ = get_logger("debug_ws", use_buffer=True)
 
@@ -109,18 +110,28 @@ def init_debug_websocket(app, unix_client_instance):
         Returns debug response in same hex format
         """
         try:
+            command_hex = data.get("command", "")
+            if not command_hex:
+                logger.warning("Empty debug command received")
+                emit("debug_response", {"success": False, "error": "Empty command"})
+                return
+
+            # License function codes (0x48/0x49/0x4A) operate on host files
+            # (/proc anchor + conf/<plugin>.license) and are resolved here in
+            # Python (D70a) BEFORE the unix-socket gate below, so device
+            # activation works even while the PLC/core is stopped.
+            license_response = handle_license_command(command_hex)
+            if license_response is not None:
+                logger.debug("License FC handled locally: %s -> %s", command_hex, license_response)
+                emit("debug_response", {"success": True, "data": license_response})
+                return
+
             if not _unix_client or not _unix_client.is_connected():
                 logger.error("Unix socket not connected")
                 emit(
                     "debug_response",
                     {"success": False, "error": "Runtime not connected"},
                 )
-                return
-
-            command_hex = data.get("command", "")
-            if not command_hex:
-                logger.warning("Empty debug command received")
-                emit("debug_response", {"success": False, "error": "Empty command"})
                 return
 
             logger.debug("Debug command received: %s", command_hex)

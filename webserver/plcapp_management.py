@@ -316,6 +316,19 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
             os.makedirs(os.path.dirname(dest_config), exist_ok=True)
             shutil.copy2(src_config, dest_config)
             build_state.log(f"[INFO] VPP: copied {p.name}.json to {dest_config}\n")
+
+            # Deliver the optional device license blob alongside the config, at
+            # the sibling path the licensed plugin derives from its config path
+            # (drop a trailing ".json", append ".license" -- must mirror
+            # derive_license_path() in the plugin exactly, or the .so reads the
+            # wrong path and falls to demo). Present only for a licensed VPP whose
+            # device was activated; absent for free VPPs or demo devices.
+            src_license = os.path.join(conf_dir, f"{p.name}.license")
+            if os.path.exists(src_license):
+                base = dest_config[:-5] if dest_config.endswith(".json") else dest_config
+                dest_license = base + ".license"
+                shutil.copy2(src_license, dest_license)
+                build_state.log(f"[INFO] VPP: copied {p.name}.license to {dest_license}\n")
     else:
         # No VPP in this upload — remove any stale vpp_plugins.conf so
         # the plugin loader does not attempt to load old VPP drivers.
