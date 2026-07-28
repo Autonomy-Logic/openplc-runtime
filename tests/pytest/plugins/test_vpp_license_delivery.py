@@ -78,14 +78,19 @@ def test_apply_vpp_plugin_conf_delivers_license(tmp_path, monkeypatch):
     monkeypatch.chdir(cwd)
     config_path = str(cwd / "build" / "vpp" / "rpi_gpio.json")
 
+    # `path` is not decoration: apply_vpp_plugin_conf now runs the uploaded conf
+    # through validate_vpp_plugins_conf first, which requires every VPP plugin's
+    # .so to resolve inside build/vpp/ (see test_vpp_plugin_signature.py). A fake
+    # without it would only prove the fake is out of date.
     class _P:
         name = "rpi_gpio"
 
-        def __init__(self, cp):
+        def __init__(self, cp, so):
             self.config_path = cp
+            self.path = so
 
     class _Conf:
-        plugins = [_P(config_path)]
+        plugins = [_P(config_path, str(cwd / "build" / "vpp" / "librpi_gpio_plugin.so"))]
 
     monkeypatch.setattr(mgmt.PluginsConfiguration, "from_file", classmethod(lambda cls, _p: _Conf()))
     monkeypatch.setattr(mgmt.build_state, "log", lambda *_a, **_k: None, raising=False)
