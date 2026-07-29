@@ -12,6 +12,7 @@
 #include "../drivers/plugin_driver.h"
 #include "debug_handler.h"
 #include "plc_state_manager.h"
+#include "plc_switch.h"
 #include "scan_cycle_manager.h"
 #include "unix_socket.h"
 #include "utils/log.h"
@@ -44,6 +45,28 @@ static void *transition_worker(void *arg)
     }
 
     atomic_store(&is_transitioning, 0);
+
+    // Converge on the mode switch.
+    //
+    // plc_begin_transition() returns false while another transition is in
+    // flight, which means a stop request CAN be dropped: an editor START may
+    // win the gate, then a plugin's set_switch_position(STOP) +
+    // request_plc_stop() arrives and the stop is collapsed as "already
+    // transitioning". That would leave the PLC running with the switch in
+    // STOP, with nobody retrying.
+    //
+    // Re-checking here — after is_transitioning clears, so this call can win
+    // the gate — makes every interleaving converge on STOPPED without asking
+    // the requester to implement retry logic. The failure direction is the
+    // safe one, which is the property to preserve in any change to either
+    // caller. (The same drop was already possible for a plugin reporting a
+    // hardware fault during a start; this fixes that too.)
+    if (plc_get_state() == PLC_STATE_RUNNING && !plc_switch_allows_run())
+    {
+        log_warn("Mode switch reads STOP but the PLC ended up RUNNING — stopping");
+        plc_begin_transition(PLC_STATE_STOPPED);
+    }
+
     return NULL;
 }
 
@@ -212,10 +235,27 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
             strncpy(response, "STOP:ERROR\n", response_size);
         }
     }
+    else if (strcmp(command, "SWITCH") == 0)
+    {
+        // Report the mode-switch position a VPP plugin last stored. Devices
+        // with no switch-aware plugin always answer RUN.
+        if (plc_get_switch_position() == PLC_SWITCH_RUN)
+            strncpy(response, "SWITCH:RUN\n", response_size);
+        else
+            strncpy(response, "SWITCH:STOP\n", response_size);
+    }
     else if (strcmp(command, "START") == 0)
     {
         PLCState current_state = plc_get_state();
-        if (current_state != PLC_STATE_RUNNING)
+        // Hardware is authoritative: refuse rather than queue, so the editor
+        // can tell the user to flip the switch instead of leaving a start
+        // pending. Checked before the transition is ever begun.
+        if (!plc_switch_allows_run())
+        {
+            strncpy(response, "START:ERROR_SWITCH_STOP\n", response_size);
+            log_warn("Received START command but the mode switch is in STOP");
+        }
+        else if (current_state != PLC_STATE_RUNNING)
         {
             if (plc_begin_transition(PLC_STATE_RUNNING))
                 strncpy(response, "START:OK\n", response_size);

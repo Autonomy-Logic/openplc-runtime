@@ -17,6 +17,7 @@
 #include "../plc_app/image_tables.h"
 #include "../plc_app/journal_buffer.h"
 #include "../plc_app/plc_state_manager.h"
+#include "../plc_app/plc_switch.h"
 #include "../plc_app/unix_socket.h"
 #include "../plc_app/utils/log.h"
 #include "../plc_app/utils/utils.h"
@@ -169,7 +170,56 @@ static void plugin_request_plc_stop(const char *reason)
     {
         // Either the PLC is already stopping/stopped or another stop
         // is already in flight — either way, nothing to do.
+        //
+        // A stop dropped because another transition was in flight is picked up
+        // by the converge-on-switch re-check at the end of transition_worker
+        // (unix_socket.c), so a switch-driven stop can't be lost here.
         log_warn("[PLUGIN] stop request collapsed (already transitioning or not running)");
+    }
+}
+
+// Mirror of plugin_request_plc_stop, routed through the same transition path
+// the socket START command uses. Gated on the mode switch: hardware is
+// authoritative no matter who asks, so a plugin cannot start a PLC whose switch
+// reads STOP (which also keeps a buggy plugin from defeating the interlock).
+static void plugin_request_plc_start(const char *reason)
+{
+    if (!plc_switch_allows_run())
+    {
+        log_warn("[PLUGIN] start request refused — mode switch is in STOP (%s)",
+                 reason ? reason : "(no reason given)");
+        return;
+    }
+
+    log_info("[PLUGIN] start requested: %s", reason ? reason : "(no reason given)");
+    if (!plc_begin_transition(PLC_STATE_RUNNING))
+    {
+        log_warn("[PLUGIN] start request collapsed (already transitioning or already running)");
+    }
+}
+
+// Thin adapter so plugin_types.h can declare the position as a plain int and
+// stay free of the plc_app include tree.
+static void plugin_set_switch_position(int position)
+{
+    plc_set_switch_position(position == PLC_SWITCH_STOP ? PLC_SWITCH_STOP : PLC_SWITCH_RUN);
+}
+
+// Map the runtime's PLCState onto the values FC 0x49 reports on baremetal
+// targets (0 = STOPPED, 1 = RUNNING, 2 = ERROR) so vendor code driving a
+// status LED can share one mapping across both target types. INIT and EMPTY
+// are v4-only and have no physical meaning for an indicator, so they report as
+// STOPPED — the PLC is not executing.
+static int plugin_get_plc_state(void)
+{
+    switch (plc_get_state())
+    {
+    case PLC_STATE_RUNNING:
+        return 1;
+    case PLC_STATE_ERROR:
+        return 2;
+    default:
+        return 0;
     }
 }
 
@@ -1024,6 +1074,13 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
 
     // Plugin-initiated async PLC stop (for unrecoverable hardware faults).
     args->request_plc_stop = plugin_request_plc_stop;
+
+    // Run/stop control: the same transition path the socket START / STOP
+    // commands drive, plus the mode-switch store the runtime gates starts on
+    // and the state read a plugin uses to drive a status LED.
+    args->request_plc_start   = plugin_request_plc_start;
+    args->set_switch_position = plugin_set_switch_position;
+    args->get_plc_state       = plugin_get_plc_state;
 
     // PLC base tick time. Runtime owns base_tick_ns; on first plugin init
     // (before symbols_init) it carries the 20 ms default, so plugins must

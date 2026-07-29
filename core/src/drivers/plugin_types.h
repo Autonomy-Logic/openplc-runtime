@@ -101,6 +101,77 @@ typedef uint8_t  (*plugin_debug_write_func_t)(uint8_t arr, uint16_t elem,
 typedef void (*plugin_request_plc_stop_func_t)(const char *reason);
 
 /**
+ * @brief PLC start request from a plugin
+ *
+ * Mirror of plugin_request_plc_stop: both are thin wrappers over the same
+ * transition path the socket START / STOP commands drive, so a plugin-initiated
+ * run/stop is byte-for-byte the flow the editor already exercises.
+ *
+ * Refused while the stored mode-switch position is STOP (see
+ * plugin_set_switch_position_func_t) -- hardware is authoritative regardless of
+ * who asks. Non-blocking; `reason` is logged. Safe to call from any plugin
+ * thread, including while the PLC is stopped: the runtime keeps every plugin
+ * mapped across a stop, so this is how a hardware STOP -> RUN edge starts the
+ * PLC again.
+ */
+typedef void (*plugin_request_plc_start_func_t)(const char *reason);
+
+/**
+ * @brief Report the run/stop mode-switch position
+ *
+ * THIS is the hardware interface on Linux. The runtime never reads hardware and
+ * never polls: the package decides how and how often it samples (GPIO
+ * interrupt, sysfs poll, fieldbus callback, its own thread) and calls this
+ * whenever the position changes.
+ *
+ * Stores only -- it starts nothing and stops nothing. On a switch change the
+ * plugin calls this and THEN asks for the matching transition:
+ *
+ *     args->set_switch_position(PLC_SWITCH_STOP);
+ *     args->request_plc_stop("mode switch moved to STOP");
+ *
+ * Always store the position BEFORE requesting the transition. On a falling edge
+ * that closes the window where a start could slip in; on a rising edge it stops
+ * the request being refused by the guard still reading the stale STOP.
+ *
+ * `position` is a plc_switch_t (0 = STOP, 1 = RUN). Declared as int here so
+ * this header stays free of the plc_app include tree. Idempotent, and safe to
+ * call from any plugin thread.
+ *
+ * Sample the switch from a thread started in init() and torn down in cleanup(),
+ * NOT in start_loop() / stop_loop(): the runtime calls stop_loop when the PLC
+ * stops, which is precisely when the position matters most. Make that start
+ * idempotent, because init() is re-entered on each PLC start. Reporting the
+ * initial position from init() also gates the boot auto-start, so a device
+ * powered up with its switch in STOP never starts and then bounces.
+ */
+typedef void (*plugin_set_switch_position_func_t)(int position);
+
+/**
+ * @brief Read the current PLC state
+ *
+ * Returns 0 = STOPPED, 1 = RUNNING, 2 = ERROR (matching the values FC 0x49
+ * reports on baremetal targets, so vendor code can share one mapping).
+ *
+ * There is no state-change callback: a plugin driving a panel LED polls this.
+ * A device with no LED never calls it and the runtime is unaware.
+ *
+ * Poll it from the plugin's OWN thread -- the same sampler that reads the mode
+ * switch is the natural home. Do NOT poll it from cycle_end: cycle_end fires
+ * once per scan, so it stops being called the moment the PLC stops, and an LED
+ * driven from there would freeze showing RUNNING exactly when it needs to show
+ * STOPPED.
+ *
+ * IMPORTANT (applies to every field of plugin_runtime_args_t): the runtime
+ * frees the args pointer as soon as init() returns. Copy the struct BY VALUE
+ * during init -- `memcpy(&my_args, args, sizeof(plugin_runtime_args_t))` --
+ * and call through the copy. Caching the pointer is a use-after-free; calling
+ * a function pointer read back out of the freed struct crashes. See the
+ * s7comm plugin for the established pattern.
+ */
+typedef int (*plugin_get_plc_state_func_t)(void);
+
+/**
  * @brief Runtime buffer access structure for plugins
  *
  * This structure is passed to plugins during initialization, providing
@@ -182,6 +253,25 @@ typedef struct
      * Populated when the runtime initializes the plugin; may be 0 if
      * symbols are not yet resolved (plugin must guard against zero). */
     unsigned long long base_tick_ns;
+
+    /* ---------------------------------------------------------------------
+     * Run/stop control. Appended at the end of the struct so plugin binaries
+     * compiled against an earlier layout keep their field offsets.
+     *
+     * A plugin that ignores all three behaves exactly as before: the switch
+     * position stays at its RUN default, so every start path is unguarded.
+     * ------------------------------------------------------------------- */
+
+    /* Async request to run — see plugin_request_plc_start_func_t. */
+    plugin_request_plc_start_func_t request_plc_start;
+
+    /* Report the mode-switch position — see
+     * plugin_set_switch_position_func_t. The hardware interface on Linux. */
+    plugin_set_switch_position_func_t set_switch_position;
+
+    /* Current PLC state, for driving a status LED — see
+     * plugin_get_plc_state_func_t. */
+    plugin_get_plc_state_func_t get_plc_state;
 } plugin_runtime_args_t;
 
 #endif /* PLUGIN_TYPES_H */

@@ -329,6 +329,22 @@ class RuntimeManager:
             logger.error("Failed to get PLC status (unexpected): %s", e)
             return "STATUS:ERROR\n"
 
+    def switch_plc(self) -> str:
+        """
+        Send SWITCH command to read the run/stop mode-switch position.
+
+        Answers ``SWITCH:RUN`` or ``SWITCH:STOP``. Devices with no switch-aware
+        VPP plugin always report RUN, so callers need no special case for them.
+        """
+        try:
+            return self.runtime_socket.send_and_receive("SWITCH\n")
+        except (OSError, socket.error) as e:
+            logger.error("Failed to get mode switch position: %s", e)
+            return "SWITCH:ERROR\n"
+        except Exception as e:
+            logger.error("Failed to get mode switch position (unexpected): %s", e)
+            return "SWITCH:ERROR\n"
+
     def stats_plc(self):
         """
         Send STATS command to get timing statistics

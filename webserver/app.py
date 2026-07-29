@@ -130,12 +130,36 @@ def parse_timing_stats(stats_response: Optional[str]) -> Optional[dict]:
         return None
 
 
+def parse_switch_position(switch_response: Optional[str]) -> Optional[str]:
+    """
+    Parse the SWITCH response from the runtime.
+    Expected format: ``SWITCH:RUN`` / ``SWITCH:STOP``.
+    Returns ``"run"`` / ``"stop"``, or None when the response is unusable.
+    """
+    if switch_response is None:
+        return None
+    value = switch_response.strip()
+    if value == "SWITCH:RUN":
+        return "run"
+    if value == "SWITCH:STOP":
+        return "stop"
+    return None
+
+
 def handle_status(data: dict) -> dict:
     response = runtime_manager.status_plc()
     if response is None:
         return {"status": "No response from runtime"}
 
     result: dict = {"status": response}
+
+    # Mode-switch position, so the editor can block a start before sending it
+    # rather than relying on the runtime's refusal alone. Additive: the existing
+    # `status` key is untouched, and an older editor simply ignores this field.
+    # A runtime with no switch-aware plugin always reports "run".
+    switch_position = parse_switch_position(runtime_manager.switch_plc())
+    if switch_position is not None:
+        result["switchPosition"] = switch_position
 
     # Only fetch timing stats if explicitly requested via include_stats parameter.
     # This avoids acquiring the stats mutex on every status poll, which could
@@ -186,6 +210,16 @@ def handle_list_serial_ports(data: dict) -> dict:
         return {"error": str(e), "ports": []}
 
 
+def handle_switch(data: dict) -> dict:
+    """
+    Report the run/stop mode-switch position on its own, for callers that want
+    it without a full status poll. Devices with no switch-aware VPP plugin
+    always answer "run".
+    """
+    position = parse_switch_position(runtime_manager.switch_plc())
+    return {"switchPosition": position if position is not None else "unknown"}
+
+
 GET_HANDLERS: dict[str, Callable[[dict], dict]] = {
     "start-plc": handle_start_plc,
     "stop-plc": handle_stop_plc,
@@ -194,6 +228,7 @@ GET_HANDLERS: dict[str, Callable[[dict], dict]] = {
     "status": handle_status,
     "ping": handle_ping,
     "serial-ports": handle_list_serial_ports,
+    "switch": handle_switch,
 }
 
 

@@ -15,6 +15,7 @@
 #include "../drivers/plugin_driver.h"
 #include "image_tables.h"
 #include "plc_state_manager.h"
+#include "plc_switch.h"
 #include "plcapp_manager.h"
 #include "unix_socket.h"
 #include "utils/log.h"
@@ -165,6 +166,15 @@ int main(int argc, char *argv[])
     {
         log_info("Runtime started in SAFE MODE - PLC program will not be loaded");
         log_info("Upload a corrected program to recover");
+    }
+    // Same gate as any other start. Plugin init ran above, so a VPP that owns a
+    // physical mode switch has already reported its position — a device powered
+    // up with the switch in STOP is gated here rather than starting and then
+    // being stopped a moment later.
+    else if (!plc_switch_allows_run())
+    {
+        log_info("Hardware mode switch is in STOP - PLC left stopped");
+        log_info("Move the switch to RUN to start the PLC");
     }
     else if (!plc_begin_transition(PLC_STATE_RUNNING))
     {
