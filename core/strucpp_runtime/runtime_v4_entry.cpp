@@ -23,6 +23,10 @@
 //      provides the cross-DSO advance entry point.
 //   6. Export strucpp_program_md5 — the project MD5, surfaced by FC 0x45
 //      so the editor can verify it's debugging the matching source.
+//   7. Export strucpp_located_scope() — classify each locatedVars[] entry as
+//      a configuration global or a POU-local located variable, by testing
+//      whether its storage lies inside the g_config object. Only this TU
+//      knows sizeof(g_config), so only this TU can answer.
 
 #define STRUCPP_V4_DEBUG_EXPORTS_DEFINE
 #include "debug_dispatch.hpp"
@@ -85,6 +89,54 @@ extern "C" int strucpp_debug_locate(uint8_t arr, uint16_t elem,
         }
     }
     return 0;
+}
+
+// Located-variable scope classifier.
+//
+// Every located variable is exactly one of:
+//
+//   CONFIG  — a CONFIGURATION VAR_GLOBAL ... AT.  strucpp emits its storage as
+//             a file-scope `inline GlobalVar<V>` singleton (see codegen's
+//             emitFileScopeGlobals: file scope so every POU, including a nested
+//             function block, reaches the one canonical value+mutex).  That
+//             storage lives at namespace scope — OUTSIDE the g_config object.
+//
+//   PROGRAM — a POU-local `VAR ... AT`.  Its storage is a member of a program
+//             instance, and every program instance is a member of the
+//             configuration object, so it lies INSIDE g_config.
+//
+// So the scope is decided by WHERE THE STORAGE LIVES, which the compiled
+// program physically carries.  It is NOT inferred from the entry's position in
+// locatedVars[]: reordering that array cannot change any answer here.  This
+// replaces the previous approach, where the runtime deduced the config-scope
+// entries as the tail not covered by any program's located_range() — an
+// ordering assumption that was backwards (strucpp emits config globals FIRST),
+// so a single POU-local located variable silently dropped every located global.
+//
+// This translation unit is the only one that can make the test: it defines
+// g_config and is the only place with its complete type, so only here is
+// sizeof(g_config) available.  The runtime binary holds a layout mirror of
+// ConfigurationInstance (core/src/lib/strucpp_abi.hpp) and deliberately does
+// not vendor the generated header, so it cannot know the object's size.
+//
+// Returns STRUCPP_LOCATED_SCOPE_PROGRAM / STRUCPP_LOCATED_SCOPE_CONFIG, or -1
+// when the entry cannot be classified (index out of range, or pointer still
+// null because the configuration constructor has not bound it).  The runtime
+// treats -1 as an error and refuses to service that entry rather than guessing.
+#define STRUCPP_LOCATED_SCOPE_PROGRAM 0
+#define STRUCPP_LOCATED_SCOPE_CONFIG  1
+
+extern "C" int strucpp_located_scope(uint32_t index) {
+    if (index >= strucpp::locatedVarsCount) return -1;
+    const void *p = strucpp::locatedVars[index].pointer;
+    if (p == nullptr) return -1;
+
+    const char *cfg_begin = reinterpret_cast<const char *>(&g_config);
+    const char *cfg_end   = cfg_begin + sizeof(g_config);
+    const char *q         = reinterpret_cast<const char *>(p);
+
+    return (q >= cfg_begin && q < cfg_end) ? STRUCPP_LOCATED_SCOPE_PROGRAM
+                                           : STRUCPP_LOCATED_SCOPE_CONFIG;
 }
 
 // Project MD5. Used by FC 0x45 to let the editor verify it's debugging

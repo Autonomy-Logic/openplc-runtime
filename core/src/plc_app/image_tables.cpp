@@ -13,6 +13,7 @@
 
 extern "C" {
 #include "include/iec_python.h"
+#include "located_scope.h"
 }
 
 // Layout-compatible mirror of the strucpp ABI. The runtime executable
@@ -58,9 +59,15 @@ IEC_BOOL  *bool_memory[BUFFER_SIZE][8];
 namespace {
     using GetLocatedVarsFn  = const strucpp::LocatedVar *(*)(void);
     using GetLocatedCountFn = uint32_t (*)(void);
+    // Classifies locatedVars[i] as a POU-local located var (0) or a
+    // CONFIGURATION VAR_GLOBAL ... AT (1); -1 when it cannot be classified.
+    // Implemented in the shim, which is the only TU that knows the size of the
+    // configuration object and can therefore test storage containment.
+    using LocatedScopeFn    = int (*)(uint32_t);
 
     GetLocatedVarsFn  ext_strucpp_get_located_vars      = nullptr;
     GetLocatedCountFn ext_strucpp_get_located_var_count = nullptr;
+    LocatedScopeFn    ext_strucpp_located_scope         = nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,14 +101,23 @@ namespace {
     uint64_t       *g_located_snapshot = nullptr;
     uint32_t        g_located_count    = 0;
 
-    // Config-scope located slice: the tail of locatedVars[] that belongs to
-    // CONFIGURATION VAR_GLOBAL ... AT (strucpp emits program-local located vars
-    // first, then the shared globals). These are NOT covered by any program's
+    // Config-scope located entries: the indices of locatedVars[] that belong to
+    // CONFIGURATION VAR_GLOBAL ... AT. These are NOT covered by any program's
     // located_range(), so the per-task copy-in/out never touches them; the
-    // dispatcher copies this slice at the quiescent frame boundary instead (see
-    // image_tables_copy_config_globals_in/out). [offset, offset+count).
-    uint32_t        g_config_located_offset = 0;
-    uint32_t        g_config_located_count  = 0;
+    // dispatcher copies them at the quiescent frame boundary instead (see
+    // image_tables_copy_config_globals_in/out).
+    //
+    // This is an EXPLICIT index list, built once at program load from the .so's
+    // strucpp_located_scope() — which answers from the variable's storage
+    // location, not from its position in the array. It deliberately replaces the
+    // previous "[offset, count) tail not covered by any program range" slice:
+    // that assumed strucpp emitted program-local entries before config globals,
+    // but the real order is the reverse, so one POU-local located variable made
+    // the computed count collapse to zero and silently stopped servicing EVERY
+    // located global (%MX, %QX, %MW alike). Never reintroduce a positional rule
+    // here.
+    uint32_t       *g_config_located_idx = nullptr;
+    uint32_t        g_config_located_n   = 0;
 
     int init_recursive_pi_mutex(pthread_mutex_t *m)
     {
@@ -214,6 +230,11 @@ extern "C" int symbols_init(PluginManager *pm)
 
     *(void **)&ext_strucpp_get_located_vars      = resolve(pm, "strucpp_get_located_vars",      true);
     *(void **)&ext_strucpp_get_located_var_count = resolve(pm, "strucpp_get_located_var_count", true);
+    // Required: the shim ships in this repo and scripts/Makefile.strucpp rebuilds
+    // it for every upload, so a missing symbol means a stale shim object rather
+    // than an old editor. Fail the load loudly instead of falling back to any
+    // positional guess about which entries are configuration globals.
+    *(void **)&ext_strucpp_located_scope         = resolve(pm, "strucpp_located_scope",         true);
 
     *(void **)&ext_strucpp_debug_array_count = resolve(pm, "strucpp_debug_array_count", true);
     *(void **)&ext_strucpp_debug_elem_count  = resolve(pm, "strucpp_debug_elem_count",  true);
@@ -228,6 +249,7 @@ extern "C" int symbols_init(PluginManager *pm)
     if (!ext_strucpp_advance_time || !ext_strucpp_set_current_time ||
         !ext_strucpp_get_config ||
         !ext_strucpp_get_located_vars || !ext_strucpp_get_located_var_count ||
+        !ext_strucpp_located_scope ||
         !ext_strucpp_debug_array_count || !ext_strucpp_debug_elem_count ||
         !ext_strucpp_debug_size || !ext_strucpp_debug_set ||
         !ext_strucpp_debug_read || !ext_strucpp_debug_write)
@@ -299,14 +321,37 @@ void image_tables_bind_located_vars(void)
     g_located_snapshot =
         (uint64_t *)calloc(lv_count ? lv_count : 1, sizeof(uint64_t));
 
-    // Determine the config-scope located slice = the entries not covered by any
-    // program's located_range(). strucpp lays out locatedVars[] as
-    // [program-local ... ][config globals ... ], so the covered part is the
-    // prefix [0, covered_end) and the config globals are the tail
-    // [covered_end, lv_count). Compute covered_end as the max end over every
-    // program's range (robust to a program declaring zero located vars).
-    uint32_t covered_end = 0;
-    if (g_config_ptr)
+    // Build the config-scope index list. Authority is the .so's
+    // strucpp_located_scope(), which classifies each entry by WHERE ITS STORAGE
+    // LIVES (config globals are file-scope singletons; POU-local located vars are
+    // members of a program instance, hence inside the configuration object). That
+    // is a property of the compiled program, so it holds regardless of the order
+    // strucpp happens to emit locatedVars[] in.
+    free(g_config_located_idx);
+    g_config_located_idx =
+        (uint32_t *)calloc(lv_count ? lv_count : 1, sizeof(uint32_t));
+    g_config_located_n = 0;
+
+    if (!g_config_located_idx)
+    {
+        log_error("[image_tables] out of memory building config-located list — "
+                  "located configuration globals will NOT be serviced");
+        return;
+    }
+    if (!ext_strucpp_located_scope)
+    {
+        log_error("[image_tables] strucpp_located_scope unresolved — cannot "
+                  "classify located vars; configuration globals will NOT be "
+                  "serviced (rebuild the program with a current runtime shim)");
+        return;
+    }
+
+    // Second, INDEPENDENT witness: the set of indices some task actually claims
+    // through located_range(). Used only to cross-check the classification, never
+    // to derive it — a disagreement means the storage model drifted and we want
+    // that loud rather than silently mis-serviced.
+    uint8_t *claimed = (uint8_t *)calloc(lv_count ? lv_count : 1, 1);
+    if (claimed && g_config_ptr)
     {
         strucpp::ResourceInstance *res = g_config_ptr->get_resources();
         size_t rc = g_config_ptr->get_resource_count();
@@ -319,18 +364,55 @@ void image_tables_bind_located_vars(void)
                 {
                     uint32_t off = 0, cnt = 0;
                     tk.programs[p]->located_range(&off, &cnt);
-                    if (cnt && off + cnt > covered_end) covered_end = off + cnt;
+                    for (uint32_t i = off; i < off + cnt && i < lv_count; ++i)
+                        claimed[i] = 1;
                 }
             }
         }
     }
-    if (covered_end > lv_count) covered_end = lv_count;
-    g_config_located_offset = covered_end;
-    g_config_located_count  = lv_count - covered_end;
+
+    const strucpp::LocatedVar *lv = ext_strucpp_get_located_vars();
+    int8_t *anomaly = (int8_t *)calloc(lv_count ? lv_count : 1, sizeof(int8_t));
+
+    g_config_located_n = located_scope_partition(lv_count,
+                                                ext_strucpp_located_scope,
+                                                claimed,
+                                                g_config_located_idx,
+                                                anomaly);
+
+    if (anomaly)
+    {
+        for (uint32_t i = 0; i < lv_count; ++i)
+        {
+            switch (anomaly[i])
+            {
+            case LOCATED_ANOMALY_UNCLASSIFIABLE:
+                log_error("[image_tables] locatedVars[%u] unclassifiable "
+                          "(area=%u size=%u byte=%u bit=%u) — NOT serviced",
+                          i, (unsigned)lv[i].area, (unsigned)lv[i].size,
+                          (unsigned)lv[i].byte_index, (unsigned)lv[i].bit_index);
+                break;
+            case LOCATED_ANOMALY_CONFIG_BUT_CLAIMED:
+                log_error("[image_tables] locatedVars[%u] is a configuration "
+                          "global but a task's located_range() also claims it — "
+                          "storage-model drift or a double-claimed slot", i);
+                break;
+            case LOCATED_ANOMALY_PROGRAM_BUT_UNCLAIMED:
+                log_warn("[image_tables] locatedVars[%u] is program-local but no "
+                         "task claims it (program not bound to a task?) — it will "
+                         "never be serviced", i);
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    free(anomaly);
+    free(claimed);
 
     log_info("[image_tables] %u located var(s) via copy-in/out "
              "(%u program-local, %u config-scope shared globals)",
-             lv_count, covered_end, g_config_located_count);
+             lv_count, lv_count - g_config_located_n, g_config_located_n);
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +497,49 @@ uint64_t threaded_image_read(const strucpp::LocatedVar &v)
     return 0;
 }
 
+// Copy a SINGLE located entry. Both the per-task range walk and the
+// config-scope index walk go through these, so the two callers can never drift
+// apart in how an entry is actually moved.
+void copy_in_one(const strucpp::LocatedVar *lv, uint32_t k)
+{
+    uint64_t v = threaded_image_read(lv[k]);
+    threaded_member_write(lv[k], v);
+    if (g_located_snapshot) g_located_snapshot[k] = v;
+}
+
+void copy_out_one(const strucpp::LocatedVar *lv, uint32_t k)
+{
+    const strucpp::LocatedVar &v = lv[k];
+    if (v.area == strucpp::LocatedArea::Input) return;  // %I is never committed
+    uint64_t cur = threaded_member_read(v);
+    if (g_located_snapshot && cur == g_located_snapshot[k]) return;  // unchanged
+    if (g_located_snapshot) g_located_snapshot[k] = cur;
+    uint16_t idx = v.byte_index;
+    bool out = (v.area == strucpp::LocatedArea::Output);
+    switch (v.size)
+    {
+    case strucpp::LocatedSize::Bit:
+        journal_write_bool(out ? JOURNAL_BOOL_OUTPUT : JOURNAL_BOOL_MEMORY,
+                           idx, v.bit_index, cur != 0);
+        break;
+    case strucpp::LocatedSize::Byte:
+        journal_write_byte(JOURNAL_BYTE_OUTPUT, idx, (uint8_t)cur);
+        break;
+    case strucpp::LocatedSize::Word:
+        journal_write_int(out ? JOURNAL_INT_OUTPUT : JOURNAL_INT_MEMORY,
+                          idx, (uint16_t)cur);
+        break;
+    case strucpp::LocatedSize::DWord:
+        journal_write_dint(out ? JOURNAL_DINT_OUTPUT : JOURNAL_DINT_MEMORY,
+                           idx, (uint32_t)cur);
+        break;
+    case strucpp::LocatedSize::LWord:
+        journal_write_lint(out ? JOURNAL_LINT_OUTPUT : JOURNAL_LINT_MEMORY,
+                           idx, cur);
+        break;
+    }
+}
+
 }  // namespace
 
 extern "C" void image_tables_threaded_copy_in(uint32_t offset, uint32_t count)
@@ -423,12 +548,7 @@ extern "C" void image_tables_threaded_copy_in(uint32_t offset, uint32_t count)
     const strucpp::LocatedVar *lv = ext_strucpp_get_located_vars();
     uint32_t end = offset + count;
     if (end > g_located_count) end = g_located_count;
-    for (uint32_t k = offset; k < end; ++k)
-    {
-        uint64_t v = threaded_image_read(lv[k]);
-        threaded_member_write(lv[k], v);
-        if (g_located_snapshot) g_located_snapshot[k] = v;
-    }
+    for (uint32_t k = offset; k < end; ++k) copy_in_one(lv, k);
 }
 
 extern "C" void image_tables_threaded_copy_out(uint32_t offset, uint32_t count)
@@ -437,61 +557,44 @@ extern "C" void image_tables_threaded_copy_out(uint32_t offset, uint32_t count)
     const strucpp::LocatedVar *lv = ext_strucpp_get_located_vars();
     uint32_t end = offset + count;
     if (end > g_located_count) end = g_located_count;
-    for (uint32_t k = offset; k < end; ++k)
-    {
-        const strucpp::LocatedVar &v = lv[k];
-        if (v.area == strucpp::LocatedArea::Input) continue;  // %I is never committed
-        uint64_t cur = threaded_member_read(v);
-        if (g_located_snapshot && cur == g_located_snapshot[k]) continue;  // unchanged
-        if (g_located_snapshot) g_located_snapshot[k] = cur;
-        uint16_t idx = v.byte_index;
-        bool out = (v.area == strucpp::LocatedArea::Output);
-        switch (v.size)
-        {
-        case strucpp::LocatedSize::Bit:
-            journal_write_bool(out ? JOURNAL_BOOL_OUTPUT : JOURNAL_BOOL_MEMORY,
-                               idx, v.bit_index, cur != 0);
-            break;
-        case strucpp::LocatedSize::Byte:
-            journal_write_byte(JOURNAL_BYTE_OUTPUT, idx, (uint8_t)cur);
-            break;
-        case strucpp::LocatedSize::Word:
-            journal_write_int(out ? JOURNAL_INT_OUTPUT : JOURNAL_INT_MEMORY,
-                              idx, (uint16_t)cur);
-            break;
-        case strucpp::LocatedSize::DWord:
-            journal_write_dint(out ? JOURNAL_DINT_OUTPUT : JOURNAL_DINT_MEMORY,
-                               idx, (uint32_t)cur);
-            break;
-        case strucpp::LocatedSize::LWord:
-            journal_write_lint(out ? JOURNAL_LINT_OUTPUT : JOURNAL_LINT_MEMORY,
-                               idx, cur);
-            break;
-        }
-    }
+    for (uint32_t k = offset; k < end; ++k) copy_out_one(lv, k);
 }
 
-// Config-scope located globals (CONFIGURATION VAR_GLOBAL ... AT). These are the
-// tail slice of locatedVars[] that no program's located_range() covers, so the
-// per-task copy-in/out never reaches them. The dispatcher calls these at the
-// quiescent frame boundary (g_tasks_running == 0) so there is no concurrent
-// task access to the shared canonical storage — the copy is safe WITHOUT the
-// per-global mutex (quiescence is the synchronization). copy_in primes the
-// canonical globals from the image (inputs get fresh hardware values); copy_out
-// journals changed output/memory globals back to the image (drained by the
-// dispatcher). No-ops when there are no located globals.
+// Config-scope located globals (CONFIGURATION VAR_GLOBAL ... AT). No program's
+// located_range() covers these, so the per-task copy-in/out never reaches them.
+// The dispatcher calls these at the quiescent frame boundary
+// (g_tasks_running == 0) so there is no concurrent task access to the shared
+// canonical storage — the copy is safe WITHOUT the per-global mutex (quiescence
+// is the synchronization). copy_in primes the canonical globals from the image
+// (inputs get fresh hardware values); copy_out journals changed output/memory
+// globals back to the image (drained by the dispatcher). No-ops when there are
+// no located globals.
+//
+// The entries are an explicit index list built at load by
+// image_tables_bind_located_vars(); they are NOT a contiguous slice, so these
+// walk the list rather than calling the range-based helpers above.
 extern "C" void image_tables_copy_config_globals_in(void)
 {
-    if (g_config_located_count)
-        image_tables_threaded_copy_in(g_config_located_offset,
-                                      g_config_located_count);
+    if (!g_config_located_n || !g_config_located_idx) return;
+    if (!ext_strucpp_get_located_vars) return;
+    const strucpp::LocatedVar *lv = ext_strucpp_get_located_vars();
+    for (uint32_t j = 0; j < g_config_located_n; ++j)
+    {
+        uint32_t k = g_config_located_idx[j];
+        if (k < g_located_count) copy_in_one(lv, k);
+    }
 }
 
 extern "C" void image_tables_copy_config_globals_out(void)
 {
-    if (g_config_located_count)
-        image_tables_threaded_copy_out(g_config_located_offset,
-                                       g_config_located_count);
+    if (!g_config_located_n || !g_config_located_idx) return;
+    if (!ext_strucpp_get_located_vars) return;
+    const strucpp::LocatedVar *lv = ext_strucpp_get_located_vars();
+    for (uint32_t j = 0; j < g_config_located_n; ++j)
+    {
+        uint32_t k = g_config_located_idx[j];
+        if (k < g_located_count) copy_out_one(lv, k);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -545,8 +648,9 @@ void image_tables_clear_null_pointers(void)
     free(g_located_snapshot);
     g_located_snapshot = nullptr;
     g_located_count    = 0;
-    g_config_located_offset = 0;
-    g_config_located_count  = 0;
+    free(g_config_located_idx);
+    g_config_located_idx = nullptr;
+    g_config_located_n   = 0;
 
     std::memset(bool_input,   0, sizeof(bool_input));
     std::memset(bool_output,  0, sizeof(bool_output));
