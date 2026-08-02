@@ -21,6 +21,7 @@ from shared import (
 
 # Import the configuration model
 from shared.plugin_config_decode.modbus_master_config_model import (
+    ERROR_HANDLING_SET_TO_ZERO,
     ModbusMasterConfig,
 )
 
@@ -38,7 +39,8 @@ try:
     )
     from .modbus_master_utils import (
         calculate_gcd_of_cycle_times,
-        get_modbus_registers_count_for_iec_size,
+        get_read_count_for_io_point,
+        get_zero_payload_for_io_point,
         parse_modbus_offset,
     )
 except ImportError:
@@ -52,7 +54,8 @@ except ImportError:
     )
     from modbus_master_utils import (
         calculate_gcd_of_cycle_times,
-        get_modbus_registers_count_for_iec_size,
+        get_read_count_for_io_point,
+        get_zero_payload_for_io_point,
         parse_modbus_offset,
     )
 
@@ -64,6 +67,29 @@ safe_buffer_accessor: SafeBufferAccess = None
 logger: PluginLogger = None
 slave_threads: List[threading.Thread] = []
 # pylint: enable=invalid-name
+
+
+def queue_zero_fill_on_failure(point: Any, read_results_to_update: List[Any]) -> bool:
+    """
+    Queue a zeroed payload for a read point whose group asks for it.
+
+    A failed read used to just be skipped, which left the point's last good
+    value in the IEC buffer for as long as the device stayed down — the
+    editor's "Set to zero" option had no effect anywhere (openplc-editor#691).
+    Queueing a zero-fill here routes it through the same conversion and
+    batched mutex write the successful path uses, so the program sees zeros
+    for that address instead of stale data.
+
+    Points configured to keep the last value are left untouched.
+
+    Returns True when a zero-fill was queued, so callers can log it.
+    """
+    if getattr(point, "error_handling", None) != ERROR_HANDLING_SET_TO_ZERO:
+        return False
+    read_results_to_update.append(
+        (point.iec_location, get_zero_payload_for_io_point(point), point.length)
+    )
+    return True
 
 
 class ModbusSlaveDevice(threading.Thread):
@@ -148,15 +174,10 @@ class ModbusSlaveDevice(threading.Thread):
                         # Parse Modbus offset
                         address = parse_modbus_offset(point.offset)
 
-                        # Calculate the correct number of Modbus registers/coils needed
-                        if point.fc in [3, 4]:  # Register-based operations (FC 3,4)
-                            iec_size = point.iec_location.size
-                            registers_per_iec_element = get_modbus_registers_count_for_iec_size(
-                                iec_size
-                            )
-                            count = point.length * registers_per_iec_element
-                        else:  # Coil/Discrete Input operations (FC 1,2)
-                            count = point.length  # 1:1 mapping for boolean operations
+                        # Registers/coils this read asks for. Same helper sizes
+                        # the zero-fill used when the read fails, so request and
+                        # fallback can never disagree.
+                        count = get_read_count_for_io_point(point)
 
                         # Perform Modbus read based on function code
                         # Note: pymodbus 3.10+ uses device_id parameter (formerly slave)
@@ -187,6 +208,7 @@ class ModbusSlaveDevice(threading.Thread):
                                 f"[{self.name}] Modbus read error "
                                 f"(FC {point.fc}, addr {address}): {response}"
                             )
+                            queue_zero_fill_on_failure(point, read_results_to_update)
                             # Mark as disconnected to force reconnection on next cycle
                             self.connection_manager.mark_disconnected()
                             continue
@@ -195,6 +217,7 @@ class ModbusSlaveDevice(threading.Thread):
                                 f"[{self.name}] Modbus read failed "
                                 f"(FC {point.fc}, addr {address}): {response}"
                             )
+                            queue_zero_fill_on_failure(point, read_results_to_update)
                             # Mark as disconnected to force reconnection on next cycle
                             self.connection_manager.mark_disconnected()
                             continue
@@ -220,6 +243,7 @@ class ModbusSlaveDevice(threading.Thread):
                             f"[{self.name}] Connection error reading "
                             f"FC {point.fc}, offset {point.offset}: {ce}"
                         )
+                        queue_zero_fill_on_failure(point, read_results_to_update)
                         # Mark as disconnected to force reconnection
                         self.connection_manager.mark_disconnected()
                     except Exception as e:
@@ -227,6 +251,7 @@ class ModbusSlaveDevice(threading.Thread):
                             f"[{self.name}] Error reading "
                             f"FC {point.fc}, offset {point.offset}: {e}"
                         )
+                        queue_zero_fill_on_failure(point, read_results_to_update)
                         # For other errors also mark disconnected as precaution
                         self.connection_manager.mark_disconnected()
 
@@ -567,15 +592,9 @@ class ModbusBusHandler(threading.Thread):
                         # Parse Modbus offset
                         address = parse_modbus_offset(point.offset)
 
-                        # Calculate the correct number of Modbus registers/coils needed
-                        if point.fc in [3, 4]:  # Register-based operations
-                            iec_size = point.iec_location.size
-                            registers_per_iec_element = get_modbus_registers_count_for_iec_size(
-                                iec_size
-                            )
-                            count = point.length * registers_per_iec_element
-                        else:  # Coil/Discrete Input operations
-                            count = point.length
+                        # Registers/coils this read asks for — same helper that
+                        # sizes the zero-fill on failure.
+                        count = get_read_count_for_io_point(point)
 
                         # Perform Modbus read with device-specific slave_id
                         if point.fc == 1:  # Read Coils
@@ -604,6 +623,7 @@ class ModbusBusHandler(threading.Thread):
                                 f"[{self.name}] Modbus read error "
                                 f"(slave {slave_id}, FC {point.fc}, addr {address}): {response}"
                             )
+                            queue_zero_fill_on_failure(point, read_results_to_update)
                             self.connection_manager.mark_disconnected()
                             continue
                         if response.isError():
@@ -611,6 +631,7 @@ class ModbusBusHandler(threading.Thread):
                                 f"[{self.name}] Modbus read failed "
                                 f"(slave {slave_id}, FC {point.fc}, addr {address}): {response}"
                             )
+                            queue_zero_fill_on_failure(point, read_results_to_update)
                             self.connection_manager.mark_disconnected()
                             continue
 
@@ -635,12 +656,14 @@ class ModbusBusHandler(threading.Thread):
                             f"[{self.name}] Connection error reading "
                             f"slave {slave_id}, FC {point.fc}, offset {point.offset}: {ce}"
                         )
+                        queue_zero_fill_on_failure(point, read_results_to_update)
                         self.connection_manager.mark_disconnected()
                     except Exception as e:
                         self.logger.error(
                             f"[{self.name}] Error reading "
                             f"slave {slave_id}, FC {point.fc}, offset {point.offset}: {e}"
                         )
+                        queue_zero_fill_on_failure(point, read_results_to_update)
                         self.connection_manager.mark_disconnected()
 
                 # Batch update IEC buffers with single mutex acquisition
