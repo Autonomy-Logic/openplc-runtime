@@ -15,6 +15,22 @@
 #ifndef PLUGIN_TYPES_H
 #define PLUGIN_TYPES_H
 
+/**
+ * @brief This runtime's plugin args carry the run/stop mode-switch interface:
+ *        `request_plc_start`, `set_switch_position` and `get_plc_state`.
+ *
+ * Defined so a VPP plugin — which ships as SOURCE and is compiled on the device
+ * against the installed runtime's headers — can support both vintages:
+ *
+ *     #if defined(PLUGIN_RUNTIME_ARGS_HAS_MODE_SWITCH)
+ *         args->set_switch_position(position);
+ *     #endif
+ *
+ * Without it, a plugin using those members simply fails to build on a runtime that
+ * predates them, which is a confusing failure a long way from its cause.
+ */
+#define PLUGIN_RUNTIME_ARGS_HAS_MODE_SWITCH 1
+
 #include "../lib/iec_types.h"
 #include <pthread.h>
 #include <stdbool.h>
@@ -260,6 +276,12 @@ typedef struct
      *
      * A plugin that ignores all three behaves exactly as before: the switch
      * position stays at its RUN default, so every start path is unguarded.
+     *
+     * Appending keeps BINARY compatibility, but a VPP plugin is shipped as source
+     * and compiled on the device against whatever runtime is installed there — so
+     * source compatibility needs a feature test, which is what
+     * PLUGIN_RUNTIME_ARGS_HAS_MODE_SWITCH above is for. Referring to these members
+     * unguarded fails to compile on an older runtime.
      * ------------------------------------------------------------------- */
 
     /* Async request to run — see plugin_request_plc_start_func_t. */
