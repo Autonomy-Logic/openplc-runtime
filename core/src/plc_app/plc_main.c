@@ -168,10 +168,16 @@ int main(int argc, char *argv[])
         log_info("Runtime started in SAFE MODE - PLC program will not be loaded");
         log_info("Upload a corrected program to recover");
     }
-    // Same gate as any other start. Plugin init ran above, so a VPP that owns a
-    // physical mode switch has already reported its position — a device powered
-    // up with the switch in STOP is gated here rather than starting and then
-    // being stopped a moment later.
+    // Same gate as any other start, but note what it can and cannot see. A VPP
+    // plugin that owns a physical mode switch is initialised as part of loading
+    // the program — inside the start transition below — so at this point the
+    // switch has usually NOT been reported yet and the gate reads the default
+    // (RUN). A device powered up with the switch in STOP therefore does start,
+    // and is then corrected: the plugin reports STOP during init, that request is
+    // dropped because a transition is in flight, and the switch-movement
+    // reconciliation stops the PLC as soon as the start lands. Safe, but the gate
+    // only bites here for a switch position already known at this point (e.g. one
+    // reported by a plugin the runtime loaded independently of the program).
     else if (!plc_switch_allows_run())
     {
         log_info("Hardware mode switch is in STOP - PLC left stopped");

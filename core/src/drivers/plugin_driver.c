@@ -159,21 +159,22 @@ static uint8_t plugin_debug_write(uint8_t arr, uint16_t elem,
 // plugin's own stop_loop is invoked. Plugins that enter fault-stopped state
 // are expected to short-circuit their I/O during that window.
 //
-// No pre-check on plc_get_state() here: plc_begin_transition does the
-// check atomically (under the same gate that prevents concurrent
-// transitions), so doing it again outside would just re-introduce the
-// check-then-act race the gate is there to close.
+// No pre-check on plc_get_state() here: plc_claim_transition does the check
+// atomically under the state lock (the state being TRANSITIONING is itself what
+// prevents concurrent transitions), so doing it again outside would just
+// re-introduce the check-then-act race that interlock exists to close.
 static void plugin_request_plc_stop(const char *reason)
 {
-    log_error("[PLUGIN] stop requested: %s", reason ? reason : "(no reason given)");
+    log_info("[PLUGIN] stop requested: %s", reason ? reason : "(no reason given)");
     if (!plc_begin_transition(PLC_STATE_STOPPED))
     {
         // Either the PLC is already stopping/stopped or another stop
         // is already in flight — either way, nothing to do.
         //
-        // A stop dropped because another transition was in flight is picked up
-        // by the converge-on-switch re-check at the end of transition_worker
-        // (unix_socket.c), so a switch-driven stop can't be lost here.
+        // A stop dropped because another transition was in flight is recovered
+        // by the switch-movement reconciliation once that transition lands (see
+        // transition_worker in unix_socket.c), so a switch-driven stop cannot be
+        // lost here.
         log_warn("[PLUGIN] stop request collapsed (already transitioning or not running)");
     }
 }
