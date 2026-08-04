@@ -61,7 +61,14 @@ jobs:
           NAME=$(node -p "require('./security/report-config.json').sbomBasename")
           bash scripts/generate-sbom.sh
           CFG=""; [ -f osv-scanner.toml ] && CFG="--config=osv-scanner.toml"
-          osv-scanner scan $CFG --format=json --output=/tmp/head.json "sbom/$NAME.cdx.json" || true
+          set +e
+          osv-scanner scan $CFG --format=json --output=/tmp/head.json "sbom/$NAME.cdx.json"
+          rc=$?
+          set -e
+          # osv-scanner: 0 = no vulns, 1 = vulns found. Any other code = failure →
+          # fail the gate CLOSED, never pass a broken scan.
+          if [ "$rc" != "0" ] && [ "$rc" != "1" ]; then echo "::error::osv-scanner failed on HEAD (exit $rc)"; exit 1; fi
+          [ -s /tmp/head.json ] || echo '{"results":[]}' > /tmp/head.json
 
       - name: Resolve & scan BASE SBOM (only if manifests changed)
         run: |
@@ -77,7 +84,12 @@ jobs:
           cp "sbom/$NAME.cdx.json" /tmp/base.cdx.json
           cp /tmp/head-req.bak requirements.txt 2>/dev/null || true
           CFG=""; [ -f osv-scanner.toml ] && CFG="--config=osv-scanner.toml"
-          osv-scanner scan $CFG --format=json --output=/tmp/base.json /tmp/base.cdx.json || true
+          set +e
+          osv-scanner scan $CFG --format=json --output=/tmp/base.json /tmp/base.cdx.json
+          rc=$?
+          set -e
+          if [ "$rc" != "0" ] && [ "$rc" != "1" ]; then echo "::error::osv-scanner failed on BASE (exit $rc)"; exit 1; fi
+          [ -s /tmp/base.json ] || echo '{"results":[]}' > /tmp/base.json
           bash scripts/generate-sbom.sh   # restore HEAD sbom/ (overwritten by the base resolve)
 
       - name: Evaluate — block on newly-introduced advisories
