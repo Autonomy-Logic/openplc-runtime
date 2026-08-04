@@ -6,7 +6,7 @@
   "sbomBasename": "openplc-runtime",
   "ecosystem": "pip",
   "securityContact": "Thiago Alves — thiago.alves@autonomylogic.com",
-  "advisorySource": "PyPI Advisory Database / OSV via pip-audit (equivalent to Dependabot for Python)",
+  "advisorySource": "PyPI Advisory Database / OSV via osv-scanner (OSV) (equivalent to Dependabot for Python)",
   "advisories": { "total": 5, "critical": 0, "high": 0, "moderate": 5, "low": 0 },
   "counts": {
     "affected": { "n": 0, "sev": "none require action" },
