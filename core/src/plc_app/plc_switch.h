@@ -57,6 +57,22 @@ plc_switch_t plc_get_switch_position(void);
  */
 bool plc_switch_allows_run(void);
 
+/**
+ * @brief Consume the "switch has moved" record. True if it moved since the last call.
+ *
+ * State-change requests are dropped while a transition is in flight, so a flip
+ * during a start or stop is refused outright. This is how that intent survives:
+ * the runtime notes only that the switch moved, and the transition-completion
+ * path compares where it came to rest against the state actually reached,
+ * correcting a mismatch. Consuming the record is what stops it correcting the
+ * same movement twice.
+ *
+ * Movement-gated on purpose. An editor stop with the switch untouched records no
+ * movement, so nothing reverses it; comparing position against state
+ * unconditionally would make Stop impossible whenever the switch sits in RUN.
+ */
+bool plc_switch_take_movement(void);
+
 #ifdef __cplusplus
 }
 #endif

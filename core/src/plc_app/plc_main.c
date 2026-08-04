@@ -104,8 +104,9 @@ int main(int argc, char *argv[])
     wake_sa.sa_flags = 0;
     sigaction(SIGUSR1, &wake_sa, NULL);
 
-    // Make sure PLC starts in STOP state
-    plc_set_state(PLC_STATE_STOPPED);
+    // No need to force STOPPED here: plc_state is statically initialised to it,
+    // and plc_set_state() is now the body of a claimed transition rather than a
+    // setter -- calling it with nothing loaded would just log a failed unload.
 
     // Initialize watchdog
     if (watchdog_init() != 0)
@@ -156,7 +157,7 @@ int main(int argc, char *argv[])
     // faulty program that may have caused repeated crashes).
     //
     // Use plc_begin_transition() rather than plc_set_state() directly so the
-    // auto-start goes through the same is_transitioning CAS gate as any
+    // auto-start is arbitrated by plc_claim_transition() like any
     // socket-originated START command. This prevents a race where the socket
     // listener (already running above) accepts a START before the auto-start
     // finishes, causing two concurrent load_plc_program() calls — and two

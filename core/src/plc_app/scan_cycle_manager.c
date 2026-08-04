@@ -189,7 +189,7 @@ int format_timing_stats_response(char *buffer, size_t buffer_size)
     if (n < 0) return 0;
     offset += (size_t)n;
 
-    /* Hold plc_tasks_reader_lock for the whole iteration. is_transitioning
+    /* Hold plc_tasks_reader_lock for the whole iteration. the TRANSITIONING state
      * gates new commands but does not bracket an in-flight STATS call —
      * a plugin-initiated STOP can fire while we're mid-loop, the bootstrap
      * thread joins task threads and frees plc_tasks[], and we'd then read

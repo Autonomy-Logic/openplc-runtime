@@ -442,10 +442,16 @@ void *plc_cycle_thread(void *arg)
 
     log_info("Starting main loop");
 
-    pthread_mutex_lock(&state_mutex);
-    plc_state = PLC_STATE_RUNNING;
-    pthread_mutex_unlock(&state_mutex);
-    log_info("PLC State: RUNNING");
+    /* NOT where RUNNING is published. The state stays TRANSITIONING_TO_RUN until
+     * the task threads exist and the dispatcher is about to release the first
+     * scan -- see the publish below the "Spawned N PLC task thread(s)" log. Two
+     * writes used to happen before this point (here, and in plc_set_state before
+     * this thread was even created), and both claimed RUNNING while nothing was
+     * scanning yet. The one here was also a deadlock: a stop landing in the
+     * window before this thread was first scheduled wrote STOPPED and joined us,
+     * and this line put RUNNING back -- after which no loop below would ever
+     * exit, so the join never returned and the runtime refused every command for
+     * the rest of the process's life. */
 
     clock_gettime(CLOCK_MONOTONIC, &timer_start);
 
@@ -708,6 +714,18 @@ void *plc_cycle_thread(void *arg)
     }
     log_info("Spawned %zu PLC task thread(s)", plc_task_count);
 
+    /* RUNNING, at last, and this is the earliest point it is true: the workers
+     * exist and the very next thing that happens is the dispatcher releasing the
+     * first scan. Nothing observes RUNNING too early as a result -- the workers
+     * are parked in sem_wait and are only ever posted from the loop below, and
+     * the loop itself needs RUNNING visible to run at all.
+     *
+     * This is also what ends the transition claimed by plc_claim_transition, so
+     * every path out of this thread from here on must land a final state: the
+     * crash recovery above publishes ERROR, and the stop path publishes STOPPED
+     * once teardown joins. */
+    plc_publish_final_state(PLC_STATE_RUNNING);
+
     /* ---------------------------------------------------------------------
      * GCD master-tick dispatcher.
      *
@@ -948,12 +966,14 @@ extern "C" int load_plc_program(PluginManager *pm)
 
     if (plugin_manager_load(pm))
     {
+        /* Progress, not a state change. This used to publish PLC_STATE_INIT,
+         * which is now actively wrong: it overwrites TRANSITIONING_TO_RUN, so the
+         * runtime would stop reporting a transition in flight and let a stop be
+         * claimed while the start was still landing -- the same hole the
+         * TRANSITIONING states exist to close. (It is also what made STATUS
+         * flicker to INIT mid-start.) INIT survives in the enum as a startup
+         * value; nothing writes it during a transition. */
         log_info("Loading PLC application");
-
-        pthread_mutex_lock(&state_mutex);
-        plc_state = PLC_STATE_INIT;
-        pthread_mutex_unlock(&state_mutex);
-        log_info("PLC State: INIT");
 
         if (plugin_driver)
         {
@@ -1047,14 +1067,18 @@ extern "C" int unload_plc_program(PluginManager *pm)
 {
     if (pm && pm == plc_program)
     {
-        PLCState prev_state = plc_get_state();
-
-        if (prev_state != PLC_STATE_ERROR)
+        /* The dispatcher and its workers leave their loops on anything that is
+         * not RUNNING, and the join below depends on that. A claimed stop has
+         * already published TRANSITIONING_TO_STOP, which is that signal. This
+         * also covers the shutdown path (plc_state_manager_cleanup), which tears
+         * down without claiming a transition first: publish the direction here so
+         * the loops still exit. ERROR is left alone -- it must survive teardown. */
+        pthread_mutex_lock(&state_mutex);
+        if (plc_state == PLC_STATE_RUNNING)
         {
-            pthread_mutex_lock(&state_mutex);
-            plc_state = PLC_STATE_STOPPED;
-            pthread_mutex_unlock(&state_mutex);
+            plc_state = PLC_STATE_TRANSITIONING_TO_STOP;
         }
+        pthread_mutex_unlock(&state_mutex);
 
         pthread_join(plc_thread, NULL);
 
@@ -1077,7 +1101,10 @@ extern "C" int unload_plc_program(PluginManager *pm)
         plc_program = NULL;
 
         log_info("PLC program unloaded successfully");
-        log_info("PLC State: STOPPED");
+
+        /* The teardown is done, so this is the moment STOPPED becomes true.
+         * plc_publish_final_state keeps ERROR if a task crashed on the way out. */
+        plc_publish_final_state(PLC_STATE_STOPPED);
         return 0;
     }
     else
@@ -1095,25 +1122,89 @@ extern "C" PLCState plc_get_state(void)
     return s;
 }
 
-extern "C" bool plc_set_state(PLCState new_state)
+extern "C" bool plc_state_is_transitioning(void)
 {
+    const PLCState s = plc_get_state();
+    return s == PLC_STATE_TRANSITIONING_TO_RUN || s == PLC_STATE_TRANSITIONING_TO_STOP;
+}
+
+extern "C" bool plc_claim_transition(PLCState target)
+{
+    if (target != PLC_STATE_RUNNING && target != PLC_STATE_STOPPED)
+    {
+        log_error("Refusing to transition to state %d: only RUNNING and STOPPED are"
+                  " requestable targets", (int)target);
+        return false;
+    }
+
     pthread_mutex_lock(&state_mutex);
-    if (plc_state == new_state)
+
+    /* Drop, don't queue. Requests are dropped while a transition is in flight,
+     * and the switch's intent is recovered afterwards by reconciliation (see
+     * plc_switch_take_movement), so nothing has to be remembered here. */
+    if (plc_state == PLC_STATE_TRANSITIONING_TO_RUN || plc_state == PLC_STATE_TRANSITIONING_TO_STOP)
     {
         pthread_mutex_unlock(&state_mutex);
         return false;
     }
-    plc_state = new_state;
+
+    if (plc_state == target)
+    {
+        pthread_mutex_unlock(&state_mutex);
+        return false;
+    }
+
+    plc_state = (target == PLC_STATE_RUNNING) ? PLC_STATE_TRANSITIONING_TO_RUN
+                                              : PLC_STATE_TRANSITIONING_TO_STOP;
     pthread_mutex_unlock(&state_mutex);
 
-    // Note: plc_state must flip BEFORE load/unload runs. Task threads
-    // exit their scan loops via `while (plc_get_state() == RUNNING)`,
-    // and unload_plc_program() depends on that signal to join them.
-    // The "STATUS reports STOPPED while teardown is still in flight"
-    // window this opens is gated externally via is_transitioning in
-    // unix_socket.c — STATUS returns STATUS:TRANSITIONING for the
-    // duration of the worker, so external pollers don't see the
-    // stale STOPPED.
+    log_info("PLC State: %s", target == PLC_STATE_RUNNING ? "TRANSITIONING_TO_RUN"
+                                                          : "TRANSITIONING_TO_STOP");
+    return true;
+}
+
+extern "C" void plc_publish_final_state(PLCState final_state)
+{
+    const char *name = "UNKNOWN";
+    switch (final_state)
+    {
+    case PLC_STATE_RUNNING: name = "RUNNING"; break;
+    case PLC_STATE_STOPPED: name = "STOPPED"; break;
+    case PLC_STATE_ERROR:   name = "ERROR";   break;
+    case PLC_STATE_EMPTY:   name = "EMPTY";   break;
+    default: break;
+    }
+
+    pthread_mutex_lock(&state_mutex);
+
+    /* ERROR outranks a STOPPED landing: a task that crashed mid-teardown recorded
+     * the fact that matters, and the teardown completing must not erase it. */
+    if (plc_state == PLC_STATE_ERROR && final_state == PLC_STATE_STOPPED)
+    {
+        pthread_mutex_unlock(&state_mutex);
+        log_info("Transition finished in ERROR — keeping ERROR rather than STOPPED");
+        return;
+    }
+
+    plc_state = final_state;
+    pthread_mutex_unlock(&state_mutex);
+    log_info("PLC State: %s", name);
+}
+
+extern "C" bool plc_set_state(PLCState new_state)
+{
+    // Performs a transition already claimed via plc_claim_transition(), which
+    // published TRANSITIONING_TO_RUN or TRANSITIONING_TO_STOP. No state is
+    // written here: writing the target up front is what used to let a stop's
+    // STOPPED be resurrected by a start still landing. The final state is
+    // published by whoever knows the transition actually finished --
+    // plc_cycle_thread for RUNNING (just before it releases the first scan) and
+    // unload_plc_program for STOPPED (after the teardown joins) -- with the
+    // failure paths below publishing ERROR or EMPTY.
+    //
+    // The current TRANSITIONING state is itself the signal the task and
+    // dispatcher loops need: they run while plc_get_state() == RUNNING, so
+    // TRANSITIONING_TO_STOP breaks them exactly as the old early STOPPED did.
 
     if (new_state == PLC_STATE_RUNNING)
     {
@@ -1123,9 +1214,7 @@ extern "C" bool plc_set_state(PLCState new_state)
             if (libplc_path == NULL)
             {
                 log_error("Failed to find libplc file");
-                pthread_mutex_lock(&state_mutex);
-                plc_state = PLC_STATE_EMPTY;
-                pthread_mutex_unlock(&state_mutex);
+                plc_publish_final_state(PLC_STATE_EMPTY);
                 return false;
             }
 
@@ -1135,17 +1224,17 @@ extern "C" bool plc_set_state(PLCState new_state)
             if (plc_program == NULL)
             {
                 log_error("Failed to create PluginManager");
-                pthread_mutex_lock(&state_mutex);
-                plc_state = PLC_STATE_EMPTY;
-                pthread_mutex_unlock(&state_mutex);
+                plc_publish_final_state(PLC_STATE_EMPTY);
                 return false;
             }
         }
         if (load_plc_program(plc_program) < 0)
         {
-            pthread_mutex_lock(&state_mutex);
-            plc_state = PLC_STATE_ERROR;
-            pthread_mutex_unlock(&state_mutex);
+            /* load_plc_program publishes ERROR or EMPTY itself on the paths it
+             * knows about; this covers anything it does not, so a claimed
+             * transition can never end without a final state. Re-publishing the
+             * same value is harmless. */
+            if (plc_state_is_transitioning()) plc_publish_final_state(PLC_STATE_ERROR);
             return false;
         }
     }
@@ -1153,7 +1242,21 @@ extern "C" bool plc_set_state(PLCState new_state)
     {
         if (plc_program)
         {
-            if (unload_plc_program(plc_program) < 0) return false;
+            if (unload_plc_program(plc_program) < 0)
+            {
+                /* Teardown failed. STOPPED is still the honest landing -- there
+                 * is no program running -- and leaving TRANSITIONING set would
+                 * make the runtime refuse every command from here on. */
+                if (plc_state_is_transitioning()) plc_publish_final_state(PLC_STATE_STOPPED);
+                return false;
+            }
+        }
+        else
+        {
+            /* Nothing loaded, so the stop is already true. Still has to be
+             * published: the transition was claimed, and only a final state
+             * ends it. */
+            plc_publish_final_state(PLC_STATE_STOPPED);
         }
     }
 
