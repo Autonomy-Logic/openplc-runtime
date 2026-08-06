@@ -42,6 +42,24 @@ else (no comments). Match the tag format exactly, e.g. ``v4.1.3``.
 import os
 from pathlib import Path
 
+# Oldest OpenPLC Editor this runtime accepts programs from, published at
+# ``GET /api/capabilities`` as ``minEditorVersion``.
+#
+# The EDITOR is what compares this value against its own version and refuses
+# to upload — the runtime only advertises it (see DOPE-448).  That is
+# deliberate: an editor already installed in the field can never be locked out
+# by a runtime release, because nothing on the upload path enforces this.
+#
+# Raise this ONLY when an older editor genuinely produces a bundle this
+# runtime would mis-compile — a changed file layout, a renamed generated
+# artefact, a conf the compile step can no longer read.  It is NOT a build
+# counter: bumping it for a release that merely "changed something" locks out
+# working editors for no reason.  When in doubt, leave it alone.
+#
+# 4.1.0 is the floor because the STruC++ compile pipeline landed there; the
+# 4.0.x editors emitted MatIEC artefacts this runtime cannot build at all.
+MIN_EDITOR_VERSION = "4.1.0"
+
 
 def _resolve_runtime_version() -> str:
     # 1. Env var (CI Docker build-arg path).

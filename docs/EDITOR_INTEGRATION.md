@@ -206,6 +206,18 @@ The runtime uses self-signed TLS certificates by default. The OpenPLC Editor han
 
 ## API Endpoints Summary
 
+### Version and compatibility
+- `GET /api/version` - Runtime version string
+- `GET /api/capabilities` - Runtime version plus `minEditorVersion`, the oldest
+  editor this runtime accepts programs from
+
+Both are unauthenticated: the Editor calls them before login to decide whether
+it may talk to this device. `minEditorVersion` is **advertised, not enforced** —
+the Editor compares it against its own version and refuses to upload, so a
+runtime release can never lock out an editor already installed in the field.
+Editors that predate `/api/capabilities` get a 404 and fall back to
+`/api/version`, seeing no editor floor (their previous behaviour).
+
 ### Authentication
 - `POST /api/create-user` - Create user account
 - `POST /api/login` - Login and get JWT token
@@ -227,7 +239,7 @@ The runtime uses self-signed TLS certificates by default. The OpenPLC Editor han
 ### Debug Interface
 - `wss://host:8443/api/debug` - WebSocket debug interface
 
-All endpoints except `/api/create-user` (first user only), `/api/login`, and `/api/get-users-info` require JWT authentication.
+All endpoints except `/api/version`, `/api/capabilities`, `/api/create-user` (first user only), `/api/login`, and `/api/get-users-info` require JWT authentication.
 
 ## Error Handling
 

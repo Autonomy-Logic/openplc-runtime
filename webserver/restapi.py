@@ -17,7 +17,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import webserver.config
 from webserver.logger import get_logger
-from webserver.version import RUNTIME_VERSION
+from webserver.version import MIN_EDITOR_VERSION, RUNTIME_VERSION
 
 logger, buffer = get_logger("logger", use_buffer=True)
 
@@ -70,6 +70,49 @@ def restapi_version():
               description: Runtime version string (GitHub release tag)
     """
     return jsonify({"version": RUNTIME_VERSION}), 200
+
+
+@restapi_bp.route("/capabilities", methods=["GET"])
+def restapi_capabilities():
+    """Return what this runtime is and what it requires of an editor.
+
+    Unauthenticated, like ``/version`` — the editor calls this before
+    login to decide whether it may talk to this device at all.
+
+    ``minEditorVersion`` is the oldest editor this runtime accepts
+    programs from.  The runtime only ADVERTISES it: the editor compares
+    the value against its own version and refuses to upload.  Nothing on
+    the upload path enforces it, so shipping a new runtime can never lock
+    out an editor already installed in the field (DOPE-448).
+
+    Editors that predate this endpoint get a 404 and fall back to
+    ``/version``; they simply see no editor floor, which is exactly the
+    behaviour they had before.
+    ---
+    tags:
+      - Runtime
+    responses:
+      200:
+        description: Runtime capabilities retrieved
+        schema:
+          type: object
+          properties:
+            runtimeVersion:
+              type: string
+              description: Runtime version string (GitHub release tag)
+            minEditorVersion:
+              type: string
+              description: Oldest OpenPLC Editor version this runtime accepts programs from
+    """
+    return (
+        jsonify(
+            {
+                "runtimeVersion": RUNTIME_VERSION,
+                "minEditorVersion": MIN_EDITOR_VERSION,
+            }
+        ),
+        200,
+    )
 
 
 jwt = JWTManager(app_restapi)
