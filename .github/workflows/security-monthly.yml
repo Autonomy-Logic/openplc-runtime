@@ -79,6 +79,7 @@ jobs:
             --cdx "sbom/$NAME.cdx.json" \
             --osv-raw /tmp/osv-raw.json \
             --osv-delta /tmp/osv.json \
+            --baseline osv-scanner.toml \
             --out "security/${{ steps.m.outputs.month }}" \
             --date "${{ steps.m.outputs.month }}"
 

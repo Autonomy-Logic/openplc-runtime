@@ -32,6 +32,20 @@ python3 -m venv "$VENV"
 # shellcheck disable=SC2086
 "$VENV/bin/pip" install --quiet --disable-pip-version-check $PIP_ARGS -r requirements.txt
 
+# The runtime also provisions Python plugin venvs (scripts/manage_plugin_venvs.sh),
+# whose dependencies ship in the deployed product. Resolve them into the same env so
+# the SBOM covers the full deployed surface, not just root requirements. Best-effort
+# per plugin: a resolution conflict is surfaced as a warning (plugins run in isolated
+# venvs in production) rather than silently dropping coverage or failing the SBOM.
+shopt -s nullglob
+for req in core/src/drivers/plugins/python/*/requirements.txt; do
+  echo "==> + plugin requirements: $req"
+  # shellcheck disable=SC2086
+  "$VENV/bin/pip" install --quiet --disable-pip-version-check $PIP_ARGS -r "$req" \
+    || echo "::warning::could not fully resolve $req into the SBOM env (plugin uses an isolated venv in production)"
+done
+shopt -u nullglob
+
 echo "==> Generating CycloneDX 1.6 SBOM (cyclonedx-py, from the clean env)"
 python3 -m venv "$TOOLS"
 "$TOOLS/bin/pip" install --quiet --disable-pip-version-check --upgrade pip cyclonedx-bom==7.3.1

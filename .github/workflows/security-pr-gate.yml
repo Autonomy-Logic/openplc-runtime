@@ -58,7 +58,10 @@ jobs:
         run: |
           BASE="${{ github.event.pull_request.base.sha }}"
           git fetch --no-tags --depth=1 origin "$BASE" 2>/dev/null || true
-          CHANGED=$(git diff --name-only "$BASE" HEAD -- requirements.txt requirements-dev.txt pyproject.toml poetry.lock Pipfile Pipfile.lock 2>/dev/null || true)
+          # Includes the Python plugin manifests: their deps ship in the deployed
+          # product, so a PR adding a vulnerable plugin dependency must trigger a
+          # base resolve rather than passing without a diff.
+          CHANGED=$(git diff --name-only "$BASE" HEAD -- requirements.txt requirements-dev.txt pyproject.toml poetry.lock Pipfile Pipfile.lock 'core/src/drivers/plugins/python/*/requirements.txt' 2>/dev/null || true)
           if [ -n "$CHANGED" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
           echo "manifests changed: ${CHANGED:-<none>}"
 
@@ -84,11 +87,19 @@ jobs:
             exit 0
           fi
           NAME=$(node -p "require('./security/report-config.json').sbomBasename")
-          cp requirements.txt /tmp/head-req.bak 2>/dev/null || true
-          git show "${{ github.event.pull_request.base.sha }}:requirements.txt" > requirements.txt 2>/dev/null || : > requirements.txt
+          BASE="${{ github.event.pull_request.base.sha }}"
+          # Restore the BASE version of EVERY changed manifest (root + Python plugins)
+          # so the base SBOM reflects base deps; generate-sbom.sh resolves all of them.
+          MANIFESTS=$(git diff --name-only "$BASE" HEAD -- requirements.txt requirements-dev.txt 'core/src/drivers/plugins/python/*/requirements.txt' 2>/dev/null || true)
+          BAK=/tmp/manifest-bak; rm -rf "$BAK"; mkdir -p "$BAK"
+          for f in $MANIFESTS; do
+            mkdir -p "$BAK/$(dirname "$f")"
+            cp "$f" "$BAK/$f" 2>/dev/null || true
+            git show "$BASE:$f" > "$f" 2>/dev/null || : > "$f"
+          done
           bash scripts/generate-sbom.sh
           cp "sbom/$NAME.cdx.json" /tmp/base.cdx.json
-          cp /tmp/head-req.bak requirements.txt 2>/dev/null || true
+          for f in $MANIFESTS; do cp "$BAK/$f" "$f" 2>/dev/null || git checkout -- "$f" 2>/dev/null || true; done
           CFG=""; [ -f osv-scanner.toml ] && CFG="--config=osv-scanner.toml"
           set +e
           osv-scanner scan $CFG --format=json --output=/tmp/base.json /tmp/base.cdx.json

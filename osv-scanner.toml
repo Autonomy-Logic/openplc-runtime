@@ -1,125 +1,17 @@
-# osv-scanner suppression baseline for openplc-runtime = our VEX "not affected"
-# decisions from the SBOM & Vulnerability Report. Only advisories triaged as not
-# reachable are suppressed: click/python-dotenv (vulnerable function never called)
-# and the pytest/pre-commit/venv developer tooling. The live Flask runtime stack
-# is left UNSUPPRESSED so a new advisory there surfaces for human review (no AI
-# triage on this public repo). SOEM (C, EtherCAT) is a submodule tracked apart.
+# osv-scanner suppression baseline for openplc-runtime (VEX "not affected"/mitigated
+# decisions from the SBOM & Vulnerability Report).
 #
-# Regenerated from a live osv-scanner scan of the CycloneDX SBOM.
-# Each entry expires (ignoreUntil) so suppressions are re-reviewed quarterly.
-# Full rationale: security/<YYYY-MM>/OpenPLC-Runtime-Security-Report.md.
-
-[[IgnoredVulns]]
-id = "GHSA-58qw-9mgm-455v"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [pip] — see security report"
-
-[[IgnoredVulns]]
-id = "GHSA-5rjg-fvgr-3xxf"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [setuptools] — see security report"
-
-[[IgnoredVulns]]
-id = "GHSA-6w46-j5rx-g56g"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: test/developer tooling (pytest/pre-commit/virtualenv subtree), not part of the running server [pytest] — see security report"
-
-[[IgnoredVulns]]
-id = "GHSA-cx63-2mw6-8hw5"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [setuptools] — see security report"
-
-[[IgnoredVulns]]
-id = "GHSA-h35f-9h28-mq5c"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [setuptools] — see security report"
-
-[[IgnoredVulns]]
-id = "GHSA-jp4c-xjxw-mgf9"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [pip] — see security report"
-
-[[IgnoredVulns]]
-id = "GHSA-mf9w-mj56-hr94"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [vulnerable_code_not_in_execute_path]: the running Flask server never invokes the vulnerable function (click.edit is never called; only load_dotenv read is used, not set_key/unset_key) [python-dotenv] — see security report"
-
-[[IgnoredVulns]]
-id = "GHSA-qmgc-5h2g-mvrw"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: test/developer tooling (pytest/pre-commit/virtualenv subtree), not part of the running server [filelock] — see security report"
-
-[[IgnoredVulns]]
-id = "GHSA-r9hx-vwmv-q579"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [setuptools] — see security report"
-
-[[IgnoredVulns]]
-id = "GHSA-w853-jp5j-5j7f"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: test/developer tooling (pytest/pre-commit/virtualenv subtree), not part of the running server [filelock] — see security report"
-
-[[IgnoredVulns]]
-id = "GHSA-wf93-45jw-7689"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [pip] — see security report"
-
-[[IgnoredVulns]]
-id = "PYSEC-2022-43012"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [setuptools] — see security report"
-
-[[IgnoredVulns]]
-id = "PYSEC-2025-49"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [setuptools] — see security report"
-
-[[IgnoredVulns]]
-id = "PYSEC-2026-1374"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: test/developer tooling (pytest/pre-commit/virtualenv subtree), not part of the running server [filelock] — see security report"
-
-[[IgnoredVulns]]
-id = "PYSEC-2026-1375"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: test/developer tooling (pytest/pre-commit/virtualenv subtree), not part of the running server [filelock] — see security report"
-
-[[IgnoredVulns]]
-id = "PYSEC-2026-1845"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: test/developer tooling (pytest/pre-commit/virtualenv subtree), not part of the running server [pytest] — see security report"
-
-[[IgnoredVulns]]
-id = "PYSEC-2026-1918"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [setuptools] — see security report"
-
-[[IgnoredVulns]]
-id = "PYSEC-2026-196"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [pip] — see security report"
-
-[[IgnoredVulns]]
-id = "PYSEC-2026-2132"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [vulnerable_code_not_in_execute_path]: the running Flask server never invokes the vulnerable function (click.edit is never called; only load_dotenv read is used, not set_key/unset_key) [click] — see security report"
-
-[[IgnoredVulns]]
-id = "PYSEC-2026-2270"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [vulnerable_code_not_in_execute_path]: the running Flask server never invokes the vulnerable function (click.edit is never called; only load_dotenv read is used, not set_key/unset_key) [python-dotenv] — see security report"
-
-[[IgnoredVulns]]
-id = "PYSEC-2026-2875"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [pip] — see security report"
-
-[[IgnoredVulns]]
-id = "PYSEC-2026-2876"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [pip] — see security report"
-
-[[IgnoredVulns]]
-id = "PYSEC-2026-3447"
-ignoreUntil = "2026-10-01T00:00:00Z"
-reason = "VEX not_affected [component_not_present]: Python venv bootstrap tooling, not a runtime dependency of the deployed server [setuptools] — see security report"
+# Intentionally EMPTY. requirements.txt is unpinned and CI resolves it into a clean
+# venv, so the scanned dependency set is the currently-resolved one — which has no
+# known advisory. The previous entries were suppressing IDs that no longer resolve
+# (all were reported "unused ignores"); a stale suppression can only fail OPEN (a
+# revived vulnerable version would stay hidden until its ignoreUntil), so they are
+# removed rather than kept. The live stack is left UNSUPPRESSED, so any advisory
+# that surfaces in a future scan is shown for human review (no AI triage on this
+# public repo). SOEM (C, EtherCAT) is a submodule tracked apart.
+#
+# When a real advisory surfaces and is triaged "not affected"/"mitigated", add an
+# [[IgnoredVulns]] entry carrying a CISA VEX status + justification, e.g.:
+#   node scripts/gen-osv-ignores.mjs <triaged.csv> <YYYY-MM-DD> >> osv-scanner.toml
+#   VEX not_affected/<cisa_justification> [pkg]: <basis>
+#   VEX affected/mitigated [pkg]: <compensating control>

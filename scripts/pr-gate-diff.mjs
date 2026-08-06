@@ -105,17 +105,55 @@ function fixedOf(v) {
   return fixes.join(', ');
 }
 
+// Severity for an OSV *group* (aliased advisories = one underlying issue). OSV
+// reports one max_severity (a CVSS base score) per group. Prefer it, so a PYSEC
+// record that carries no severity of its own is NOT treated as an approximate HIGH
+// just because it is the same issue as a GHSA that holds the real (often lower)
+// score. Only fall back to the flagged conservative HIGH if the whole group has
+// no exact reading anywhere.
+function severityOfGroup(group, vulns) {
+  const sc = Number(group?.max_severity);
+  if (Number.isFinite(sc) && sc > 0) return { sev: bucketFromScore(sc), approx: false };
+  let best = null;
+  for (const v of vulns) {
+    const { sev, approx } = severityOf(v);
+    if (!approx && (best === null || ORDER.indexOf(sev) > ORDER.indexOf(best))) best = sev;
+  }
+  return best ? { sev: best, approx: false } : { sev: 'HIGH', approx: true };
+}
+
 // Key by advisory id AND package: the same CVE landing on a *different* package
 // in head must count as introduced; a version bump of an already-vulnerable
-// package (same id+package) must NOT.
+// package (same id+package) must NOT. We iterate OSV GROUPS, not raw
+// vulnerabilities, so a GHSA and its PYSEC/CVE aliases are counted — and can
+// block — exactly ONCE, at the group's real severity (osv-scanner emits GHSA and
+// PYSEC as separate vulnerabilities[] entries for the same issue). The group is
+// represented by its GHSA id when present, so the key is stable across base/head.
 function index(data) {
   const m = new Map();
-  for (const r of (data.results || [])) for (const p of (r.packages || [])) for (const v of (p.vulnerabilities || [])) {
+  for (const r of (data.results || [])) for (const p of (r.packages || [])) {
     const pkg = p.package?.name || '?';
-    const key = `${v.id}|${pkg}`;
-    if (!v.id || m.has(key)) continue;
-    const { sev, approx } = severityOf(v);
-    m.set(key, { id: v.id, sev, approx, pkg, ver: p.package?.version || '', fixed: fixedOf(v), summary: (v.summary || '').slice(0, 120) });
+    const ver = p.package?.version || '';
+    const byId = new Map((p.vulnerabilities || []).map((v) => [v.id, v]));
+    const grouped = new Set();
+    const units = [];
+    for (const g of (p.groups || [])) {
+      const ids = (g.ids || []).filter(Boolean);
+      if (!ids.length) continue;
+      ids.forEach((id) => grouped.add(id));
+      units.push({ group: g, ids });
+    }
+    // any vulnerability OSV did not place in a group becomes its own unit
+    for (const v of (p.vulnerabilities || [])) if (v.id && !grouped.has(v.id)) units.push({ group: null, ids: [v.id] });
+    for (const u of units) {
+      const repId = u.ids.find((id) => /^GHSA/i.test(id)) || [...u.ids].sort()[0];
+      const key = `${repId}|${pkg}`;
+      if (m.has(key)) continue;
+      const vs = u.ids.map((id) => byId.get(id)).filter(Boolean);
+      const rep = vs.find((v) => /^GHSA/i.test(v.id)) || vs[0] || {};
+      const { sev, approx } = severityOfGroup(u.group, vs);
+      m.set(key, { id: repId, sev, approx, pkg, ver, fixed: fixedOf(rep), summary: (rep.summary || '').slice(0, 120) });
+    }
   }
   return m;
 }

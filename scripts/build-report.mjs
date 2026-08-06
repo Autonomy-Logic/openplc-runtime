@@ -43,39 +43,134 @@ const topLicenses = Object.entries(licAgg).sort((a, b) => b[1] - a[1]).slice(0, 
 // osv-scanner.toml VEX baseline applied. Falls back to the config numbers if no
 // scan is passed (e.g. an ad-hoc local render).
 const loadScan = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
-function tally(scan) {
+function idSet(scan) {
   const bySev = { CRITICAL: 0, HIGH: 0, MODERATE: 0, LOW: 0 };
   const ids = new Set();
+  const aliases = new Map(); // id -> [aliases]; OSV reports GHSA ids, the baseline keys on CVEs
   for (const r of (scan?.results || [])) for (const p of (r.packages || [])) for (const v of (p.vulnerabilities || [])) {
     if (!v.id || ids.has(v.id)) continue; ids.add(v.id);
+    aliases.set(v.id, v.aliases || []);
     let s = (v.database_specific?.severity || '').toUpperCase();
     if (s === 'MEDIUM') s = 'MODERATE';
     if (!(s in bySev)) s = 'MODERATE';
     bySev[s]++;
   }
-  return { total: ids.size, bySev };
+  return { ids, total: ids.size, bySev, aliases };
 }
 const sevStr = (b) => `${b.CRITICAL} critical · ${b.HIGH} high · ${b.MODERATE} moderate · ${b.LOW} low`;
+
+// Parse the VEX baseline (osv-scanner.toml) into id -> { status, justification }.
+// Reasons are written in a machine-readable form by gen-osv-ignores.mjs / reclassify:
+//   VEX not_affected/<cisa_justification> [pkg / sev]: ...
+//   VEX affected/mitigated [pkg / sev]: ...
+function parseBaseline(p) {
+  const map = new Map();
+  const src = readFileSync(p, 'utf8');
+  for (const block of src.split(/\n(?=\[\[IgnoredVulns\]\])/)) {
+    if (!block.includes('[[IgnoredVulns]]')) continue;
+    const id = (block.match(/id\s*=\s*"([^"]+)"/) || [])[1];
+    const reason = (block.match(/reason\s*=\s*"([^"]*)"/) || [])[1] || '';
+    const m = reason.match(/VEX\s+(not_affected|affected)\/(\S+)/);
+    if (id && m) map.set(id, { status: m[1], justification: m[2] });
+  }
+  return map;
+}
+
 const rawScan = args['osv-raw'] ? loadScan(args['osv-raw']) : null;
 const deltaScan = args['osv-delta'] ? loadScan(args['osv-delta']) : null;
+const baseline = args.baseline ? parseBaseline(args.baseline) : null;
+
+// derived = the single source of truth for the report's numbers when a live scan
+// is available. Everything reconciles by construction; a mismatch fails the build.
+let derived = null;
 let advisoryRows;
 if (rawScan && deltaScan) {
-  const raw = tally(rawScan), delta = tally(deltaScan);
-  const suppressed = Math.max(0, raw.total - delta.total);
+  const raw = idSet(rawScan), delta = idSet(deltaScan);
+  const suppressedIds = [...raw.ids].filter((id) => !delta.ids.has(id));
+  const suppressed = suppressedIds.length;
+
+  if (baseline) {
+    // Split the suppressed set into CISA buckets straight from the baseline.
+    const byJust = {};
+    let mitigated = 0;
+    const unexplained = [];
+    for (const id of suppressedIds) {
+      const candidates = [id, ...(raw.aliases.get(id) || [])]; // match GHSA id or its CVE alias
+      const c = candidates.map((k) => baseline.get(k)).find(Boolean);
+      if (!c) { unexplained.push(id); continue; }
+      if (c.status === 'affected' && c.justification === 'mitigated') mitigated++;
+      else byJust[c.justification] = (byJust[c.justification] || 0) + 1;
+    }
+    const notAffected = Object.values(byJust).reduce((a, b) => a + b, 0);
+
+    // Fail-closed reconciliation. A published compliance artifact must add up.
+    const errs = [];
+    if (unexplained.length) errs.push(`${unexplained.length} suppressed advisories have no VEX entry in the baseline (e.g. ${unexplained.slice(0, 3).join(', ')})`);
+    if (notAffected + mitigated !== suppressed) errs.push(`buckets (${notAffected} not-affected + ${mitigated} mitigated) != ${suppressed} suppressed`);
+    if (delta.total + suppressed !== raw.total) errs.push(`surfacing (${delta.total}) + suppressed (${suppressed}) != raw (${raw.total})`);
+    if (errs.length) {
+      console.error('build-report: VEX numbers do not reconcile — refusing to render:\n  - ' + errs.join('\n  - '));
+      process.exit(1);
+    }
+    derived = { raw, delta, suppressed, notAffected, mitigated, byJust };
+  }
+
   const pct = raw.total ? Math.round(100 * suppressed / raw.total) : 0;
   advisoryRows = [
     { label: `Raw advisories detected (this scan · ${date})`, value: `${raw.total} (${sevStr(raw.bySev)})` },
-    { label: 'Not applicable — suppressed by the VEX baseline', value: `${suppressed} (${pct}%)`, badge: 'b-green' },
-    { label: 'Surfacing after suppression — review', value: `${delta.total} (${sevStr(delta.bySev)})`, badge: delta.total ? 'b-red' : 'b-green' },
+    ...(derived ? [
+      { label: 'Not affected — suppressed by the VEX baseline', value: `${derived.notAffected} (${raw.total ? Math.round(100 * derived.notAffected / raw.total) : 0}%)`, badge: 'b-green' },
+      { label: 'Affected, mitigated — suppressed with a compensating control', value: `${derived.mitigated}`, badge: 'b-amber' },
+    ] : [
+      { label: 'Not applicable — suppressed by the VEX baseline', value: `${suppressed} (${pct}%)`, badge: 'b-green' },
+    ]),
+    { label: 'Surfacing after suppression — requires triage', value: `${delta.total} (${sevStr(delta.bySev)})`, badge: delta.total ? 'b-red' : 'b-green' },
   ];
 } else {
+  // Same four-bucket shape as the derived path (raw = surfacing + mitigated +
+  // not-affected), so a local render never contradicts a CI render.
   advisoryRows = [
     { label: 'Raw advisories detected', value: `${cfg.advisories.total} (${cfg.advisories.critical} critical · ${cfg.advisories.high} high · ${cfg.advisories.moderate} moderate · ${cfg.advisories.low} low)` },
-    { label: 'AFFECTED — action required', value: `${cfg.counts.affected.n} (${cfg.counts.affected.sev})`, badge: 'b-red' },
-    { label: 'AFFECTED — mitigating controls in place', value: `${cfg.counts.mitigated.n} (${cfg.counts.mitigated.sev})`, badge: 'b-amber' },
-    { label: 'NOT AFFECTED', value: `${cfg.counts.notAffected.n} (${cfg.counts.notAffected.pct})`, badge: 'b-green' },
+    { label: 'Not affected — suppressed by the VEX baseline', value: `${cfg.counts.notAffected.n} (${cfg.counts.notAffected.pct})`, badge: 'b-green' },
+    { label: 'Affected, mitigated — suppressed with a compensating control', value: `${cfg.counts.mitigated.n} (${cfg.counts.mitigated.sev})`, badge: 'b-amber' },
+    { label: 'Surfacing after suppression — requires triage', value: `${cfg.counts.affected.n} (${cfg.counts.affected.sev})`, badge: 'b-red' },
   ];
 }
+
+// §5/§6/§9 counts come from `derived` when a scan+baseline are present, so the body
+// tables can never contradict the headline. cfg values remain the fallback.
+const justCount = (justification) => {
+  if (!derived) return null;
+  // config justification strings may prefix/annotate the enum — match by containment
+  for (const [enumKey, n] of Object.entries(derived.byJust)) if (justification.includes(enumKey)) return n;
+  return 0;
+};
+// The advisory register (vulnerabilities.csv) is produced from the DELTA scan, so
+// its row count must come from the delta scan whenever a live scan is available —
+// never from the static config (which drifts). Independent of the VEX baseline.
+const registerRows = deltaScan ? idSet(deltaScan).total : cfg.advisories.total;
+
+// The narrative sections (§4 affected, headline, criticalNote, mitigated) come
+// from the config, which is NOT auto-updated once AI triage is removed. If the
+// live scan surfaces advisories the config doesn't reflect, the document must not
+// claim "none require remediation": it renders a DRAFT banner and lists the
+// surfacing advisories from the scan, so live metrics and static narrative can
+// never disagree in a published attestation.
+function surfacingRows(scan) {
+  const seen = new Set(); const out = [];
+  for (const r of (scan?.results || [])) for (const p of (r.packages || [])) for (const v of (p.vulnerabilities || [])) {
+    const pkg = p.package?.name || '?';
+    const key = `${v.id}|${pkg}`;
+    if (!v.id || seen.has(key)) continue; seen.add(key);
+    let sev = (v.database_specific?.severity || '').toUpperCase();
+    if (sev === 'MEDIUM') sev = 'MODERATE';
+    out.push({ id: v.id, pkg, sev: sev || 'UNKNOWN', summary: String(v.summary || '').replace(/\s+/g, ' ').slice(0, 140) });
+  }
+  return out.sort((a, b) => a.pkg.localeCompare(b.pkg) || a.id.localeCompare(b.id));
+}
+const surfacing = deltaScan ? surfacingRows(deltaScan) : [];
+const isDraft = surfacing.length > 0;
+const draftLine = `DRAFT — ${surfacing.length} advisor${surfacing.length === 1 ? 'y' : 'ies'} surfacing above the VEX baseline await triage. Sections 4–7 reflect the last triaged state and may be stale until a reviewer updates report-config.json.`;
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 // report-config.json is written by the AI triage step, so its strings are
@@ -90,6 +185,7 @@ const stripTags = (s) => String(s ?? '').replace(/<[^>]+>/g, '');
 // ========================= MARKDOWN =========================
 const md = [];
 md.push(`# ${cfg.title} — Software Supply Chain Security Report (SBOM & VEX)\n`);
+if (isDraft) md.push(`> **${draftLine}**\n`);
 md.push('| | |');
 md.push('|---|---|');
 md.push(`| **Product** | ${cfg.title} (\`${cfg.product}\`) — ${cfg.subtitle} · v${cfg.version} |`);
@@ -118,15 +214,23 @@ md.push('|---|---|');
 for (const [l, n] of topLicenses) md.push(`| ${l} | ${n} |`);
 md.push(`\n**License finding:** ${stripTags(cfg.licenseNote)}\n`);
 md.push('## 4. Findings Requiring Remediation (Affected)\n');
+if (isDraft) {
+  md.push(`_Surfacing this scan — awaiting triage (${surfacing.length}):_\n`);
+  md.push('| Advisory | Package | Severity | Summary |');
+  md.push('|---|---|---|---|');
+  for (const s of surfacing) md.push(`| ${s.id} | \`${s.pkg}\` | ${s.sev} | ${stripTags(s.summary)} |`);
+  md.push('');
+}
 if (cfg.affected.length) {
+  if (isDraft) md.push('_Previously triaged priorities (may be stale):_\n');
   md.push('| Priority | Component | Installed | Fixed in | Severity | Reachability rationale |');
   md.push('|---|---|---|---|---|---|');
   for (const f of cfg.affected) md.push(`| ${f.priority} | \`${f.component}\` | ${f.installed} | ${f.fixedIn} | ${f.severity} | ${stripTags(f.rationale)} |`);
-} else md.push('**None.**');
+} else if (!isDraft) md.push('**None.**');
 md.push('\n## 5. Not Affected — VEX Justifications\n');
 md.push('| VEX justification (CISA) | Count | Representative components | Basis |');
 md.push('|---|---|---|---|');
-for (const n of cfg.notAffected) md.push(`| \`${n.justification}\` | ${n.count} | ${stripTags(n.components)} | ${stripTags(n.basis)} |`);
+for (const n of cfg.notAffected) md.push(`| \`${n.justification}\` | ${justCount(n.justification) ?? n.count} | ${stripTags(n.components)} | ${stripTags(n.basis)} |`);
 if (cfg.criticalNote) md.push(`\n**On critical severity.** ${stripTags(cfg.criticalNote)}\n`);
 md.push('\n## 6. Mitigated Findings\n');
 md.push('| Component | Advisories | Existing control |');
@@ -144,7 +248,7 @@ md.push('|---|---|---|');
 md.push(`| \`sbom/${cfg.sbomBasename}.cdx.json\` | CycloneDX 1.6 | Canonical machine-readable SBOM |`);
 md.push(`| \`sbom/${cfg.sbomBasename}.spdx.json\` | SPDX 2.3 (ISO/IEC 5962) | Procurement / compliance SBOM |`);
 md.push(`| \`sbom/${cfg.sbomBasename}.components.csv\` | CSV | Human-readable component inventory (${componentCount} rows) |`);
-md.push(`| \`sbom/vulnerabilities.csv\` | CSV | Full annotated advisory register (${cfg.advisories.total} rows) |`);
+md.push(`| \`sbom/vulnerabilities.csv\` | CSV | Full annotated advisory register (${registerRows} rows) |`);
 md.push(`\n---\n\n*Prepared by Autonomy Logic Engineering. Assessment date ${date}. Regenerate per release.*\n`);
 const mdOut = md.join('\n');
 
@@ -165,13 +269,14 @@ h2{font-size:1.25rem;margin-top:1.6em;color:var(--accent);}p,li{font-size:.95rem
 code{background:#f2f4f8;padding:1px 5px;border-radius:4px;font-size:.86em;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
 table{border-collapse:collapse;width:100%;margin:1em 0;font-size:.86rem;}th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top;}th{background:#f6f8fb;font-weight:600;}
 .meta td:first-child{font-weight:600;width:190px;background:#fafbfd;}
-.callout{border-left:4px solid var(--accent);background:#f4f8ff;padding:14px 18px;border-radius:0 8px 8px 0;margin:1.2em 0;}.callout.good{border-color:var(--green);background:#f1f9f4;}
+.callout{border-left:4px solid var(--accent);background:#f4f8ff;padding:14px 18px;border-radius:0 8px 8px 0;margin:1.2em 0;}.callout.good{border-color:var(--green);background:#f1f9f4;}.callout.warn{border-color:var(--red);background:#fdf1ef;}
 .badge{display:inline-block;padding:1px 8px;border-radius:20px;font-size:.72rem;font-weight:700;color:#fff;}.b-red{background:var(--red);}.b-amber{background:var(--amber);}.b-green{background:var(--green);}
 .muted{color:var(--muted);font-size:.85rem;}hr{border:0;border-top:1px solid var(--line);margin:2.5em 0;}
 @media print{body{padding:0;max-width:none;}h1{page-break-after:avoid;}table{page-break-inside:avoid;}a{color:var(--ink);text-decoration:none;}}
 </style></head><body>
 <h1 style="border:0;margin-bottom:0;">${esc(cfg.title)}</h1>
 <p class="muted" style="margin-top:0;">Software Supply Chain Security Report — SBOM &amp; VEX</p>
+${isDraft ? `<div class="callout warn"><strong>${esc(draftLine)}</strong></div>` : ''}
 <table class="meta">
 ${row(['Product', `${esc(cfg.title)} (<code>${esc(cfg.product)}</code>) — ${esc(cfg.subtitle)} · v${esc(cfg.version)}`])}
 ${row(['Report type', 'Software Bill of Materials (SBOM) &amp; Vulnerability Exploitability eXchange (VEX)'])}
@@ -197,12 +302,16 @@ ${topLicenses.map(([l, n]) => row([esc(l), String(n)])).join('\n')}
 </table>
 <div class="callout"><strong>License finding:</strong> ${rich(cfg.licenseNote)}</div>
 <h1>4. Findings Requiring Remediation (Affected)</h1>
-${cfg.affected.length ? `<table>${th(['Priority', 'Component', 'Installed', 'Fixed in', 'Severity', 'Reachability rationale'])}
+${isDraft ? `<p class="muted"><strong>Surfacing this scan — awaiting triage (${surfacing.length}):</strong></p>
+<table>${th(['Advisory', 'Package', 'Severity', 'Summary'])}
+${surfacing.map((s) => row([esc(s.id), `<code>${esc(s.pkg)}</code>`, esc(s.sev), esc(s.summary)])).join('\n')}
+</table>` : ''}
+${cfg.affected.length ? `${isDraft ? '<p class="muted"><strong>Previously triaged priorities (may be stale):</strong></p>' : ''}<table>${th(['Priority', 'Component', 'Installed', 'Fixed in', 'Severity', 'Reachability rationale'])}
 ${cfg.affected.map((f) => row([f.priority, `<code>${esc(f.component)}</code>`, esc(f.installed), esc(f.fixedIn), f.severity, rich(f.rationale)])).join('\n')}
-</table>` : '<div class="callout good"><strong>None.</strong></div>'}
+</table>` : (isDraft ? '' : '<div class="callout good"><strong>None.</strong></div>')}
 <h1>5. Not Affected — VEX Justifications</h1>
 <table>${th(['VEX justification (CISA)', 'Count', 'Representative components', 'Basis'])}
-${cfg.notAffected.map((n) => row([`<code>${esc(n.justification)}</code>`, n.count, rich(n.components), rich(n.basis)])).join('\n')}
+${cfg.notAffected.map((n) => row([`<code>${esc(n.justification)}</code>`, String(justCount(n.justification) ?? n.count), rich(n.components), rich(n.basis)])).join('\n')}
 </table>
 ${cfg.criticalNote ? `<div class="callout"><strong>On critical severity.</strong> ${rich(cfg.criticalNote)}</div>` : ''}
 <h1>6. Mitigated Findings</h1>
@@ -219,7 +328,7 @@ ${cfg.practices.map((p) => row([esc(p.practice), p.status === 'In place' ? badge
 ${row([`<code>sbom/${cfg.sbomBasename}.cdx.json</code>`, 'CycloneDX 1.6', 'Canonical machine-readable SBOM'])}
 ${row([`<code>sbom/${cfg.sbomBasename}.spdx.json</code>`, 'SPDX 2.3 (ISO/IEC 5962)', 'Procurement / compliance SBOM'])}
 ${row([`<code>sbom/${cfg.sbomBasename}.components.csv</code>`, 'CSV', `Human-readable component inventory (${componentCount} rows)`])}
-${row(['<code>sbom/vulnerabilities.csv</code>', 'CSV', `Full annotated advisory register (${cfg.advisories.total} rows)`])}
+${row(['<code>sbom/vulnerabilities.csv</code>', 'CSV', `Full annotated advisory register (${registerRows} rows)`])}
 </table>
 <hr/><p class="muted">Prepared by Autonomy Logic Engineering. Assessment date ${esc(date)}. Regenerate per release.</p>
 </body></html>`;

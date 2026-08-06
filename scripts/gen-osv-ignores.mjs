@@ -11,9 +11,18 @@
 //     arg2 = review-by date (YYYY-MM-DD) written as ignoreUntil
 //
 // The CSV must contain an advisory-id column (named cve / advisory / id) whose
-// cells hold OSV ids (GHSA-*, CVE-*, PYSEC-*, possibly pipe-separated). If a
-// verdict column is present (verdict / verdict_vex / reach), only not-affected
-// rows are suppressed; otherwise every listed id is suppressed (review!).
+// cells hold OSV ids (GHSA-*, CVE-*, PYSEC-*, possibly pipe-separated) and a
+// verdict column (verdict / verdict_vex / reach). Only rows the team classified
+// "not_affected" or "mitigated" are suppressed; a not_affected row is suppressed
+// ONLY if its verdict/basis names one of the five CISA justification enums
+// (component_not_present, vulnerable_code_not_present,
+// vulnerable_code_not_in_execute_path,
+// vulnerable_code_cannot_be_controlled_by_adversary,
+// inline_mitigations_already_exist). Everything else stays visible.
+//
+// Emitted reasons are machine-readable and parsed back by build-report.mjs:
+//   VEX not_affected/<cisa_justification> [pkg / sev]: <basis>
+//   VEX affected/mitigated [pkg / sev]: <control>          (a DISTINCT VEX status)
 
 import { readFileSync } from 'node:fs';
 
@@ -37,27 +46,57 @@ if (verdictCol < 0) {
   process.exit(1);
 }
 
-// Only these explicit statuses are suppressed. "affected"/"requires action" rows
-// (and anything ambiguous) are kept VISIBLE so they keep alerting.
-const isNotAffected = (v) => /\bnot[_ ]?affected\b|\bmitigat|\bnot[_ ]?applicable\b/i.test(v || '');
+// Optional package / severity columns — included in the reason for readability.
+const pkgCol = header.findIndex((h) => ['package', 'pkg', 'component'].includes(h));
+const sevCol = header.findIndex((h) => ['severity', 'sev'].includes(h));
+
+// A suppressible row is one the team classified "not affected" or "mitigated".
+// "affected"/"requires action" (and anything ambiguous) stay VISIBLE so they keep
+// alerting. `\bmitigat` is anchored to a status word so it does not match
+// "mitigation pending" / "needs mitigation" (which mean action is still required).
+const isMitigated = (v) => /\bmitigat(?:ed|ing)\b|inline[_ ]?mitigation/i.test(v || '');
+const isNotAffected = (v) => /\bnot[_ ]?affected\b|\bnot[_ ]?applicable\b/i.test(v || '');
+
+// The five CISA VEX "not_affected" justification enums. We only suppress with one
+// of these (or "mitigated"); a row that names none is left visible for triage.
+const CISA = ['component_not_present', 'vulnerable_code_not_present', 'vulnerable_code_not_in_execute_path', 'vulnerable_code_cannot_be_controlled_by_adversary', 'inline_mitigations_already_exist'];
+const cisaOf = (text) => CISA.find((e) => new RegExp(e, 'i').test(text || ''));
+
 const seen = new Set();
-let emitted = 0;
+let emitted = 0, skippedNoJust = 0;
 
 for (const r of rows) {
   const verdict = r[verdictCol] || '';
-  if (!isNotAffected(verdict)) continue; // keep actionable / ambiguous ones visible
+  const reasonText = (reasonCol >= 0 ? r[reasonCol] : '') || '';
+  const mitigated = isMitigated(verdict) || isMitigated(reasonText);
+  if (!mitigated && !isNotAffected(verdict)) continue; // keep actionable / ambiguous ones visible
+
+  // "affected/mitigated" is a distinct VEX status from "not_affected" — a
+  // compensating control is NOT a statement of non-affectedness (CISA VEX).
+  let tag, just;
+  if (mitigated) { tag = 'affected/mitigated'; just = null; }
+  else {
+    just = cisaOf(verdict) || cisaOf(reasonText);
+    if (!just) { skippedNoJust++; continue; } // refuse to suppress without a CISA justification
+    tag = `not_affected/${just}`;
+  }
+
   const ids = String(r[idCol] || '').split('|').map((s) => s.trim()).filter((s) => /^(GHSA|CVE|PYSEC)-/i.test(s));
-  const reason = (reasonCol >= 0 ? r[reasonCol] : verdict) || 'triaged not-affected';
+  const pkg = pkgCol >= 0 ? String(r[pkgCol] || '').trim() : '';
+  const sev = sevCol >= 0 ? String(r[sevCol] || '').trim() : '';
+  const loc = pkg ? ` [${pkg}${sev ? ` / ${sev}` : ''}]` : '';
+  const detail = reasonText.replace(/\s+/g, ' ').slice(0, 160) || (mitigated ? 'compensating control in place' : just);
   for (const id of ids) {
     if (seen.has(id)) continue;
     seen.add(id);
     console.log(`\n[[IgnoredVulns]]`);
     console.log(`id = "${id}"`);
     console.log(`ignoreUntil = "${reviewDate}T00:00:00Z"`);
-    console.log(`reason = ${JSON.stringify('VEX not_affected: ' + reason.replace(/\s+/g, ' ').slice(0, 160))}`);
+    console.log(`reason = ${JSON.stringify(`VEX ${tag}${loc}: ${detail}`)}`);
     emitted++;
   }
 }
+if (skippedNoJust) console.error(`Left ${skippedNoJust} not-affected row(s) visible: no CISA justification enum in the verdict/basis column.`);
 console.error(`Emitted ${emitted} ignore entries from ${rows.length} rows.`);
 
 function parseCsvLine(line) {
