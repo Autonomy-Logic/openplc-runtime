@@ -6,7 +6,8 @@ name: Security — monthly SBOM & VEX report
 # and opens a PR for the team to review. Nothing is merged automatically.
 #
 # Python variant: the SBOM is built from a clean venv (cyclonedx-py) and OSV
-# scans the resulting CycloneDX SBOM. Auth for the triage step: your Claude
+# scans the resulting CycloneDX SBOM. There is no AI triage on this public repo —
+# advisories that surface above the VEX baseline are shown in the PR for a human.
 
 on:
   schedule:
@@ -26,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -34,9 +35,9 @@ jobs:
         id: m
         run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
 
       # ---- deterministic: SBOM from a clean venv (CycloneDX + SPDX + CSV) ----
@@ -84,7 +85,7 @@ jobs:
             --date "${{ steps.m.outputs.month }}"
 
       - name: Render PDF
-        uses: browser-actions/setup-chrome@v1
+        uses: browser-actions/setup-chrome@c785b87e244131f27c9f19c1a33e2ead956ab7ce # v1
         id: chrome
       - name: Assemble dated folder
         run: |
@@ -92,21 +93,26 @@ jobs:
           MONTH="${{ steps.m.outputs.month }}"
           DIR="security/$MONTH"; mkdir -p "$DIR/sbom"
           cp "sbom/$NAME".cdx.json "sbom/$NAME".spdx.json "sbom/$NAME".components.csv sbom/vulnerabilities.csv "$DIR/sbom/"
-          REPORT="$DIR/$(ls "$DIR" | grep -E 'Security-Report\.html$')"
+          # Deterministic path (build-report.mjs derives the same basename from the
+          # report title) instead of ls|grep, which without pipefail yields "$DIR/"
+          # on no match and fails Chrome with an opaque error.
+          REPORT="$DIR/$(node -p "require('./security/report-config.json').title.replace(/[^A-Za-z0-9]+/g,'-')")-Security-Report.html"
+          [ -f "$REPORT" ] || { echo "::error::report HTML not found at $REPORT"; exit 1; }
           # --no-sandbox / --disable-dev-shm-usage: Chrome's zygote sandbox aborts
           # (SIGABRT) on GitHub runners; required for headless Chrome in CI.
-          # --disable-javascript: the report HTML is a static document written from
-          # report-config.json (AI-authored) — no JS should run while rendering it
-          # with local file:// access. Defense-in-depth on top of the HTML escaping.
+          # --blink-settings=scriptEnabled=false: the report HTML is a static document
+          # written from report-config.json — no JS should run while rendering it with
+          # local file:// access (the old --disable-javascript switch is a silent no-op
+          # in modern Chromium). Defense-in-depth on top of the HTML escaping.
           "${{ steps.chrome.outputs.chrome-path }}" --headless=new --no-sandbox --disable-dev-shm-usage \
-            --disable-javascript --disable-gpu --no-pdf-header-footer \
+            --blink-settings=scriptEnabled=false --disable-gpu --no-pdf-header-footer \
             --run-all-compositor-stages-before-draw --virtual-time-budget=5000 \
             --print-to-pdf="${REPORT%.html}.pdf" "file://$PWD/$REPORT"
           ln -sfn "$MONTH" security/latest
 
       # ---- delivery: open the PR for review ----
       - name: Open Pull Request
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6
         with:
           # A PR opened with GITHUB_TOKEN does not trigger other workflows; set a
           # SECURITY_BOT_TOKEN (GitHub App / fine-grained PAT) to make checks run.
