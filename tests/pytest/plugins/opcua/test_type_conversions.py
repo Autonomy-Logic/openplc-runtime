@@ -9,7 +9,6 @@ Tests the functions in opcua_utils.py:
 """
 
 import pytest
-import struct
 import sys
 from pathlib import Path
 
@@ -247,12 +246,16 @@ class TestConvertValueForOpcua:
         result = convert_value_for_opcua("FLOAT", 3.14159)
         assert abs(result - 3.14159) < 0.0001
 
-    def test_float_from_int_representation(self):
-        """Float stored as int representation should be unpacked."""
-        # Pack 3.14159 as int representation
-        int_repr = struct.unpack('I', struct.pack('f', 3.14159))[0]
-        result = convert_value_for_opcua("FLOAT", int_repr)
-        assert abs(result - 3.14159) < 0.0001
+    def test_float_from_int_is_the_number_not_a_bit_pattern(self):
+        """An int reaching a FLOAT node is that number, widened.
+
+        debug_read_value hands over a real float (c_float / c_double), so
+        there is no bit pattern to decode. The MatIEC-era code reinterpreted
+        ints through struct.unpack, which turned a REAL of 1 into 1.4e-45.
+        """
+        assert convert_value_for_opcua("FLOAT", 1) == 1.0
+        assert convert_value_for_opcua("FLOAT", -7) == -7.0
+        assert convert_value_for_opcua("FLOAT", 1109917696) == 1109917696.0
 
     def test_float_zero(self):
         """Zero float should work correctly."""
@@ -270,12 +273,16 @@ class TestConvertValueForOpcua:
         result = convert_value_for_opcua("REAL", 3.14159)
         assert abs(result - 3.14159) < 0.0001
 
-    def test_real_from_int_representation(self):
-        """REAL stored as int representation should be unpacked."""
-        # Pack 3.14159 as int representation
-        int_repr = struct.unpack('I', struct.pack('f', 3.14159))[0]
-        result = convert_value_for_opcua("REAL", int_repr)
-        assert abs(result - 3.14159) < 0.0001
+    def test_real_from_int_is_the_number_not_a_bit_pattern(self):
+        """Same contract as FLOAT, for both REAL and LREAL."""
+        assert convert_value_for_opcua("REAL", 1) == 1.0
+        assert convert_value_for_opcua("LREAL", 42) == 42.0
+
+    # LREAL conversions (IEC 61131-3 LREAL = 64-bit float)
+    def test_lreal_from_float(self):
+        """LREAL values should pass through as float."""
+        result = convert_value_for_opcua("LREAL", -273.15)
+        assert abs(result - (-273.15)) < 0.0001
 
     # STRING conversions
     def test_string_normal(self):
@@ -396,26 +403,40 @@ class TestConvertValueForPlc:
         assert convert_value_for_plc("LINT", 1000000000) == 1000000000
 
     # FLOAT conversions
-    def test_float_to_int_representation(self):
-        """Float should be packed to int representation for PLC storage."""
-        result = convert_value_for_plc("FLOAT", 3.14159)
-        # Verify by unpacking back
-        unpacked = struct.unpack('f', struct.pack('I', result))[0]
-        assert abs(unpacked - 3.14159) < 0.0001
+    def test_float_stays_a_float(self):
+        """Floats are handed over as numbers, not as their bit pattern.
+
+        debug_write_value encodes with c_float / c_double, so packing the bit
+        pattern here would store the pattern as the value.
+        """
+        assert convert_value_for_plc("FLOAT", 3.5) == 3.5
+        assert convert_value_for_plc("FLOAT", -273.15) == -273.15
 
     def test_float_zero(self):
-        """Zero float should pack correctly."""
-        result = convert_value_for_plc("FLOAT", 0.0)
-        unpacked = struct.unpack('f', struct.pack('I', result))[0]
-        assert unpacked == 0.0
+        """Zero float should stay zero."""
+        assert convert_value_for_plc("FLOAT", 0.0) == 0.0
+
+    def test_float_from_int_is_widened_not_reinterpreted(self):
+        """A client sending an int to a Float node means that number."""
+        assert convert_value_for_plc("FLOAT", 3) == 3.0
 
     # REAL conversions (IEC 61131-3 REAL = 32-bit float)
-    def test_real_to_int_representation(self):
-        """REAL should be packed to int representation for PLC storage."""
-        result = convert_value_for_plc("REAL", 3.14159)
-        # Verify by unpacking back
-        unpacked = struct.unpack('f', struct.pack('I', result))[0]
-        assert abs(unpacked - 3.14159) < 0.0001
+    def test_real_stays_a_float(self):
+        """REAL and LREAL follow the same contract as FLOAT."""
+        assert convert_value_for_plc("REAL", 3.5) == 3.5
+        assert convert_value_for_plc("LREAL", -273.15) == -273.15
+
+    def test_real_write_of_42_is_not_a_bit_pattern(self):
+        """Regression: forum thread "Error changing values via OPC UA".
+
+        A client writing 42 saw 1.109918e+09 on a REAL and
+        4.6311077918204232e+18 on an LREAL -- the IEEE-754 bit patterns of
+        42.0 stored as the value itself.
+        """
+        assert convert_value_for_plc("REAL", 42.0) == 42.0
+        assert convert_value_for_plc("REAL", 42.0) != 1109917696
+        assert convert_value_for_plc("LREAL", 42.0) == 42.0
+        assert convert_value_for_plc("LREAL", 42.0) != 4631107791820423168
 
     # STRING conversions
     def test_string_normal(self):
@@ -536,30 +557,19 @@ class TestRoundTripConversions:
             assert plc_val == val
 
     def test_float_roundtrip(self):
-        """FLOAT values should survive round-trip conversion (with float precision)."""
-        for val in [0.0, 3.14159, -273.15, 1000000.5]:
-            # First convert float to int representation (as stored in PLC)
-            int_repr = struct.unpack('I', struct.pack('f', val))[0]
-            # Convert to OPC-UA
-            opcua_val = convert_value_for_opcua("FLOAT", int_repr)
-            # Convert back to PLC
+        """FLOAT values should survive round-trip conversion."""
+        for val in [0.0, 3.14159, -273.15, 1000000.5, 42.0]:
+            opcua_val = convert_value_for_opcua("FLOAT", val)
             plc_val = convert_value_for_plc("FLOAT", opcua_val)
-            # Unpack and compare
-            result = struct.unpack('f', struct.pack('I', plc_val))[0]
-            assert abs(result - val) < 0.0001
+            assert abs(plc_val - val) < 0.0001
 
     def test_real_roundtrip(self):
-        """REAL values should survive round-trip conversion (same as FLOAT)."""
-        for val in [0.0, 3.14159, -273.15, 1000000.5]:
-            # First convert float to int representation (as stored in PLC)
-            int_repr = struct.unpack('I', struct.pack('f', val))[0]
-            # Convert to OPC-UA
-            opcua_val = convert_value_for_opcua("REAL", int_repr)
-            # Convert back to PLC
-            plc_val = convert_value_for_plc("REAL", opcua_val)
-            # Unpack and compare
-            result = struct.unpack('f', struct.pack('I', plc_val))[0]
-            assert abs(result - val) < 0.0001
+        """REAL and LREAL values should survive round-trip conversion."""
+        for datatype in ("REAL", "LREAL"):
+            for val in [0.0, 3.14159, -273.15, 1000000.5, 42.0]:
+                opcua_val = convert_value_for_opcua(datatype, val)
+                plc_val = convert_value_for_plc(datatype, opcua_val)
+                assert abs(plc_val - val) < 0.0001
 
     def test_string_roundtrip(self):
         """STRING values should survive round-trip conversion."""
