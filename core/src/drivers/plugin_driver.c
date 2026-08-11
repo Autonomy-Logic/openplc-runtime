@@ -738,6 +738,21 @@ int plugin_driver_cleanup_init(plugin_driver_t *driver)
     return cleaned;
 }
 
+void plugin_driver_release_gil(void)
+{
+    if (!Py_IsInitialized())
+    {
+        return;
+    }
+    /* Idempotent: a second call with the GIL already released would be calling
+     * PyEval_SaveThread() without holding it. */
+    if (main_tstate != NULL)
+    {
+        return;
+    }
+    main_tstate = PyEval_SaveThread();
+}
+
 // Call the thread function for each plugin
 int plugin_driver_start(plugin_driver_t *driver)
 {
@@ -752,11 +767,19 @@ int plugin_driver_start(plugin_driver_t *driver)
         return 0;
     }
 
-    // Only manage Python GIL if we have Python plugins and Python is initialized
+    // Only manage Python GIL if we have Python plugins and Python is initialized.
+    //
+    // Acquire-then-save leaves this thread without the GIL, which is the point:
+    // the plugin threads started below need it. The saved state is deliberately
+    // NOT stored in main_tstate -- this runs on the PLC cycle thread, and
+    // main_tstate is what plugin_driver_destroy restores before Py_FinalizeEx(),
+    // which must be the MAIN thread's state. Overwriting it here meant a shutdown
+    // after a start restored a state belonging to a thread that no longer exists.
+    // plugin_driver_release_gil() owns that value.
     if (has_python_plugin && Py_IsInitialized())
     {
-        gstate      = PyGILState_Ensure();
-        main_tstate = PyEval_SaveThread();
+        gstate = PyGILState_Ensure();
+        PyEval_SaveThread();
     }
 
     for (int i = 0; i < driver->plugin_count; i++)
@@ -971,10 +994,18 @@ void plugin_driver_destroy(plugin_driver_t *driver)
 
     if (python_initialized)
     {
-        PyGILState_Release(local_gstate);
+        /* Py_FinalizeEx() requires the GIL, and getting there with it released is
+         * what used to segfault the runtime on every graceful shutdown where the
+         * PLC had never run (Py_FinalizeEx -> PyImport_GetModule with no thread
+         * state). main_tstate is only non-NULL once the GIL has been saved by the
+         * main thread, so when it is NULL the right move is to KEEP the state
+         * PyGILState_Ensure() gave us above rather than dropping it. */
         if (main_tstate != NULL)
         {
+            PyGILState_Release(local_gstate);
             PyEval_RestoreThread(main_tstate);
+            /* Consumed: a second destroy must not restore a stale state. */
+            main_tstate = NULL;
         }
         Py_FinalizeEx();
     }

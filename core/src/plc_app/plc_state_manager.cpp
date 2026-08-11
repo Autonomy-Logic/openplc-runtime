@@ -1323,6 +1323,38 @@ extern "C" bool plc_set_state(PLCState new_state)
 
 extern "C" void plc_state_manager_cleanup(void)
 {
+    /* Let an in-flight transition finish before tearing anything down.
+     *
+     * Shutdown is the one state change that does not go through
+     * plc_claim_transition, so it can land on top of a start that is still
+     * running. Tearing down from there is not safe at any point of it: during
+     * plugin bring-up load_plc_program has not assigned plc_thread yet, so the
+     * join below would run on a handle that was never set; a moment later the
+     * cycle thread is mid-bring-up and would have RUNNING published underneath
+     * the teardown. Both disappear if the transition is allowed to land first --
+     * then this is an ordinary stop of a RUNNING (or ERROR, or EMPTY) runtime.
+     *
+     * Bounded by the same constant the transition worker waits on, so a
+     * transition that will never land cannot hold the process open forever; the
+     * teardown then proceeds and does what it can. */
+    const int poll_ms = 20;
+    int       waited  = 0;
+    while (plc_state_is_transitioning() && waited < PLC_TRANSITION_LANDING_TIMEOUT_MS)
+    {
+        struct timespec poll = { 0, (long)poll_ms * 1000000L };
+        nanosleep(&poll, nullptr);
+        waited += poll_ms;
+    }
+    if (waited > 0)
+    {
+        log_info("Shutdown waited %d ms for the state change in flight to land", waited);
+    }
+    if (plc_state_is_transitioning())
+    {
+        log_warn("Shutdown proceeding with a state change still in flight after %d ms",
+                 waited);
+    }
+
     if (plc_program) unload_plc_program(plc_program);
 }
 

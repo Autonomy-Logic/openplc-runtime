@@ -100,6 +100,19 @@ int plugin_driver_start(plugin_driver_t *driver);
 int plugin_driver_stop(plugin_driver_t *driver);
 void plugin_driver_destroy(plugin_driver_t *driver);
 
+/* Release the Python GIL held by the calling thread after plugin loading, and
+ * remember the thread state so plugin_driver_destroy() can restore it before
+ * Py_FinalizeEx().
+ *
+ * Call from the MAIN thread, once, after plugins are loaded. The runtime used to
+ * call PyEval_SaveThread() directly and drop the returned state on the floor,
+ * which left the driver with nothing to restore: shutdown then finalised the
+ * interpreter with no GIL held and segfaulted -- on every graceful shutdown of a
+ * runtime whose PLC had never started, safe mode included. Keeping the
+ * bookkeeping next to the code that consumes it is what makes that
+ * unrepresentable. No-op when Python was never initialised. */
+void plugin_driver_release_gil(void);
+
 // Cycle hook functions for native plugins (called during PLC scan cycle)
 // These iterate through all active native plugins and call their cycle hooks
 // Plugins opt-in by implementing cycle_start/cycle_end; opt-out by not implementing them

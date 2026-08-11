@@ -27,7 +27,10 @@ volatile sig_atomic_t keep_running = 1;
 plugin_driver_t *plugin_driver     = NULL;
 extern bool print_logs;
 
-void handle_sigint(int sig)
+/* Graceful shutdown for both signals that mean "stop": SIGINT from an
+ * interactive Ctrl-C, and SIGTERM from a supervisor. Drops out of the main loop
+ * so the program is stopped and the plugin driver torn down on the way out. */
+void handle_shutdown_signal(int sig)
 {
     (void)sig;
     keep_running = 0;
@@ -83,12 +86,22 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // Handle SIGINT for graceful shutdown
+    // Handle SIGINT and SIGTERM for graceful shutdown.
+    //
+    // SIGTERM matters as much as SIGINT and was missing: RuntimeManager stops the
+    // runtime with process.terminate() (SIGTERM) and only escalates to
+    // process.kill() after a 5 s wait, and systemd's default KillSignal is also
+    // SIGTERM. With no handler installed the default disposition applied, so every
+    // supervisor-initiated stop killed the process outright -- the PLC program was
+    // never unloaded, plugins never stopped, the journal never flushed, and the
+    // program .so never dlclose'd. The escalation to SIGKILL is the backstop for a
+    // shutdown that hangs, not the normal path.
     struct sigaction sa;
-    sa.sa_handler = handle_sigint;
+    sa.sa_handler = handle_shutdown_signal;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
     // Install the process-wide SIGUSR1 wake handler exactly once. Task
     // threads (plc_state_manager.cpp) and EtherCAT bus threads
@@ -115,17 +128,20 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // Start UNIX socket server
-    if (setup_unix_socket() != 0)
-    {
-        log_error("Failed to set up UNIX socket");
-        return -1;
-    }
-
     // Initialize plugin driver system BEFORE loading the PLC program.
     // plc_set_state(RUNNING) triggers load_plc_program() which uses the plugin
     // driver to update config and re-init plugins, and plc_cycle_thread() calls
     // plugin_driver_start() after image tables are populated.
+    //
+    // This block runs BEFORE the command socket exists, deliberately. A START
+    // accepted while it is still executing runs load_plc_program() ->
+    // plugin_driver_init() on the transition worker at the same time as this
+    // thread is inside plugin_driver_load_config()/plugin_driver_init(), and
+    // rebuilding a plugin slot dlcloses the .so -- so a plugin sleeping in its
+    // own init() on the other thread returns into an unmapped page. Observed as a
+    // SIGSEGV in the main thread at an address inside the plugin that had just
+    // been unloaded. Transition arbitration cannot help here: there is only one
+    // transition, racing driver setup rather than another transition.
     plugin_driver = plugin_driver_create();
     if (plugin_driver)
     {
@@ -146,11 +162,26 @@ int main(int argc, char *argv[])
         // This prevents a deadlock where the main thread holds the GIL forever
         // while sleeping, blocking other threads (like the unix socket thread)
         // from using Python when handling commands like START.
+        //
+        // Through the driver rather than PyEval_SaveThread() directly: the driver
+        // has to restore this exact thread state before Py_FinalizeEx() at
+        // shutdown, and the state was previously discarded here.
         if (Py_IsInitialized())
         {
-            PyEval_SaveThread();
+            plugin_driver_release_gil();
             log_info("[PLUGIN]: Released Python GIL");
         }
+    }
+
+    // Start the command socket only now that the plugin driver is fully built.
+    // Everything the socket can ask for -- START, STOP, PLUGIN_CMD, STATS --
+    // reaches into the driver, so serving commands before this point was serving
+    // them against a half-configured one. The webserver already tolerates the
+    // socket appearing a moment later: it connects, retries, and polls.
+    if (setup_unix_socket() != 0)
+    {
+        log_error("Failed to set up UNIX socket");
+        return -1;
     }
 
     // Start PLC (skip in safe mode to allow program upload without loading the
@@ -159,7 +190,7 @@ int main(int argc, char *argv[])
     // Use plc_begin_transition() rather than plc_set_state() directly so the
     // auto-start is arbitrated by plc_claim_transition() like any
     // socket-originated START command. This prevents a race where the socket
-    // listener (already running above) accepts a START before the auto-start
+    // listener (started just above) accepts a START before the auto-start
     // finishes, causing two concurrent load_plc_program() calls — and two
     // dispatcher threads. plc_begin_transition() also makes the start
     // asynchronous, which is fine: the main thread just sleeps below.
