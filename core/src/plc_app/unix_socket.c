@@ -1,10 +1,10 @@
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -12,30 +12,34 @@
 #include "../drivers/plugin_driver.h"
 #include "debug_handler.h"
 #include "plc_state_manager.h"
+#include "plc_switch.h"
 #include "scan_cycle_manager.h"
 #include "unix_socket.h"
 #include "utils/log.h"
 #include "utils/utils.h"
 
 extern volatile sig_atomic_t keep_running;
-extern PLCState plc_state;
 
 static plugin_driver_t *g_plugin_driver = NULL;
+
+/* How long run_transition waits to observe the landing before reconciling with
+ * the mode switch, and how often it looks. The bound comes from
+ * plc_state_manager.h so that the watchdog's stuck-transition bound is derived
+ * from the same number and can only fire strictly later. */
+#define LANDING_WAIT_MS PLC_TRANSITION_LANDING_TIMEOUT_MS
+#define LANDING_POLL_MS 20
 
 void unix_socket_set_plugin_driver(void *driver)
 {
     g_plugin_driver = (plugin_driver_t *)driver;
 }
 
-// Flag to prevent overlapping state transitions (e.g. START while STOP is in progress).
-// Set before spawning the transition thread, cleared when the transition completes.
-static atomic_int is_transitioning = 0;
-
-static void *transition_worker(void *arg)
+// Body of a claimed transition: perform it, wait for it to land, then reconcile
+// with the mode switch. Normally runs on the detached worker spawned below, but
+// is called directly when that worker cannot be spawned -- the transition has
+// already been claimed by then, and it has to be completed by somebody.
+static bool run_transition(PLCState target)
 {
-    PLCState target = *(PLCState *)arg;
-    free(arg);
-
     bool result = plc_set_state(target);
     if (!result)
     {
@@ -43,67 +47,145 @@ static void *transition_worker(void *arg)
                   target == PLC_STATE_RUNNING ? "RUNNING" : "STOPPED");
     }
 
-    atomic_store(&is_transitioning, 0);
+    // Wait for the landing before reconciling.
+    //
+    // plc_set_state(RUNNING) returns as soon as load_plc_program() has spawned
+    // the PLC thread; that thread publishes RUNNING later, once the workers exist
+    // (measured at ~4 s on an SLM-RP4, most of it plugin bring-up). Reconciling
+    // straight after plc_set_state() therefore ran while the state was still
+    // TRANSITIONING_TO_RUN and threw the switch movement away without acting on
+    // it -- losing precisely the flip-during-a-start this exists to catch.
+    //
+    // Polling rather than a condvar handshake: the state IS the interlock, so
+    // nothing else can begin a transition while we wait, and there is no lock
+    // held here. The bound only exists so a transition that never lands cannot
+    // strand this thread -- the watchdog is what turns that into a reported
+    // fault.
+    for (int waited_ms = 0; plc_state_is_transitioning() && waited_ms < LANDING_WAIT_MS;
+         waited_ms += LANDING_POLL_MS)
+    {
+        struct timespec poll = { .tv_sec = 0, .tv_nsec = LANDING_POLL_MS * 1000000L };
+        nanosleep(&poll, NULL);
+    }
+
+    // Reconcile with the mode switch.
+    //
+    // Requests are DROPPED while a transition is in flight, which on its own
+    // loses the switch's intent: flip to STOP during a start and the stop
+    // vanishes, leaving the PLC running with the switch in STOP and nobody
+    // retrying. Rather than queueing requests, the runtime remembers only
+    // whether the switch MOVED (plc_switch, so this works for every platform's
+    // plugin) and compares the position it came to rest at against the state we
+    // actually landed on. Several flips during one transition collapse to the
+    // final position, which is the only one that matters.
+    //
+    // Gated on movement, deliberately: an editor stop with the switch untouched
+    // records no movement, so nothing reconciles it away. Comparing position to
+    // state unconditionally would make Stop impossible whenever the switch sits
+    // in RUN. It also cannot ping-pong — each pass consumes the movement, and
+    // only the switch physically moving sets it again.
+    if (plc_switch_take_movement())
+    {
+        const PLCState landed = plc_get_state();
+        const PLCState wanted = plc_switch_allows_run() ? PLC_STATE_RUNNING : PLC_STATE_STOPPED;
+
+        // Only reconcile from a clean landing. ERROR and EMPTY are not states to
+        // "correct" — restarting a faulted or programless PLC because a switch
+        // moved would fight the fault rather than report it.
+        if ((landed == PLC_STATE_RUNNING || landed == PLC_STATE_STOPPED) && landed != wanted)
+        {
+            log_warn("Mode switch came to rest in %s but the PLC landed on %s — correcting",
+                     wanted == PLC_STATE_RUNNING ? "RUN" : "STOP",
+                     landed == PLC_STATE_RUNNING ? "RUNNING" : "STOPPED");
+
+            // The movement record was consumed above, so a refusal here would
+            // throw the switch's intent away for good: the state is already
+            // final, which leaves the socket thread free to claim a transition in
+            // the gap, and the spawn paths below can fail too. Put the record
+            // back so the next landing reconciles instead. This cannot ping-pong
+            // -- the retry compares position against state again, and a landing
+            // that agrees with the switch just consumes the record.
+            if (!plc_begin_transition(wanted))
+            {
+                plc_switch_note_movement();
+                log_warn("Correction to %s did not go through — re-armed for the "
+                         "next landing",
+                         wanted == PLC_STATE_RUNNING ? "RUN" : "STOP");
+            }
+        }
+    }
+
+    return result;
+}
+
+static void *transition_worker(void *arg)
+{
+    PLCState target = *(PLCState *)arg;
+    free(arg);
+
+    run_transition(target);
     return NULL;
 }
 
 // Start a background thread that performs the (potentially slow) state
-// transition. Returns true if the thread was spawned, false otherwise.
+// transition. Returns false when the request was refused; otherwise the
+// transition is under way (or, if the worker could not be spawned, has already
+// been completed on this thread -- see below).
 //
-// This is the single authoritative entry point for all state transitions:
-// socket START/STOP commands, plugin-initiated stops, AND the boot auto-start
-// in plc_main.c (which calls this instead of plc_set_state() directly so that
-// all paths share the same guard). That last point closes the race where the
-// socket listener accepts a START while the auto-start is still in flight,
-// which previously could spawn two concurrent load_plc_program() calls.
+// The single authoritative entry point for every state change: socket
+// START/STOP, plugin-initiated requests from a mode switch, and the boot
+// auto-start in plc_main.c. All of them come here rather than calling
+// plc_set_state() directly, so one arbiter decides what may begin.
 //
-// Two safety guards on the entry path:
+// That arbiter is plc_claim_transition(), which under the state lock refuses a
+// request while the state is TRANSITIONING_TO_RUN or TRANSITIONING_TO_STOP, and
+// refuses a request for the state the runtime is already in. There is no second
+// flag to keep in step with plc_state -- the state IS the interlock, which is
+// what makes "you cannot change state while changing state" true by
+// construction rather than by two variables agreeing.
 //
-//   1. CAS on `is_transitioning` 0→1: collapses concurrent calls. A
-//      misbehaving plugin spinning on plugin_request_plc_stop, or the boot
-//      path racing with a socket START, would otherwise pile up detached
-//      pthread workers. The CAS means only the first call fires the worker;
-//      everything else is a cheap return.
-//
-//   2. Re-check current state AFTER the CAS wins: closes the
-//      check-then-call race where the caller sees RUNNING, calls in,
-//      and the state flips to STOPPED before we spawn the worker. We'd
-//      otherwise dispatch a no-op transition, leaving STATUS reporting
-//      TRANSITIONING for the worker's lifetime for nothing.
+// Requests refused here are dropped, not queued. The switch's intent survives
+// via the movement reconciliation in transition_worker above.
 bool plc_begin_transition(PLCState target)
 {
-    int expected = 0;
-    if (!atomic_compare_exchange_strong(&is_transitioning, &expected, 1))
+    if (!plc_claim_transition(target))
     {
-        // Another transition is already in flight. Don't pile on.
         return false;
     }
 
-    if (plc_get_state() == target)
-    {
-        // State already at target — release the gate and bail. No
-        // worker needed; reporting STATUS:TRANSITIONING for a no-op
-        // would just confuse external pollers.
-        atomic_store(&is_transitioning, 0);
-        return false;
-    }
-
+    // Claimed but the worker cannot be spawned: run the transition on this thread
+    // rather than publishing a landing.
+    //
+    // Publishing STOPPED here used to look like the safe way out, and it is the
+    // opposite. The claim has already published TRANSITIONING_TO_STOP, which is
+    // what makes the dispatcher and workers leave their loops -- so on a stop from
+    // RUNNING the scan really does end, but unload_plc_program never runs:
+    // journal_cleanup, plugin_driver_stop, plugin_manager_destroy and the dlclose
+    // are all skipped, plc_program stays non-NULL, plc_thread is never joined, and
+    // STATUS reports a stop that tore nothing down. The next start then re-enters
+    // plugin_driver_init on live plugin state and re-runs a program whose statics
+    // were never reinitialised. (For a start from EMPTY it also reported "no
+    // program" as "stopped".)
+    //
+    // Completing it here blocks this caller for the duration -- the socket is
+    // single-client, so the editor waits -- which on a thread-or-memory exhaustion
+    // path is the cheaper of the two costs by a wide margin.
     PLCState *arg = malloc(sizeof(PLCState));
     if (!arg)
     {
-        log_error("Failed to allocate transition argument");
-        atomic_store(&is_transitioning, 0);
-        return false;
+        log_error("Failed to allocate transition argument — completing the "
+                  "transition on the calling thread");
+        return run_transition(target);
     }
     *arg = target;
 
     pthread_t tid;
     if (pthread_create(&tid, NULL, transition_worker, arg) != 0)
     {
-        log_error("Failed to create transition thread: %s", strerror(errno));
+        log_error("Failed to create transition thread (%s) — completing the "
+                  "transition on the calling thread", strerror(errno));
         free(arg);
-        atomic_store(&is_transitioning, 0);
-        return false;
+        return run_transition(target);
     }
     pthread_detach(tid);
     return true;
@@ -133,27 +215,16 @@ static ssize_t read_line(int fd, char *buffer, size_t max_length)
 
 static void format_status_response(char *response, size_t response_size)
 {
-    // While a transition is in progress, plc_state has already flipped
-    // to the target value (so the running task threads can exit their
-    // `while (plc_get_state() == RUNNING)` loops) but the actual
-    // load/unload work is still happening on the transition worker
-    // thread. Reporting the bare state here would tell external
-    // pollers STATUS:STOPPED while the runtime can't yet accept a
-    // START — they'd race ahead and get COMMAND:BUSY.
-    //
-    // Surfacing TRANSITIONING for the duration of the worker keeps
-    // _wait_for_plc_state(STOPPED) on the webserver side honest:
-    // STATUS:STOPPED is reported only after the worker has completed
-    // and is_transitioning has cleared.
-    if (atomic_load(&is_transitioning))
-    {
-        strncpy(response, "STATUS:TRANSITIONING\n", response_size);
-        return;
-    }
-
     PLCState current_state = plc_get_state();
 
-    if (current_state == PLC_STATE_INIT)
+    // Both directions report as the one TRANSITIONING string that external
+    // callers already know. The distinction is internal (intent), and the
+    // webserver's _wait_for_plc_idle plus the editor both key off this wire
+    // value, so it stays exactly as it was.
+    if (current_state == PLC_STATE_TRANSITIONING_TO_RUN ||
+        current_state == PLC_STATE_TRANSITIONING_TO_STOP)
+        strncpy(response, "STATUS:TRANSITIONING\n", response_size);
+    else if (current_state == PLC_STATE_INIT)
         strncpy(response, "STATUS:INIT\n", response_size);
     else if (current_state == PLC_STATE_RUNNING)
         strncpy(response, "STATUS:RUNNING\n", response_size);
@@ -167,11 +238,29 @@ static void format_status_response(char *response, size_t response_size)
         strncpy(response, "STATUS:UNKNOWN\n", response_size);
 }
 
+static void format_switch_response(char *response, size_t response_size)
+{
+    // Report the mode-switch position a VPP plugin last stored. Devices with no
+    // switch-aware plugin always answer RUN.
+    if (plc_get_switch_position() == PLC_SWITCH_RUN)
+        strncpy(response, "SWITCH:RUN\n", response_size);
+    else
+        strncpy(response, "SWITCH:STOP\n", response_size);
+}
+
 void handle_unix_socket_commands(const char *command, char *response, size_t response_size)
 {
-    // While a state transition is in progress, only allow PING and STATUS.
-    // Everything else gets COMMAND:BUSY so commands cannot overlap.
-    if (atomic_load(&is_transitioning))
+    // While a state transition is in progress, only allow the reads: you cannot
+    // change state while it is changing, and everything else gets COMMAND:BUSY.
+    //
+    // SWITCH belongs here with PING and STATUS. It is a plain atomic load of
+    // plc_switch with no coupling to plc_state, so there is nothing mid-change for
+    // it to expose -- and answering BUSY meant the webserver dropped
+    // switchPosition from every status response for the whole duration of a start
+    // or stop (parse_switch_position returns None) and GET /switch reported
+    // "unknown". An editor that decides whether a start is allowed from that field
+    // lost it precisely while polling through the transition it had just asked for.
+    if (plc_state_is_transitioning())
     {
         if (strcmp(command, "PING") == 0)
         {
@@ -180,6 +269,10 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
         else if (strcmp(command, "STATUS") == 0)
         {
             format_status_response(response, response_size);
+        }
+        else if (strcmp(command, "SWITCH") == 0)
+        {
+            format_switch_response(response, response_size);
         }
         else
         {
@@ -212,10 +305,22 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
             strncpy(response, "STOP:ERROR\n", response_size);
         }
     }
+    else if (strcmp(command, "SWITCH") == 0)
+    {
+        format_switch_response(response, response_size);
+    }
     else if (strcmp(command, "START") == 0)
     {
         PLCState current_state = plc_get_state();
-        if (current_state != PLC_STATE_RUNNING)
+        // Hardware is authoritative: refuse rather than queue, so the editor
+        // can tell the user to flip the switch instead of leaving a start
+        // pending. Checked before the transition is ever begun.
+        if (!plc_switch_allows_run())
+        {
+            strncpy(response, "START:ERROR_SWITCH_STOP\n", response_size);
+            log_warn("Received START command but the mode switch is in STOP");
+        }
+        else if (current_state != PLC_STATE_RUNNING)
         {
             if (plc_begin_transition(PLC_STATE_RUNNING))
                 strncpy(response, "START:OK\n", response_size);

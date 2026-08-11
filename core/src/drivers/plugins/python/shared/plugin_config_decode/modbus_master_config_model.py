@@ -269,16 +269,36 @@ class ModbusMasterConfig(PluginConfigContract):
         return f"{self.__class__.__name__}(devices={len(self.devices)})"
 
 
+# What a read point does with its IEC buffer while communication is down.
+# The editor exposes this per I/O group ("Keep last value" / "Set to zero");
+# these are the strings it writes into the plugin config.
+ERROR_HANDLING_KEEP_LAST = "keep-last-value"
+ERROR_HANDLING_SET_TO_ZERO = "set-to-zero"
+ERROR_HANDLING_MODES = (ERROR_HANDLING_KEEP_LAST, ERROR_HANDLING_SET_TO_ZERO)
+
+
 class ModbusIoPointConfig:
     """
     Model for a single Modbus I/O point configuration.
     """
-    def __init__(self, fc: int, offset: str, iec_location: str, length: int, cycle_time_ms: int = 1000):
+    def __init__(
+        self,
+        fc: int,
+        offset: str,
+        iec_location: str,
+        length: int,
+        cycle_time_ms: int = 1000,
+        error_handling: str = ERROR_HANDLING_KEEP_LAST,
+    ):
         self.fc = fc  # Function code
         self.offset = offset  # Modbus register offset
         self.iec_location: IECAddress = parse_iec_address(iec_location)  # IEC location (as IECAddress)
         self.length = length  # Length of the data
         self.cycle_time_ms = cycle_time_ms  # Polling cycle time in milliseconds
+        # Behaviour on communication failure. Defaults to keeping the last
+        # value, which is what every config written before this field existed
+        # implies — and what the runtime did unconditionally.
+        self.error_handling = error_handling
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ModbusIoPointConfig':
@@ -294,7 +314,25 @@ class ModbusIoPointConfig:
         except KeyError as e:
             raise ValueError(f"Missing required field in Modbus I/O point config: {e}")
 
-        return cls(fc=fc, offset=offset, iec_location=iec_location, length=length, cycle_time_ms=cycle_time_ms)
+        # An unrecognised mode falls back to the historical behaviour instead
+        # of failing the load: a config from a newer editor must not take the
+        # whole device offline over one unknown string.
+        error_handling = data.get("error_handling", ERROR_HANDLING_KEEP_LAST)
+        if error_handling not in ERROR_HANDLING_MODES:
+            print(
+                f"(WARN) Unknown error_handling '{error_handling}' for I/O point "
+                f"{iec_location}; falling back to '{ERROR_HANDLING_KEEP_LAST}'"
+            )
+            error_handling = ERROR_HANDLING_KEEP_LAST
+
+        return cls(
+            fc=fc,
+            offset=offset,
+            iec_location=iec_location,
+            length=length,
+            cycle_time_ms=cycle_time_ms,
+            error_handling=error_handling,
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -310,7 +348,8 @@ class ModbusIoPointConfig:
             "offset": self.offset,
             "iec_location": iec_str,
             "len": self.length,
-            "cycle_time_ms": self.cycle_time_ms
+            "cycle_time_ms": self.cycle_time_ms,
+            "error_handling": self.error_handling
         }
 
     def __repr__(self) -> str:

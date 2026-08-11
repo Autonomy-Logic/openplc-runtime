@@ -1,5 +1,7 @@
 import pytest
 from .modbus_master_config_model import (
+    ERROR_HANDLING_KEEP_LAST,
+    ERROR_HANDLING_SET_TO_ZERO,
     parse_iec_address,
     ModbusIoPointConfig,
     ModbusDeviceConfig,
@@ -50,6 +52,44 @@ def test_modbus_io_point_from_dict():
     d = point.to_dict()
     assert d["fc"] == 3
     assert d["iec_location"].startswith("%I")
+
+def test_modbus_io_point_error_handling_defaults_to_keep_last():
+    # Configs written before the field existed must keep behaving as they did:
+    # the runtime left the last value in the buffer when a read failed.
+    point = ModbusIoPointConfig.from_dict(
+        {"fc": 3, "offset": "40001", "iec_location": "%IW0", "len": 2}
+    )
+    assert point.error_handling == ERROR_HANDLING_KEEP_LAST
+
+
+def test_modbus_io_point_parses_set_to_zero():
+    point = ModbusIoPointConfig.from_dict(
+        {
+            "fc": 3,
+            "offset": "40001",
+            "iec_location": "%IW0",
+            "len": 2,
+            "error_handling": "set-to-zero",
+        }
+    )
+    assert point.error_handling == ERROR_HANDLING_SET_TO_ZERO
+    assert point.to_dict()["error_handling"] == "set-to-zero"
+
+
+def test_modbus_io_point_unknown_error_handling_falls_back():
+    # A config from a newer editor must not take the whole device offline over
+    # one unrecognised string.
+    point = ModbusIoPointConfig.from_dict(
+        {
+            "fc": 3,
+            "offset": "40001",
+            "iec_location": "%IW0",
+            "len": 2,
+            "error_handling": "explode",
+        }
+    )
+    assert point.error_handling == ERROR_HANDLING_KEEP_LAST
+
 
 def test_modbus_io_point_missing_field():
     data = {

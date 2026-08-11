@@ -3,7 +3,6 @@
 import ctypes
 import os
 import sys
-import struct
 from typing import Any
 from asyncua import ua
 
@@ -140,24 +139,13 @@ def convert_value_for_opcua(datatype: str, value: Any) -> Any:
             clamped_value = max(0, min(18446744073709551615, int(value)))
             return ctypes.c_uint64(clamped_value).value
 
-        elif datatype.upper() in ["FLOAT", "REAL"]:
-            # Float/Real values are stored as integers in debug variables
-            # Convert back to float if it's an integer representation
-            if isinstance(value, int):
-                try:
-                    return struct.unpack('f', struct.pack('I', value))[0]
-                except struct.error:
-                    return float(value)
-            return float(value)
-
-        elif datatype.upper() == "LREAL":
-            # LREAL (64-bit float) values are stored as integers in debug variables
-            # Convert back to double if it's an integer representation
-            if isinstance(value, int):
-                try:
-                    return struct.unpack('d', struct.pack('Q', value))[0]
-                except struct.error:
-                    return float(value)
+        elif datatype.upper() in ["FLOAT", "REAL", "LREAL"]:
+            # debug_read_value casts the raw bytes to c_float / c_double, so
+            # what arrives here is the number itself, never its bit pattern.
+            # The MatIEC-era debug protocol did hand over raw integers, and the
+            # struct.unpack that decoded them outlived it -- on the STruC++
+            # debug surface it would turn an integer-valued REAL of 1 into
+            # 1.4e-45. Mirror of the write-side fix below.
             return float(value)
 
         elif datatype.upper() == "STRING":
@@ -312,25 +300,13 @@ def convert_value_for_plc(datatype: str, value: Any) -> Any:
             clamped_value = max(0, min(18446744073709551615, int(value)))
             return ctypes.c_uint64(clamped_value).value
 
-        elif datatype.upper() in ["FLOAT", "REAL"]:
-            # Convert float to int representation for storage
-            if isinstance(value, float):
-                try:
-                    return struct.unpack('I', struct.pack('f', value))[0]
-                except struct.error:
-                    return int(value)
-            else:
-                return int(float(value))
-
-        elif datatype.upper() == "LREAL":
-            # Convert double to int representation for storage (64-bit)
-            if isinstance(value, float):
-                try:
-                    return struct.unpack('Q', struct.pack('d', value))[0]
-                except struct.error:
-                    return int(value)
-            else:
-                return int(float(value))
+        elif datatype.upper() in ["FLOAT", "REAL", "LREAL"]:
+            # debug_write_value packs this through c_float / c_double, so hand
+            # it the number. Packing the bit pattern here -- correct back when
+            # the debug protocol exchanged raw integers -- meant a client
+            # writing 42.0 stored 1109917696.0 in the PLC (forum thread
+            # "Error changing values via OPC UA").
+            return float(value)
 
         elif datatype.upper() == "STRING":
             return str(value)
@@ -391,8 +367,11 @@ def convert_value_for_plc(datatype: str, value: Any) -> Any:
         log_warn(f"Failed to convert value {value} to {datatype}, using default: {e}")
         if datatype.upper() == "BOOL":
             return 0
-        elif datatype.upper() in ["FLOAT", "REAL"]:
-            return 0
+        elif datatype.upper() in ["FLOAT", "REAL", "LREAL"]:
+            # Float default, matching the c_float / c_double the write path
+            # encodes with -- an int default would be a (harmless, but
+            # misleading) type mismatch.
+            return 0.0
         elif datatype.upper() == "STRING":
             return ""
         elif datatype.upper() in TIME_DATATYPES:

@@ -163,8 +163,16 @@ extern "C"
      *
      * Shared globals no longer use a runtime-owned mutex — each carries its own
      * std::mutex inside the .so (strucpp GlobalVar<V>), taken per access in
-     * run(). The config-scope helpers copy the shared-global tail slice at the
-     * dispatcher's quiescent frame boundary (see image_tables.cpp).
+     * run(). The config-scope helpers copy the located CONFIGURATION VAR_GLOBALs
+     * at the dispatcher's quiescent frame boundary. Those entries are identified
+     * at load by joining locatedVars[].pointer against the .so's locatedGlobals[]
+     * on pointer identity — NOT by their position in locatedVars[], and NOT as a
+     * contiguous slice (see image_tables.cpp).
+     *
+     * locatedGlobals[] is OPTIONAL: a program exported before STruC++ emitted it
+     * does not export the accessors, in which case located configuration globals
+     * are not synced at all (the program still runs, POU-local located I/O is
+     * unaffected) and a warning is logged once at load.
      * --------------------------------------------------------------------- */
     void image_tables_threaded_copy_in(uint32_t offset, uint32_t count);
     void image_tables_threaded_copy_out(uint32_t offset, uint32_t count);

@@ -56,7 +56,24 @@ CC     := $(if $(CCACHE),$(CCACHE) gcc,gcc)
 # when the per-upload generated.hpp changes, leaving a stale locatedVarsCount
 # (a constexpr baked in at compile time) in the shim object -> ABI/count
 # mismatch against the freshly compiled program -> runtime crash.
-CXXFLAGS := -std=c++17 -O1 -pipe -fPIC -Wall -DSTRUCPP_THREADED -MMD -MP \
+# -fno-gnu-unique: THIS FLAG IS WHAT MAKES STOP ACTUALLY STOP. The program .so is
+# dlopen'd on start and dlclose'd on stop, but glibc refuses to unmap any DSO
+# that defines STB_GNU_UNIQUE symbols -- and strucpp's headers emit them for
+# template statics (strucpp::GLOBALVAR, GLOBALBOOL), the debug type_ops table,
+# and statics inside inline functions. dlclose() therefore returned success,
+# logged "PLC program unloaded successfully", and left the mapping resident with
+# every static still holding the previous run's values. Because find_libplc_file
+# hands dlopen the SAME path on the next start, glibc matched the still-loaded
+# object by name and handed it straight back: the program resumed mid-state
+# instead of restarting. A CTU that had counted to 100 stayed at 100 across
+# stop/start, so the program looked alive in the debugger but did nothing.
+# Suppressing the unique attribute costs nothing here -- these symbols are
+# private to this one .so (plc_main exports only the ext_strucpp_* hook
+# pointers, never the mangled statics), so there is no cross-DSO identity to
+# preserve. Verified on an SLM-RP4: with the flag the .so leaves
+# /proc/<pid>/maps on every stop and re-maps fresh on every start; without it,
+# it never leaves -- one build's image stays pinned for the life of the process.
+CXXFLAGS := -std=c++17 -O1 -pipe -fPIC -Wall -DSTRUCPP_THREADED -fno-gnu-unique -MMD -MP \
             -Wno-unknown-pragmas -Wno-deprecated-declarations \
             -I $(GENERATED_DIR) -I $(RUNTIME_INC) -I $(PYTHON_INC)
 

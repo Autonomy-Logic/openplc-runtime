@@ -202,3 +202,38 @@ def parse_modbus_offset(offset_str: str) -> int:
         raise ValueError(f"Offset must be non-negative, got: {address}")
 
     return address
+
+
+def get_read_count_for_io_point(point: Any) -> int:
+    """
+    Returns how many Modbus registers/coils a read of `point` asks for.
+
+    Registers (FC 3/4) scale with the IEC element width — a %MD point needs
+    two registers per element — while coils and discrete inputs (FC 1/2) map
+    1:1. Callers use this both to size the Modbus request and to size the
+    zero-fill that replaces a failed read (see `get_zero_payload_for_io_point`),
+    which is why it derives everything from the point itself.
+    """
+    if point.fc in (3, 4):
+        registers_per_element = get_modbus_registers_count_for_iec_size(point.iec_location.size)
+        return point.length * registers_per_element
+    return point.length
+
+
+def get_zero_payload_for_io_point(point: Any) -> List[Any]:
+    """
+    Returns a zeroed payload shaped like the response a successful read of
+    `point` would have produced.
+
+    Used to honour the I/O group's "set to zero" error handling: instead of a
+    separate buffer-writing path, the failed read feeds this through the same
+    conversion + batched mutex write the happy path uses, so a zeroed value
+    lands exactly where a real one would.
+
+    Booleans come back as `False` (FC 1/2 responses carry bits), registers as
+    integer zeros.
+    """
+    count = get_read_count_for_io_point(point)
+    if point.fc in (1, 2):
+        return [False] * count
+    return [0] * count
