@@ -17,6 +17,7 @@
 #include "../plc_app/image_tables.h"
 #include "../plc_app/journal_buffer.h"
 #include "../plc_app/plc_state_manager.h"
+#include "../plc_app/plc_switch.h"
 #include "../plc_app/unix_socket.h"
 #include "../plc_app/utils/log.h"
 #include "../plc_app/utils/utils.h"
@@ -158,18 +159,68 @@ static uint8_t plugin_debug_write(uint8_t arr, uint16_t elem,
 // plugin's own stop_loop is invoked. Plugins that enter fault-stopped state
 // are expected to short-circuit their I/O during that window.
 //
-// No pre-check on plc_get_state() here: plc_begin_transition does the
-// check atomically (under the same gate that prevents concurrent
-// transitions), so doing it again outside would just re-introduce the
-// check-then-act race the gate is there to close.
+// No pre-check on plc_get_state() here: plc_claim_transition does the check
+// atomically under the state lock (the state being TRANSITIONING is itself what
+// prevents concurrent transitions), so doing it again outside would just
+// re-introduce the check-then-act race that interlock exists to close.
 static void plugin_request_plc_stop(const char *reason)
 {
-    log_error("[PLUGIN] stop requested: %s", reason ? reason : "(no reason given)");
+    log_info("[PLUGIN] stop requested: %s", reason ? reason : "(no reason given)");
     if (!plc_begin_transition(PLC_STATE_STOPPED))
     {
         // Either the PLC is already stopping/stopped or another stop
         // is already in flight — either way, nothing to do.
+        //
+        // A stop dropped because another transition was in flight is recovered
+        // by the switch-movement reconciliation once that transition lands (see
+        // transition_worker in unix_socket.c), so a switch-driven stop cannot be
+        // lost here.
         log_warn("[PLUGIN] stop request collapsed (already transitioning or not running)");
+    }
+}
+
+// Mirror of plugin_request_plc_stop, routed through the same transition path
+// the socket START command uses. Gated on the mode switch: hardware is
+// authoritative no matter who asks, so a plugin cannot start a PLC whose switch
+// reads STOP (which also keeps a buggy plugin from defeating the interlock).
+static void plugin_request_plc_start(const char *reason)
+{
+    if (!plc_switch_allows_run())
+    {
+        log_warn("[PLUGIN] start request refused — mode switch is in STOP (%s)",
+                 reason ? reason : "(no reason given)");
+        return;
+    }
+
+    log_info("[PLUGIN] start requested: %s", reason ? reason : "(no reason given)");
+    if (!plc_begin_transition(PLC_STATE_RUNNING))
+    {
+        log_warn("[PLUGIN] start request collapsed (already transitioning or already running)");
+    }
+}
+
+// Thin adapter so plugin_types.h can declare the position as a plain int and
+// stay free of the plc_app include tree.
+static void plugin_set_switch_position(int position)
+{
+    plc_set_switch_position(position == PLC_SWITCH_STOP ? PLC_SWITCH_STOP : PLC_SWITCH_RUN);
+}
+
+// Map the runtime's PLCState onto the values FC 0x49 reports on baremetal
+// targets (0 = STOPPED, 1 = RUNNING, 2 = ERROR) so vendor code driving a
+// status LED can share one mapping across both target types. INIT and EMPTY
+// are v4-only and have no physical meaning for an indicator, so they report as
+// STOPPED — the PLC is not executing.
+static int plugin_get_plc_state(void)
+{
+    switch (plc_get_state())
+    {
+    case PLC_STATE_RUNNING:
+        return 1;
+    case PLC_STATE_ERROR:
+        return 2;
+    default:
+        return 0;
     }
 }
 
@@ -687,6 +738,21 @@ int plugin_driver_cleanup_init(plugin_driver_t *driver)
     return cleaned;
 }
 
+void plugin_driver_release_gil(void)
+{
+    if (!Py_IsInitialized())
+    {
+        return;
+    }
+    /* Idempotent: a second call with the GIL already released would be calling
+     * PyEval_SaveThread() without holding it. */
+    if (main_tstate != NULL)
+    {
+        return;
+    }
+    main_tstate = PyEval_SaveThread();
+}
+
 // Call the thread function for each plugin
 int plugin_driver_start(plugin_driver_t *driver)
 {
@@ -701,11 +767,19 @@ int plugin_driver_start(plugin_driver_t *driver)
         return 0;
     }
 
-    // Only manage Python GIL if we have Python plugins and Python is initialized
+    // Only manage Python GIL if we have Python plugins and Python is initialized.
+    //
+    // Acquire-then-save leaves this thread without the GIL, which is the point:
+    // the plugin threads started below need it. The saved state is deliberately
+    // NOT stored in main_tstate -- this runs on the PLC cycle thread, and
+    // main_tstate is what plugin_driver_destroy restores before Py_FinalizeEx(),
+    // which must be the MAIN thread's state. Overwriting it here meant a shutdown
+    // after a start restored a state belonging to a thread that no longer exists.
+    // plugin_driver_release_gil() owns that value.
     if (has_python_plugin && Py_IsInitialized())
     {
-        gstate      = PyGILState_Ensure();
-        main_tstate = PyEval_SaveThread();
+        gstate = PyGILState_Ensure();
+        PyEval_SaveThread();
     }
 
     for (int i = 0; i < driver->plugin_count; i++)
@@ -920,10 +994,18 @@ void plugin_driver_destroy(plugin_driver_t *driver)
 
     if (python_initialized)
     {
-        PyGILState_Release(local_gstate);
+        /* Py_FinalizeEx() requires the GIL, and getting there with it released is
+         * what used to segfault the runtime on every graceful shutdown where the
+         * PLC had never run (Py_FinalizeEx -> PyImport_GetModule with no thread
+         * state). main_tstate is only non-NULL once the GIL has been saved by the
+         * main thread, so when it is NULL the right move is to KEEP the state
+         * PyGILState_Ensure() gave us above rather than dropping it. */
         if (main_tstate != NULL)
         {
+            PyGILState_Release(local_gstate);
             PyEval_RestoreThread(main_tstate);
+            /* Consumed: a second destroy must not restore a stale state. */
+            main_tstate = NULL;
         }
         Py_FinalizeEx();
     }
@@ -1024,6 +1106,13 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
 
     // Plugin-initiated async PLC stop (for unrecoverable hardware faults).
     args->request_plc_stop = plugin_request_plc_stop;
+
+    // Run/stop control: the same transition path the socket START / STOP
+    // commands drive, plus the mode-switch store the runtime gates starts on
+    // and the state read a plugin uses to drive a status LED.
+    args->request_plc_start   = plugin_request_plc_start;
+    args->set_switch_position = plugin_set_switch_position;
+    args->get_plc_state       = plugin_get_plc_state;
 
     // PLC base tick time. Runtime owns base_tick_ns; on first plugin init
     // (before symbols_init) it carries the 20 ms default, so plugins must

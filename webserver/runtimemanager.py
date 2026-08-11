@@ -28,6 +28,12 @@ if not HAS_PSUTIL:
 MAX_RAPID_CRASHES = 3
 RAPID_CRASH_WINDOW = 30  # seconds
 
+# How long to let the runtime shut down gracefully after SIGTERM before killing
+# it. Has to exceed the worst-case graceful stop: the runtime waits for a state
+# change already in flight to land (a boot start with plugin bring-up is ~4 s on
+# an SLM-RP4) and then tears the program and plugins down.
+RUNTIME_SHUTDOWN_TIMEOUT_S = 15
+
 
 class RuntimeManager:
     def __init__(self, runtime_path, plc_socket, log_socket, print_debug=False):
@@ -244,17 +250,32 @@ class RuntimeManager:
         self.monitor_thread.join(timeout=5)
         time.sleep(1)
         if self.process:
+            # SIGTERM now reaches a handler in the runtime, so terminate() starts a
+            # real shutdown: it stops the PLC program, waits out any state change
+            # already in flight (a boot start is ~4 s on an SLM-RP4), stops the
+            # plugins and unloads the program. Wait long enough for that to finish,
+            # or the SIGKILL below would preempt the very cleanup the signal asked
+            # for -- which is what happened for every stop while SIGTERM had no
+            # handler at all. The kill stays as the backstop for a hung teardown.
             if HAS_PSUTIL and isinstance(self.process, psutil.Process):
                 self.process.terminate()
                 try:
-                    self.process.wait(timeout=5)
+                    self.process.wait(timeout=RUNTIME_SHUTDOWN_TIMEOUT_S)
                 except (psutil.TimeoutExpired, psutil.Error):
+                    logger.warning(
+                        "PLC runtime did not exit within %d s of SIGTERM; killing it",
+                        RUNTIME_SHUTDOWN_TIMEOUT_S,
+                    )
                     self.process.kill()
             elif isinstance(self.process, subprocess.Popen):
                 self.process.terminate()
                 try:
-                    self.process.wait(timeout=5)
+                    self.process.wait(timeout=RUNTIME_SHUTDOWN_TIMEOUT_S)
                 except (subprocess.TimeoutExpired, subprocess.SubprocessError):
+                    logger.warning(
+                        "PLC runtime did not exit within %d s of SIGTERM; killing it",
+                        RUNTIME_SHUTDOWN_TIMEOUT_S,
+                    )
                     self.process.kill()
             self.process = None
         self._safe_stop_log_server()
@@ -328,6 +349,22 @@ class RuntimeManager:
         except Exception as e:
             logger.error("Failed to get PLC status (unexpected): %s", e)
             return "STATUS:ERROR\n"
+
+    def switch_plc(self) -> str:
+        """
+        Send SWITCH command to read the run/stop mode-switch position.
+
+        Answers ``SWITCH:RUN`` or ``SWITCH:STOP``. Devices with no switch-aware
+        VPP plugin always report RUN, so callers need no special case for them.
+        """
+        try:
+            return self.runtime_socket.send_and_receive("SWITCH\n")
+        except (OSError, socket.error) as e:
+            logger.error("Failed to get mode switch position: %s", e)
+            return "SWITCH:ERROR\n"
+        except Exception as e:
+            logger.error("Failed to get mode switch position (unexpected): %s", e)
+            return "SWITCH:ERROR\n"
 
     def stats_plc(self):
         """

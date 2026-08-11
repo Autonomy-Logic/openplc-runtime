@@ -81,8 +81,24 @@ class PluginRuntimeArgs(ctypes.Structure):
         ("journal_write_int", ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)),
         ("journal_write_dint", ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint)),
         ("journal_write_lint", ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulonglong)),
+        # Async request to stop the whole PLC: void (*)(const char *reason).
+        #
+        # This entry was missing while the C struct had the field, so every
+        # field after it was shifted by one pointer -- `base_tick_ns` was
+        # actually reading the request_plc_stop pointer. Keep this list in
+        # lockstep with plugin_types.h; the offsets are load-bearing.
+        ("request_plc_stop", ctypes.CFUNCTYPE(None, ctypes.c_char_p)),
         # PLC base tick time in nanoseconds (mirrors C-side base_tick_ns).
         ("base_tick_ns", ctypes.c_ulonglong),
+        # --- Run/stop control (appended in C, so appended here too) ---------
+        # Async request to run: void (*)(const char *reason). Refused while the
+        # mode switch reads STOP.
+        ("request_plc_start", ctypes.CFUNCTYPE(None, ctypes.c_char_p)),
+        # Report the mode-switch position: void (*)(int position),
+        # 0 = STOP, 1 = RUN. Store the position BEFORE requesting a transition.
+        ("set_switch_position", ctypes.CFUNCTYPE(None, ctypes.c_int)),
+        # Current PLC state: int (*)(void), 0 = STOPPED, 1 = RUNNING, 2 = ERROR.
+        ("get_plc_state", ctypes.CFUNCTYPE(ctypes.c_int)),
     ]
 
     def validate_pointers(self):
