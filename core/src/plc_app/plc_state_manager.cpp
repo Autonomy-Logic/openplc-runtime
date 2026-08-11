@@ -194,9 +194,15 @@ static void *plc_task_thread(void *arg)
 
     pthread_setname_np(pthread_self(), ctx->name);
 
+    /* 99 is reserved for the dispatcher, which has to be strictly above every
+     * worker for its tick never to be delayed by a busy one. A worker allowed to
+     * reach 99 would only TIE it, and SCHED_FIFO does not time-slice between equal
+     * priorities: a task that never blocks (an unbounded loop in IEC code) would
+     * then keep the dispatcher off that CPU entirely, along with anything else
+     * trying to bring the PLC down. */
     int rt = ctx->priority;
     if (rt < 1)  rt = 1;
-    if (rt > 99) rt = 99;
+    if (rt > 98) rt = 98;
     sched_param sp{};
     sp.sched_priority = rt;
     if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0)
@@ -361,6 +367,46 @@ static void *plc_task_thread(void *arg)
     log_info("[task %s] stopped after %llu scans", ctx->name,
              (unsigned long long)ctx->local_tick.load());
     return nullptr;
+}
+
+/* Wake every worker, join them, and destroy the task array.
+ *
+ * Two callers: the normal end of the dispatcher loop, and the early-out below
+ * when bring-up finished but this start is no longer the transition in flight.
+ * The second one exists so that path tears its workers down instead of leaving
+ * them parked on a semaphore nobody will ever post again. */
+static void reap_task_threads(void)
+{
+    log_info("Stopping %zu PLC task thread(s)", plc_task_count);
+    /* Wake every worker: post its release semaphore (breaks sem_wait) and
+     * SIGUSR1 (breaks a syscall). A worker mid-scan finishes, loops to
+     * sem_wait, consumes the post, observes state != RUNNING, and exits. */
+    for (size_t i = 0; i < plc_task_count; ++i)
+    {
+        sem_post(&plc_tasks[i].go);
+        pthread_kill(plc_tasks[i].thread, SIGUSR1);
+    }
+    for (size_t i = 0; i < plc_task_count; ++i)
+    {
+        pthread_join(plc_tasks[i].thread, nullptr);
+    }
+
+    /* Take plc_tasks_lock for the tracker-cleanup + free. A STATS reader
+     * that started iterating before STOP arrived will block briefly
+     * waiting for this critical section, then exit because plc_task_count
+     * is observed as 0. Without the lock, the reader could be midway
+     * through scan_cycle_tracker_snapshot when we pthread_mutex_destroy
+     * the tracker's own mutex below — undefined behaviour. */
+    pthread_mutex_lock(&plc_tasks_lock);
+    for (size_t i = 0; i < plc_task_count; ++i)
+    {
+        scan_cycle_tracker_cleanup(&plc_tasks[i].tracker);
+        sem_destroy(&plc_tasks[i].go);
+    }
+    std::free(plc_tasks);
+    plc_tasks      = nullptr;
+    plc_task_count = 0;
+    pthread_mutex_unlock(&plc_tasks_lock);
 }
 
 void *plc_cycle_thread(void *arg)
@@ -723,8 +769,25 @@ void *plc_cycle_thread(void *arg)
      * This is also what ends the transition claimed by plc_claim_transition, so
      * every path out of this thread from here on must land a final state: the
      * crash recovery above publishes ERROR, and the stop path publishes STOPPED
-     * once teardown joins. */
-    plc_publish_final_state(PLC_STATE_RUNNING);
+     * once teardown joins.
+     *
+     * Conditional, because ending a transition is only ours to do while it is
+     * still the one in flight. Two paths get here otherwise: the watchdog forced
+     * ERROR because this start exceeded its bound, and plc_state_manager_cleanup
+     * published TRANSITIONING_TO_STOP on shutdown and is now blocked joining this
+     * very thread. Publishing RUNNING in either case erases a state someone else
+     * landed, and in the second it hangs the process -- the dispatcher loop below
+     * would never see a non-RUNNING state and the join would never return. */
+    if (!plc_publish_running_if_claimed())
+    {
+        log_warn("PLC bring-up finished but the start is no longer the transition in "
+                 "flight (state is %d) — not releasing the first scan",
+                 (int)plc_get_state());
+        reap_task_threads();
+        signal(SIGFPE,  SIG_DFL);
+        signal(SIGSEGV, SIG_DFL);
+        return NULL;
+    }
 
     /* ---------------------------------------------------------------------
      * GCD master-tick dispatcher.
@@ -915,36 +978,7 @@ void *plc_cycle_thread(void *arg)
         pthread_mutex_unlock(&done_mutex);
     }
 
-    log_info("Stopping %zu PLC task thread(s)", plc_task_count);
-    /* Wake every worker: post its release semaphore (breaks sem_wait) and
-     * SIGUSR1 (breaks a syscall). A worker mid-scan finishes, loops to
-     * sem_wait, consumes the post, observes state != RUNNING, and exits. */
-    for (size_t i = 0; i < plc_task_count; ++i)
-    {
-        sem_post(&plc_tasks[i].go);
-        pthread_kill(plc_tasks[i].thread, SIGUSR1);
-    }
-    for (size_t i = 0; i < plc_task_count; ++i)
-    {
-        pthread_join(plc_tasks[i].thread, nullptr);
-    }
-
-    /* Take plc_tasks_lock for the tracker-cleanup + free. A STATS reader
-     * that started iterating before STOP arrived will block briefly
-     * waiting for this critical section, then exit because plc_task_count
-     * is observed as 0. Without the lock, the reader could be midway
-     * through scan_cycle_tracker_snapshot when we pthread_mutex_destroy
-     * the tracker's own mutex below — undefined behaviour. */
-    pthread_mutex_lock(&plc_tasks_lock);
-    for (size_t i = 0; i < plc_task_count; ++i)
-    {
-        scan_cycle_tracker_cleanup(&plc_tasks[i].tracker);
-        sem_destroy(&plc_tasks[i].go);
-    }
-    std::free(plc_tasks);
-    plc_tasks      = nullptr;
-    plc_task_count = 0;
-    pthread_mutex_unlock(&plc_tasks_lock);
+    reap_task_threads();
 
     signal(SIGFPE,  SIG_DFL);
     signal(SIGSEGV, SIG_DFL);
@@ -1069,12 +1103,18 @@ extern "C" int unload_plc_program(PluginManager *pm)
     {
         /* The dispatcher and its workers leave their loops on anything that is
          * not RUNNING, and the join below depends on that. A claimed stop has
-         * already published TRANSITIONING_TO_STOP, which is that signal. This
-         * also covers the shutdown path (plc_state_manager_cleanup), which tears
-         * down without claiming a transition first: publish the direction here so
-         * the loops still exit. ERROR is left alone -- it must survive teardown. */
+         * already published TRANSITIONING_TO_STOP, which is that signal.
+         *
+         * Anything that is not ERROR is overwritten, not just RUNNING, because
+         * this also covers the shutdown path (plc_state_manager_cleanup), which
+         * tears down without claiming a transition first. On SIGTERM during a
+         * start the state is TRANSITIONING_TO_RUN, and a guard that only matched
+         * RUNNING published nothing at all -- so the cycle thread went on to
+         * publish RUNNING and the join below never returned. Pairs with the
+         * conditional publish in plc_cycle_thread: this write is what makes that
+         * one decline. ERROR is left alone -- it must survive teardown. */
         pthread_mutex_lock(&state_mutex);
-        if (plc_state == PLC_STATE_RUNNING)
+        if (plc_state != PLC_STATE_ERROR)
         {
             plc_state = PLC_STATE_TRANSITIONING_TO_STOP;
         }
@@ -1189,6 +1229,24 @@ extern "C" void plc_publish_final_state(PLCState final_state)
     plc_state = final_state;
     pthread_mutex_unlock(&state_mutex);
     log_info("PLC State: %s", name);
+}
+
+extern "C" bool plc_publish_running_if_claimed(void)
+{
+    /* Land RUNNING only while the start we are completing is still the transition
+     * in flight. The check and the write share one critical section: reading the
+     * state and then publishing in two steps would let a stop be claimed in
+     * between, and RUNNING would go down on top of it. */
+    pthread_mutex_lock(&state_mutex);
+    if (plc_state != PLC_STATE_TRANSITIONING_TO_RUN)
+    {
+        pthread_mutex_unlock(&state_mutex);
+        return false;
+    }
+    plc_state = PLC_STATE_RUNNING;
+    pthread_mutex_unlock(&state_mutex);
+    log_info("PLC State: RUNNING");
+    return true;
 }
 
 extern "C" bool plc_set_state(PLCState new_state)

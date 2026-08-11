@@ -73,6 +73,20 @@ bool plc_switch_allows_run(void);
  */
 bool plc_switch_take_movement(void);
 
+/**
+ * @brief Re-arm the "switch has moved" record after a correction could not start.
+ *
+ * The counterpart to plc_switch_take_movement(): consuming the record commits the
+ * caller to acting on it, and this hands it back when that action was refused --
+ * another transition claimed in the gap, or a spawn that failed. Without it the
+ * switch's intent is lost silently and the PLC stays in the state the switch
+ * disagrees with, which is the exact failure the record exists to prevent.
+ *
+ * Not for plugins: a plugin reporting a position calls plc_set_switch_position(),
+ * which records movement on an edge by itself.
+ */
+void plc_switch_note_movement(void);
+
 #ifdef __cplusplus
 }
 #endif

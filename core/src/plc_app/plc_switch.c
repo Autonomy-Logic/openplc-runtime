@@ -58,6 +58,11 @@ bool plc_switch_take_movement(void)
     return atomic_exchange(&switch_moved, false);
 }
 
+void plc_switch_note_movement(void)
+{
+    atomic_store(&switch_moved, true);
+}
+
 plc_switch_t plc_get_switch_position(void)
 {
     return (plc_switch_t)atomic_load(&switch_position);

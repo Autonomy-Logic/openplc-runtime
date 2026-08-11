@@ -19,15 +19,14 @@
 #include "utils/utils.h"
 
 extern volatile sig_atomic_t keep_running;
-extern PLCState plc_state;
 
 static plugin_driver_t *g_plugin_driver = NULL;
 
-/* How long transition_worker waits to observe the landing before reconciling
- * with the mode switch, and how often it looks. The bound is generous because a
- * start includes plugin bring-up (SPI base scans, fieldbus probes); exceeding it
- * means the transition is not going to land, which the watchdog reports. */
-#define LANDING_WAIT_MS 90000
+/* How long run_transition waits to observe the landing before reconciling with
+ * the mode switch, and how often it looks. The bound comes from
+ * plc_state_manager.h so that the watchdog's stuck-transition bound is derived
+ * from the same number and can only fire strictly later. */
+#define LANDING_WAIT_MS PLC_TRANSITION_LANDING_TIMEOUT_MS
 #define LANDING_POLL_MS 20
 
 void unix_socket_set_plugin_driver(void *driver)
@@ -35,11 +34,12 @@ void unix_socket_set_plugin_driver(void *driver)
     g_plugin_driver = (plugin_driver_t *)driver;
 }
 
-static void *transition_worker(void *arg)
+// Body of a claimed transition: perform it, wait for it to land, then reconcile
+// with the mode switch. Normally runs on the detached worker spawned below, but
+// is called directly when that worker cannot be spawned -- the transition has
+// already been claimed by then, and it has to be completed by somebody.
+static bool run_transition(PLCState target)
 {
-    PLCState target = *(PLCState *)arg;
-    free(arg);
-
     bool result = plc_set_state(target);
     if (!result)
     {
@@ -97,15 +97,40 @@ static void *transition_worker(void *arg)
             log_warn("Mode switch came to rest in %s but the PLC landed on %s — correcting",
                      wanted == PLC_STATE_RUNNING ? "RUN" : "STOP",
                      landed == PLC_STATE_RUNNING ? "RUNNING" : "STOPPED");
-            plc_begin_transition(wanted);
+
+            // The movement record was consumed above, so a refusal here would
+            // throw the switch's intent away for good: the state is already
+            // final, which leaves the socket thread free to claim a transition in
+            // the gap, and the spawn paths below can fail too. Put the record
+            // back so the next landing reconciles instead. This cannot ping-pong
+            // -- the retry compares position against state again, and a landing
+            // that agrees with the switch just consumes the record.
+            if (!plc_begin_transition(wanted))
+            {
+                plc_switch_note_movement();
+                log_warn("Correction to %s did not go through — re-armed for the "
+                         "next landing",
+                         wanted == PLC_STATE_RUNNING ? "RUN" : "STOP");
+            }
         }
     }
 
+    return result;
+}
+
+static void *transition_worker(void *arg)
+{
+    PLCState target = *(PLCState *)arg;
+    free(arg);
+
+    run_transition(target);
     return NULL;
 }
 
 // Start a background thread that performs the (potentially slow) state
-// transition. Returns true if the transition was claimed and a worker spawned.
+// transition. Returns false when the request was refused; otherwise the
+// transition is under way (or, if the worker could not be spawned, has already
+// been completed on this thread -- see below).
 //
 // The single authoritative entry point for every state change: socket
 // START/STOP, plugin-initiated requests from a mode switch, and the boot
@@ -128,24 +153,39 @@ bool plc_begin_transition(PLCState target)
         return false;
     }
 
+    // Claimed but the worker cannot be spawned: run the transition on this thread
+    // rather than publishing a landing.
+    //
+    // Publishing STOPPED here used to look like the safe way out, and it is the
+    // opposite. The claim has already published TRANSITIONING_TO_STOP, which is
+    // what makes the dispatcher and workers leave their loops -- so on a stop from
+    // RUNNING the scan really does end, but unload_plc_program never runs:
+    // journal_cleanup, plugin_driver_stop, plugin_manager_destroy and the dlclose
+    // are all skipped, plc_program stays non-NULL, plc_thread is never joined, and
+    // STATUS reports a stop that tore nothing down. The next start then re-enters
+    // plugin_driver_init on live plugin state and re-runs a program whose statics
+    // were never reinitialised. (For a start from EMPTY it also reported "no
+    // program" as "stopped".)
+    //
+    // Completing it here blocks this caller for the duration -- the socket is
+    // single-client, so the editor waits -- which on a thread-or-memory exhaustion
+    // path is the cheaper of the two costs by a wide margin.
     PLCState *arg = malloc(sizeof(PLCState));
     if (!arg)
     {
-        log_error("Failed to allocate transition argument");
-        // Claimed but cannot run it: land a final state, or the runtime would sit
-        // in TRANSITIONING forever refusing every command.
-        plc_publish_final_state(PLC_STATE_STOPPED);
-        return false;
+        log_error("Failed to allocate transition argument — completing the "
+                  "transition on the calling thread");
+        return run_transition(target);
     }
     *arg = target;
 
     pthread_t tid;
     if (pthread_create(&tid, NULL, transition_worker, arg) != 0)
     {
-        log_error("Failed to create transition thread: %s", strerror(errno));
+        log_error("Failed to create transition thread (%s) — completing the "
+                  "transition on the calling thread", strerror(errno));
         free(arg);
-        plc_publish_final_state(PLC_STATE_STOPPED);
-        return false;
+        return run_transition(target);
     }
     pthread_detach(tid);
     return true;
@@ -198,11 +238,28 @@ static void format_status_response(char *response, size_t response_size)
         strncpy(response, "STATUS:UNKNOWN\n", response_size);
 }
 
+static void format_switch_response(char *response, size_t response_size)
+{
+    // Report the mode-switch position a VPP plugin last stored. Devices with no
+    // switch-aware plugin always answer RUN.
+    if (plc_get_switch_position() == PLC_SWITCH_RUN)
+        strncpy(response, "SWITCH:RUN\n", response_size);
+    else
+        strncpy(response, "SWITCH:STOP\n", response_size);
+}
+
 void handle_unix_socket_commands(const char *command, char *response, size_t response_size)
 {
-    // While a state transition is in progress, only allow PING and STATUS.
-    // Everything else gets COMMAND:BUSY: you cannot change state, or read state
-    // that is mid-change, while it is changing.
+    // While a state transition is in progress, only allow the reads: you cannot
+    // change state while it is changing, and everything else gets COMMAND:BUSY.
+    //
+    // SWITCH belongs here with PING and STATUS. It is a plain atomic load of
+    // plc_switch with no coupling to plc_state, so there is nothing mid-change for
+    // it to expose -- and answering BUSY meant the webserver dropped
+    // switchPosition from every status response for the whole duration of a start
+    // or stop (parse_switch_position returns None) and GET /switch reported
+    // "unknown". An editor that decides whether a start is allowed from that field
+    // lost it precisely while polling through the transition it had just asked for.
     if (plc_state_is_transitioning())
     {
         if (strcmp(command, "PING") == 0)
@@ -212,6 +269,10 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
         else if (strcmp(command, "STATUS") == 0)
         {
             format_status_response(response, response_size);
+        }
+        else if (strcmp(command, "SWITCH") == 0)
+        {
+            format_switch_response(response, response_size);
         }
         else
         {
@@ -246,12 +307,7 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
     }
     else if (strcmp(command, "SWITCH") == 0)
     {
-        // Report the mode-switch position a VPP plugin last stored. Devices
-        // with no switch-aware plugin always answer RUN.
-        if (plc_get_switch_position() == PLC_SWITCH_RUN)
-            strncpy(response, "SWITCH:RUN\n", response_size);
-        else
-            strncpy(response, "SWITCH:STOP\n", response_size);
+        format_switch_response(response, response_size);
     }
     else if (strcmp(command, "START") == 0)
     {

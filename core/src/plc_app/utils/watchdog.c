@@ -12,12 +12,12 @@
 
 atomic_long plc_heartbeat;
 
-/* Watchdog loop period, and how long a state change may plausibly take before
- * something is wrong. A start brings plugins up (SPI base scans, fieldbus
- * probes) and a stop joins task threads, so the bound is generous: it is here to
- * catch a transition that will never finish, not to police a slow one. */
+/* Watchdog loop period. The stuck-transition bound is NOT defined here: it comes
+ * from plc_state_manager.h, where it is derived from the same constant the
+ * transition worker waits on, so this can never fire while the runtime still
+ * considers the transition to be progressing normally. */
 #define WATCHDOG_TICK_S      2
-#define TRANSITION_STUCK_S   60
+#define TRANSITION_STUCK_S   (PLC_TRANSITION_STUCK_TIMEOUT_MS / 1000)
 
 void *watchdog_thread(void *arg)
 {
@@ -37,6 +37,15 @@ void *watchdog_thread(void *arg)
         // could clear to recover. Every path is meant to land a final state;
         // this is the backstop for the one that doesn't, turning a silent
         // permanent wedge into a reported fault the webserver can act on.
+        //
+        // KNOWN LIMITATION: forcing ERROR releases the interlock but does not
+        // abort the transition, so the worker that failed to land is still
+        // running -- and a START accepted from ERROR would begin a second one
+        // over the top of it. Reaching this point at all now takes longer than
+        // the runtime's own landing bound (see PLC_TRANSITION_STUCK_TIMEOUT_MS),
+        // which removes the realistic trigger; closing it properly needs the
+        // transition owner to be able to abort its own work, which is the
+        // lifecycle-executor refactor and not this function's job.
         if (current_state == PLC_STATE_TRANSITIONING_TO_RUN ||
             current_state == PLC_STATE_TRANSITIONING_TO_STOP)
         {

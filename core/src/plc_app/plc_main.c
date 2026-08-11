@@ -194,14 +194,21 @@ int main(int argc, char *argv[])
         sleep(1);
     }
 
-    // Cleanup plugin driver system
+    log_info("Shutting down...");
+
+    // Stop the program BEFORE destroying the driver, not after.
+    //
+    // plc_state_manager_cleanup() tears the program down, and its teardown calls
+    // plugin_driver_stop(plugin_driver) -- so destroying the driver first left that
+    // call reading freed memory, and the cycle thread could still be running plugin
+    // cycle hooks through the same pointer while it wound down. The order here is
+    // the dependency order: no program, then no driver.
+    plc_state_manager_cleanup();
+
     if (plugin_driver)
     {
         plugin_driver_destroy(plugin_driver);
+        plugin_driver = NULL;
     }
-
-    // Cleanup
-    log_info("Shutting down...");
-    plc_state_manager_cleanup();
     return 0;
 }

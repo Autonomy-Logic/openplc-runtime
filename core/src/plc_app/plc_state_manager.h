@@ -151,9 +151,22 @@ void plc_tasks_reader_unlock(void);
 PLCState plc_get_state(void);
 
 /**
- * @brief Set the PLC state. In case of a state change, it will load or unload the PLC program as needed.
- * @param new_state The new PLC state to set
- * @return true if the state was changed, false if it was already in the desired state
+ * @brief Body of a transition that has ALREADY been claimed. Not a setter.
+ *
+ * PRECONDITION: plc_claim_transition(new_state) returned true, so a TRANSITIONING
+ * state is current. Calling this without a claim tears the program down with no
+ * TRANSITIONING_TO_STOP for the scan loops to observe and then publishes a final
+ * state nobody claimed, corrupting the interlock the TRANSITIONING states are.
+ *
+ * Writes no state of its own: the landing is published by whoever knows the work
+ * finished -- plc_cycle_thread for RUNNING, unload_plc_program for STOPPED -- with
+ * the failure paths here publishing ERROR or EMPTY.
+ *
+ * Go through plc_begin_transition() instead. It is the only intended entry point
+ * for a state change and it does the claiming for you.
+ *
+ * @param new_state PLC_STATE_RUNNING or PLC_STATE_STOPPED
+ * @return true if the transition body completed without error
  */
 bool plc_set_state(PLCState new_state);
 
@@ -180,8 +193,36 @@ bool plc_claim_transition(PLCState target);
  */
 void plc_publish_final_state(PLCState final_state);
 
+/**
+ * @brief Publish RUNNING, but only if the start being completed is still in flight.
+ *
+ * Same landing as plc_publish_final_state(PLC_STATE_RUNNING), refused when the
+ * current state is not TRANSITIONING_TO_RUN. Ending a transition is only the
+ * caller's to do while it owns it: a watchdog-forced ERROR or a shutdown that
+ * published TRANSITIONING_TO_STOP has taken ownership away, and overwriting either
+ * with RUNNING erases a landing (or, on the shutdown path, hangs the join waiting
+ * for a state that is never written again).
+ *
+ * @return true when RUNNING was published and the caller may start scanning
+ */
+bool plc_publish_running_if_claimed(void);
+
 /** @brief True while a transition is in flight (either direction). */
 bool plc_state_is_transitioning(void);
+
+/* How long a state change may plausibly take before something is wrong.
+ *
+ * ONE bound, two consumers, deliberately ordered: transition_worker stops waiting
+ * to observe the landing at PLC_TRANSITION_LANDING_TIMEOUT_MS, and the watchdog
+ * forces ERROR strictly later. Two independent numbers is how the watchdog came to
+ * fire 30 s before the runtime itself had given up -- ending a transition while its
+ * worker was still executing it.
+ *
+ * Generous on purpose: a start brings plugins up (SPI base scans, fieldbus probes,
+ * certificate generation) and a stop joins task threads. The bound is here to catch
+ * a transition that will never finish, not to police a slow one. */
+#define PLC_TRANSITION_LANDING_TIMEOUT_MS 90000
+#define PLC_TRANSITION_STUCK_TIMEOUT_MS   (PLC_TRANSITION_LANDING_TIMEOUT_MS + 30000)
 
 /**
  * @brief Cleanup the PLC state manager and unloads the plugin manager.
