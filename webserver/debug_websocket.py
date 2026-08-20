@@ -8,6 +8,7 @@ and returns responses through the WebSocket connection.
 
 from flask import request
 from flask_jwt_extended import current_user, verify_jwt_in_request
+from jwt import ExpiredSignatureError
 from flask_socketio import SocketIO, emit
 
 from webserver.logger import get_logger
@@ -45,6 +46,13 @@ def _reverify_session_token() -> bool:
         request.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
         verify_jwt_in_request()
         return True
+    except ExpiredSignatureError:
+        # Distinguishable on purpose (review 2026-08-20, R1): expiry is the ONE
+        # failure the client can repair -- its token manager re-logins and
+        # pushes the fresh token through the 'reauth' event below. Everything
+        # else (revocation, tamper) stays a generic refusal.
+        logger.info("Debug command deferred: session token expired (client may reauth)")
+        return "expired"
     except Exception as e:
         logger.warning("Debug command rejected, token no longer valid: %s", e)
         return False
@@ -143,6 +151,31 @@ def init_debug_websocket(app, unix_client_instance):
             logger.warning("Debug WebSocket auth failed: %s", e)
             return False
 
+    @_socketio.on("reauth", namespace="/api/debug")
+    def handle_reauth(data):
+        """Swap this session's token for a fresh one, after FULL verification.
+
+        The per-command re-verification (above) makes the connect-time token a
+        15-minute fuse; this is the renewal path (review 2026-08-20, R1). The
+        new token goes through the same pipeline as every command -- signature,
+        expiry, revocation, user lookup -- so reauth can never LOWER the bar,
+        only extend a session that could re-login anyway.
+        """
+        token = data.get("token", "") if isinstance(data, dict) else ""
+        if not token:
+            emit("reauth_result", {"success": False, "error": "no token"})
+            return
+        try:
+            request.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
+            verify_jwt_in_request()
+        except Exception as e:
+            logger.warning("reauth rejected: %s", e)
+            emit("reauth_result", {"success": False, "error": "Unauthorized"})
+            return
+        _session_tokens[request.sid] = token
+        logger.info("Debug session token renewed via reauth")
+        emit("reauth_result", {"success": True})
+
     @_socketio.on("disconnect", namespace="/api/debug")
     def handle_disconnect():
         """Handle WebSocket disconnection"""
@@ -171,8 +204,12 @@ def init_debug_websocket(app, unix_client_instance):
             # Re-authenticate EVERY command, not just the connect. See
             # _reverify_session_token: an expired or revoked token must stop
             # working on a socket that is already open.
-            if not _reverify_session_token():
-                emit("debug_response", {"success": False, "error": "Unauthorized"})
+            verdict = _reverify_session_token()
+            if verdict is not True:
+                emit(
+                    "debug_response",
+                    {"success": False, "error": "token_expired" if verdict == "expired" else "Unauthorized"},
+                )
                 return
 
             # The license FCs are a trust boundary of their own: 0x48 hands out

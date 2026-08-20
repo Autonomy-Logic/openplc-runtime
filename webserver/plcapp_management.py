@@ -305,11 +305,22 @@ def validate_vpp_plugins_conf(conf_path: str, runtime_root: str, vpp_build_dir: 
         relative to the runtime root (which is the loader's cwd). Resolving
         against the process cwd instead would make the guard depend on where
         the caller happened to be."""
-        return candidate if os.path.isabs(candidate) else os.path.join(runtime_root, candidate)
+        return os.path.join(runtime_root, candidate)
 
     for p in plugins_conf.plugins:
         if not p.path:
             return False, f"plugin '{p.name}' has an empty path"
+        if os.path.isabs(p.path):
+            # The C loader (plugin_config.c, require_contained=1) rejects EVERY
+            # absolute path; tolerating a contained absolute here produced a
+            # conf accepted by the upload and silently dropped at parse time --
+            # the VPP never loaded and nothing said why (review 2026-08-20,
+            # R5). The two guards must agree, and the editor only ever emits
+            # relative paths, so nothing legitimate breaks.
+            return False, (
+                f"plugin '{p.name}' path '{p.path}' is absolute -- plugin paths "
+                f"must be relative to the runtime root (./build/vpp/...)"
+            )
         plugin_path = against_root(p.path)
         if not is_inside_root(plugin_path, runtime_root):
             return False, f"plugin '{p.name}' path '{p.path}' escapes the runtime root"

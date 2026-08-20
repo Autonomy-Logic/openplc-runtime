@@ -90,7 +90,7 @@ def test_apply_vpp_plugin_conf_delivers_license(tmp_path, monkeypatch):
             self.path = so
 
     class _Conf:
-        plugins = [_P(config_path, str(cwd / "build" / "vpp" / "librpi_gpio_plugin.so"))]
+        plugins = [_P(config_path, "./build/vpp/librpi_gpio_plugin.so")]
 
     monkeypatch.setattr(mgmt.PluginsConfiguration, "from_file", classmethod(lambda cls, _p: _Conf()))
     monkeypatch.setattr(mgmt.build_state, "log", lambda *_a, **_k: None, raising=False)

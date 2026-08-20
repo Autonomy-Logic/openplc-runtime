@@ -113,9 +113,11 @@ def test_get_board_id_returns_raw_ascii_anchor(tmp_path, monkeypatch):
 
 
 def test_get_board_id_missing_anchor_is_empty_success(tmp_path, monkeypatch):
-    # No anchor -> SUCCESS with id_len=0 (matches Arduino D57), not an error byte.
+    # No anchor -> LIC_UNSUPPORTED (review 2026-08-20, R2): on this medium 0x48
+    # is ONLY the licensing anchor, and SUCCESS/0 made every anchor-less host
+    # derive the SAME deviceId -- a purchase bound to it never validated.
     monkeypatch.setattr(lic, "ANCHOR_PATH", str(tmp_path / "nope"))
-    assert lic.handle_license_command("48") == "48 7E 00"
+    assert lic.handle_license_command("48") == "48 85"
 
 
 def test_write_refuses_path_traversal(tmp_path, monkeypatch):

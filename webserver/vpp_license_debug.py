@@ -345,9 +345,14 @@ def handle_license_command(command_hex: str) -> Optional[str]:
     if fc == FC_GET_BOARD_ID:
         anchor = _read_anchor()
         if not anchor:
-            # Match the Arduino firmware (D57): no id -> SUCCESS with id_len=0, so
-            # the editor sees a clean empty id (outcome no-id), not an error byte.
-            return _hex_from_bytes(bytes([fc, ST_SUCCESS, 0]))
+            # NOT the Arduino convention (review 2026-08-20, R2). On this medium
+            # 0x48 is ONLY the licensing anchor -- SUCCESS with id_len=0 made the
+            # editor hash an EMPTY pre-image, so every anchor-less host (x86 box,
+            # container, unmounted /proc/device-tree) derived the SAME deviceId,
+            # a purchase bound to it never validated on the .so, and the buyer
+            # got a 2-hour demo forever. UNSUPPORTED is the truth: this device
+            # has no hardware anchor to license against.
+            return _hex_from_bytes(bytes([fc, ST_LIC_UNSUPPORTED]))
         if len(anchor) > ANCHOR_MAX_BYTES:
             # REFUSE. The .so only ever reads 64 bytes, so anything longer would
             # make the editor derive a device_id the verifier cannot reproduce --
