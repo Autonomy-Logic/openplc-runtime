@@ -12,6 +12,7 @@ from typing import Final
 from webserver.runtimemanager import RuntimeManager
 from webserver.logger import get_logger, LogParser
 from webserver.plugin_config_model import PluginsConfiguration, PluginConfig, PluginType
+from webserver.vpp_license_debug import derive_license_path, is_inside_root
 
 logger, _ = get_logger("runtime", use_buffer=True)
 
@@ -144,8 +145,14 @@ def safe_extract(zip_path, dest_dir, valid_files):
             out_path = os.path.join(dest_dir, filename)
             out_path = os.path.abspath(out_path)
 
-            # Ensure extraction stays inside destination
-            if not out_path.startswith(os.path.abspath(dest_dir)):
+            # Ensure extraction stays inside destination. Same containment rule
+            # as the VPP config copy below: a bare prefix check accepts a
+            # sibling sharing dest_dir as a string prefix (dest_dir
+            # "core/generated" vs. an entry resolving to "core/generatedX/..."),
+            # and it ignores symlinks entirely. analyze_zip() already rejects
+            # entries containing ".." before we get here, so this is defence in
+            # depth -- but it is the same bug class, so it gets the same fix.
+            if not is_inside_root(out_path, dest_dir):
                 # logger.warning("Skipping suspicious path: %s", filename)
                 continue
 
@@ -264,6 +271,69 @@ def _wait_for_plc_idle(runtime_manager: RuntimeManager, timeout_s: float) -> boo
     return False
 
 
+def validate_vpp_plugins_conf(conf_path: str, runtime_root: str, vpp_build_dir: str) -> tuple[bool, str]:
+    """Containment check for an upload-supplied ``vpp_plugins.conf``.
+
+    The ``path`` field of this file is what the C plugin loader passes straight
+    to ``dlopen`` (``core/src/drivers/plugin_driver.c``). It arrives verbatim
+    from the upload, and until this existed only ``config_path`` was checked --
+    so a forged conf could name ANY .so on the filesystem, including one the
+    attacker left there by an unrelated route, and verifying the plugin the
+    build produced would have proved nothing about the object actually loaded.
+
+    Two rules, and the whole file is refused if either is broken (rather than
+    dropping the offending line): a conf that tries to escape is not a conf we
+    want to partially honour, and leaving the rest installed would silently
+    load a subset of what the editor intended.
+
+    1. ``path`` must resolve inside the runtime root -- same
+       ``is_inside_root`` definition (symlink-resolving) every other write path
+       here uses.
+    2. ``path`` must resolve inside ``build/vpp/``. That is the only directory
+       compile.sh writes VPP artefacts into, and the only one whose contents
+       the compile-time seal covers, so anything outside it is by definition
+       unverified.
+
+    The C side repeats rule 1's spirit in ``parse_plugin_config_contained`` --
+    on purpose, so containment does not depend on Python alone.
+    """
+    plugins_conf = PluginsConfiguration.from_file(conf_path)
+    vpp_root = os.path.abspath(os.path.join(runtime_root, vpp_build_dir))
+
+    def against_root(candidate: str) -> str:
+        """Resolve a conf path the way the C loader will: relative entries are
+        relative to the runtime root (which is the loader's cwd). Resolving
+        against the process cwd instead would make the guard depend on where
+        the caller happened to be."""
+        return os.path.join(runtime_root, candidate)
+
+    for p in plugins_conf.plugins:
+        if not p.path:
+            return False, f"plugin '{p.name}' has an empty path"
+        if os.path.isabs(p.path):
+            # The C loader (plugin_config.c, require_contained=1) rejects EVERY
+            # absolute path; tolerating a contained absolute here produced a
+            # conf accepted by the upload and silently dropped at parse time --
+            # the VPP never loaded and nothing said why (review 2026-08-20,
+            # R5). The two guards must agree, and the editor only ever emits
+            # relative paths, so nothing legitimate breaks.
+            return False, (
+                f"plugin '{p.name}' path '{p.path}' is absolute -- plugin paths "
+                f"must be relative to the runtime root (./build/vpp/...)"
+            )
+        plugin_path = against_root(p.path)
+        if not is_inside_root(plugin_path, runtime_root):
+            return False, f"plugin '{p.name}' path '{p.path}' escapes the runtime root"
+        if not is_inside_root(plugin_path, vpp_root):
+            return False, (
+                f"plugin '{p.name}' path '{p.path}' is outside {vpp_build_dir}/ "
+                "(VPP plugins may only load objects built by this upload)"
+            )
+        if p.config_path and not is_inside_root(against_root(p.config_path), runtime_root):
+            return False, f"plugin '{p.name}' config_path '{p.config_path}' escapes the runtime root"
+    return True, ""
+
+
 def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
     """Apply or remove the VPP plugin configuration for this upload.
 
@@ -289,6 +359,19 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
     uploaded_conf = os.path.join(generated_dir, "vpp_plugins.conf")
 
     if os.path.exists(uploaded_conf):
+        runtime_root = os.path.abspath(".")
+
+        # Containment BEFORE the copy: once this file is in the runtime root the
+        # C loader will dlopen whatever `path` says, so an escaping entry has to
+        # be stopped while it is still just a file in core/generated/.
+        contained, reason = validate_vpp_plugins_conf(uploaded_conf, runtime_root, VPP_BUILD_DIR)
+        if not contained:
+            build_state.log(f"[ERROR] VPP: refusing vpp_plugins.conf from upload: {reason}\n")
+            if os.path.exists(VPP_CONF_DEST):
+                os.remove(VPP_CONF_DEST)
+                build_state.log("[INFO] VPP: removed previous vpp_plugins.conf\n")
+            return
+
         # Copy vpp_plugins.conf to runtime root
         shutil.copy2(uploaded_conf, VPP_CONF_DEST)
         build_state.log(f"[INFO] VPP: installed vpp_plugins.conf from upload\n")
@@ -300,7 +383,6 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
         # a separate destination.
         conf_dir = os.path.join(generated_dir, "conf")
         vpp_conf_plugins = PluginsConfiguration.from_file(VPP_CONF_DEST)
-        runtime_root = os.path.abspath(".")
         for p in vpp_conf_plugins.plugins:
             if not p.config_path:
                 continue
@@ -309,13 +391,31 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
                 build_state.log(f"[WARNING] VPP: conf/{p.name}.json not found in upload, skipping\n")
                 continue
             dest_config = os.path.normpath(p.config_path)
-            # Guard against path traversal in editor-generated vpp_plugins.conf
-            if not os.path.abspath(dest_config).startswith(runtime_root):
+            # Guard against path traversal in editor-generated vpp_plugins.conf.
+            # Shares one containment definition with the 0x49 write path (see
+            # is_inside_root): rejects a sibling that merely shares runtime_root
+            # as a string prefix, AND resolves symlinks, which a lexical
+            # abspath check does not -- a link out of the tree would otherwise
+            # let an innocent-looking relative path write outside the root.
+            if not is_inside_root(dest_config, runtime_root):
                 build_state.log(f"[WARNING] VPP: config_path '{p.config_path}' escapes runtime root, skipping\n")
                 continue
             os.makedirs(os.path.dirname(dest_config), exist_ok=True)
             shutil.copy2(src_config, dest_config)
             build_state.log(f"[INFO] VPP: copied {p.name}.json to {dest_config}\n")
+
+            # Deliver the optional device license blob alongside the config, at
+            # the sibling path the licensed plugin derives from its config path
+            # (derive_license_path, shared with vpp_license_debug.py's 0x49
+            # handler so both write the SAME file the .so reads). Present only
+            # for a licensed VPP whose device was activated; absent for free
+            # VPPs or demo devices. dest_config already passed the traversal
+            # guard above, so no need to re-check its .license sibling.
+            src_license = os.path.join(conf_dir, f"{p.name}.license")
+            if os.path.exists(src_license):
+                dest_license = derive_license_path(dest_config)
+                shutil.copy2(src_license, dest_license)
+                build_state.log(f"[INFO] VPP: copied {p.name}.license to {dest_license}\n")
     else:
         # No VPP in this upload — remove any stale vpp_plugins.conf so
         # the plugin loader does not attempt to load old VPP drivers.

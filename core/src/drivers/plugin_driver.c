@@ -23,6 +23,7 @@
 #include "../plc_app/utils/utils.h"
 #include "plugin_config.h"
 #include "plugin_driver.h"
+#include "vpp_plugin_seal.h"
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -523,7 +524,10 @@ int plugin_driver_append_config(plugin_driver_t *driver, const char *config_file
     }
 
     plugin_config_t configs[MAX_PLUGINS];
-    int config_count = parse_plugin_config(config_file, configs, MAX_PLUGINS);
+    /* This config file comes from the user's upload (the editor writes it and
+     * webserver/plcapp_management.py copies it verbatim), so its paths are
+     * parsed under containment: no "..", no absolute paths. */
+    int config_count = parse_plugin_config_contained(config_file, configs, MAX_PLUGINS);
     if (config_count < 0)
     {
         return -1;
@@ -1338,6 +1342,23 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     plugin_funct_bundle_t *native_bundle = calloc(1, sizeof(plugin_funct_bundle_t));
     if (!native_bundle)
     {
+        return -1;
+    }
+
+    /* Last metre before execution: a VPP plugin .so must match the hash
+     * scripts/compile.sh sealed after building it from a signature-verified
+     * upload. The upload gate proved the plugin's INPUTS came from a signed
+     * package; it cannot speak for the .so, which is linked here afterwards.
+     * Without this check an object dropped into build/vpp/ after the compile
+     * would be dlopen'ed with no provenance at all.
+     *
+     * Built-in plugins from plugins.conf are produced by the runtime's own
+     * CMake build and are not sealed -- vpp_plugin_seal_required() scopes the
+     * check to objects that resolve inside build/vpp/. */
+    if (vpp_plugin_seal_required(plugin->config.path) &&
+        vpp_plugin_seal_verify(plugin->config.path) != 0)
+    {
+        free(native_bundle);
         return -1;
     }
 
