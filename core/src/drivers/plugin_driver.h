@@ -33,6 +33,35 @@ typedef int (*plugin_execute_command_func_t)(const char *command_json, char *res
 // Return 0 on success; any other value means "skip me this cycle."
 typedef int (*plugin_get_stats_func_t)(char *out, size_t out_size);
 
+/* ---- Optional: retain-variable storage (NODE-94) -------------------------
+ *
+ * A plugin that owns retention hardware exports these two and becomes the
+ * device's retain store. Same names, same status meaning and the same contract
+ * text as baremetal's `openplc_retain.h`, so a vendor writes one shape twice
+ * rather than learning two interfaces for one job.
+ *
+ * The runtime MARSHALS and the plugin STORES: what arrives is an opaque blob,
+ * already validated on the way back in (magic, format, layout hash, crc32), so
+ * a backend needs no understanding of retained variables at all.
+ *
+ * `retain_save` is called ONCE PER SCAN CYCLE, unconditionally, from the
+ * dispatcher's quiescent window. The runtime does not diff and does not
+ * rate-limit — holding the bytes and flushing on a schedule the medium can
+ * sustain is the plugin's job, and the reason the call exists at that cadence
+ * is so a plugin that CAN write every cycle (FRAM, battery-backed SRAM) is free
+ * to. It MUST return promptly and MUST NOT block: this runs inside the scan,
+ * so time spent here is time the PLC is not scanning.
+ *
+ * Both must be exported for the plugin to be used as the store; a plugin
+ * exporting only one is ignored, since a store that can save and not load is
+ * worse than none. Return 0 on success, non-zero otherwise.
+ */
+typedef int (*plugin_retain_save_func_t)(const uint8_t *blob, uint16_t len);
+typedef int (*plugin_retain_load_func_t)(uint8_t *out, uint16_t cap, uint16_t *out_len);
+/* Optional third: discard the stored blob. A plugin without it simply cannot
+ * be cold-reset, and the editor's post-upload clear is a no-op for it. */
+typedef int (*plugin_retain_clear_func_t)(void);
+
 typedef struct
 {
     void *handle; // Handle to the loaded shared library
@@ -44,6 +73,10 @@ typedef struct
     plugin_cleanup_func_t cleanup;
     plugin_execute_command_func_t execute_command;
     plugin_get_stats_func_t get_stats;
+    /* Optional retain-store hooks; NULL unless the plugin exports them. */
+    plugin_retain_save_func_t  retain_save;
+    plugin_retain_load_func_t  retain_load;
+    plugin_retain_clear_func_t retain_clear;
 } plugin_funct_bundle_t;
 
 // Plugin instance structure
@@ -118,6 +151,20 @@ void plugin_driver_release_gil(void);
 // Plugins opt-in by implementing cycle_start/cycle_end; opt-out by not implementing them
 void plugin_driver_cycle_start(plugin_driver_t *driver);
 void plugin_driver_cycle_end(plugin_driver_t *driver);
+
+/* ---- Retain store ------------------------------------------------------- */
+
+/* The plugin acting as this device's retain store, or NULL.
+ *
+ * The FIRST plugin that exports both retain_save and retain_load wins, and any
+ * others are logged and ignored. Two plugins writing the same retained values
+ * to different places would both appear to work and disagree on the next boot,
+ * which is a far worse failure than refusing the second. */
+plugin_instance_t *plugin_driver_find_retain_store(plugin_driver_t *driver);
+
+int plugin_driver_retain_save(plugin_instance_t *store, const uint8_t *blob, uint16_t len);
+int plugin_driver_retain_load(plugin_instance_t *store, uint8_t *out, uint16_t cap, uint16_t *out_len);
+int plugin_driver_retain_clear(plugin_instance_t *store);
 
 // Route a command to a specific plugin by name (for async commands like scan)
 int plugin_driver_execute_command(plugin_driver_t *driver, const char *plugin_name,

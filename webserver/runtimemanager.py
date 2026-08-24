@@ -337,6 +337,29 @@ class RuntimeManager:
             logger.error("Failed to stop PLC runtime (unexpected): %s", e)
             return "STOP:ERROR\n"
 
+    def clear_retained(self):
+        """
+        Discard the runtime's stored retained values.
+
+        Called on program upload. CODESYS clears retained memory on download,
+        and a new program's retained values have no business surviving into it
+        — the layout hash would refuse a genuinely different program, but two
+        programs that happen to share a retain layout would otherwise inherit
+        each other's values silently.
+
+        Failure is logged and swallowed: the upload itself is what matters, and
+        a runtime that is not currently reachable has nothing stored that this
+        program will read anyway.
+        """
+        try:
+            return self.runtime_socket.send_and_receive("RETAIN:CLEAR\n")
+        except (OSError, socket.error) as e:
+            logger.warning("Could not clear retained values: %s", e)
+            return "RETAIN:ERROR\n"
+        except Exception as e:
+            logger.warning("Could not clear retained values (unexpected): %s", e)
+            return "RETAIN:ERROR\n"
+
     def status_plc(self):
         """
         Send STATUS command
