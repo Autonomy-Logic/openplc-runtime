@@ -262,7 +262,7 @@ int vpp_plugin_seal_verify(const char *path)
     if (!seal)
     {
         log_error("[PLUGIN] no VPP plugin seal at %s -- refusing to load '%s'. The plugin was "
-                  "not produced by a verified upload; re-upload the program from the editor.",
+                  "not produced by this runtime's compile step; re-upload the program from the editor.",
                   VPP_SEAL_FILE, path);
         return -1;
     }
@@ -301,7 +301,7 @@ int vpp_plugin_seal_verify(const char *path)
     if (!found)
     {
         log_error("[PLUGIN] VPP plugin '%s' has no entry in %s -- refusing to load it. Only "
-                  "objects built from a signature-verified upload are sealed.",
+                  "objects built by this runtime's compile step are sealed.",
                   path, VPP_SEAL_FILE);
         return -1;
     }
@@ -309,7 +309,7 @@ int vpp_plugin_seal_verify(const char *path)
     if (!matched)
     {
         log_error("[PLUGIN] VPP plugin '%s' does not match its sealed hash -- refusing to load "
-                  "it. The .so changed after the verified build.",
+                  "it. The .so changed after it was built.",
                   path);
         return -1;
     }

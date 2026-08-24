@@ -5,11 +5,8 @@ flask_sqlalchemy
 Flask-SocketIO
 PyJWT
 python-dotenv
-# Ed25519 verification of the VPP package signature on the upload path
-# (webserver/vpp_package_signature.py). Imported lazily and only while handling
-# an upload, so a runtime that has not re-run install.sh still boots and still
-# accepts plain PLC programs -- only VPP uploads are refused, with a message
-# naming this package.
+# Certificate/key handling for the OPC UA server security profiles
+# (core/src/drivers/plugins/python/opcua/opcua_security.py).
 cryptography
 pytest
 pytest-flask
