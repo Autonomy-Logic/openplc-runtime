@@ -288,6 +288,16 @@ def handle_upload_file(data: dict) -> dict:
 
         safe_extract(zip_file, extract_dir, valid_files)
 
+        # A new program must not inherit the previous one's retained values.
+        # The layout hash already refuses a genuinely different set of retained
+        # variables, but two programs that happen to share a layout would
+        # otherwise silently inherit each other's state. CODESYS clears retained
+        # memory on download; this is the same rule.
+        try:
+            runtime_manager.clear_retained()
+        except Exception as e:  # never fail an upload over this
+            logger.warning("Could not clear retained values before upload: %s", e)
+
         # Verify the VPP package signature BEFORE anything from this upload is
         # copied into the runtime root and before any Makefile from it runs.
         #

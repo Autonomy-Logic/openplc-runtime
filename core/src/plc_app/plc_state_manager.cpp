@@ -34,6 +34,7 @@ extern "C" {
 #include "debug_write_journal.h"
 #include "image_tables.h"
 #include "journal_buffer.h"
+#include "plc_retain.h"
 #include "plc_state_manager.h"
 #include "plcapp_manager.h"
 #include "scan_cycle_manager.h"
@@ -438,6 +439,15 @@ void *plc_cycle_thread(void *arg)
     image_tables_bind_located_vars();
     image_tables_fill_null_pointers();
     pthread_mutex_unlock(itm);
+
+    /* Retained variables. init() decides once whether retain can run here —
+     * does the .so export the entry points, does the program retain anything,
+     * is there a plugin willing to store it — and load() restores what was
+     * kept. Both must follow the located-variable binding above: a retained
+     * variable may also be located, and its image slot has to exist before
+     * anything writes through it. Both are no-ops when retain is not in play. */
+    plc_retain_init();
+    plc_retain_load();
 
     journal_buffer_ptrs_t journal_ptrs = {
         .bool_input   = bool_input,
@@ -965,6 +975,12 @@ void *plc_cycle_thread(void *arg)
                  * g_tasks_running == 0 so no worker is mid-scan, and we hold
                  * image_lock. Cheap no-op when nothing is queued. */
                 debug_write_journal_drain();
+                /* Retained values, once per scan. This window is the only place
+                 * they can be read safely: g_tasks_running == 0, so no worker is
+                 * inside a body mutating them — the same guarantee
+                 * copy_config_globals_out relies on. The plugin decides whether
+                 * these bytes are actually committed now; no-op with no store. */
+                plc_retain_save();
                 image_unlock();
                 if (plugin_driver) plugin_driver_cycle_end(plugin_driver);
                 cycle_end_pending = false;

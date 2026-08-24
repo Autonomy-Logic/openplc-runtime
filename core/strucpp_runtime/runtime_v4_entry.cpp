@@ -28,6 +28,7 @@
 #include "debug_dispatch.hpp"
 #include "iec_located.hpp"
 #include "iec_std_lib.hpp"   // ConfigurationInstance + __CURRENT_TIME_NS
+#include "iec_retain.hpp"    // retain blob format + pack/unpack
 #include "generated.hpp"
 
 #include <cstddef>
@@ -140,3 +141,62 @@ extern "C" void strucpp_set_current_time(int64_t ns) {
 // NOTE: the runtime no longer probes a "threaded ABI" capability symbol. It
 // compiles every .so itself with -DSTRUCPP_THREADED, so the threaded
 // process-image model is the only one; there is nothing to detect.
+
+// ---------------------------------------------------------------------------
+// Retain marshalling.
+//
+// The WALK lives here, inside the .so, because that is where the debug tables
+// and `handle_read` / `handle_write` are. The runtime is built once and loads
+// many .so files, so it cannot reach `strucpp::retain` by mangled name — and
+// re-implementing the blob format on its side would put two copies of a wire
+// format in two repos, which is exactly the drift `iec_retain.hpp` exists to
+// prevent.
+//
+// What the runtime DOES own is the write path, which is why unpack takes a
+// callback instead of using `handle_write` directly: a retained variable may
+// also be LOCATED (`VAR RETAIN x AT %MW10`), and poking such a leaf's IECVar
+// is undone by the next copy-in from the process image. The runtime passes a
+// thunk that routes through `runtime_external_write`, which knows to send a
+// located leaf through the image journal. Reads need no such care — a read
+// sees whatever the last copy-in left — so pack uses `handle_read` here.
+// ---------------------------------------------------------------------------
+
+static uint16_t retain_read_leaf(uint8_t arr, uint16_t elem, uint8_t* dest) {
+    return strucpp::debug::handle_read(arr, elem, dest);
+}
+
+static uint16_t retain_size_leaf(uint8_t arr, uint16_t elem) {
+    return strucpp::debug::handle_size(arr, elem);
+}
+
+/** Bytes a full blob occupies for this program; 0 when nothing is retained. */
+extern "C" size_t strucpp_retain_blob_size(void) {
+    return strucpp::retain::blob_size(retain_size_leaf);
+}
+
+/** Identity of the retain LAYOUT — reported so the runtime can log it. */
+extern "C" uint32_t strucpp_retain_layout_hash(void) {
+    return strucpp::debug::retain_layout_hash;
+}
+
+/** Serialise every retained leaf. Returns bytes written, 0 on failure. */
+extern "C" size_t strucpp_retain_pack(uint8_t* out, size_t cap) {
+    return strucpp::retain::pack(out, cap, retain_read_leaf, retain_size_leaf);
+}
+
+/**
+ * Restore every retained leaf, writing through the runtime's own callback.
+ *
+ * Returns `strucpp::retain::LoadResult` as a byte. Anything but 0 (Ok) means
+ * nothing was written and every variable keeps its declared initial value —
+ * the correct outcome for a corrupt or stale store, since a machine starting
+ * from its defaults is recoverable and one starting from plausible-looking
+ * garbage is not.
+ */
+extern "C" uint8_t strucpp_retain_unpack(
+    const uint8_t* blob,
+    size_t len,
+    uint8_t (*write_leaf)(uint8_t arr, uint16_t elem, const uint8_t* bytes, uint16_t n)) {
+    return static_cast<uint8_t>(
+        strucpp::retain::unpack(blob, len, write_leaf, retain_size_leaf));
+}
