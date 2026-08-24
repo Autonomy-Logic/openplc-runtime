@@ -109,12 +109,10 @@ make -j"$JOBS" -f scripts/Makefile.strucpp
 # into BUILD_PATH (next to new_libplc.so) so the runtime's plugin
 # loader picks it up under the same lookup rules as built-ins.
 #
-# checksum.sha256 is a RECOMPILATION CACHE KEY, NOT AN INTEGRITY CHECK.
-# It is written by the editor over the files the editor itself just copied,
-# travels inside the same upload as those files, and is only ever compared
-# against a copy of itself saved by a previous build. It proves nothing about
-# where the plugin came from and must never be read as if it did.
-#
+# checksum.sha256 is a RECOMPILATION CACHE KEY: the editor writes it over the
+# files it copied, it travels inside the upload, and it is only ever compared
+# against a copy of itself saved by a previous build -- to decide whether the
+# plugin source changed since the last compile.
 # -----------------------------------------------------------------------
 VPP_PLUGIN_DIR="$GENERATED_DIR/vpp_plugin"
 VPP_CHECKSUM_FILE="$VPP_PLUGIN_DIR/checksum.sha256"
@@ -142,8 +140,6 @@ sha256_hex() {
     fi
 }
 
-
-
 # Every lib*_plugin.so on disk must hash to a line in the seal (review
 # 2026-08-20, R3). Decides whether a checksum cache hit may skip the
 # compile: objects the seal does not vouch for force a rebuild.
@@ -170,7 +166,7 @@ if [ -d "$VPP_PLUGIN_DIR" ] && [ -f "$VPP_PLUGIN_DIR/Makefile" ]; then
                 # whatever sits in build/vpp/ converted a detected tamper
                 # into a permanent pass on the next re-upload, and an
                 # upgraded runtime with no seal must REBUILD from the
-                # just-verified tree, never bless unknown bytes.
+                # just-extracted tree, never bless unknown bytes.
                 if vpp_object_seal_matches; then
                     echo "[INFO] VPP plugin source unchanged (checksum match), skipping recompilation"
                     NEEDS_COMPILE=0

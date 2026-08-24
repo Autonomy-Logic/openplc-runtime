@@ -8,9 +8,7 @@
  * before dlopen, so an object swapped into build/vpp/ AFTER the compile does
  * not load: only what THIS runtime's compile step built gets executed.
  * (Package provenance of the upload itself is the editor's concern -- it
- * verifies the installed VPP's Ed25519 signature before building the bundle;
- * the runtime-side upload verification was removed by decision 2026-08-26,
- * preserved on branch archive/vpp-plugin-signature-gate.)
+ * verifies the installed VPP's Ed25519 signature before building the bundle.)
  *
  * Scope, deliberately narrow: only objects that resolve inside build/vpp/ are
  * sealed. Built-in plugins listed in plugins.conf are produced by the

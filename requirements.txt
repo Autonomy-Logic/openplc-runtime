@@ -5,9 +5,6 @@ flask_sqlalchemy
 Flask-SocketIO
 PyJWT
 python-dotenv
-# Certificate/key handling for the OPC UA server security profiles
-# (core/src/drivers/plugins/python/opcua/opcua_security.py).
-cryptography
 pytest
 pytest-flask
 pre-commit
