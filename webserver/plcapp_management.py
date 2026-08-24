@@ -531,7 +531,20 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
         )
 
         threading.Thread(target=stream_output, args=(compile_proc.stdout, ""), daemon=True).start()
-        threading.Thread(target=stream_output, args=(compile_proc.stderr, "[ERROR] "), daemon=True).start()
+        # stderr is NOT evidence of failure: g++ writes warnings, notes, and the
+        # quoted-source / `^~~~` caret lines under them to stderr too, beside real
+        # errors. Tagging the stream "[ERROR] " made every warning fatal to the
+        # editor, which names the last error-level line as the reason a build
+        # failed — so a build that merely warned came back as `upload_rejected`
+        # with a bare caret line as its message.
+        #
+        # The exit code is the verdict, and it already gets one: wait_step logs
+        # "[ERROR] Build failed (exit=N)" below. These lines are diagnostics, so
+        # they go in at WARNING and the operator reads the severity g++ itself
+        # printed in the text. Deliberately NOT parsed for severity — g++ output
+        # is localised and tool-specific, and a parser that misreads it would
+        # relabel real errors, which is worse than under-labelling warnings.
+        threading.Thread(target=stream_output, args=(compile_proc.stderr, "[WARNING] "), daemon=True).start()
 
         # Block until compile finishes.
         compile_ok = wait_step(compile_proc, "Build")
@@ -563,7 +576,8 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
         )
 
         threading.Thread(target=stream_output, args=(cleanup_proc.stdout, ""), daemon=True).start()
-        threading.Thread(target=stream_output, args=(cleanup_proc.stderr, "[ERROR] "), daemon=True).start()
+        # Same reasoning as the compile drainer above.
+        threading.Thread(target=stream_output, args=(cleanup_proc.stderr, "[WARNING] "), daemon=True).start()
 
         cleanup_ok = wait_step(cleanup_proc, "Cleanup")
 
