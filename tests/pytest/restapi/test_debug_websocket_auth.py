@@ -183,7 +183,7 @@ def test_a_non_license_command_also_requires_a_live_token(socketio, app, client,
 
 
 # ---------------------------------------------------------------------------
-# 3. The license FCs require the admin role
+# 3. The license FCs are open to any authenticated role
 # ---------------------------------------------------------------------------
 
 
@@ -198,30 +198,35 @@ def test_an_admin_can_read_the_anchor(socketio, app, admin_token, anchor):
 
 
 @pytest.mark.parametrize("command_hex", ["48", "49 00 62" + " 00" * 98, "4A"])
-def test_a_non_admin_cannot_use_the_license_fcs(
+def test_a_non_admin_can_use_the_license_fcs(
     socketio, app, client, admin_token, anchor, command_hex
 ):
-    """Role `user` must not read the anchor nor write a license.
+    """Role `user` may run every license FC (decision 2026-08-25).
 
-    Reading it once is enough to derive that board's licensing identity and its
-    possession key offline, forever -- the anchor does not rotate, so revoking the
-    account afterwards takes nothing back.
+    The purchase is authorized by the Edge account on the /buy page, never by the
+    runtime role, so admin-gating these only stopped an operator from activating a
+    licence they had already paid for. Any authenticated role now reads the anchor
+    (0x48), writes (0x49) and reads back (0x4A) the blob. The old refusal
+    ("Admin privileges required") must never come back.
     """
     user_token = _user_token(client, admin_token)
     ws = _connect(socketio, app, token=user_token)
-    assert ws.is_connected(_NAMESPACE)  # a `user` may still debug variables
+    assert ws.is_connected(_NAMESPACE)
 
-    refused = _command(ws, command_hex)
-    assert refused["success"] is False
-    assert refused["error"] == "Admin privileges required"
-    assert "data" not in refused
-    assert _ANCHOR.hex() not in str(refused)
-    assert _ANCHOR.decode() not in str(refused)
+    response = _command(ws, command_hex)
+
+    assert response.get("error") != "Admin privileges required"
+    # 0x48 must actually hand the `user` the real anchor, same as the admin path.
+    if command_hex == "48":
+        assert response["success"] is True
+        parts = response["data"].split()
+        assert parts[:3] == ["48", "7E", "10"]
+        assert bytes(int(p, 16) for p in parts[3:]) == anchor
 
 
 def test_a_non_admin_can_still_run_ordinary_debug_commands(socketio, app, client, admin_token):
-    """The role gate is scoped to the license FCs -- it is not a general lockout,
-    which is what would make it get reverted."""
+    """A `user` role debugs variables just like an admin -- there is no role
+    lockout anywhere on this channel."""
     user_token = _user_token(client, admin_token)
     ws = _connect(socketio, app, token=user_token)
 
