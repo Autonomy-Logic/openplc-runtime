@@ -94,6 +94,14 @@ void cleanup(void);     // Called when plugin is being unloaded
 // Per-cycle hooks (called during each PLC scan cycle, synchronized with PLC execution)
 void cycle_start(void); // Called at start of each scan cycle, before PLC logic
 void cycle_end(void);   // Called at end of each scan cycle, after PLC logic
+
+// Optional: retain-variable storage. A plugin exporting both retain_save and
+// retain_load becomes the device's retain store (first one found wins).
+// retain_clear is optional on top of that; without it the plugin simply
+// cannot be cold-reset.
+int retain_save(const uint8_t *blob, uint16_t len);                 // Persist the blob. Must not block.
+int retain_load(uint8_t *out, uint16_t cap, uint16_t *out_len);     // Restore the blob.
+int retain_clear(void);                                             // Discard the stored blob.
 ```
 
 **Important: Native Plugin Args Lifetime**
@@ -581,6 +589,18 @@ void plugin_driver_cycle_start(plugin_driver_t *driver);
 // Plugins opt-in by implementing cycle_end(); opt-out by not implementing it
 void plugin_driver_cycle_end(plugin_driver_t *driver);
 
+// Find the plugin acting as this device's retain store (first plugin that
+// exports both retain_save and retain_load), or NULL if none does
+plugin_instance_t *plugin_driver_find_retain_store(plugin_driver_t *driver);
+
+// Save/load/clear the retain blob through the chosen store plugin
+// Return 0 on success; retain_save/retain_load return -1 if `store` isn't a
+// valid store, retain_clear is a no-op (returns 0) if the plugin has no
+// retain_clear export
+int plugin_driver_retain_save(plugin_instance_t *store, const uint8_t *blob, uint16_t len);
+int plugin_driver_retain_load(plugin_instance_t *store, uint8_t *out, uint16_t cap, uint16_t *out_len);
+int plugin_driver_retain_clear(plugin_instance_t *store);
+
 // Destroy the plugin driver and free resources (calls 'cleanup' on plugins)
 void plugin_driver_destroy(plugin_driver_t *driver);
 ```
@@ -683,7 +703,17 @@ void plugin_driver_destroy(plugin_driver_t *driver);
     }
     ```
 
-4.  **Memory Management (Python):**
+4.  **Native Plugin Retain Store:**
+
+    A native plugin that owns retention hardware (FRAM, battery-backed SRAM, a data partition, etc.) can become the device's retain store by exporting `retain_save()` and `retain_load()`. The runtime marshals retained variables into an opaque blob and hands it to the store; the plugin only needs to persist and return bytes, with no knowledge of what they mean.
+
+    *   `retain_save(blob, len)`: Called once per scan cycle, unconditionally, from the scan's quiescent window. Must return promptly and must not block — this runs inside the scan cycle.
+    *   `retain_load(out, cap, out_len)`: Called once at program start to restore the last saved blob.
+    *   `retain_clear(void)`: Optional. Discards the stored blob so the next start uses the program's declared initial values. Called on program upload and by the runtime's `RETAIN:CLEAR` command. A plugin without it simply cannot be cold-reset.
+
+    **Both `retain_save` and `retain_load` are required** to be selected as the store; a plugin exporting only one is ignored. If more than one plugin exports both, the first one found wins and the rest are logged and ignored.
+
+5.  **Memory Management (Python):**
     *   Python's garbage collector handles memory. However, explicitly close files, sockets, or release other external resources in `cleanup()`.
 
 ## Dependencies
