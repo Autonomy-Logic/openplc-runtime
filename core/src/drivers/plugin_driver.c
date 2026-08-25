@@ -1487,11 +1487,24 @@ void python_plugin_cycle(plugin_instance_t *plugin)
 
 static bool plugin_provides_retain_store(const plugin_instance_t *p)
 {
+    if (!p) return false;
+
+    // A DISABLED plugin is not a store, even though its symbols resolved.
+    //
+    // Loading resolves symbols for every plugin in plugins.conf; only starting
+    // is gated on `enabled`. Without this check a disabled plugin is still
+    // picked as the store, so retain reports itself active, hands it the blob
+    // every scan, and gets nothing back on the next boot — the values are
+    // simply gone, with a log line at start saying retain is configured and
+    // working. Found on hardware: an upload rewrote plugins.conf, disabled the
+    // storage plugin, and retain went on claiming to work.
+    if (!p->config.enabled) return false;
+
     // BOTH halves required. A store that can save and not load is worse than
     // none: it would accept values every scan and silently never give them
     // back, which looks like working retention right up until the reboot that
     // matters.
-    return p && p->native_plugin && p->native_plugin->retain_save && p->native_plugin->retain_load;
+    return p->native_plugin && p->native_plugin->retain_save && p->native_plugin->retain_load;
 }
 
 plugin_instance_t *plugin_driver_find_retain_store(plugin_driver_t *driver)
