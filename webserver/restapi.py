@@ -17,6 +17,15 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import webserver.config
 from webserver.logger import get_logger
+from webserver.retain_config import (
+    DEFAULT_FLUSH_SECONDS,
+    DEFAULT_RETAIN_PATH,
+    MAX_FLUSH_SECONDS,
+    MIN_FLUSH_SECONDS,
+    RetainConfigError,
+    read_retain_config,
+    write_retain_config,
+)
 from webserver.version import MIN_EDITOR_VERSION, RUNTIME_VERSION
 
 logger, buffer = get_logger("logger", use_buffer=True)
@@ -676,6 +685,129 @@ def delete_user(user_id):
 
 
 # login endpoint
+# Persistent storage (RETAIN) settings for the runtime's BUILT-IN file store.
+#
+# Read by any authenticated user, written by an admin — the same split the user
+# endpoints use, and for the same reason: seeing how a device is configured is
+# not the same privilege as changing it.
+#
+# The settings describe the built-in store only. A VPP plugin that provides its
+# own retain backend OVERRIDES it, which is why the GET also reports what is
+# actually holding the bytes right now.
+@restapi_bp.route("/retain-config", methods=["GET"])
+@jwt_required()
+def get_retain_config():
+    """
+    Return the persistent-storage settings and the live backend.
+    ---
+    tags:
+      - Runtime
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Persistent storage settings
+        schema:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            path:
+              type: string
+            flushSeconds:
+              type: integer
+            defaultPath:
+              type: string
+            minFlushSeconds:
+              type: integer
+            maxFlushSeconds:
+              type: integer
+            backend:
+              type: string
+              description: What is holding retained bytes now — none, plugin, file or unknown
+            backendDetail:
+              type: string
+            active:
+              type: boolean
+      401:
+        description: Authentication required
+    """
+    cfg = read_retain_config()
+    manager = app_restapi.config.get("RUNTIME_MANAGER")
+    status = manager.retain_status() if manager else {"active": False, "backend": "unknown", "detail": ""}
+    cfg.update(
+        {
+            "defaultPath": DEFAULT_RETAIN_PATH,
+            "defaultFlushSeconds": DEFAULT_FLUSH_SECONDS,
+            "minFlushSeconds": MIN_FLUSH_SECONDS,
+            "maxFlushSeconds": MAX_FLUSH_SECONDS,
+            "backend": status.get("backend", "unknown"),
+            "backendDetail": status.get("detail", ""),
+            "active": status.get("active", False),
+        }
+    )
+    return jsonify(cfg), 200
+
+
+@restapi_bp.route("/retain-config", methods=["PUT"])
+@jwt_required()
+def put_retain_config():
+    """
+    Update the persistent-storage settings.
+
+    Takes effect when the PLC next starts: the core reads the file once per
+    program load, and re-reading it mid-scan would mean changing where a
+    running program's retained values go, which is not a thing to do quietly.
+    ---
+    tags:
+      - Runtime
+    security:
+      - BearerAuth: []
+    parameters:
+      - in: body
+        name: body
+        schema:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            path:
+              type: string
+            flushSeconds:
+              type: integer
+    responses:
+      200:
+        description: Settings saved
+      400:
+        description: A setting the runtime could not honour
+      401:
+        description: Authentication required
+      403:
+        description: Admin privileges required
+    """
+    if not (current_user and current_user.is_admin()):
+        return jsonify({"msg": "Admin privileges required"}), 403
+
+    data = request.get_json() or {}
+    current = read_retain_config()
+
+    enabled = data.get("enabled", current["enabled"])
+    if not isinstance(enabled, bool):
+        return jsonify({"msg": "enabled must be true or false"}), 400
+
+    path = data.get("path", current["path"])
+    flush_seconds = data.get("flushSeconds", current["flushSeconds"])
+
+    try:
+        saved = write_retain_config(enabled, path, flush_seconds)
+    except RetainConfigError as e:
+        return jsonify({"msg": str(e)}), 400
+    except OSError as e:
+        return jsonify({"msg": f"Could not save the settings: {e}"}), 400
+
+    return jsonify(saved), 200
+
+
 @restapi_bp.route("/login", methods=["POST"])
 def login():
     """

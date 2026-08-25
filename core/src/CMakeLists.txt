@@ -45,6 +45,7 @@ add_executable(plc_main
     ${CMAKE_SOURCE_DIR}/core/src/plc_app/debug_write_journal.cpp
     ${CMAKE_SOURCE_DIR}/core/src/plc_app/plc_io_cycle.cpp
     ${CMAKE_SOURCE_DIR}/core/src/plc_app/plc_retain.cpp
+    ${CMAKE_SOURCE_DIR}/core/src/plc_app/plc_retain_file_store.cpp
     ${CMAKE_SOURCE_DIR}/core/src/plc_app/plc_state_manager.cpp
     ${CMAKE_SOURCE_DIR}/core/src/plc_app/plc_switch.c
     ${CMAKE_SOURCE_DIR}/core/src/plc_app/plcapp_manager.c

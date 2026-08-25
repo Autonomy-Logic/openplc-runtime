@@ -98,6 +98,21 @@ void plc_retain_clear(void);
  */
 bool plc_retain_active(void);
 
+/**
+ * @brief Which backend is holding the bytes, for the editor's Persistent
+ *        Storage screen.
+ *
+ * One of "none", "plugin" or "file". The screen needs to distinguish them
+ * because a VPP plugin OVERRIDES the built-in file store: on such a device the
+ * file settings are still there and still saved, and are simply not what is
+ * being used. Showing "enabled" while a plugin quietly handles retention would
+ * be a lie the operator only discovers by looking for a file that never grows.
+ */
+const char *plc_retain_backend(void);
+
+/** @brief The store's target for display — a path, or a plugin name. */
+const char *plc_retain_backend_detail(void);
+
 #ifdef __cplusplus
 }
 #endif

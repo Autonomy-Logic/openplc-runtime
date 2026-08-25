@@ -323,6 +323,19 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
         plc_retain_clear();
         strncpy(response, "RETAIN:OK\n", response_size);
     }
+    else if (strcmp(command, "RETAIN:STATUS") == 0)
+    {
+        /* What is ACTUALLY holding the retained bytes right now, which is not
+         * the same question as what the settings say. A VPP plugin overrides
+         * the built-in file store, and the Persistent Storage screen has to be
+         * able to say so — otherwise it reports the file store as enabled
+         * while a plugin quietly does the work, and the operator finds out by
+         * wondering why the file never grows. */
+        snprintf(response, response_size, "RETAIN:STATUS %s %s %s\n",
+                 plc_retain_active() ? "active" : "inactive",
+                 plc_retain_backend(),
+                 plc_retain_backend_detail());
+    }
     else if (strcmp(command, "START") == 0)
     {
         PLCState current_state = plc_get_state();
