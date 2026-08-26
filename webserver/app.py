@@ -45,10 +45,6 @@ from webserver.restapi import (
     restapi_bp,
 )
 from webserver.runtimemanager import RuntimeManager
-from webserver.vpp_package_signature import (
-    verify_uploaded_vpp_plugin,
-    write_verification_seal,
-)
 
 logger, _ = get_logger("logger", use_buffer=True)
 
@@ -287,30 +283,6 @@ def handle_upload_file(data: dict) -> dict:
             shutil.rmtree(extract_dir)
 
         safe_extract(zip_file, extract_dir, valid_files)
-
-        # Verify the VPP package signature BEFORE anything from this upload is
-        # copied into the runtime root and before any Makefile from it runs.
-        #
-        # The order matters and is the reason this sits here rather than in
-        # compile.sh: a licensed VPP ships the closed enforcement objects and a
-        # link-only Makefile inside the upload, and compile.sh runs that
-        # Makefile as root. Refusing here means an unsigned or tampered plugin
-        # never gets a vpp_plugins.conf installed, never gets its config or
-        # license blob copied out, and never reaches `make`.
-        #
-        # Policy for uploads without a signature lives in exactly one place --
-        # vpp_package_signature.signature_required(). Today: only uploads that
-        # carry a vpp_plugin/ directory must be signed, so plain PLC programs
-        # from any editor keep working untouched.
-        verification = verify_uploaded_vpp_plugin(extract_dir)
-        if not verification.ok:
-            build_state.status = BuildStatus.FAILED
-            build_state.log(f"[ERROR] {verification.error}\n")
-            return {
-                "UploadFileFail": verification.error,
-                "CompilationStatus": build_state.status.name,
-            }
-        write_verification_seal(extract_dir, verification)
 
         # Apply VPP plugin conf from upload (copy if present, delete if not)
         apply_vpp_plugin_conf(extract_dir)

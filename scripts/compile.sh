@@ -109,20 +109,13 @@ make -j"$JOBS" -f scripts/Makefile.strucpp
 # into BUILD_PATH (next to new_libplc.so) so the runtime's plugin
 # loader picks it up under the same lookup rules as built-ins.
 #
-# checksum.sha256 is a RECOMPILATION CACHE KEY, NOT AN INTEGRITY CHECK.
-# It is written by the editor over the files the editor itself just copied,
-# travels inside the same upload as those files, and is only ever compared
-# against a copy of itself saved by a previous build. It proves nothing about
-# where the plugin came from and must never be read as if it did.
-#
-# What DOES gate this block is the verification seal below: the webserver
-# verified the VPP package's Ed25519 signature over these exact bytes before
-# calling this script (webserver/vpp_package_signature.py). Without a seal
-# that still matches the tree on disk, no uploaded Makefile runs.
+# checksum.sha256 is a RECOMPILATION CACHE KEY: the editor writes it over the
+# files it copied, it travels inside the upload, and it is only ever compared
+# against a copy of itself saved by a previous build -- to decide whether the
+# plugin source changed since the last compile.
 # -----------------------------------------------------------------------
 VPP_PLUGIN_DIR="$GENERATED_DIR/vpp_plugin"
 VPP_CHECKSUM_FILE="$VPP_PLUGIN_DIR/checksum.sha256"
-VPP_VERIFIED_SEAL="$GENERATED_DIR/vpp_plugin.verified"
 # VPP outputs land in a dedicated subdir of BUILD_PATH so the cleanup
 # glob below can scope itself to VPP-only artefacts. If a future built-in
 # plugin ships as a .so dropped into BUILD_PATH directly, the old
@@ -147,78 +140,6 @@ sha256_hex() {
     fi
 }
 
-# Digest over a whole directory tree: sha256 of "<filehash>  <relpath>\n" lines
-# for every regular file, sorted by path. Must stay byte-identical to
-# webserver/vpp_package_signature.py's tree_digest(), which is what produced
-# the value in the seal -- hence LC_ALL=C for byte-order sort, POSIX relative
-# paths, and exactly two spaces.
-vpp_tree_digest() {
-    local dir="$1" listing
-    # '|| exit 1' used to exit the while's SUBSHELL (a pipeline stage); the
-    # function's status was cut's (0), so a hashing failure emitted a digest
-    # of a PARTIAL listing -- reported as "tree changed after it was
-    # verified", accusing an intact package of tampering when the real cause
-    # was a missing tool (review 2026-08-20, R4). pipefail makes the inner
-    # failure the pipeline's, and the caller sees it.
-    listing=$(
-        cd "$dir" || exit 1
-        set -o pipefail
-        find . -type f -print | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r f; do
-            inner=$(sha256_hex "$f") || { echo "[ERROR] cannot hash $dir/$f" >&2; exit 1; }
-            printf '%s  %s\n' "$inner" "$f"
-        done
-    ) || return 1
-    # An empty tree hashes as EMPTY INPUT (python's tree_digest of no files);
-    # printf '%s\n' of an empty capture would inject one newline.
-    { [ -n "$listing" ] && printf '%s\n' "$listing" || printf ''; } | { if command -v sha256sum > /dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | awk '{ sub(/^\\/, "", $1); print $1; exit }'
-}
-
-# Refuse to build an unverified plugin tree.
-#
-# The webserver already verified the package signature before calling this
-# script, and this seal is how that verdict reaches us. It exists for the case
-# where compile.sh is invoked directly (by hand, by a systemd unit, by a future
-# caller that forgets the gate) and for the window between the gate and `make`:
-# the digest is recomputed here, so a file swapped in after verification does
-# not build either.
-#
-# The seal is unkeyed and therefore forgeable by anyone who can already write
-# into core/generated/ -- but that is a shell, not the upload endpoint this
-# defends. It is an interlock, not a trust anchor.
-check_vpp_verification_seal() {
-    if [ ! -f "$VPP_VERIFIED_SEAL" ]; then
-        echo "[ERROR] Refusing to build the uploaded VPP plugin: no verification seal at" >&2
-        echo "        $VPP_VERIFIED_SEAL." >&2
-        echo "        The plugin tree in $VPP_PLUGIN_DIR was never checked against a signed" >&2
-        echo "        VPP package. Upload the program through the runtime's /api/upload-file" >&2
-        echo "        endpoint, which verifies the package signature first." >&2
-        return 1
-    fi
-
-    local sealed actual
-    sealed=$(awk '/^treeDigest /{print $2; exit}' "$VPP_VERIFIED_SEAL")
-    if [ -z "$sealed" ]; then
-        echo "[ERROR] Verification seal $VPP_VERIFIED_SEAL has no treeDigest." >&2
-        return 1
-    fi
-
-    if ! actual=$(vpp_tree_digest "$VPP_PLUGIN_DIR") || [ -z "$actual" ]; then
-        echo "[ERROR] Cannot compute the VPP plugin digest (no sha256sum/shasum on PATH)." >&2
-        echo "        Install coreutils; the plugin integrity check cannot be skipped." >&2
-        return 1
-    fi
-
-    if [ "$sealed" != "$actual" ]; then
-        echo "[ERROR] The VPP plugin tree changed after it was verified." >&2
-        echo "        sealed:  $sealed" >&2
-        echo "        on disk: $actual" >&2
-        return 1
-    fi
-
-    echo "[INFO] VPP plugin verified against the signed package (digest ${actual:0:12}...)"
-    return 0
-}
-
 # Every lib*_plugin.so on disk must hash to a line in the seal (review
 # 2026-08-20, R3). Decides whether a checksum cache hit may skip the
 # compile: objects the seal does not vouch for force a rebuild.
@@ -234,10 +155,6 @@ vpp_object_seal_matches() {
 }
 
 if [ -d "$VPP_PLUGIN_DIR" ] && [ -f "$VPP_PLUGIN_DIR/Makefile" ]; then
-    # Before mkdir, before the cache check, before make: nothing from the
-    # upload is acted on until the seal matches.
-    check_vpp_verification_seal || exit 3
-
     NEEDS_COMPILE=1
     mkdir -p "$VPP_OUTPUT_DIR"
 
@@ -249,12 +166,12 @@ if [ -d "$VPP_PLUGIN_DIR" ] && [ -f "$VPP_PLUGIN_DIR/Makefile" ]; then
                 # whatever sits in build/vpp/ converted a detected tamper
                 # into a permanent pass on the next re-upload, and an
                 # upgraded runtime with no seal must REBUILD from the
-                # just-verified tree, never bless unknown bytes.
+                # just-extracted tree, never bless unknown bytes.
                 if vpp_object_seal_matches; then
                     echo "[INFO] VPP plugin source unchanged (checksum match), skipping recompilation"
                     NEEDS_COMPILE=0
                 else
-                    echo "[INFO] Object seal missing or stale for cached .so -- recompiling from the verified tree"
+                    echo "[INFO] Object seal missing or stale for cached .so -- recompiling from the uploaded tree"
                 fi
             fi
         fi
@@ -277,7 +194,7 @@ if [ -d "$VPP_PLUGIN_DIR" ] && [ -f "$VPP_PLUGIN_DIR/Makefile" ]; then
         echo "[INFO] VPP plugin compiled successfully"
     fi
 
-    # Record the sha256 of every .so this verified build produced, so the
+    # Record the sha256 of every .so this build produced, so the
     # plugin loader can refuse an object swapped in AFTER the compile
     # (core/src/drivers/vpp_plugin_seal.c, checked immediately before dlopen).
     # ONLY when this run compiled (review 2026-08-20, R3): sealing on the

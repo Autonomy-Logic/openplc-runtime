@@ -2,18 +2,13 @@
  * @file vpp_plugin_seal.h
  * @brief Last-metre integrity check for VPP plugin shared objects.
  *
- * The trust anchor for a VPP plugin is the package's Ed25519 signature, which
- * the webserver verifies on the upload path before anything is compiled
- * (webserver/vpp_package_signature.py). That covers the INPUTS: the prebuilt
- * vendor objects and the link-only Makefile.
- *
- * It cannot cover the OUTPUT. The .so is linked on the device, after the
- * signature was made, so its bytes are unknown to whoever signed. Instead
- * scripts/compile.sh records the sha256 of every .so it produced from a
- * verified tree into build/vpp/vpp_plugin.seal, and this module re-checks that
- * hash immediately before dlopen. Without it, an object swapped into
- * build/vpp/ AFTER the compile would load unchecked, and verifying the upload
- * would have proved nothing about the code actually executed.
+ * The VPP plugin's .so is linked on the device by scripts/compile.sh, which
+ * records the sha256 of every .so it produced into
+ * build/vpp/vpp_plugin.seal. This module re-checks that hash immediately
+ * before dlopen, so an object swapped into build/vpp/ AFTER the compile does
+ * not load: only what THIS runtime's compile step built gets executed.
+ * (Package provenance of the upload itself is the editor's concern -- it
+ * verifies the installed VPP's Ed25519 signature before building the bundle.)
  *
  * Scope, deliberately narrow: only objects that resolve inside build/vpp/ are
  * sealed. Built-in plugins listed in plugins.conf are produced by the

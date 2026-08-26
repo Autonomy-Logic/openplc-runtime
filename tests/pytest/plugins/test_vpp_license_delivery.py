@@ -80,8 +80,8 @@ def test_apply_vpp_plugin_conf_delivers_license(tmp_path, monkeypatch):
 
     # `path` is not decoration: apply_vpp_plugin_conf now runs the uploaded conf
     # through validate_vpp_plugins_conf first, which requires every VPP plugin's
-    # .so to resolve inside build/vpp/ (see test_vpp_plugin_signature.py). A fake
-    # without it would only prove the fake is out of date.
+    # .so to resolve inside build/vpp/. A fake without it would only prove the
+    # fake is out of date.
     class _P:
         name = "rpi_gpio"
 
