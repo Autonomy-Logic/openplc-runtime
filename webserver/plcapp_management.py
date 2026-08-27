@@ -9,6 +9,7 @@ import threading
 import glob
 from typing import Final
 
+from webserver.config import VPP_DATA_DIR
 from webserver.runtimemanager import RuntimeManager
 from webserver.logger import get_logger, LogParser
 from webserver.plugin_config_model import PluginsConfiguration, PluginConfig, PluginType
@@ -344,15 +345,21 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
 
     * **Upload includes vpp_plugins.conf** → copy it to the runtime root
       so the C-side plugin loader picks it up at the next PLC start.
-      Also copy each plugin's JSON config from ``conf/`` into the VPP
-      build output directory (``build/vpp/``) so the .so can read it
-      from the stable location listed in vpp_plugins.conf.
+      Also copy each plugin's JSON config (and its license sibling) from
+      ``conf/`` into ``config.VPP_DATA_DIR`` (under PERSISTENT_DATA_DIR),
+      and REWRITE each ``config_path`` in vpp_plugins.conf to that
+      persistent absolute path. build/ is wiped by install.sh on a runtime
+      version update, which would otherwise delete a purchased license; the
+      persistent dir survives. Only the ``.so`` binary stays under build/vpp
+      (it is code, rebuilt each upload) — the C loader passes config_path to
+      the plugin verbatim, so the .so still finds its config and license.
 
     * **Upload does not include vpp_plugins.conf** → delete any existing
       ``vpp_plugins.conf`` from the runtime root.  This ensures a
       vanilla upload never inadvertently loads a VPP driver left over
       from a previous project, regardless of what .so files exist in
-      ``build/vpp/``.
+      ``build/vpp/``. The persistent config/license are left in place, so a
+      device keeps its license if the VPP is re-added later.
     """
     VPP_CONF_DEST = "vpp_plugins.conf"
     VPP_BUILD_DIR = "build/vpp"
@@ -376,13 +383,14 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
         shutil.copy2(uploaded_conf, VPP_CONF_DEST)
         build_state.log(f"[INFO] VPP: installed vpp_plugins.conf from upload\n")
 
-        # Copy each VPP plugin's config file to the path declared in
-        # vpp_plugins.conf (the config_path field). That field is the
-        # single source of truth for where the .so will look for its
-        # config at runtime — use it directly rather than constructing
-        # a separate destination.
+        # Copy each VPP plugin's config file into the persistent dir and rewrite
+        # its config_path to point there (see the loop below). config_path is the
+        # single source of truth for where the .so looks for its config at
+        # runtime, so relocating it there is what carries config+license out of
+        # the wipe-on-update build/ tree.
         conf_dir = os.path.join(generated_dir, "conf")
         vpp_conf_plugins = PluginsConfiguration.from_file(VPP_CONF_DEST)
+        rewrote_paths = False
         for p in vpp_conf_plugins.plugins:
             if not p.config_path:
                 continue
@@ -390,32 +398,71 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
             if not os.path.exists(src_config):
                 build_state.log(f"[WARNING] VPP: conf/{p.name}.json not found in upload, skipping\n")
                 continue
-            dest_config = os.path.normpath(p.config_path)
-            # Guard against path traversal in editor-generated vpp_plugins.conf.
-            # Shares one containment definition with the 0x49 write path (see
-            # is_inside_root): rejects a sibling that merely shares runtime_root
-            # as a string prefix, AND resolves symlinks, which a lexical
-            # abspath check does not -- a link out of the tree would otherwise
-            # let an innocent-looking relative path write outside the root.
-            if not is_inside_root(dest_config, runtime_root):
-                build_state.log(f"[WARNING] VPP: config_path '{p.config_path}' escapes runtime root, skipping\n")
+
+            # Relocate the config (and its license sibling) OUT of build/vpp and
+            # into PERSISTENT_DATA_DIR/vpp: install.sh does `rm -rf $OPENPLC_DIR/
+            # build` on a runtime version update, which used to delete the
+            # purchased license with it. The .so still finds them because we
+            # rewrite config_path in vpp_plugins.conf below to this persistent
+            # absolute path -- the C loader passes config_path to the plugin
+            # verbatim (plugin_config.c only contains `path`, the .so itself,
+            # which stays under build/vpp).
+            #
+            # The destination is built from the plugin NAME (a basename), NEVER
+            # from the editor-supplied config_path, so a forged conf cannot steer
+            # the write outside the persistent dir. A name that is not a plain
+            # filename is refused rather than trusted.
+            if not p.name or os.path.basename(p.name) != p.name:
+                build_state.log(f"[WARNING] VPP: suspicious plugin name '{p.name}', skipping\n")
                 continue
+            dest_config = os.path.join(str(VPP_DATA_DIR), f"{p.name}.json")
+            if not is_inside_root(dest_config, str(VPP_DATA_DIR)):
+                build_state.log(f"[WARNING] VPP: config dest '{dest_config}' escapes the persistent dir, skipping\n")
+                continue
+            # The old build/vpp sibling, captured BEFORE we repoint config_path,
+            # so a device licensed before this change can be migrated below.
+            old_license = derive_license_path(os.path.normpath(p.config_path))
+
             os.makedirs(os.path.dirname(dest_config), exist_ok=True)
             shutil.copy2(src_config, dest_config)
             build_state.log(f"[INFO] VPP: copied {p.name}.json to {dest_config}\n")
 
-            # Deliver the optional device license blob alongside the config, at
-            # the sibling path the licensed plugin derives from its config path
-            # (derive_license_path, shared with vpp_license_debug.py's 0x49
+            # Point the .so at the persistent config (absolute). This one line is
+            # what moves the license out of harm's way: the license sibling the
+            # .so derives from config_path now lives in the persistent dir too.
+            p.config_path = dest_config
+            rewrote_paths = True
+            dest_license = derive_license_path(dest_config)
+
+            # Deliver the optional device license blob to the sibling of the
+            # persistent config (derive_license_path, shared with the 0x49
             # handler so both write the SAME file the .so reads). Present only
             # for a licensed VPP whose device was activated; absent for free
-            # VPPs or demo devices. dest_config already passed the traversal
-            # guard above, so no need to re-check its .license sibling.
+            # VPPs or demo devices.
             src_license = os.path.join(conf_dir, f"{p.name}.license")
             if os.path.exists(src_license):
-                dest_license = derive_license_path(dest_config)
                 shutil.copy2(src_license, dest_license)
                 build_state.log(f"[INFO] VPP: copied {p.name}.license to {dest_license}\n")
+            elif old_license and os.path.exists(old_license) and not os.path.exists(dest_license):
+                # One-time migration: a device licensed before this change has
+                # its blob next to the OLD build/vpp config. Move it to the
+                # persistent sibling when the upload did not carry one, so the
+                # license is not orphaned in a directory install.sh wipes.
+                # Best-effort: a failure here just means the device re-activates
+                # from its existing entitlement on the next connect, as it does
+                # today when 0x4A reads EMPTY.
+                try:
+                    shutil.copy2(old_license, dest_license)
+                    build_state.log(f"[INFO] VPP: migrated {p.name}.license {old_license} -> {dest_license}\n")
+                except OSError as exc:
+                    build_state.log(f"[WARNING] VPP: could not migrate {p.name}.license: {exc}\n")
+
+        # Persist the rewritten config_path values so the C loader AND the
+        # 0x49/0x4A handlers (via _license_path) read the persistent location,
+        # not the build/vpp one the editor emitted.
+        if rewrote_paths:
+            vpp_conf_plugins.to_file(VPP_CONF_DEST)
+            build_state.log("[INFO] VPP: rewrote vpp_plugins.conf config_path to the persistent dir\n")
     else:
         # No VPP in this upload — remove any stale vpp_plugins.conf so
         # the plugin loader does not attempt to load old VPP drivers.

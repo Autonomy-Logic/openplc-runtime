@@ -104,6 +104,15 @@ RUNTIME_DIR = get_runtime_dir()
 PERSISTENT_DATA_DIR = get_persistent_data_dir()
 ENV_PATH = PERSISTENT_DATA_DIR / ".env"
 DB_PATH = PERSISTENT_DATA_DIR / "restapi.db"
+# VPP plugin configs + license blobs live here, OUTSIDE $OPENPLC_DIR/build, so a
+# runtime version update (install.sh does ``rm -rf $OPENPLC_DIR/build``) can never
+# delete a purchased license. The closed .so still reads them because the runtime
+# writes this absolute path into vpp_plugins.conf's config_path field (see
+# webserver/plcapp_management.py::apply_vpp_plugin_conf); the C loader passes
+# config_path to the plugin verbatim, so only the .so binary itself must stay
+# under build/vpp.
+VPP_DATA_DIR = PERSISTENT_DATA_DIR / "vpp"
+VPP_DATA_DIR.mkdir(parents=True, exist_ok=True)
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
 

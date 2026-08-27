@@ -64,53 +64,83 @@ def test_delivery_path_matches_plugin_derivation(config_path):
     assert _runtime_license_dest(config_path) == _plugin_license_path(config_path)
 
 
-def test_apply_vpp_plugin_conf_delivers_license(tmp_path, monkeypatch):
-    """Integration: a conf/<plugin>.license in the upload is copied to the sibling
-    of the plugin's config_path; absence leaves no license (device -> demo)."""
+def test_apply_vpp_plugin_conf_relocates_to_persistent_dir(tmp_path, monkeypatch):
+    """Integration: apply relocates config+license into PERSISTENT_DATA_DIR/vpp
+    (NOT build/vpp) and rewrites config_path in vpp_plugins.conf to that absolute
+    path, so a runtime update -- which wipes build/ -- cannot delete the license.
+    The .so path stays under build/vpp (it is code, rebuilt each upload)."""
     mgmt = pytest.importorskip(
         "webserver.plcapp_management",
         reason="runtime webserver package not importable (no venv)",
     )
 
-    # Fake a single native plugin whose config_path lives under the temp cwd.
+    # Persistent dir lives OUTSIDE the runtime cwd on purpose -- that is the whole
+    # point of the change. Point the module's VPP_DATA_DIR at a temp location so
+    # the test never touches /var/lib.
+    persist = tmp_path / "data" / "vpp"
+    persist.mkdir(parents=True)
+    monkeypatch.setattr(mgmt, "VPP_DATA_DIR", persist)
+
     cwd = tmp_path / "runtime"
-    (cwd).mkdir()
+    cwd.mkdir()
     monkeypatch.chdir(cwd)
-    config_path = str(cwd / "build" / "vpp" / "rpi_gpio.json")
-
-    # `path` is not decoration: apply_vpp_plugin_conf now runs the uploaded conf
-    # through validate_vpp_plugins_conf first, which requires every VPP plugin's
-    # .so to resolve inside build/vpp/. A fake without it would only prove the
-    # fake is out of date.
-    class _P:
-        name = "rpi_gpio"
-
-        def __init__(self, cp, so):
-            self.config_path = cp
-            self.path = so
-
-    class _Conf:
-        plugins = [_P(config_path, "./build/vpp/librpi_gpio_plugin.so")]
-
-    monkeypatch.setattr(mgmt.PluginsConfiguration, "from_file", classmethod(lambda cls, _p: _Conf()))
     monkeypatch.setattr(mgmt.build_state, "log", lambda *_a, **_k: None, raising=False)
 
-    # Build the uploaded generated_dir: vpp_plugins.conf + conf/{json,license}.
+    # A REAL uploaded conf (no from_file monkeypatch): the .so path is relative
+    # and inside build/vpp so validate_vpp_plugins_conf accepts it; config_path is
+    # what the editor emits (relative build/vpp) and what apply must rewrite.
     gen = tmp_path / "generated"
     (gen / "conf").mkdir(parents=True)
-    (gen / "vpp_plugins.conf").write_text("dummy\n")
+    (gen / "vpp_plugins.conf").write_text(
+        "rpi_gpio,./build/vpp/librpi_gpio_plugin.so,1,1,build/vpp/rpi_gpio.json,\n"
+    )
     (gen / "conf" / "rpi_gpio.json").write_text("{}\n")
     (gen / "conf" / "rpi_gpio.license").write_bytes(b"\x4f\x50\x4c\x43" + b"\x00" * 94)  # 98-byte blob
 
     mgmt.apply_vpp_plugin_conf(str(gen))
 
-    expected = config_path[:-5] + ".license"
-    assert os.path.exists(expected), "license blob not delivered to the plugin's sibling path"
-    assert os.path.getsize(expected) == 98
+    # Config and license landed in the persistent dir, not build/vpp.
+    assert os.path.exists(persist / "rpi_gpio.json")
+    assert os.path.exists(persist / "rpi_gpio.license")
+    assert os.path.getsize(persist / "rpi_gpio.license") == 98
+    assert not os.path.exists(cwd / "build" / "vpp" / "rpi_gpio.license")
 
-    # Second pass without a .license in the upload must not resurrect a stale one
-    # from the same source (delivery only copies what the upload carries).
-    os.remove(expected)
+    # vpp_plugins.conf was rewritten: config_path -> persistent absolute; the .so
+    # path is untouched (stays under build/vpp).
+    rewritten = mgmt.PluginsConfiguration.from_file(str(cwd / "vpp_plugins.conf"))
+    plugin = rewritten.plugins[0]
+    assert plugin.config_path == str(persist / "rpi_gpio.json")
+    assert plugin.path == "./build/vpp/librpi_gpio_plugin.so"
+
+
+def test_persistent_license_survives_an_upload_without_a_license(tmp_path, monkeypatch):
+    """A re-upload that does not carry a .license must NOT wipe the license the
+    device already holds in the persistent dir -- that survival is the point."""
+    mgmt = pytest.importorskip(
+        "webserver.plcapp_management",
+        reason="runtime webserver package not importable (no venv)",
+    )
+    persist = tmp_path / "data" / "vpp"
+    persist.mkdir(parents=True)
+    monkeypatch.setattr(mgmt, "VPP_DATA_DIR", persist)
+    cwd = tmp_path / "runtime"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(mgmt.build_state, "log", lambda *_a, **_k: None, raising=False)
+
+    gen = tmp_path / "generated"
+    (gen / "conf").mkdir(parents=True)
+    conf_line = "rpi_gpio,./build/vpp/librpi_gpio_plugin.so,1,1,build/vpp/rpi_gpio.json,\n"
+    (gen / "vpp_plugins.conf").write_text(conf_line)
+    (gen / "conf" / "rpi_gpio.json").write_text("{}\n")
+    (gen / "conf" / "rpi_gpio.license").write_bytes(b"\x4f\x50\x4c\x43" + b"\x00" * 94)
+
+    mgmt.apply_vpp_plugin_conf(str(gen))
+    assert os.path.exists(persist / "rpi_gpio.license")
+
+    # Second upload of the same VPP, this time WITHOUT the license blob.
     (gen / "conf" / "rpi_gpio.license").unlink()
     mgmt.apply_vpp_plugin_conf(str(gen))
-    assert not os.path.exists(expected)
+
+    assert os.path.exists(persist / "rpi_gpio.license"), "persistent license must survive a license-less upload"
+    assert os.path.getsize(persist / "rpi_gpio.license") == 98
