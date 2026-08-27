@@ -5,11 +5,15 @@
 #
 #   - Per-file compilation rules let `make -j` saturate every core on
 #     the target platform (Pi 4 = 4×, x86 servers = 8–32×).
-#   - `wildcard $(GENERATED_DIR)/*.cpp` discovers however many .cpp
-#     files STruC++ split into. The codegen emits one TU per POU plus
-#     a shared configuration.cpp, so the file set varies per project
-#     — keeping the list out of this file means no Makefile churn
-#     when POUs are added or removed.
+#   - Sources are discovered by searching $(GENERATED_DIR), so the
+#     file set varies per project with no Makefile churn when POUs
+#     are added or removed. The codegen emits one TU per POU plus a
+#     shared configuration.cpp.
+#   - A project can also carry C++ libraries under
+#     $(GENERATED_DIR)/libraries/<name>/, each an ordinary library
+#     folder with its sources under src/. Every such src/ goes on the
+#     include path and its sources are compiled, so a block resolves
+#     `#include <Foo.h>` the same way it does on Arduino.
 #   - `ccache` is picked up automatically when present. Re-running a
 #     build where only one POU's body changed reuses every other .o
 #     from the cache, so incremental builds drop from minutes to a
@@ -73,9 +77,16 @@ CC     := $(if $(CCACHE),$(CCACHE) gcc,gcc)
 # preserve. Verified on an SLM-RP4: with the flag the .so leaves
 # /proc/<pid>/maps on every stop and re-maps fresh on every start; without it,
 # it never leaves -- one build's image stays pinned for the life of the process.
+# Libraries the editor materialised from enabled .stlib archives. Each is an
+# ordinary library folder, so `src/` is its include root; a folder without one
+# is taken as its own root.
+RESOURCE_LIB_DIRS := $(wildcard $(GENERATED_DIR)/libraries/*)
+RESOURCE_LIB_INC  := $(foreach d,$(RESOURCE_LIB_DIRS),$(if $(wildcard $d/src),$d/src,$d))
+
 CXXFLAGS := -std=c++17 -O1 -pipe -fPIC -Wall -DSTRUCPP_THREADED -fno-gnu-unique -MMD -MP \
             -Wno-unknown-pragmas -Wno-deprecated-declarations \
-            -I $(GENERATED_DIR) -I $(RUNTIME_INC) -I $(PYTHON_INC)
+            -I $(GENERATED_DIR) -I $(RUNTIME_INC) -I $(PYTHON_INC) \
+            $(addprefix -I ,$(RESOURCE_LIB_INC))
 
 # Python POU stubs (`{external …}` blocks emitted by the editor) call
 # `getpid()`, `create_shm_name()`, `python_block_loader()`. Those
@@ -85,10 +96,11 @@ CXXFLAGS := -std=c++17 -O1 -pipe -fPIC -Wall -DSTRUCPP_THREADED -fno-gnu-unique 
 # any Python POU pay nothing; the header is declarations only.
 GENERATED_CXXFLAGS := $(CXXFLAGS) -include iec_python.h
 
-# Discover every .cpp emitted into core/generated/. STruC++ splits
-# across configuration.cpp + one pou_<NAME>.cpp per POU, but this
-# Makefile doesn't care — wildcard adapts.
-GEN_CPP := $(wildcard $(GENERATED_DIR)/*.cpp)
+# Discover every .cpp under core/generated/, at any depth: the top-level TUs
+# STruC++ emitted, plus whatever each resource library carries below its own
+# root. `sort` makes the order reproducible across filesystems and drops any
+# duplicate.
+GEN_CPP := $(sort $(shell find $(GENERATED_DIR) -name '*.cpp'))
 GEN_OBJ := $(patsubst $(GENERATED_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(GEN_CPP))
 
 SHIM_OBJ      := $(BUILD_DIR)/runtime_v4_entry.o
@@ -126,8 +138,12 @@ $(LIBPLC): $(GEN_OBJ) $(SHIM_OBJ) $(EXTRA_OBJS) | $(BUILD_DIR)
 
 # Generated TUs from the editor's upload. Force-include iec_python.h
 # so unqualified Python loader symbols in {external} blocks resolve.
+# `$(@D)` because a nested source maps to a nested object: a library source at
+# libraries/foo/src/transport/bar.cpp builds to
+# $(BUILD_DIR)/libraries/foo/src/transport/bar.o.
 $(BUILD_DIR)/%.o: $(GENERATED_DIR)/%.cpp | $(BUILD_DIR)
 	@echo "[INFO] Compiling $<..."
+	@mkdir -p $(@D)
 	$(CXX) $(GENERATED_CXXFLAGS) -c $< -o $@
 
 # Static runtime shim — lives in the runtime repo, not in the user
