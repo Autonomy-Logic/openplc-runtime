@@ -360,6 +360,39 @@ class RuntimeManager:
             logger.warning("Could not clear retained values (unexpected): %s", e)
             return "RETAIN:ERROR\n"
 
+    def retain_status(self):
+        """Ask the core which backend is actually holding the retained bytes.
+
+        Not the same question as what ``retain.conf`` says. A VPP plugin
+        overrides the built-in file store, so a device can have the file store
+        switched on in settings while a plugin does the work — and the
+        Persistent Storage screen has to be able to say so rather than report
+        a file that will never grow.
+
+        Returns ``{"active", "backend", "detail"}``; ``backend`` is one of
+        ``none`` / ``plugin`` / ``file``. A runtime that is not reachable, or
+        one too old to answer, reports ``unknown`` rather than guessing.
+        """
+        unknown = {"active": False, "backend": "unknown", "detail": ""}
+        try:
+            reply = self.runtime_socket.send_and_receive("RETAIN:STATUS\n")
+        except (OSError, socket.error) as e:
+            logger.warning("Could not read retain status: %s", e)
+            return unknown
+        except Exception as e:
+            logger.warning("Could not read retain status (unexpected): %s", e)
+            return unknown
+
+        parts = (reply or "").strip().split()
+        # "RETAIN:STATUS <active|inactive> <backend> [detail]"
+        if len(parts) < 3 or parts[0] != "RETAIN:STATUS":
+            return unknown
+        return {
+            "active": parts[1] == "active",
+            "backend": parts[2],
+            "detail": parts[3] if len(parts) > 3 else "",
+        }
+
     def status_plc(self):
         """
         Send STATUS command

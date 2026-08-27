@@ -19,6 +19,7 @@ extern "C" {
 
 #include "debug_write_journal.h"
 #include "image_tables.h"
+#include "plc_retain_file_store.h"
 
 extern plugin_driver_t *plugin_driver;
 
@@ -57,7 +58,19 @@ uint8_t retain_write_leaf(uint8_t arr, uint16_t elem, const uint8_t *bytes, uint
     return runtime_external_write(arr, elem, (uint8_t)DBGW_OP_WRITE, bytes, len) == 0 ? 0x7E : 0x82;
 }
 
-/** The first plugin that exports both hooks wins; see plc_retain_init(). */
+/**
+ * Where the bytes go.
+ *
+ * A VPP plugin ALWAYS wins over the runtime's own file store. The vendor knows
+ * what the box actually has — FRAM, battery-backed SRAM, an NVS partition —
+ * and a file on the data partition is the runtime's fallback, not its
+ * preference. Silently writing to disk on a device whose VPP just implemented
+ * proper retention would be both slower and wrong.
+ */
+enum class Backend { None, Plugin, BuiltinFile };
+Backend g_backend = Backend::None;
+
+/** Set only when g_backend == Plugin. */
 plugin_instance_t *g_store = nullptr;
 
 }  // namespace
@@ -65,8 +78,13 @@ plugin_instance_t *g_store = nullptr;
 void plc_retain_init(void)
 {
     g_active.store(false);
-    g_store = nullptr;
+    g_store   = nullptr;
+    g_backend = Backend::None;
     g_buffer.clear();
+    /* Re-read on every program load, so an operator's change to the Persistent
+     * Storage settings takes effect on the next PLC start without needing the
+     * daemon restarted. */
+    plc_retain_file_store_stop();
 
     if (!ext_strucpp_retain_blob_size || !ext_strucpp_retain_pack || !ext_strucpp_retain_unpack)
     {
@@ -87,31 +105,45 @@ void plc_retain_init(void)
     }
 
     g_store = plugin_driver_find_retain_store(plugin_driver);
-    if (!g_store)
+    if (g_store)
     {
-        /* Info, not a warning: a device with no retention plugin is a normal
-         * configuration, and the program still runs correctly — its retained
+        g_backend = Backend::Plugin;
+    }
+    else if (plc_retain_file_store_start("./retain.conf"))
+    {
+        g_backend = Backend::BuiltinFile;
+    }
+    else
+    {
+        /* Info, not a warning: a device with no retention configured is a
+         * normal state, and the program still runs correctly — its retained
          * variables just behave as NON_RETAIN. Said once so the operator can
-         * tell "not supported here" from "supported and broken". */
-        log_info("Retain: %zu bytes of retained variables, but no plugin provides storage — "
-                 "they will start at their initial values",
+         * tell "not switched on here" from "switched on and broken". */
+        log_info("Retain: %zu bytes of retained variables, but no storage is configured — "
+                 "they will start at their initial values. Enable the built-in store on the "
+                 "device's Persistent Storage screen, or install a VPP that provides one.",
                  needed);
         return;
     }
 
     g_buffer.assign(needed, 0);
     g_active.store(true);
-    log_info("Retain: %zu bytes across the program's retained variables (layout %08x)",
-             needed, ext_strucpp_retain_layout_hash ? ext_strucpp_retain_layout_hash() : 0u);
+    log_info("Retain: %zu bytes across the program's retained variables (layout %08x), stored by %s",
+             needed, ext_strucpp_retain_layout_hash ? ext_strucpp_retain_layout_hash() : 0u,
+             g_backend == Backend::Plugin ? g_store->config.name
+                                          : plc_retain_file_store_path());
 }
 
 void plc_retain_load(void)
 {
-    if (!g_active.load() || !g_store) return;
+    if (!g_active.load() || g_backend == Backend::None) return;
 
-    uint16_t got = 0;
-    const int rc = plugin_driver_retain_load(g_store, g_buffer.data(),
-                                             (uint16_t)g_buffer.size(), &got);
+    uint16_t  got = 0;
+    const int rc = g_backend == Backend::Plugin
+                     ? plugin_driver_retain_load(g_store, g_buffer.data(),
+                                                 (uint16_t)g_buffer.size(), &got)
+                     : plc_retain_file_store_load(g_buffer.data(),
+                                                  (uint16_t)g_buffer.size(), &got);
     if (rc != 0 || got == 0)
     {
         log_info("Retain: nothing stored yet — retained variables start at their initial values");
@@ -137,7 +169,7 @@ void plc_retain_load(void)
 
 void plc_retain_save(void)
 {
-    if (!g_active.load() || !g_store) return;
+    if (!g_active.load() || g_backend == Backend::None) return;
 
     const size_t n = ext_strucpp_retain_pack(g_buffer.data(), g_buffer.size());
     if (n == 0) return;
@@ -145,7 +177,10 @@ void plc_retain_save(void)
     /* Hand the bytes over and return. Whether this is committed to storage now,
      * in five seconds, or on shutdown is the plugin's decision — it is the only
      * layer that knows what its medium costs. */
-    plugin_driver_retain_save(g_store, g_buffer.data(), (uint16_t)n);
+    if (g_backend == Backend::Plugin)
+        plugin_driver_retain_save(g_store, g_buffer.data(), (uint16_t)n);
+    else
+        plc_retain_file_store_save(g_buffer.data(), (uint16_t)n);
 }
 
 void plc_retain_clear(void)
@@ -154,11 +189,39 @@ void plc_retain_clear(void)
      * nothing retained, because what it is discarding belongs to the PREVIOUS
      * program. That is the whole point of clearing on upload. */
     plugin_instance_t *store = g_store ? g_store : plugin_driver_find_retain_store(plugin_driver);
-    if (!store) return;
-    plugin_driver_retain_clear(store);
+    if (store)
+    {
+        plugin_driver_retain_clear(store);
+        return;
+    }
+    /* No plugin: clear the built-in store. Deliberately NOT gated on whether it
+     * is currently enabled — what is being discarded belongs to the previous
+     * program, and may have been written while it was. */
+    plc_retain_file_store_start("./retain.conf");
+    plc_retain_file_store_clear();
 }
 
 bool plc_retain_active(void)
 {
     return g_active.load();
+}
+
+const char *plc_retain_backend(void)
+{
+    switch (g_backend)
+    {
+        case Backend::Plugin:      return "plugin";
+        case Backend::BuiltinFile: return "file";
+        default:                   return "none";
+    }
+}
+
+const char *plc_retain_backend_detail(void)
+{
+    switch (g_backend)
+    {
+        case Backend::Plugin:      return g_store ? g_store->config.name : "";
+        case Backend::BuiltinFile: return plc_retain_file_store_path();
+        default:                   return "";
+    }
 }
