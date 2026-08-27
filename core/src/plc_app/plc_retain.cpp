@@ -9,6 +9,7 @@
 #include "plc_retain.h"
 
 #include <atomic>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
@@ -34,7 +35,17 @@ namespace {
  * something to discover on a running machine. A program needing more is
  * refused at init with a message naming both numbers.
  */
-constexpr size_t RETAIN_BUFFER_MAX = 64 * 1024;
+/*
+ * UINT16_MAX, not 64 KB.
+ *
+ * The plugin retain API takes `uint16_t len` / `cap`, so 65535 is the largest
+ * blob it can describe. A cap of 65536 admitted exactly one size the API cannot
+ * express: `needed == 65536` passed the check below, `g_active` went true, and
+ * then every `(uint16_t)` cast of the length wrapped to 0 — the plugin was
+ * handed cap/len 0 and retain silently neither saved nor restored, at the one
+ * size the error message above claims is supported.
+ */
+constexpr size_t RETAIN_BUFFER_MAX = UINT16_MAX;
 
 std::vector<uint8_t> g_buffer;
 std::atomic<bool>    g_active{false};

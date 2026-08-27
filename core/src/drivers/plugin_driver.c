@@ -25,6 +25,7 @@
 #include "plugin_driver.h"
 #include "vpp_plugin_seal.h"
 #include <dlfcn.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1500,11 +1501,31 @@ static bool plugin_provides_retain_store(const plugin_instance_t *p)
     // storage plugin, and retain went on claiming to work.
     if (!p->config.enabled) return false;
 
+    if (!p->native_plugin) return false;
+
     // BOTH halves required. A store that can save and not load is worse than
     // none: it would accept values every scan and silently never give them
     // back, which looks like working retention right up until the reboot that
     // matters.
-    return p->native_plugin && p->native_plugin->retain_save && p->native_plugin->retain_load;
+    //
+    // Half a store is a MISTAKE, not a configuration, so say so. Exporting one
+    // hook and not the other is a typo or an unfinished driver, and treating it
+    // as "not a store" without a word looks identical to a plugin that never
+    // meant to provide one — the vendor sees retain quietly not happening and
+    // has nothing to go on. The two-stores case below already logs; this is the
+    // same courtesy for the more likely error.
+    const bool has_save = p->native_plugin->retain_save != NULL;
+    const bool has_load = p->native_plugin->retain_load != NULL;
+    if (has_save != has_load)
+    {
+        log_warn("Retain: plugin '%s' exports %s but not %s, so it cannot be a retain store — "
+                 "a store must implement both",
+                 p->config.name,
+                 has_save ? "retain_save" : "retain_load",
+                 has_save ? "retain_load" : "retain_save");
+        return false;
+    }
+    return has_save && has_load;
 }
 
 plugin_instance_t *plugin_driver_find_retain_store(plugin_driver_t *driver)
@@ -1532,17 +1553,40 @@ plugin_instance_t *plugin_driver_find_retain_store(plugin_driver_t *driver)
     return chosen;
 }
 
+/*
+ * Serialises the plugin's retain callbacks.
+ *
+ * `retain_save` runs on the PLC cycle thread, every scan. `retain_clear` runs
+ * on the control-socket thread whenever a program is uploaded — and the upload
+ * path clears unconditionally, without waiting for the PLC to stop. Without
+ * this lock the two can enter the SAME plugin's C entry points at once, and
+ * nothing in the plugin contract says a vendor's `retain_save` has to be
+ * reentrant with its own `retain_clear`. For the expected backends — a file, an
+ * FRAM page, an NVS partition — that overlap is how a store ends up torn.
+ *
+ * Held only across the plugin call, which the contract already requires to
+ * return promptly, so a per-scan acquire on an uncontended mutex is the whole
+ * cost.
+ */
+static pthread_mutex_t retain_call_lock = PTHREAD_MUTEX_INITIALIZER;
+
 int plugin_driver_retain_save(plugin_instance_t *store, const uint8_t *blob, uint16_t len)
 {
     if (!plugin_provides_retain_store(store)) return -1;
-    return store->native_plugin->retain_save(blob, len);
+    pthread_mutex_lock(&retain_call_lock);
+    const int rc = store->native_plugin->retain_save(blob, len);
+    pthread_mutex_unlock(&retain_call_lock);
+    return rc;
 }
 
 int plugin_driver_retain_load(plugin_instance_t *store, uint8_t *out, uint16_t cap, uint16_t *out_len)
 {
     if (out_len) *out_len = 0;
     if (!plugin_provides_retain_store(store)) return -1;
-    return store->native_plugin->retain_load(out, cap, out_len);
+    pthread_mutex_lock(&retain_call_lock);
+    const int rc = store->native_plugin->retain_load(out, cap, out_len);
+    pthread_mutex_unlock(&retain_call_lock);
+    return rc;
 }
 
 int plugin_driver_retain_clear(plugin_instance_t *store)
@@ -1551,7 +1595,11 @@ int plugin_driver_retain_clear(plugin_instance_t *store)
     // reporting that as failure would make the editor's post-upload clear look
     // broken on every such device.
     if (!store || !store->native_plugin || !store->native_plugin->retain_clear) return 0;
-    return store->native_plugin->retain_clear();
+    // Same lock as save/load: this is the call that races the scan thread.
+    pthread_mutex_lock(&retain_call_lock);
+    const int rc = store->native_plugin->retain_clear();
+    pthread_mutex_unlock(&retain_call_lock);
+    return rc;
 }
 
 void plugin_driver_cycle_start(plugin_driver_t *driver)

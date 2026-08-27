@@ -97,8 +97,23 @@ void read_config(const char *config_path)
  * and fall back to initial values anyway, but losing the previous values as
  * well would be gratuitous.
  */
+/*
+ * Guards the STORE, not the staging buffer.
+ *
+ * `g_lock` covers `g_pending` and is deliberately released before the write, so
+ * the scan thread never waits on a disk I/O. That leaves the file itself
+ * unguarded, and two threads reach it: the flusher, and `clear()` on the
+ * control-socket thread when a program is uploaded. Without this, a clear could
+ * `remove()` the file while an in-flight commit was between its write and its
+ * rename — the rename then republished the blob a moment after it was supposed
+ * to be gone, and the next start restored values from the PREVIOUS program.
+ */
+std::mutex g_store_lock;
+
 void commit(const uint8_t *buf, uint16_t len)
 {
+    std::lock_guard<std::mutex> store(g_store_lock);
+
     const std::string tmp = g_path + ".tmp";
 
     FILE *f = fopen(tmp.c_str(), "wb");
@@ -257,9 +272,14 @@ int plc_retain_file_store_clear(void)
         g_dirty = false;
     }
     /* Not gated on `enabled`: a clear has to remove what a PREVIOUS
-     * configuration stored, which is the whole point of clearing on upload. */
+     * configuration stored, which is the whole point of clearing on upload.
+     *
+     * Under `g_store_lock`, so a commit that is mid write-and-rename finishes
+     * first and this removes the file it published — rather than the rename
+     * landing after the remove and resurrecting the blob. */
     if (!g_path.empty())
     {
+        std::lock_guard<std::mutex> store(g_store_lock);
         remove(g_path.c_str());
         remove((g_path + ".tmp").c_str());
     }
