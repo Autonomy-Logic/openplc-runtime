@@ -419,9 +419,17 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
             if not is_inside_root(dest_config, str(VPP_DATA_DIR)):
                 build_state.log(f"[WARNING] VPP: config dest '{dest_config}' escapes the persistent dir, skipping\n")
                 continue
-            # The old build/vpp sibling, captured BEFORE we repoint config_path,
-            # so a device licensed before this change can be migrated below.
-            old_license = derive_license_path(os.path.normpath(p.config_path))
+            # The old build/vpp sibling of THIS plugin, so a device licensed
+            # before this change can be migrated below. Derived from the FIXED
+            # build/vpp location plus the (already basename-checked) plugin name
+            # -- NOT from config_path. config_path is only confined to the runtime
+            # root by validate_vpp_plugins_conf (not to build/vpp), so deriving
+            # the migration source from it would let a forged conf point the read
+            # at any .license under the root and have it copied where 0x4A reads
+            # it back. The old code always wrote the license next to a build/vpp
+            # config, so this is exactly where a pre-change license lives, and it
+            # cannot be steered anywhere else.
+            old_license = os.path.join(runtime_root, VPP_BUILD_DIR, f"{p.name}.license")
 
             os.makedirs(os.path.dirname(dest_config), exist_ok=True)
             shutil.copy2(src_config, dest_config)

@@ -144,3 +144,68 @@ def test_persistent_license_survives_an_upload_without_a_license(tmp_path, monke
 
     assert os.path.exists(persist / "rpi_gpio.license"), "persistent license must survive a license-less upload"
     assert os.path.getsize(persist / "rpi_gpio.license") == 98
+
+
+def test_migration_rescues_a_pre_change_license_from_build_vpp(tmp_path, monkeypatch):
+    """A device licensed before this change has its blob at build/vpp/<name>.license.
+    When the update did not wipe build/ (the wipe is conditional on CMakeCache.txt),
+    the next upload without a bundled license migrates that blob into the persistent
+    dir instead of leaving it orphaned."""
+    mgmt = pytest.importorskip(
+        "webserver.plcapp_management",
+        reason="runtime webserver package not importable (no venv)",
+    )
+    persist = tmp_path / "data" / "vpp"
+    persist.mkdir(parents=True)
+    monkeypatch.setattr(mgmt, "VPP_DATA_DIR", persist)
+    cwd = tmp_path / "runtime"
+    (cwd / "build" / "vpp").mkdir(parents=True)
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(mgmt.build_state, "log", lambda *_a, **_k: None, raising=False)
+
+    old = cwd / "build" / "vpp" / "rpi_gpio.license"  # pre-change location
+    old.write_bytes(b"\x4f\x50\x4c\x43" + b"\x00" * 94)
+
+    gen = tmp_path / "generated"
+    (gen / "conf").mkdir(parents=True)
+    (gen / "vpp_plugins.conf").write_text(
+        "rpi_gpio,./build/vpp/librpi_gpio_plugin.so,1,1,build/vpp/rpi_gpio.json,\n"
+    )
+    (gen / "conf" / "rpi_gpio.json").write_text("{}\n")  # no .license in the upload
+
+    mgmt.apply_vpp_plugin_conf(str(gen))
+    assert (persist / "rpi_gpio.license").read_bytes() == old.read_bytes()
+
+
+def test_migration_ignores_a_license_a_forged_config_path_points_at(tmp_path, monkeypatch):
+    """Security: the migration source is the FIXED build/vpp/<name>.license, never
+    config_path. validate_vpp_plugins_conf only confines config_path to the runtime
+    root, so a forged conf could name a .license elsewhere under the root; that file
+    must NOT be copied to where 0x4A would read it back."""
+    mgmt = pytest.importorskip(
+        "webserver.plcapp_management",
+        reason="runtime webserver package not importable (no venv)",
+    )
+    persist = tmp_path / "data" / "vpp"
+    persist.mkdir(parents=True)
+    monkeypatch.setattr(mgmt, "VPP_DATA_DIR", persist)
+    cwd = tmp_path / "runtime"
+    (cwd / "build" / "vpp").mkdir(parents=True)
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(mgmt.build_state, "log", lambda *_a, **_k: None, raising=False)
+
+    # A decoy .license elsewhere in the runtime root (passes the validator's
+    # runtime-root confinement) that a forged config_path tries to point at.
+    (cwd / "secrets").mkdir()
+    (cwd / "secrets" / "target.license").write_bytes(b"\x4f\x50\x4c\x43" + b"\x00" * 94)
+
+    gen = tmp_path / "generated"
+    (gen / "conf").mkdir(parents=True)
+    (gen / "vpp_plugins.conf").write_text(
+        "rpi_gpio,./build/vpp/librpi_gpio_plugin.so,1,1,secrets/target.json,\n"
+    )
+    (gen / "conf" / "rpi_gpio.json").write_text("{}\n")  # no .license in the upload
+
+    mgmt.apply_vpp_plugin_conf(str(gen))
+    # migration looked at build/vpp/rpi_gpio.license (absent), NOT secrets/target.license
+    assert not (persist / "rpi_gpio.license").exists()

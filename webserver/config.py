@@ -111,8 +111,12 @@ DB_PATH = PERSISTENT_DATA_DIR / "restapi.db"
 # webserver/plcapp_management.py::apply_vpp_plugin_conf); the C loader passes
 # config_path to the plugin verbatim, so only the .so binary itself must stay
 # under build/vpp.
+#
+# Created on demand by apply_vpp_plugin_conf / _write_license_atomically, NOT at
+# import: a bare module-scope mkdir is import-time filesystem work that turns a
+# permission failure into a hard import crash (the very thing tests/pytest/
+# conftest.py exists to work around).
 VPP_DATA_DIR = PERSISTENT_DATA_DIR / "vpp"
-VPP_DATA_DIR.mkdir(parents=True, exist_ok=True)
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
 
