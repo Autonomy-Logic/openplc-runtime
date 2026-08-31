@@ -48,6 +48,7 @@ def test_capabilities_reports_runtime_version_and_editor_floor(client):
     assert body == {
         "runtimeVersion": RUNTIME_VERSION,
         "minEditorVersion": MIN_EDITOR_VERSION,
+        "projectSnapshot": True,
     }
 
 
