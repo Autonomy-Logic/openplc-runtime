@@ -100,6 +100,7 @@ The processes communicate via Unix domain sockets (`/run/runtime/plc_runtime.soc
 - [Editor Integration](docs/EDITOR_INTEGRATION.md) - How OpenPLC Editor communicates with the runtime
 - [Docker Deployment](docs/DOCKER.md) - Container usage and configuration
 - [Compilation Flow](docs/COMPILATION_FLOW.md) - How programs are built and loaded
+- [Retrieve Project from PLC](docs/RETRIEVE_PROJECT.md) - Storing the source project on a device and pulling it back
 - [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
 
 ### Advanced Topics
