@@ -212,6 +212,62 @@ def apply_user_schema_migrations():
         )
 
 
+def repair_missing_admin() -> bool:
+    """Rescue a device whose accounts contain no admin at all.
+
+    That state is a dead end. Once any user exists, ``create-user`` refuses a
+    caller who is not an admin and ``update-user`` refuses a role change from
+    one, so there is no sequence of API calls that produces an admin. Every
+    admin-gated operation is permanently unreachable, and nothing surfaces it
+    until someone tries one.
+
+    Devices reach it by upgrading through an early build of the roles feature,
+    whose ``role`` column was nullable with no default and whose rows landed on
+    ``user``. ``apply_user_schema_migrations`` does not help: it only runs when
+    the column is ABSENT, so a database that already has one is left alone
+    whatever is in it.
+
+    Exactly one account is promoted, because a single-user device has no
+    ambiguity about who the administrator is. With several accounts the runtime
+    has no basis for picking a winner, so it refuses to guess and says so
+    loudly instead -- that combination should barely exist in the field, since
+    multiple accounts only became possible when roles did.
+
+    Returns True when an account was promoted. Safe on every boot: a no-op the
+    moment any admin exists.
+    """
+    if admin_count() > 0:
+        return False
+
+    users = User.query.order_by(User.id).all()
+    if not users:
+        # Fresh device. The bootstrap path already makes the first account an
+        # admin, so there is nothing to repair.
+        return False
+
+    if len(users) > 1:
+        logger.error(
+            "No administrator account exists and there are %d accounts (%s). "
+            "The runtime will not choose one. Admin-only operations stay "
+            "unavailable until an administrator is restored directly in the "
+            "user database.",
+            len(users),
+            ", ".join(user.username for user in users),
+        )
+        return False
+
+    user = users[0]
+    user.role = ADMIN_ROLE
+    db.session.commit()
+    logger.warning(
+        "Account '%s' was the only account on this device and held no "
+        "administrator role, which leaves admin-only operations permanently "
+        "unreachable. Promoted it to administrator.",
+        user.username,
+    )
+    return True
+
+
 @jwt.user_identity_loader
 def user_identity_lookup(user):
     return str(user.id)

@@ -43,6 +43,7 @@ from webserver.restapi import (
     db,
     register_callback_get,
     register_callback_post,
+    repair_missing_admin,
     restapi_bp,
 )
 from webserver.runtimemanager import RuntimeManager
@@ -457,6 +458,13 @@ def run_https():
             # users.role column in place; no-op once present).
             apply_user_schema_migrations()
             db.session.commit()
+            # Rescue a device left with accounts but no admin. Unlike the
+            # schema migration above this is a DATA repair, and it has to run
+            # separately: the migration only fires when the role column is
+            # missing, so a database that already has one keeps whatever values
+            # it holds -- including none of them being 'admin'. Without an
+            # admin there is no API path back to having one.
+            repair_missing_admin()
             # logger.info("Database tables created successfully.")
         except Exception:
             # logger.error("Error creating database tables: %s", e)
