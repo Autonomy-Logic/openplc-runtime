@@ -334,7 +334,6 @@ def handle_upload_file(data: dict) -> dict:
         # client keep working, and the device stops advertising a project it
         # is no longer running.
         project_snapshot.clear()
-        snapshot_error = stage_project_snapshot()
 
         if os.path.exists(extract_dir):
             shutil.rmtree(extract_dir)
@@ -362,6 +361,16 @@ def handle_upload_file(data: dict) -> dict:
         # ccache contents before invoking compile.sh. Older editors
         # don't pass this flag, so behaviour for them is unchanged.
         clean_build = flask.request.args.get("clean") == "1"
+
+        # Stage the snapshot only once the program itself is safely in place.
+        # run_compile's `finally` is what promotes or discards a staged
+        # snapshot, so staging before the extract would leave one stranded if
+        # the extract threw -- the compile thread never starts, nothing
+        # discards it, and the NEXT successful build would promote a snapshot
+        # belonging to an upload that never landed. The clear() above has
+        # already erased the old one either way, which is correct: the program
+        # it described is gone.
+        snapshot_error = stage_project_snapshot()
 
         # Start compilation in a separate thread
         build_state.status = BuildStatus.COMPILING

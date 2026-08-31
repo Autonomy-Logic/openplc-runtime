@@ -101,6 +101,18 @@ def test_clear_then_no_stage_erases_the_previous_project():
     assert project_snapshot.has_snapshot() is False
 
 
+def test_a_stranded_staged_snapshot_is_never_promoted_by_a_later_build():
+    # If an upload dies after staging but before the compile thread starts
+    # (a failed extract, say), nothing discards what it staged. The next
+    # upload's clear() has to be what removes it -- otherwise that build would
+    # promote a snapshot belonging to an upload that never landed, and the
+    # device would advertise a project it is definitely not running.
+    project_snapshot.stage(b"stranded", _metadata(projectName="Never Landed"))
+    project_snapshot.clear()  # the next upload
+    assert project_snapshot.promote() is False
+    assert project_snapshot.has_snapshot() is False
+
+
 def test_a_second_upload_replaces_the_first():
     _store(b"first", projectName="First")
     project_snapshot.clear()
