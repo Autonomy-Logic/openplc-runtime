@@ -21,6 +21,7 @@ from typing import Callable, Final, Optional
 import flask
 import flask_login
 
+from webserver import project_snapshot
 from webserver.credentials import CertGen
 from webserver.debug_websocket import init_debug_websocket
 from webserver.discovery.discovery_routes import discovery_bp
@@ -30,10 +31,10 @@ from webserver.plcapp_management import (
     MAX_FILE_SIZE,
     BuildStatus,
     analyze_zip,
+    apply_vpp_plugin_conf,
     build_state,
     run_compile,
     safe_extract,
-    apply_vpp_plugin_conf,
     update_plugin_configurations,
 )
 from webserver.restapi import (
@@ -243,6 +244,48 @@ def restapi_callback_get(argument: str, data: dict) -> dict:
     return {"error": "Unknown argument"}
 
 
+def stage_project_snapshot() -> str:
+    """Stage the optional source-project snapshot that rides along with an upload.
+
+    Returns an empty string when there was nothing to store or it was stored,
+    and a human-readable reason otherwise. Never raises: the snapshot is the
+    optional half of the request and must not be able to fail a program upload.
+
+    The two fields are deliberately separate from ``program.zip``. Inside it
+    they would run through ``analyze_zip`` and be extracted into
+    ``core/generated``, where the next upload would wipe them and the compiler
+    would try to build them. The metadata is separate from the archive for the
+    same reason in reverse: the runtime never opens the archive, so anything it
+    needs to say about the stored project has to arrive already parsed.
+    """
+    snapshot_file = flask.request.files.get("snapshot")
+    if snapshot_file is None:
+        return ""
+
+    raw_metadata = flask.request.form.get("snapshot_metadata")
+    if not raw_metadata:
+        return "Snapshot ignored: the upload carried an archive but no snapshot_metadata"
+
+    try:
+        metadata = project_snapshot.normalize_metadata(json.loads(raw_metadata))
+    except json.JSONDecodeError as e:
+        return f"Snapshot ignored: snapshot_metadata is not valid JSON ({e})"
+    except project_snapshot.SnapshotError as e:
+        return f"Snapshot ignored: {e}"
+
+    try:
+        blob = snapshot_file.read()
+    except (OSError, IOError) as e:
+        return f"Snapshot ignored: could not read the uploaded archive ({e})"
+
+    try:
+        project_snapshot.stage(blob, metadata)
+    except project_snapshot.SnapshotError as e:
+        return f"Snapshot ignored: {e}"
+
+    return ""
+
+
 def handle_upload_file(data: dict) -> dict:
     if build_state.status == BuildStatus.COMPILING:
         return {
@@ -279,6 +322,19 @@ def handle_upload_file(data: dict) -> dict:
             }
 
         extract_dir = "core/generated"
+
+        # Point of no return: past here the program on the device is being
+        # replaced, so the stored project snapshot must go with it. Clearing
+        # here rather than on arrival means a rejected upload (bad zip, too
+        # large, runtime busy) leaves the previous program AND its snapshot
+        # untouched, which is the pair that is actually still true.
+        #
+        # An upload carrying no snapshot therefore erases the stored one --
+        # that is the point. Older editors, openplc-cli and any third-party
+        # client keep working, and the device stops advertising a project it
+        # is no longer running.
+        project_snapshot.clear()
+
         if os.path.exists(extract_dir):
             shutil.rmtree(extract_dir)
 
@@ -306,6 +362,16 @@ def handle_upload_file(data: dict) -> dict:
         # don't pass this flag, so behaviour for them is unchanged.
         clean_build = flask.request.args.get("clean") == "1"
 
+        # Stage the snapshot only once the program itself is safely in place.
+        # run_compile's `finally` is what promotes or discards a staged
+        # snapshot, so staging before the extract would leave one stranded if
+        # the extract threw -- the compile thread never starts, nothing
+        # discards it, and the NEXT successful build would promote a snapshot
+        # belonging to an upload that never landed. The clear() above has
+        # already erased the old one either way, which is correct: the program
+        # it described is gone.
+        snapshot_error = stage_project_snapshot()
+
         # Start compilation in a separate thread
         build_state.status = BuildStatus.COMPILING
 
@@ -318,7 +384,15 @@ def handle_upload_file(data: dict) -> dict:
 
         task_compile.start()
 
-        return {"UploadFileFail": "", "CompilationStatus": build_state.status.name}
+        # The program upload itself succeeded. A snapshot that could not be
+        # stored is reported alongside rather than as a failure: the device is
+        # running the new program either way, and failing the upload over the
+        # optional half of it would be worse than losing retrievability.
+        return {
+            "UploadFileFail": "",
+            "CompilationStatus": build_state.status.name,
+            "ProjectSnapshotWarning": snapshot_error,
+        }
 
     except (OSError, IOError) as e:
         build_state.status = BuildStatus.FAILED

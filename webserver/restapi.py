@@ -1,3 +1,4 @@
+import base64
 import os
 from typing import Callable, Optional
 
@@ -16,6 +17,7 @@ from sqlalchemy import text as sa_text
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import webserver.config
+from webserver import project_snapshot
 from webserver.logger import get_logger
 from webserver.retain_config import (
     DEFAULT_FLUSH_SECONDS,
@@ -118,6 +120,10 @@ def restapi_capabilities():
             {
                 "runtimeVersion": RUNTIME_VERSION,
                 "minEditorVersion": MIN_EDITOR_VERSION,
+                # Tells a client it may send a source-project snapshot with an
+                # upload and retrieve it later. Unauthenticated like the rest of
+                # this endpoint, so a client can decide before logging in.
+                "projectSnapshot": True,
             }
         ),
         200,
@@ -806,6 +812,112 @@ def put_retain_config():
         return jsonify({"msg": f"Could not save the settings: {e}"}), 400
 
     return jsonify(saved), 200
+
+
+@restapi_bp.route("/project-snapshot/info", methods=["GET"])
+@jwt_required()
+def get_project_snapshot_info():
+    """Describe the source project stored on this device, if any.
+
+    Authenticated but not admin-gated: this is the metadata a client needs to
+    decide whether retrieving is worth offering, and it says nothing the
+    discovery broadcast does not already hint at. The archive itself is
+    admin-only.
+    ---
+    tags:
+      - Programs
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Stored project metadata, or present=false when there is none
+        schema:
+          type: object
+          properties:
+            present:
+              type: boolean
+            projectName:
+              type: string
+            editorVersion:
+              type: string
+            uploadedBy:
+              type: string
+            timestamp:
+              type: string
+            sizeBytes:
+              type: integer
+            formatVersion:
+              type: integer
+            libraries:
+              type: array
+              items:
+                type: object
+      401:
+        description: Authentication required
+    """
+    record = project_snapshot.read_metadata()
+    if record is None:
+        return jsonify({"present": False}), 200
+    return jsonify({"present": True, **record}), 200
+
+
+@restapi_bp.route("/project-snapshot", methods=["GET"])
+@jwt_required()
+def get_project_snapshot():
+    """Retrieve the stored source project as a base64 ZIP.
+
+    Admin only. The stored project is NOT encrypted on the device -- anyone
+    with filesystem access can read it -- so this role check is the whole of
+    the access control, not a second layer behind one.
+
+    Base64 inside JSON rather than a binary body on purpose: openplc-web
+    reaches devices through the orchestrator agent's HTTP proxy, which decodes
+    responses as JSON or falls back to text. A binary body does not survive
+    that trip.
+    ---
+    tags:
+      - Programs
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: The stored project archive
+        schema:
+          type: object
+          properties:
+            projectName:
+              type: string
+            filename:
+              type: string
+            contentBase64:
+              type: string
+              description: The project ZIP, base64-encoded
+      401:
+        description: Authentication required
+      403:
+        description: Admin privileges required
+      404:
+        description: No project is stored on this device
+    """
+    if not (current_user and current_user.is_admin()):
+        return jsonify({"msg": "Admin privileges required"}), 403
+
+    record = project_snapshot.read_metadata()
+    blob = project_snapshot.read_blob()
+    if record is None or blob is None:
+        return jsonify({"msg": "No project is stored on this device"}), 404
+
+    return (
+        jsonify(
+            {
+                "projectName": record.get("projectName", ""),
+                "formatVersion": record.get("formatVersion"),
+                "filename": "project.zip",
+                "contentBase64": base64.b64encode(blob).decode("ascii"),
+            }
+        ),
+        200,
+    )
 
 
 @restapi_bp.route("/login", methods=["POST"])
