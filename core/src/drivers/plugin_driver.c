@@ -1346,11 +1346,10 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     }
 
     /* Last metre before execution: a VPP plugin .so must match the hash
-     * scripts/compile.sh sealed after building it from a signature-verified
-     * upload. The upload gate proved the plugin's INPUTS came from a signed
-     * package; it cannot speak for the .so, which is linked here afterwards.
-     * Without this check an object dropped into build/vpp/ after the compile
-     * would be dlopen'ed with no provenance at all.
+     * scripts/compile.sh sealed when it built that .so on this device. The
+     * check binds what the loader executes to what this runtime's compile
+     * step produced, so an object dropped into build/vpp/ after the compile
+     * is refused.
      *
      * Built-in plugins from plugins.conf are produced by the runtime's own
      * CMake build and are not sealed -- vpp_plugin_seal_required() scopes the

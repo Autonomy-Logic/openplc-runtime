@@ -7,7 +7,7 @@ and returns responses through the WebSocket connection.
 """
 
 from flask import request
-from flask_jwt_extended import current_user, verify_jwt_in_request
+from flask_jwt_extended import verify_jwt_in_request
 from jwt import ExpiredSignatureError
 from flask_socketio import SocketIO, emit
 
@@ -56,22 +56,6 @@ def _reverify_session_token() -> bool:
     except Exception as e:
         logger.warning("Debug command rejected, token no longer valid: %s", e)
         return False
-
-
-def _current_user_is_admin() -> bool:
-    """True when the re-verified token belongs to an admin account.
-
-    Uses the role mechanism that already exists in the REST API (the User model's
-    ``is_admin()``, resolved through the JWT user_lookup_loader) -- @jwt_required
-    alone does not look at the role, so a plain ``user`` account could read the
-    anchor of any board and overwrite its license. Must be called AFTER
-    _reverify_session_token(), which is what populates ``current_user``.
-    """
-    user = current_user
-    if not user:
-        return False
-    checker = getattr(user, "is_admin", None)
-    return bool(checker and checker())
 
 
 def init_debug_websocket(app, unix_client_instance):
@@ -212,18 +196,18 @@ def init_debug_websocket(app, unix_client_instance):
                 )
                 return
 
-            # The license FCs are a trust boundary of their own: 0x48 hands out
-            # the raw anchor (from which the licensing identity and the
-            # possession key are derived, offline and forever) and 0x49 writes
-            # the license blob. Require the admin role for them -- @jwt_required
-            # alone never looks at the role.
-            if is_license_command(command_hex) and not _current_user_is_admin():
-                logger.warning("License FC refused for a non-admin account: %s", command_hex)
-                emit(
-                    "debug_response",
-                    {"success": False, "error": "Admin privileges required"},
-                )
-                return
+            # The license FCs are open to any AUTHENTICATED role, not just admin
+            # (decision 2026-08-25). They were admin-gated on the theory that the
+            # anchor read (0x48) and the blob write (0x49) were a trust boundary,
+            # but that gate protected the wrong thing: the PURCHASE is authorized
+            # by the Edge account on the /buy page, never by the runtime role, so
+            # requiring admin here only stopped an operator from activating a
+            # licence they had already paid for. What stays open is low-risk: the
+            # anchor is the board's serial (baremetal exposes it with no auth at
+            # all), the blob is node-locked and useless on another device, and a
+            # bad write is recoverable (the entitlement lives in the backend; a
+            # refresh rewrites the correct blob). JWT re-verification above still
+            # applies, so "any role" means any logged-in user, never anonymous.
 
             # License function codes (0x48/0x49/0x4A) operate on host files
             # (/proc anchor + conf/<plugin>.license) and are resolved here in
