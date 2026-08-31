@@ -11,6 +11,7 @@
 
 #include "../drivers/plugin_driver.h"
 #include "debug_handler.h"
+#include "plc_retain.h"
 #include "plc_state_manager.h"
 #include "plc_switch.h"
 #include "scan_cycle_manager.h"
@@ -308,6 +309,32 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
     else if (strcmp(command, "SWITCH") == 0)
     {
         format_switch_response(response, response_size);
+    }
+    else if (strcmp(command, "RETAIN:CLEAR") == 0)
+    {
+        /* Discard stored retained values, so the next start uses the declared
+         * initialisers. The webserver calls this on program upload — CODESYS
+         * clears retained memory on download, and a new program's values have
+         * no business surviving into it.
+         *
+         * Answers OK even with no retain plugin: "discard what is stored" is
+         * satisfied by a device that stores nothing, and failing there would
+         * make every upload to such a device look broken. */
+        plc_retain_clear();
+        strncpy(response, "RETAIN:OK\n", response_size);
+    }
+    else if (strcmp(command, "RETAIN:STATUS") == 0)
+    {
+        /* What is ACTUALLY holding the retained bytes right now, which is not
+         * the same question as what the settings say. A VPP plugin overrides
+         * the built-in file store, and the Persistent Storage screen has to be
+         * able to say so — otherwise it reports the file store as enabled
+         * while a plugin quietly does the work, and the operator finds out by
+         * wondering why the file never grows. */
+        snprintf(response, response_size, "RETAIN:STATUS %s %s %s\n",
+                 plc_retain_active() ? "active" : "inactive",
+                 plc_retain_backend(),
+                 plc_retain_backend_detail());
     }
     else if (strcmp(command, "START") == 0)
     {
