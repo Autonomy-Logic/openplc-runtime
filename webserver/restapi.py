@@ -258,7 +258,18 @@ def repair_missing_admin() -> bool:
 
     user = users[0]
     user.role = ADMIN_ROLE
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception as exc:
+        # The caller runs inside a broad `except Exception: pass` that exists
+        # for the schema setup around it. Reporting here means a failed repair
+        # is not swallowed by that: it only ever gets one chance per boot, and
+        # a device that silently stayed unrepairable is the hardest version of
+        # this problem to diagnose.
+        db.session.rollback()
+        logger.error("Could not promote '%s' to administrator: %s", user.username, exc)
+        return False
+
     logger.warning(
         "Account '%s' was the only account on this device and held no "
         "administrator role, which leaves admin-only operations permanently "
