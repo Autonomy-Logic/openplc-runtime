@@ -52,6 +52,17 @@ logger, _ = get_logger("logger", use_buffer=True)
 
 app = flask.Flask(__name__)
 app.secret_key = str(os.urandom(16))
+
+# A backstop at the HTTP layer, under everything the routes do.
+#
+# Individual handlers check their own parts, but those checks run after Werkzeug
+# has already parsed (and spooled to disk) the request. This bounds the whole
+# body first, so an oversized upload is refused as 413 before any of it is
+# stored. Sized to hold the largest legitimate request -- a program zip and a
+# project snapshot together -- plus room for the multipart framing.
+app.config["MAX_CONTENT_LENGTH"] = (
+    MAX_FILE_SIZE + project_snapshot.MAX_SNAPSHOT_BYTES + (8 * 1024 * 1024)
+)
 login_manager = flask_login.LoginManager()
 login_manager.init_app(app)
 
@@ -274,10 +285,35 @@ def stage_project_snapshot() -> str:
     except project_snapshot.SnapshotError as e:
         return f"Snapshot ignored: {e}"
 
+    # Bounded read, before the bytes exist rather than after.
+    #
+    # `stage()` also enforces the cap, but only once the whole part is already
+    # in memory -- and this route is authenticated without an admin gate, so any
+    # account on the device could post an arbitrarily large `snapshot` field and
+    # have it spooled to disk and then pulled into RAM before anything refused
+    # it. On the hardware this runtime targets that is a disk-fill followed by
+    # an OOM.
+    #
+    # `content_length` on a multipart part is client-supplied and often absent,
+    # so it is a fast path and not the guard. Reading one byte past the cap and
+    # stopping is what actually bounds this, whatever the client claimed.
+    declared = snapshot_file.content_length
+    if declared and declared > project_snapshot.MAX_SNAPSHOT_BYTES:
+        return (
+            f"Snapshot ignored: archive is too large "
+            f"({declared} bytes, limit {project_snapshot.MAX_SNAPSHOT_BYTES})"
+        )
+
     try:
-        blob = snapshot_file.read()
+        blob = snapshot_file.read(project_snapshot.MAX_SNAPSHOT_BYTES + 1)
     except (OSError, IOError) as e:
         return f"Snapshot ignored: could not read the uploaded archive ({e})"
+
+    if len(blob) > project_snapshot.MAX_SNAPSHOT_BYTES:
+        return (
+            f"Snapshot ignored: archive is too large "
+            f"(limit {project_snapshot.MAX_SNAPSHOT_BYTES} bytes)"
+        )
 
     try:
         project_snapshot.stage(blob, metadata)

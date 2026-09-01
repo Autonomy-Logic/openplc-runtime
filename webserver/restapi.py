@@ -1,8 +1,9 @@
 import base64
+import json
 import os
 from typing import Callable, Optional
 
-from flask import Blueprint, Flask, jsonify, request
+from flask import Blueprint, Flask, current_app, jsonify, request
 from flask_jwt_extended import (
     JWTManager,
     create_access_token,
@@ -31,6 +32,11 @@ from webserver.retain_config import (
 from webserver.version import MIN_EDITOR_VERSION, RUNTIME_VERSION
 
 logger, buffer = get_logger("logger", use_buffer=True)
+
+# Read size for streaming the stored project out. A multiple of 3 so every chunk
+# encodes to whole base64 quads; 3 MB of source becomes 4 MB of base64, which is
+# the actual peak this bounds.
+_BASE64_CHUNK_BYTES: int = 3 * 1024 * 1024
 
 env = os.getenv("FLASK_ENV", "development")
 
@@ -970,21 +976,43 @@ def get_project_snapshot():
         return jsonify({"msg": "Admin privileges required"}), 403
 
     record = project_snapshot.read_metadata()
-    blob = project_snapshot.read_blob()
-    if record is None or blob is None:
+    if record is None or not project_snapshot.blob_path().exists():
         return jsonify({"msg": "No project is stored on this device"}), 404
 
-    return (
-        jsonify(
-            {
-                "projectName": record.get("projectName", ""),
-                "formatVersion": record.get("formatVersion"),
-                "filename": "project.zip",
-                "contentBase64": base64.b64encode(blob).decode("ascii"),
-            }
-        ),
-        200,
-    )
+    # Streamed, not assembled.
+    #
+    # The base64-in-JSON wire format is not negotiable (the agent's proxy
+    # decodes JSON or falls back to text; a binary body does not survive that
+    # trip), but building the response in memory meant holding the archive, its
+    # base64 expansion, and Flask's serialisation of the whole document at once
+    # -- roughly 3.5x the archive, which at the 100 MB cap is far more than the
+    # Pi-class hardware this targets has to spare.
+    #
+    # Encoding straight into the response bounds peak memory by the chunk size
+    # instead of the file size, and the bytes on the wire are identical. The
+    # chunk is a multiple of 3 so each one encodes to complete base64 quads with
+    # no padding until the end.
+    def stream():
+        head = {
+            "projectName": record.get("projectName", ""),
+            "formatVersion": record.get("formatVersion"),
+            "filename": "project.zip",
+        }
+        # Everything except the archive, opened for the value to be appended.
+        prefix = json.dumps(head)[:-1]
+        yield f'{prefix}, "contentBase64": "'.encode("ascii")
+        try:
+            for chunk in project_snapshot.iter_blob(_BASE64_CHUNK_BYTES):
+                yield base64.b64encode(chunk)
+        except OSError as exc:
+            # The response has already begun, so there is no status code left to
+            # change. Truncating mid-value gives the client invalid JSON, which
+            # is the honest outcome: it must not read a partial archive as whole.
+            logger.error("Streaming the stored project failed: %s", exc)
+            return
+        yield b'"}'
+
+    return current_app.response_class(stream(), mimetype="application/json")
 
 
 @restapi_bp.route("/login", methods=["POST"])

@@ -311,3 +311,169 @@ def test_capabilities_advertises_snapshot_support(client):
     # Unauthenticated on purpose: a client decides whether to build and send a
     # snapshot before it has logged in to the device.
     assert client.get("/api/capabilities").get_json()["projectSnapshot"] is True
+
+
+# --- the size guard at the boundary it defends ---------------------------
+#
+# `test_an_oversized_snapshot_is_refused` exercises `stage()` directly, which
+# proves the cap fires once the bytes already exist. The point of the guard is
+# that they never do: the route is authenticated but not admin-gated, so any
+# account could otherwise have an arbitrarily large part spooled to disk and
+# pulled into memory before anything refused it.
+
+
+def _post_snapshot(client, admin_token, blob, *, metadata=None):
+    """Post a snapshot part through the upload endpoint's staging helper."""
+    import io
+
+    from webserver import app as app_module
+
+    payload = {
+        "snapshot": (io.BytesIO(blob), "project.zip"),
+        "snapshot_metadata": json.dumps(
+            metadata
+            if metadata is not None
+            else {"formatVersion": 1, "projectName": "Traffic Light"}
+        ),
+    }
+    with app_module.app.test_request_context(
+        "/api/upload-file", method="POST", data=payload, content_type="multipart/form-data"
+    ):
+        return app_module.stage_project_snapshot()
+
+
+def test_an_oversized_part_is_refused_without_being_read_into_memory(client):
+    """The refusal must happen during the read, not after it.
+
+    Asserting only on the message would pass against the old code too, because
+    `stage()` rejected an oversized archive with the same words -- after the
+    whole thing was already in memory. So the stream itself is the assertion: it
+    refuses to hand over more than the guard is allowed to ask for.
+    """
+    from werkzeug.datastructures import FileStorage
+    from werkzeug.datastructures import MultiDict
+
+    from webserver import app as app_module
+
+    cap = project_snapshot.MAX_SNAPSHOT_BYTES
+
+    class Tripwire:
+        """Behaves like a huge upload, and objects to being swallowed whole."""
+
+        def __init__(self):
+            self.served = 0
+
+        def read(self, size=-1):
+            if size is None or size < 0:
+                raise AssertionError("unbounded read of the snapshot part")
+            self.served += size
+            if self.served > cap + 1:
+                raise AssertionError(f"read {self.served} bytes past the {cap} cap")
+            return b"x" * size
+
+    stream = Tripwire()
+    with app_module.app.test_request_context("/api/upload-file", method="POST"):
+        import flask
+
+        flask.request.files = MultiDict(
+            {"snapshot": FileStorage(stream=stream, filename="project.zip")}
+        )
+        flask.request.form = MultiDict(
+            {"snapshot_metadata": json.dumps({"formatVersion": 1, "projectName": "Big"})}
+        )
+        reason = app_module.stage_project_snapshot()
+
+    assert "too large" in reason
+    assert project_snapshot.has_snapshot() is False
+    # Nothing staged either: a refused archive must not sit in the store waiting
+    # for the next successful build to promote it.
+    assert project_snapshot._STAGED_BLOB.exists() is False
+
+
+def test_an_archive_at_the_limit_is_still_accepted(client, admin_token):
+    # The guard reads one byte past the cap to decide, so the boundary itself
+    # has to keep working.
+    at_limit = b"y" * project_snapshot.MAX_SNAPSHOT_BYTES
+
+    reason = _post_snapshot(client, admin_token, at_limit)
+
+    assert reason == ""
+    assert project_snapshot.promote() is True
+    assert len(project_snapshot.read_blob()) == project_snapshot.MAX_SNAPSHOT_BYTES
+
+
+def test_the_whole_request_is_bounded_at_the_http_layer(client):
+    # A backstop under the per-part checks: those run only after Werkzeug has
+    # parsed and spooled the body, so the body itself is capped first.
+    from webserver import app as app_module
+
+    limit = app_module.app.config["MAX_CONTENT_LENGTH"]
+    assert limit is not None
+    assert limit > project_snapshot.MAX_SNAPSHOT_BYTES
+
+
+# --- an interrupted promote is diagnosable -------------------------------
+
+
+def test_a_blob_left_without_metadata_says_so_in_the_log(caplog):
+    # `promote()` moves two files, so a power cut between them can leave a blob
+    # with no metadata. Reporting "nothing stored" is correct; doing it in
+    # silence leaves no way to tell that from a device that never had one.
+    _store()
+    project_snapshot._PROMOTED_META.unlink()
+
+    with caplog.at_level("WARNING"):
+        assert project_snapshot.read_metadata() is None
+
+    assert any("no metadata beside it" in record.message for record in caplog.records)
+
+
+# --- the advertised fields cache -----------------------------------------
+#
+# The discovery responder reads these on every probe, so they are held in
+# memory. A cache that can go stale would make the device advertise a project it
+# is no longer running, which is the one thing this whole design refuses to do.
+
+
+def test_what_the_device_advertises_follows_every_change_to_the_store():
+    assert project_snapshot.advertised_fields() == {}
+
+    _store(projectName="First")
+    assert project_snapshot.advertised_fields()["project_name"] == "First"
+
+    # A second upload's build succeeding replaces it.
+    project_snapshot.clear()
+    _store(projectName="Second")
+    assert project_snapshot.advertised_fields()["project_name"] == "Second"
+
+    # And an upload that carries nothing erases it.
+    project_snapshot.clear()
+    assert project_snapshot.advertised_fields() == {}
+
+
+def test_a_staged_project_is_never_advertised():
+    # By the time anything is staged, the upload has already passed its point of
+    # no return and cleared the old project -- the program it described is being
+    # replaced. So the device advertises nothing at all until a build succeeds,
+    # which is the honest answer: naming the staged project would name one the
+    # device is not running and may never run.
+    _store(projectName="Running")
+    project_snapshot.stage(b"new-archive", _metadata(projectName="Building"))
+
+    assert project_snapshot.advertised_fields() == {}
+
+    # A failed build leaves it that way rather than resurrecting the old name.
+    project_snapshot.discard_staged()
+    assert project_snapshot.advertised_fields() == {}
+
+    # A successful one names the new project.
+    project_snapshot.stage(b"new-archive", _metadata(projectName="Built"))
+    assert project_snapshot.promote() is True
+    assert project_snapshot.advertised_fields()["project_name"] == "Built"
+
+
+def test_the_caller_cannot_mutate_the_cache_through_the_value_it_gets():
+    _store(projectName="Traffic Light")
+    first = project_snapshot.advertised_fields()
+    first["project_name"] = "tampered"
+    assert project_snapshot.advertised_fields()["project_name"] == "Traffic Light"
