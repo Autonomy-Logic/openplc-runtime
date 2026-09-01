@@ -21,6 +21,7 @@ from typing import Callable, Final, Optional
 import flask
 import flask_login
 
+from webserver import project_snapshot
 from webserver.credentials import CertGen
 from webserver.debug_websocket import init_debug_websocket
 from webserver.discovery.discovery_routes import discovery_bp
@@ -30,10 +31,10 @@ from webserver.plcapp_management import (
     MAX_FILE_SIZE,
     BuildStatus,
     analyze_zip,
+    apply_vpp_plugin_conf,
     build_state,
     run_compile,
     safe_extract,
-    apply_vpp_plugin_conf,
     update_plugin_configurations,
 )
 from webserver.restapi import (
@@ -42,6 +43,7 @@ from webserver.restapi import (
     db,
     register_callback_get,
     register_callback_post,
+    repair_missing_admin,
     restapi_bp,
 )
 from webserver.runtimemanager import RuntimeManager
@@ -50,6 +52,17 @@ logger, _ = get_logger("logger", use_buffer=True)
 
 app = flask.Flask(__name__)
 app.secret_key = str(os.urandom(16))
+
+# A backstop at the HTTP layer, under everything the routes do.
+#
+# Individual handlers check their own parts, but those checks run after Werkzeug
+# has already parsed (and spooled to disk) the request. This bounds the whole
+# body first, so an oversized upload is refused as 413 before any of it is
+# stored. Sized to hold the largest legitimate request -- a program zip and a
+# project snapshot together -- plus room for the multipart framing.
+app.config["MAX_CONTENT_LENGTH"] = (
+    MAX_FILE_SIZE + project_snapshot.MAX_SNAPSHOT_BYTES + (8 * 1024 * 1024)
+)
 login_manager = flask_login.LoginManager()
 login_manager.init_app(app)
 
@@ -243,6 +256,73 @@ def restapi_callback_get(argument: str, data: dict) -> dict:
     return {"error": "Unknown argument"}
 
 
+def stage_project_snapshot() -> str:
+    """Stage the optional source-project snapshot that rides along with an upload.
+
+    Returns an empty string when there was nothing to store or it was stored,
+    and a human-readable reason otherwise. Never raises: the snapshot is the
+    optional half of the request and must not be able to fail a program upload.
+
+    The two fields are deliberately separate from ``program.zip``. Inside it
+    they would run through ``analyze_zip`` and be extracted into
+    ``core/generated``, where the next upload would wipe them and the compiler
+    would try to build them. The metadata is separate from the archive for the
+    same reason in reverse: the runtime never opens the archive, so anything it
+    needs to say about the stored project has to arrive already parsed.
+    """
+    snapshot_file = flask.request.files.get("snapshot")
+    if snapshot_file is None:
+        return ""
+
+    raw_metadata = flask.request.form.get("snapshot_metadata")
+    if not raw_metadata:
+        return "Snapshot ignored: the upload carried an archive but no snapshot_metadata"
+
+    try:
+        metadata = project_snapshot.normalize_metadata(json.loads(raw_metadata))
+    except json.JSONDecodeError as e:
+        return f"Snapshot ignored: snapshot_metadata is not valid JSON ({e})"
+    except project_snapshot.SnapshotError as e:
+        return f"Snapshot ignored: {e}"
+
+    # Bounded read, before the bytes exist rather than after.
+    #
+    # `stage()` also enforces the cap, but only once the whole part is already
+    # in memory -- and this route is authenticated without an admin gate, so any
+    # account on the device could post an arbitrarily large `snapshot` field and
+    # have it spooled to disk and then pulled into RAM before anything refused
+    # it. On the hardware this runtime targets that is a disk-fill followed by
+    # an OOM.
+    #
+    # `content_length` on a multipart part is client-supplied and often absent,
+    # so it is a fast path and not the guard. Reading one byte past the cap and
+    # stopping is what actually bounds this, whatever the client claimed.
+    declared = snapshot_file.content_length
+    if declared and declared > project_snapshot.MAX_SNAPSHOT_BYTES:
+        return (
+            f"Snapshot ignored: archive is too large "
+            f"({declared} bytes, limit {project_snapshot.MAX_SNAPSHOT_BYTES})"
+        )
+
+    try:
+        blob = snapshot_file.read(project_snapshot.MAX_SNAPSHOT_BYTES + 1)
+    except (OSError, IOError) as e:
+        return f"Snapshot ignored: could not read the uploaded archive ({e})"
+
+    if len(blob) > project_snapshot.MAX_SNAPSHOT_BYTES:
+        return (
+            f"Snapshot ignored: archive is too large "
+            f"(limit {project_snapshot.MAX_SNAPSHOT_BYTES} bytes)"
+        )
+
+    try:
+        project_snapshot.stage(blob, metadata)
+    except project_snapshot.SnapshotError as e:
+        return f"Snapshot ignored: {e}"
+
+    return ""
+
+
 def handle_upload_file(data: dict) -> dict:
     if build_state.status == BuildStatus.COMPILING:
         return {
@@ -279,6 +359,19 @@ def handle_upload_file(data: dict) -> dict:
             }
 
         extract_dir = "core/generated"
+
+        # Point of no return: past here the program on the device is being
+        # replaced, so the stored project snapshot must go with it. Clearing
+        # here rather than on arrival means a rejected upload (bad zip, too
+        # large, runtime busy) leaves the previous program AND its snapshot
+        # untouched, which is the pair that is actually still true.
+        #
+        # An upload carrying no snapshot therefore erases the stored one --
+        # that is the point. Older editors, openplc-cli and any third-party
+        # client keep working, and the device stops advertising a project it
+        # is no longer running.
+        project_snapshot.clear()
+
         if os.path.exists(extract_dir):
             shutil.rmtree(extract_dir)
 
@@ -306,6 +399,16 @@ def handle_upload_file(data: dict) -> dict:
         # don't pass this flag, so behaviour for them is unchanged.
         clean_build = flask.request.args.get("clean") == "1"
 
+        # Stage the snapshot only once the program itself is safely in place.
+        # run_compile's `finally` is what promotes or discards a staged
+        # snapshot, so staging before the extract would leave one stranded if
+        # the extract threw -- the compile thread never starts, nothing
+        # discards it, and the NEXT successful build would promote a snapshot
+        # belonging to an upload that never landed. The clear() above has
+        # already erased the old one either way, which is correct: the program
+        # it described is gone.
+        snapshot_error = stage_project_snapshot()
+
         # Start compilation in a separate thread
         build_state.status = BuildStatus.COMPILING
 
@@ -318,7 +421,15 @@ def handle_upload_file(data: dict) -> dict:
 
         task_compile.start()
 
-        return {"UploadFileFail": "", "CompilationStatus": build_state.status.name}
+        # The program upload itself succeeded. A snapshot that could not be
+        # stored is reported alongside rather than as a failure: the device is
+        # running the new program either way, and failing the upload over the
+        # optional half of it would be worse than losing retrievability.
+        return {
+            "UploadFileFail": "",
+            "CompilationStatus": build_state.status.name,
+            "ProjectSnapshotWarning": snapshot_error,
+        }
 
     except (OSError, IOError) as e:
         build_state.status = BuildStatus.FAILED
@@ -383,6 +494,13 @@ def run_https():
             # users.role column in place; no-op once present).
             apply_user_schema_migrations()
             db.session.commit()
+            # Rescue a device left with accounts but no admin. Unlike the
+            # schema migration above this is a DATA repair, and it has to run
+            # separately: the migration only fires when the role column is
+            # missing, so a database that already has one keeps whatever values
+            # it holds -- including none of them being 'admin'. Without an
+            # admin there is no API path back to having one.
+            repair_missing_admin()
             # logger.info("Database tables created successfully.")
         except Exception:
             # logger.error("Error creating database tables: %s", e)

@@ -1,17 +1,18 @@
-from dataclasses import dataclass, field
-from enum import Enum, auto
+import glob
 import os
 import shutil
-import time
-import zipfile
 import subprocess
 import threading
-import glob
+import time
+import zipfile
+from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import Final
 
+from webserver import project_snapshot
+from webserver.logger import LogParser, get_logger
+from webserver.plugin_config_model import PluginConfig, PluginsConfiguration, PluginType
 from webserver.runtimemanager import RuntimeManager
-from webserver.logger import get_logger, LogParser
-from webserver.plugin_config_model import PluginsConfiguration, PluginConfig, PluginType
 from webserver.vpp_license_debug import derive_license_path, is_inside_root
 
 logger, _ = get_logger("runtime", use_buffer=True)
@@ -619,3 +620,21 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
         build_state.log(f"[ERROR] Compile orchestrator crashed: {e}\n")
         build_state.status = BuildStatus.FAILED
         build_state.exit_code = -1
+    finally:
+        # The stored project snapshot follows the program exactly. A snapshot
+        # staged by the upload becomes the stored one only once the build has
+        # actually produced a program; any other outcome discards it, and the
+        # upload already cleared whatever was stored before.
+        #
+        # In a `finally` so the outer crash guard above cannot leave a staged
+        # snapshot behind to be promoted by the NEXT build. Discarding is the
+        # honest end state either way: a failed build leaves the device with no
+        # program at all, because compile-clean.sh removes libplc_*.so before it
+        # has a replacement to move into place.
+        try:
+            if build_state.status == BuildStatus.SUCCESS:
+                project_snapshot.promote()
+            else:
+                project_snapshot.discard_staged()
+        except Exception as e:  # never let snapshot bookkeeping mask a build result
+            build_state.log(f"[WARNING] Project snapshot bookkeeping failed: {e}\n")
