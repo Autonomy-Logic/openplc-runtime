@@ -5,6 +5,8 @@
 
 #include "plc_retain_file_store.h"
 
+#include "plc_retain.h"  // PLC_RETAIN_PROGRAM_ID_LEN — one definition for both sides
+
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -32,7 +34,11 @@ constexpr size_t RETAIN_MAX = 64 * 1024;
 /* Length of the program identity stored ahead of the blob. Mirrors baremetal's
  * OPLC_RETAIN_PROGRAM_ID_LEN: an MD5 as lower-case hex, 32 characters, never
  * NUL-terminated on the wire or on disk. */
-constexpr size_t PROGRAM_ID_LEN = 32;
+constexpr size_t PROGRAM_ID_LEN = PLC_RETAIN_PROGRAM_ID_LEN;
+static_assert(PROGRAM_ID_LEN == PLC_RETAIN_PROGRAM_ID_LEN,
+              "The identity this store writes into its on-disk header must be exactly the "
+              "identity the runtime hands to read() — a shorter or longer header would be "
+              "indistinguishable from a torn write and every load would discard good values.");
 
 std::mutex           g_lock;
 std::vector<uint8_t> g_pending;

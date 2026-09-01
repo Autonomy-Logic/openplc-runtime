@@ -66,6 +66,20 @@ extern "C" {
 #endif
 
 /**
+ * @brief Length of the program identity passed to a driver's read hook.
+ *
+ * An MD5 as lower-case hex: exactly 32 characters, and NOT NUL-terminated —
+ * compare with memcmp over this length, never strcmp.
+ *
+ * Defined once, here, because three copies of the number existed and were tied
+ * together only by comments. Baremetal's `OPLC_RETAIN_PROGRAM_ID_LEN` is the
+ * fourth, and deliberately stays separate: it sits across a process and
+ * toolchain boundary where a shared header would be worse than a documented
+ * constant. It must carry the same value.
+ */
+#define PLC_RETAIN_PROGRAM_ID_LEN 32
+
+/**
  * @brief Decide once, after the program is loaded, whether retain can run, and
  *        bind whichever driver claimed the store.
  *

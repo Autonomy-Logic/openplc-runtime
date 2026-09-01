@@ -77,6 +77,14 @@ struct RetainDriver
     int (*flush)(void);
 };
 
+/* Written only by plc_retain_init(), read from the scan thread.
+ *
+ * `g_active` IS THE PUBLICATION BARRIER for this record. init() stores false
+ * before mutating it and true after, both seq_cst, and every reader checks
+ * g_active before touching g_driver — so a reader that sees active==true is
+ * guaranteed to see the completed record. Nothing else orders these writes, so
+ * an early return that skips the `store(true)`, or a relaxed memory order on
+ * either store, would break it silently. */
 RetainDriver g_driver = {nullptr, nullptr, nullptr, nullptr};
 
 /* The plugin acting as the store, when a plugin claimed it. Held only so the
@@ -187,20 +195,29 @@ void plc_retain_read(void)
      * (image_tables.cpp), so it is already available here. Exactly 32
      * characters of hex and NOT guaranteed NUL-terminated, which is why the
      * length travels with it rather than being recovered with strlen. */
-    static const uint16_t MD5_HEX_LEN = 32;
     if (!ext_strucpp_program_md5)
     {
         /* No identity to compare against means a driver cannot tell a new
          * program from the old one, and restoring on that basis is how one
-         * program inherits another's state. Refuse instead. */
+         * program inherits another's state. Refuse — and stand the store DOWN
+         * rather than leave saves running.
+         *
+         * Returning while `g_active` stayed true left retain half-on: the
+         * per-scan save kept packing and handing over bytes that no driver could
+         * ever commit, because the identity a commit needs is only ever set by
+         * the read this branch skipped. The file store then refused every write
+         * and logged "short write" once per flush interval, forever, naming a
+         * cause that was not the real one. One warning, said once, is the whole
+         * story — so make it true. */
         log_warn("Retain: the program exports no MD5 — retained variables start at their "
                  "initial values");
+        g_active.store(false);
         return;
     }
 
     uint16_t  got = 0;
-    const int rc  = g_driver.read(ext_strucpp_program_md5, MD5_HEX_LEN, g_buffer.data(),
-                                 (uint16_t)g_buffer.size(), &got);
+    const int rc  = g_driver.read(ext_strucpp_program_md5, PLC_RETAIN_PROGRAM_ID_LEN,
+                                 g_buffer.data(), (uint16_t)g_buffer.size(), &got);
     if (rc != 0 || got == 0)
     {
         log_info("Retain: nothing stored yet — retained variables start at their initial values");

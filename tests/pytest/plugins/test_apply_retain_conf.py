@@ -136,6 +136,23 @@ def test_refuses_a_flush_period_outside_the_bounds_the_core_accepts(upload, isol
     assert not isolated_conf.exists()
 
 
+def test_a_disabled_stanza_is_installed_without_validating_its_flush_period(upload, isolated_conf):
+    """`flushSeconds` is as dead as `path` while storage is off.
+
+    Refusing over it would delete the device's existing config for a value
+    nothing reads. The case that makes this concrete: a later release tightens
+    MAX_FLUSH_SECONDS, and every project still carrying the old value has its
+    whole retain.conf refused on the next upload — including projects that had
+    storage switched off anyway.
+    """
+    write_conf(upload, enabled=False, flush_seconds=retain_config.MAX_FLUSH_SECONDS + 1)
+
+    plcapp_management.apply_retain_conf(str(upload))
+
+    assert isolated_conf.exists()
+    assert retain_config.read_retain_conf_file(isolated_conf)["enabled"] is False
+
+
 def test_a_disabled_stanza_is_installed_without_validating_its_path(upload, isolated_conf):
     """Nothing will be written there, so an unusable path is not worth refusing.
 

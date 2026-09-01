@@ -485,11 +485,16 @@ def apply_retain_conf(generated_dir: str = "core/generated") -> None:
 
     try:
         if cfg["enabled"]:
-            # Only meaningful when the store is on. A disabled stanza carrying a
-            # path that happens not to exist is not an error worth refusing an
-            # upload over -- nothing will be written there.
+            # Both only meaningful when the store is on. A disabled stanza
+            # carrying a path that does not exist, or a flush period outside the
+            # bounds, is not worth refusing an upload over -- neither is read
+            # while enabled=0, and refusing would delete the device's existing
+            # config over a field nothing consults. That bites for real when a
+            # later release tightens MAX_FLUSH_SECONDS: every project still
+            # carrying the old value would have its whole retain.conf refused,
+            # including the ones that had storage switched off anyway.
             validate_retain_path(cfg["path"])
-        validate_flush_seconds(cfg["flushSeconds"])
+            validate_flush_seconds(cfg["flushSeconds"])
     except RetainConfigError as e:
         build_state.log(f"[ERROR] Retain: refusing retain.conf from upload: {e}\n")
         # Leave no half-applied state: a refused stanza must not leave the
