@@ -214,39 +214,6 @@ def test_discovery_advertises_only_name_and_timestamp():
     }
 
 
-# --- GET /api/project-snapshot/info --------------------------------------
-
-
-def test_info_requires_authentication(client):
-    assert client.get("/api/project-snapshot/info").status_code == 401
-
-
-def test_info_reports_absence_on_a_fresh_device(client, admin_token):
-    body = client.get("/api/project-snapshot/info", headers=auth(admin_token)).get_json()
-    assert body == {"present": False}
-
-
-def test_info_reports_the_stored_project(client, admin_token):
-    _store(b"payload")
-    body = client.get("/api/project-snapshot/info", headers=auth(admin_token)).get_json()
-    assert body["present"] is True
-    assert body["projectName"] == "Traffic Light"
-    assert body["editorVersion"] == "4.2.0"
-    assert body["uploadedBy"] == "admin"
-    assert body["sizeBytes"] == len(b"payload")
-    assert body["libraries"][0]["name"] == "Motion"
-
-
-def test_info_is_open_to_non_admins(client, admin_token):
-    # Deciding whether to OFFER retrieval is not privileged; retrieving is.
-    _store()
-    create_user(client, "operator", "operator-pass", token=admin_token, role="user")
-    operator = token_for(client, "operator", "operator-pass")
-    resp = client.get("/api/project-snapshot/info", headers=auth(operator))
-    assert resp.status_code == 200
-    assert resp.get_json()["present"] is True
-
-
 # --- GET /api/project-snapshot -------------------------------------------
 
 

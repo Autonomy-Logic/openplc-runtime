@@ -97,10 +97,10 @@ The flow is the same on both clients: **File -> Retrieve Project from PLC**.
    Picking the device you are already signed in to reuses that session and skips
    straight to the retrieval.
 
-3. **Sign in as an administrator.** Any authenticated user can see *that* a
-   project is stored and what it is called; only an administrator can retrieve
-   the archive itself. A non-administrator who performed the upload still cannot
-   retrieve it.
+3. **Sign in as an administrator.** Anything on the network can see *that* a
+   project is stored and what it is called, because the discovery reply is
+   unauthenticated; only an administrator can retrieve the archive itself. A
+   non-administrator who performed the upload still cannot retrieve it.
 
 4. **The project opens.** It is unpacked into a scratch directory and opened as
    an ordinary project.
@@ -131,29 +131,15 @@ opening it in the desktop editor.
 
 ## HTTP API
 
-Both endpoints require authentication. See [API.md](API.md) for the
+The retrieval endpoint requires authentication. See [API.md](API.md) for the
 authentication flow.
 
-### `GET /api/project-snapshot/info`
-
-What is stored, without the archive. Authenticated, but not restricted to
-administrators: this is what a client needs to decide whether retrieving is
-worth offering, and it says nothing the discovery reply does not already carry.
-
-```json
-{
-  "present": true,
-  "projectName": "Traffic Light",
-  "editorVersion": "1.2.0",
-  "uploadedBy": "operator",
-  "timestamp": "2026-08-31T12:00:00Z",
-  "sizeBytes": 48213,
-  "formatVersion": 1,
-  "libraries": [{ "name": "oscat-basic", "version": "3.3.4", "hash": "9f2c..." }]
-}
-```
-
-When the device stores nothing: `{"present": false}`.
+What a device is storing is published two ways: its name and timestamp in the
+unauthenticated discovery reply, which is what fills a client's device picker,
+and the archive itself here. There is deliberately no authenticated
+"describe it without fetching it" endpoint -- one existed briefly and had no
+caller, because a picker has to describe a device *before* anyone signs in to
+it, which an authenticated endpoint cannot do.
 
 ### `GET /api/project-snapshot`
 

@@ -811,53 +811,6 @@ def put_retain_config():
     return jsonify(saved), 200
 
 
-@restapi_bp.route("/project-snapshot/info", methods=["GET"])
-@jwt_required()
-def get_project_snapshot_info():
-    """Describe the source project stored on this device, if any.
-
-    Authenticated but not admin-gated: this is the metadata a client needs to
-    decide whether retrieving is worth offering, and it says nothing the
-    discovery broadcast does not already hint at. The archive itself is
-    admin-only.
-    ---
-    tags:
-      - Programs
-    security:
-      - BearerAuth: []
-    responses:
-      200:
-        description: Stored project metadata, or present=false when there is none
-        schema:
-          type: object
-          properties:
-            present:
-              type: boolean
-            projectName:
-              type: string
-            editorVersion:
-              type: string
-            uploadedBy:
-              type: string
-            timestamp:
-              type: string
-            sizeBytes:
-              type: integer
-            formatVersion:
-              type: integer
-            libraries:
-              type: array
-              items:
-                type: object
-      401:
-        description: Authentication required
-    """
-    record = project_snapshot.read_metadata()
-    if record is None:
-        return jsonify({"present": False}), 200
-    return jsonify({"present": True, **record}), 200
-
-
 @restapi_bp.route("/project-snapshot", methods=["GET"])
 @jwt_required()
 def get_project_snapshot():
