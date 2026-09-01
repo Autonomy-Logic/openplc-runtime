@@ -15,6 +15,7 @@
 extern "C" {
 #include "../drivers/plugin_driver.h"
 #include "utils/log.h"
+#include "utils/utils.h"  // ext_strucpp_program_md5 — the program's identity
 }
 
 #include "debug_write_journal.h"
@@ -59,31 +60,64 @@ uint8_t retain_write_leaf(uint8_t arr, uint16_t elem, const uint8_t *bytes, uint
 }
 
 /**
- * Where the bytes go.
+ * A store, whatever kind it is.
  *
- * A VPP plugin ALWAYS wins over the runtime's own file store. The vendor knows
- * what the box actually has — FRAM, battery-backed SRAM, an NVS partition —
- * and a file on the data partition is the runtime's fallback, not its
- * preference. Silently writing to disk on a device whose VPP just implemented
- * proper retention would be both slower and wrong.
+ * Three function pointers and a name. Everything past init() calls through this
+ * record, so there is exactly one path to storage and no branch anywhere that
+ * asks whether the bytes are going to a plugin or to a file. Adding a third
+ * kind of store means filling this in from somewhere new and changing nothing
+ * else.
  */
-enum class Backend { None, Plugin, BuiltinFile };
-Backend g_backend = Backend::None;
+struct RetainDriver
+{
+    const char *name;
+    int (*read)(const char *program_md5, uint16_t md5_len, uint8_t *out, uint16_t cap,
+                uint16_t *out_len);
+    int (*write)(const uint8_t *blob, uint16_t len);
+    int (*flush)(void);
+};
 
-/** Set only when g_backend == Plugin. */
-plugin_instance_t *g_store = nullptr;
+RetainDriver g_driver = {nullptr, nullptr, nullptr, nullptr};
+
+/* The plugin acting as the store, when a plugin claimed it. Held only so the
+ * thunks below have something to forward to — the plugin hooks are instance
+ * methods and the driver record is plain function pointers. */
+plugin_instance_t *g_plugin_store = nullptr;
+
+int plugin_read_thunk(const char *program_md5, uint16_t md5_len, uint8_t *out, uint16_t cap,
+                      uint16_t *out_len)
+{
+    return plugin_driver_retain_load(g_plugin_store, program_md5, md5_len, out, cap, out_len);
+}
+
+int plugin_write_thunk(const uint8_t *blob, uint16_t len)
+{
+    return plugin_driver_retain_save(g_plugin_store, blob, len);
+}
+
+int plugin_flush_thunk(void)
+{
+    return plugin_driver_retain_flush(g_plugin_store);
+}
+
+/** Whether a store is bound. Cheap enough to ask on the scan path. */
+bool driver_bound()
+{
+    return g_driver.read != nullptr && g_driver.write != nullptr;
+}
 
 }  // namespace
 
 void plc_retain_init(void)
 {
     g_active.store(false);
-    g_store   = nullptr;
-    g_backend = Backend::None;
+    g_plugin_store = nullptr;
+    g_driver       = {nullptr, nullptr, nullptr, nullptr};
     g_buffer.clear();
-    /* Re-read on every program load, so an operator's change to the Persistent
-     * Storage settings takes effect on the next PLC start without needing the
-     * daemon restarted. */
+    /* Re-read retain.conf on every program load, so settings that arrived with
+     * a program upload take effect on the next PLC start without needing the
+     * daemon restarted. Stopping first is what forces the re-read, and it also
+     * commits anything the previous run was still holding. */
     plc_retain_file_store_stop();
 
     if (!ext_strucpp_retain_blob_size || !ext_strucpp_retain_pack || !ext_strucpp_retain_unpack)
@@ -104,14 +138,25 @@ void plc_retain_init(void)
         return;
     }
 
-    g_store = plugin_driver_find_retain_store(plugin_driver);
-    if (g_store)
+    /* Ask the drivers, in rank order, which will hold the bytes.
+     *
+     * A vendor plugin outranks the built-in file store because the vendor knows
+     * what the box actually has — FRAM, battery-backed SRAM, an NVS partition —
+     * and a file on the data partition is the runtime's default, not its
+     * preference. In a correctly declared device only one of them offers itself
+     * at all: the file store answers no unless retain.conf enabled it, and the
+     * editor emits no retain.conf for a target whose VPP declared that it owns
+     * retention. So this is a rank, not an arbitration. */
+    g_plugin_store = plugin_driver_find_retain_store(plugin_driver);
+    if (g_plugin_store)
     {
-        g_backend = Backend::Plugin;
+        g_driver = {g_plugin_store->config.name, plugin_read_thunk, plugin_write_thunk,
+                    plugin_flush_thunk};
     }
     else if (plc_retain_file_store_start("./retain.conf"))
     {
-        g_backend = Backend::BuiltinFile;
+        g_driver = {plc_retain_file_store_path(), plc_retain_file_store_load,
+                    plc_retain_file_store_save, plc_retain_file_store_flush};
     }
     else
     {
@@ -120,8 +165,8 @@ void plc_retain_init(void)
          * variables just behave as NON_RETAIN. Said once so the operator can
          * tell "not switched on here" from "switched on and broken". */
         log_info("Retain: %zu bytes of retained variables, but no storage is configured — "
-                 "they will start at their initial values. Enable the built-in store on the "
-                 "device's Persistent Storage screen, or install a VPP that provides one.",
+                 "they will start at their initial values. Turn on persistent storage in the "
+                 "project and upload again, or install a VPP that provides a store.",
                  needed);
         return;
     }
@@ -130,20 +175,32 @@ void plc_retain_init(void)
     g_active.store(true);
     log_info("Retain: %zu bytes across the program's retained variables (layout %08x), stored by %s",
              needed, ext_strucpp_retain_layout_hash ? ext_strucpp_retain_layout_hash() : 0u,
-             g_backend == Backend::Plugin ? g_store->config.name
-                                          : plc_retain_file_store_path());
+             g_driver.name ? g_driver.name : "?");
 }
 
-void plc_retain_load(void)
+void plc_retain_read(void)
 {
-    if (!g_active.load() || g_backend == Backend::None) return;
+    if (!g_active.load() || !driver_bound()) return;
+
+    /* The program's identity, so the driver can tell whether the bytes it holds
+     * belong to the program now running. Resolved from the .so at load time
+     * (image_tables.cpp), so it is already available here. Exactly 32
+     * characters of hex and NOT guaranteed NUL-terminated, which is why the
+     * length travels with it rather than being recovered with strlen. */
+    static const uint16_t MD5_HEX_LEN = 32;
+    if (!ext_strucpp_program_md5)
+    {
+        /* No identity to compare against means a driver cannot tell a new
+         * program from the old one, and restoring on that basis is how one
+         * program inherits another's state. Refuse instead. */
+        log_warn("Retain: the program exports no MD5 — retained variables start at their "
+                 "initial values");
+        return;
+    }
 
     uint16_t  got = 0;
-    const int rc = g_backend == Backend::Plugin
-                     ? plugin_driver_retain_load(g_store, g_buffer.data(),
-                                                 (uint16_t)g_buffer.size(), &got)
-                     : plc_retain_file_store_load(g_buffer.data(),
-                                                  (uint16_t)g_buffer.size(), &got);
+    const int rc  = g_driver.read(ext_strucpp_program_md5, MD5_HEX_LEN, g_buffer.data(),
+                                 (uint16_t)g_buffer.size(), &got);
     if (rc != 0 || got == 0)
     {
         log_info("Retain: nothing stored yet — retained variables start at their initial values");
@@ -169,59 +226,20 @@ void plc_retain_load(void)
 
 void plc_retain_save(void)
 {
-    if (!g_active.load() || g_backend == Backend::None) return;
+    if (!g_active.load() || !driver_bound()) return;
 
     const size_t n = ext_strucpp_retain_pack(g_buffer.data(), g_buffer.size());
     if (n == 0) return;
 
     /* Hand the bytes over and return. Whether this is committed to storage now,
-     * in five seconds, or on shutdown is the plugin's decision — it is the only
+     * in five seconds, or on shutdown is the driver's decision — it is the only
      * layer that knows what its medium costs. */
-    if (g_backend == Backend::Plugin)
-        plugin_driver_retain_save(g_store, g_buffer.data(), (uint16_t)n);
-    else
-        plc_retain_file_store_save(g_buffer.data(), (uint16_t)n);
+    g_driver.write(g_buffer.data(), (uint16_t)n);
 }
 
-void plc_retain_clear(void)
+void plc_retain_flush(void)
 {
-    /* Not gated on g_active: a clear has to work even when this program has
-     * nothing retained, because what it is discarding belongs to the PREVIOUS
-     * program. That is the whole point of clearing on upload. */
-    plugin_instance_t *store = g_store ? g_store : plugin_driver_find_retain_store(plugin_driver);
-    if (store)
-    {
-        plugin_driver_retain_clear(store);
-        return;
-    }
-    /* No plugin: clear the built-in store. Deliberately NOT gated on whether it
-     * is currently enabled — what is being discarded belongs to the previous
-     * program, and may have been written while it was. */
-    plc_retain_file_store_start("./retain.conf");
-    plc_retain_file_store_clear();
+    if (!g_active.load() || !g_driver.flush) return;
+    g_driver.flush();
 }
 
-bool plc_retain_active(void)
-{
-    return g_active.load();
-}
-
-const char *plc_retain_backend(void)
-{
-    switch (g_backend)
-    {
-        case Backend::Plugin:      return "plugin";
-        case Backend::BuiltinFile: return "file";
-        default:                   return "none";
-    }
-}
-
-const char *plc_retain_backend_detail(void)
-{
-    switch (g_backend)
-    {
-        case Backend::Plugin:      return g_store ? g_store->config.name : "";
-        case Backend::BuiltinFile: return plc_retain_file_store_path();
-        default:                   return "";
-    }
-}

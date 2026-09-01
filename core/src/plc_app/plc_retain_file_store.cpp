@@ -29,9 +29,21 @@ namespace {
  * a limit anyone is expected to meet. */
 constexpr size_t RETAIN_MAX = 64 * 1024;
 
+/* Length of the program identity stored ahead of the blob. Mirrors baremetal's
+ * OPLC_RETAIN_PROGRAM_ID_LEN: an MD5 as lower-case hex, 32 characters, never
+ * NUL-terminated on the wire or on disk. */
+constexpr size_t PROGRAM_ID_LEN = 32;
+
 std::mutex           g_lock;
 std::vector<uint8_t> g_pending;
 bool                 g_dirty = false;
+
+/* The running program's identity, taken from the last load() and committed
+ * alongside the blob by every save(). Held rather than written at load time so
+ * a read never mutates storage, and so identity and bytes always reach the disk
+ * as one unit — a file whose header says "program A" is guaranteed to contain
+ * program A's values. Empty until the first load(). */
+std::string          g_program_md5;
 
 std::string       g_path;
 int               g_flush_seconds = 5;
@@ -97,9 +109,19 @@ void read_config(const char *config_path)
  * and fall back to initial values anyway, but losing the previous values as
  * well would be gratuitous.
  */
-void commit(const uint8_t *buf, uint16_t len)
+void commit(const uint8_t *buf, uint16_t len, const std::string &program_id)
 {
     const std::string tmp = g_path + ".tmp";
+
+    /* File layout: [PROGRAM_ID_LEN bytes of md5 hex][blob].
+     *
+     * The identity goes in the same file as the bytes, and the same
+     * write-and-rename publishes both, so the two can never disagree — a
+     * separate sidecar could be updated and then lost, leaving one program's
+     * values labelled with another's. A file that predates this header, or a
+     * torn one shorter than the header, simply fails the identity check on the
+     * next load and is discarded, which is the correct outcome for bytes whose
+     * owner cannot be established. */
 
     FILE *f = fopen(tmp.c_str(), "wb");
     if (!f)
@@ -110,7 +132,13 @@ void commit(const uint8_t *buf, uint16_t len)
         log_warn("Retain: cannot write %s — retained values will not be kept", tmp.c_str());
         return;
     }
-    const bool wrote = fwrite(buf, 1, len, f) == len;
+    /* Header first. g_program_md5 is empty only if something committed before
+     * any load ran, which the call order rules out — but a short header would
+     * be indistinguishable from a torn write, so refuse rather than publish a
+     * file whose owner is blank. */
+    bool wrote = program_id.size() == PROGRAM_ID_LEN &&
+                 fwrite(program_id.data(), 1, PROGRAM_ID_LEN, f) == PROGRAM_ID_LEN;
+    if (wrote) wrote = fwrite(buf, 1, len, f) == len;
     if (wrote)
     {
         fflush(f);
@@ -147,6 +175,27 @@ void commit(const uint8_t *buf, uint16_t len)
     }
 }
 
+/** Remove the stored file and forget the buffered blob.
+ *
+ * Not gated on `enabled`: what is being discarded belongs to a PREVIOUS
+ * program, and may have been written while the store was configured
+ * differently. The identity is deliberately NOT cleared — the caller has just
+ * set it to the program now running, and the next save has to label its bytes.
+ */
+void discard_stored()
+{
+    {
+        std::lock_guard<std::mutex> guard(g_lock);
+        g_pending.clear();
+        g_dirty = false;
+    }
+    if (!g_path.empty())
+    {
+        remove(g_path.c_str());
+        remove((g_path + ".tmp").c_str());
+    }
+}
+
 void flush_loop()
 {
     while (g_running.load())
@@ -158,15 +207,19 @@ void flush_loop()
         if (!g_running.load()) break;
 
         std::vector<uint8_t> snapshot;
+        std::string          snapshot_id;
         {
             /* Copy under the lock, write outside it: the scan thread calls
-             * save() every cycle and must never wait on a disk write. */
+             * save() every cycle and must never wait on a disk write. The
+             * identity is snapshotted with the bytes so the pair committed
+             * below is the pair that was current at this instant. */
             std::lock_guard<std::mutex> guard(g_lock);
             if (!g_dirty) continue;
-            snapshot = g_pending;
-            g_dirty  = false;
+            snapshot    = g_pending;
+            snapshot_id = g_program_md5;
+            g_dirty     = false;
         }
-        if (!snapshot.empty()) commit(snapshot.data(), (uint16_t)snapshot.size());
+        if (!snapshot.empty()) commit(snapshot.data(), (uint16_t)snapshot.size(), snapshot_id);
     }
 }
 
@@ -195,7 +248,7 @@ void plc_retain_file_store_stop(void)
         std::lock_guard<std::mutex> guard(g_lock);
         if (g_dirty && !g_pending.empty())
         {
-            commit(g_pending.data(), (uint16_t)g_pending.size());
+            commit(g_pending.data(), (uint16_t)g_pending.size(), g_program_md5);
             g_dirty = false;
         }
     }
@@ -228,16 +281,48 @@ int plc_retain_file_store_save(const uint8_t *blob, uint16_t len)
     return 0;
 }
 
-int plc_retain_file_store_load(uint8_t *out, uint16_t cap, uint16_t *out_len)
+int plc_retain_file_store_load(const char *program_md5, uint16_t md5_len, uint8_t *out,
+                               uint16_t cap, uint16_t *out_len)
 {
     if (out_len) *out_len = 0;
     if (!g_enabled.load() || !out || cap == 0) return -1;
+    if (!program_md5 || md5_len != PROGRAM_ID_LEN) return -1;
+
+    /* Hold the identity for every subsequent save, whatever the outcome below:
+     * a store that just discarded a previous program's values still has to
+     * label the new program's first commit. */
+    {
+        std::lock_guard<std::mutex> guard(g_lock);
+        g_program_md5.assign(program_md5, md5_len);
+    }
 
     FILE *f = fopen(g_path.c_str(), "rb");
-    if (!f) return -1; /* nothing stored — a first boot, or freshly cleared */
+    if (!f) return 0; /* nothing stored — a first boot, or freshly discarded */
+
+    char stored_id[PROGRAM_ID_LEN];
+    const size_t got_id = fread(stored_id, 1, PROGRAM_ID_LEN, f);
+    if (got_id != PROGRAM_ID_LEN)
+    {
+        /* Shorter than the header: a torn write, or a file written before the
+         * header existed. Either way its owner cannot be established. */
+        fclose(f);
+        discard_stored();
+        log_info("Retain: stored values could not be attributed to a program — storage cleared");
+        return 0;
+    }
+
+    if (memcmp(stored_id, program_md5, PROGRAM_ID_LEN) != 0)
+    {
+        fclose(f);
+        discard_stored();
+        log_info("Retain: stored values belong to a different program — storage cleared, "
+                 "retained variables start at their initial values");
+        return 0;
+    }
+
     const size_t n = fread(out, 1, cap, f);
     fclose(f);
-    if (n == 0) return -1;
+    if (n == 0) return 0; /* header only: nothing was ever committed for it */
 
     if (out_len) *out_len = (uint16_t)n;
 
@@ -249,19 +334,15 @@ int plc_retain_file_store_load(uint8_t *out, uint16_t cap, uint16_t *out_len)
     return 0;
 }
 
-int plc_retain_file_store_clear(void)
+int plc_retain_file_store_flush(void)
 {
-    {
-        std::lock_guard<std::mutex> guard(g_lock);
-        g_pending.clear();
-        g_dirty = false;
-    }
-    /* Not gated on `enabled`: a clear has to remove what a PREVIOUS
-     * configuration stored, which is the whole point of clearing on upload. */
-    if (!g_path.empty())
-    {
-        remove(g_path.c_str());
-        remove((g_path + ".tmp").c_str());
-    }
+    /* Commit now, WITHOUT touching the flusher thread. Deliberately not
+     * plc_retain_file_store_stop(): the PLC can be started again without the
+     * daemon restarting, and joining the thread here would leave the next run
+     * with nothing committing on a timer. */
+    std::lock_guard<std::mutex> guard(g_lock);
+    if (!g_dirty || g_pending.empty()) return 0;
+    commit(g_pending.data(), (uint16_t)g_pending.size(), g_program_md5);
+    g_dirty = false;
     return 0;
 }

@@ -442,12 +442,15 @@ void *plc_cycle_thread(void *arg)
 
     /* Retained variables. init() decides once whether retain can run here —
      * does the .so export the entry points, does the program retain anything,
-     * is there a plugin willing to store it — and load() restores what was
-     * kept. Both must follow the located-variable binding above: a retained
-     * variable may also be located, and its image slot has to exist before
-     * anything writes through it. Both are no-ops when retain is not in play. */
+     * which driver will hold the bytes — and read() asks that driver for what it
+     * has for THIS program, which is also where a driver discards a previous
+     * program's values. Both must follow the located-variable binding above: a
+     * retained variable may also be located, and its image slot has to exist
+     * before anything writes through it. Both are no-ops when retain is not in
+     * play, and read() lands before the first task is released, so a new
+     * program never runs a scan on the old one's state. */
     plc_retain_init();
-    plc_retain_load();
+    plc_retain_read();
 
     journal_buffer_ptrs_t journal_ptrs = {
         .bool_input   = bool_input,
@@ -1137,6 +1140,15 @@ extern "C" int unload_plc_program(PluginManager *pm)
         pthread_mutex_unlock(&state_mutex);
 
         pthread_join(plc_thread, NULL);
+
+        /* Retained values: ask the store to commit whatever it is still
+         * holding. Placed exactly here on purpose — AFTER the join, so no scan
+         * is mid-save and the bytes are a consistent snapshot, and BEFORE
+         * plugin_driver_stop(), because a plugin-backed store has to still be
+         * alive to answer. A driver that already commits inside save() has
+         * nothing to do; what this buys is that a clean stop loses nothing on
+         * one that buffers. */
+        plc_retain_flush();
 
         journal_cleanup();
         debug_write_journal_reset();
