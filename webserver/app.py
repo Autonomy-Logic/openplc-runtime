@@ -31,6 +31,7 @@ from webserver.plcapp_management import (
     MAX_FILE_SIZE,
     BuildStatus,
     analyze_zip,
+    apply_retain_conf,
     apply_vpp_plugin_conf,
     build_state,
     run_compile,
@@ -377,18 +378,23 @@ def handle_upload_file(data: dict) -> dict:
 
         safe_extract(zip_file, extract_dir, valid_files)
 
-        # A new program must not inherit the previous one's retained values.
-        # The layout hash already refuses a genuinely different set of retained
-        # variables, but two programs that happen to share a layout would
-        # otherwise silently inherit each other's state. CODESYS clears retained
-        # memory on download; this is the same rule.
-        try:
-            runtime_manager.clear_retained()
-        except Exception as e:  # never fail an upload over this
-            logger.warning("Could not clear retained values before upload: %s", e)
-
         # Apply VPP plugin conf from upload (copy if present, delete if not)
         apply_vpp_plugin_conf(extract_dir)
+
+        # Persistent storage settings, same present/absent contract as the VPP
+        # conf above: the project owns them, so an upload that carries
+        # retain.conf installs it and one that does not removes the device's
+        # copy. That absent case is what lets a target whose VPP owns retention
+        # switch the built-in file store off simply by not configuring it.
+        #
+        # Nothing clears retained VALUES here. The store itself decides, at
+        # program start, whether what it holds belongs to the program now
+        # running — it compares the program MD5 it stored against the one the
+        # runtime hands it. Doing it there rather than here is what makes the
+        # two platforms behave identically: baremetal has no webserver to
+        # observe an upload, and a device flashed or provisioned by any other
+        # route still reaches the right answer.
+        apply_retain_conf(extract_dir)
 
         # Update built-in plugin configurations based on extracted config files
         update_plugin_configurations(extract_dir)
