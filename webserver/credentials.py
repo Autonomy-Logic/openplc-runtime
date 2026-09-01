@@ -1,5 +1,7 @@
 import os
+import platform
 import re
+import shutil
 import subprocess
 from ipaddress import ip_address
 from pathlib import Path
@@ -7,6 +9,30 @@ from pathlib import Path
 from webserver.logger import get_logger
 
 logger, _ = get_logger(__name__)
+
+
+def resolve_openssl():
+    """
+    Resolve the OpenSSL executable to invoke.
+
+    On MSYS2/Cygwin (non-Linux) the process PATH usually appends the Windows
+    host directories, so a bare "openssl" lookup can resolve to the user's
+    native Windows OpenSSL instead of the one shipped inside MSYS2. The host
+    binary handles paths differently and may not support the flags we use
+    (e.g. -addext), so we prefer the MSYS2 /usr/bin/openssl explicitly.
+
+    An explicit OPENPLC_OPENSSL override always wins, for packaging or tests.
+    """
+    override = os.environ.get("OPENPLC_OPENSSL")
+    if override:
+        return override
+
+    if platform.system() != "Linux":
+        for candidate in ("/usr/bin/openssl.exe", "/usr/bin/openssl"):
+            if os.path.exists(candidate):
+                return candidate
+
+    return shutil.which("openssl") or "openssl"
 
 
 def validate_hostname(hostname: str) -> str:
@@ -179,7 +205,7 @@ class CertGen:
         san_string = ",".join(san_list)
 
         cmd = [
-            "openssl",
+            resolve_openssl(),
             "req",
             "-x509",
             "-newkey",
@@ -233,9 +259,10 @@ class CertGen:
             return False
 
         try:
+            openssl_bin = resolve_openssl()
             result = subprocess.run(
                 [
-                    "openssl",
+                    openssl_bin,
                     "x509",
                     "-in",
                     cert_path,
@@ -251,7 +278,7 @@ class CertGen:
             if result.returncode == 0:
                 date_result = subprocess.run(
                     [
-                        "openssl",
+                        openssl_bin,
                         "x509",
                         "-in",
                         cert_path,

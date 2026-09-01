@@ -313,6 +313,7 @@ install_deps_msys2() {
         python-pip \
         python-setuptools \
         python-cryptography \
+        openssl \
         git \
         sqlite3 \
         msys2-w32api-headers \
