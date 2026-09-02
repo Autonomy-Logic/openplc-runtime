@@ -1,18 +1,27 @@
-from dataclasses import dataclass, field
-from enum import Enum, auto
+import glob
 import os
 import shutil
-import time
-import zipfile
 import subprocess
 import threading
-import glob
+import time
+import zipfile
+from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import Final
 
+from webserver import project_snapshot
 from webserver.config import VPP_DATA_DIR
+from webserver.logger import LogParser, get_logger
+from webserver.plugin_config_model import PluginConfig, PluginsConfiguration, PluginType
+from webserver.retain_config import (
+    RETAIN_CONF_PATH,
+    RetainConfigError,
+    read_retain_conf_file,
+    validate_flush_seconds,
+    validate_retain_path,
+    write_retain_conf_file,
+)
 from webserver.runtimemanager import RuntimeManager
-from webserver.logger import get_logger, LogParser
-from webserver.plugin_config_model import PluginsConfiguration, PluginConfig, PluginType
 from webserver.vpp_license_debug import derive_license_path, is_inside_root
 
 logger, _ = get_logger("runtime", use_buffer=True)
@@ -479,6 +488,100 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
             build_state.log("[INFO] VPP: removed stale vpp_plugins.conf (no VPP in upload)\n")
 
 
+def apply_retain_conf(generated_dir: str = "core/generated") -> None:
+    """Apply or remove the persistent-storage settings for this upload.
+
+    Retain settings are owned by the PROJECT, not by the device: the editor
+    emits ``retain.conf`` from the project's Persistent Storage screen and the
+    upload carries it here, exactly as it carries ``vpp_plugins.conf``. This
+    function is the single authoritative gate, with the same two cases:
+
+    * **Upload includes retain.conf** → validate it and copy it to the runtime
+      root, where the PLC application reads it at the next program load.
+
+    * **Upload does not include retain.conf** → delete any existing copy from
+      the runtime root, so the built-in file store goes back to being switched
+      off. This is not tidiness: it is how a target whose VPP owns retention
+      turns the built-in store off. Such a VPP declares
+      ``hidesNativeScreens: ['persistent-storage']``, the editor emits no
+      retain.conf, and the built-in store then declines the role — leaving the
+      vendor's driver as the only store on the device.
+
+    Validation happens HERE rather than at first use. A path whose directory
+    does not exist, or a flush period outside the bounds the core accepts, would
+    otherwise fail on every flush for the life of the program with nothing but a
+    log line to show for it. Refusing it once, with a line in the build log the
+    user is already watching, is the difference between a mistake they can see
+    and one they cannot.
+
+    Note what this function does NOT do: it does not touch retained VALUES. The
+    store itself decides at program start whether what it holds belongs to the
+    program now running, by comparing the program MD5 it stored alongside the
+    bytes. Keeping that decision in the store is what makes baremetal and
+    runtime v4 behave identically — baremetal has no webserver to notice an
+    upload at all.
+    """
+    RETAIN_CONF_NAME = "retain.conf"
+    uploaded_conf = os.path.join(generated_dir, RETAIN_CONF_NAME)
+    dest = str(RETAIN_CONF_PATH)
+
+    if not os.path.exists(uploaded_conf):
+        if os.path.exists(dest):
+            os.remove(dest)
+            build_state.log(
+                "[INFO] Retain: removed stale retain.conf (persistent storage not "
+                "configured in this project)\n"
+            )
+        return
+
+    # Parse with the same reader the core's settings go through, so what is
+    # validated here is exactly what the core will read back.
+    cfg = read_retain_conf_file(uploaded_conf)
+
+    try:
+        if cfg["enabled"]:
+            # Both only meaningful when the store is on. A disabled stanza
+            # carrying a path that does not exist, or a flush period outside the
+            # bounds, is not worth refusing an upload over -- neither is read
+            # while enabled=0, and refusing would delete the device's existing
+            # config over a field nothing consults. That bites for real when a
+            # later release tightens MAX_FLUSH_SECONDS: every project still
+            # carrying the old value would have its whole retain.conf refused,
+            # including the ones that had storage switched off anyway.
+            validate_retain_path(cfg["path"])
+            validate_flush_seconds(cfg["flushSeconds"])
+    except RetainConfigError as e:
+        build_state.log(f"[ERROR] Retain: refusing retain.conf from upload: {e}\n")
+        # Leave no half-applied state: a refused stanza must not leave the
+        # PREVIOUS project's settings in force, because the user would then be
+        # looking at a device configured by a project they are no longer
+        # running.
+        if os.path.exists(dest):
+            os.remove(dest)
+            build_state.log("[INFO] Retain: removed previous retain.conf\n")
+        return
+
+    # WRITTEN, not copied — and that is load-bearing, not stylistic.
+    #
+    # The editor emits `path=` to mean "use this device's default": it does not
+    # know the device's filesystem layout and should not guess at one.
+    # `read_retain_conf_file` substitutes this device's default for that empty
+    # value, so writing the PARSED stanza is what materialises it. Copying the
+    # upload byte-for-byte would ship the empty value to the core, which treats
+    # enabled-with-no-path as a misconfiguration and leaves the store off — so
+    # "use the default" would silently become "no retention at all".
+    #
+    # It also means anyone reading retain.conf on the device sees the real
+    # location rather than a blank.
+    write_retain_conf_file(
+        dest, enabled=cfg["enabled"], path_value=cfg["path"], flush_seconds=cfg["flushSeconds"]
+    )
+    state = "on" if cfg["enabled"] else "off"
+    build_state.log(
+        f"[INFO] Retain: installed retain.conf from upload (persistent storage {state})\n"
+    )
+
+
 def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", clean: bool = False):
     """Run compile script synchronously (wait for completion) and update status/logs.
 
@@ -674,3 +777,21 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
         build_state.log(f"[ERROR] Compile orchestrator crashed: {e}\n")
         build_state.status = BuildStatus.FAILED
         build_state.exit_code = -1
+    finally:
+        # The stored project snapshot follows the program exactly. A snapshot
+        # staged by the upload becomes the stored one only once the build has
+        # actually produced a program; any other outcome discards it, and the
+        # upload already cleared whatever was stored before.
+        #
+        # In a `finally` so the outer crash guard above cannot leave a staged
+        # snapshot behind to be promoted by the NEXT build. Discarding is the
+        # honest end state either way: a failed build leaves the device with no
+        # program at all, because compile-clean.sh removes libplc_*.so before it
+        # has a replacement to move into place.
+        try:
+            if build_state.status == BuildStatus.SUCCESS:
+                project_snapshot.promote()
+            else:
+                project_snapshot.discard_staged()
+        except Exception as e:  # never let snapshot bookkeeping mask a build result
+            build_state.log(f"[WARNING] Project snapshot bookkeeping failed: {e}\n")

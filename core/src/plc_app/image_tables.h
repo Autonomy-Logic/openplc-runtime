@@ -83,6 +83,28 @@ extern "C"
                                                      const uint8_t *bytes,
                                                      uint16_t len);
 
+    /* ---- Retain marshalling (NODE-94) --------------------------------------
+     *
+     * The WALK lives inside the .so, not here: that is where the debug tables
+     * and handle_read/handle_write are, and re-implementing the blob format on
+     * this side would put two copies of one wire format in two repos.
+     *
+     * `unpack` takes a write CALLBACK because the runtime owns the write path.
+     * A retained variable may also be LOCATED (`VAR RETAIN x AT %MW10`), and
+     * poking such a leaf's IECVar is undone by the next copy-in from the
+     * process image — so the callback we hand over routes through
+     * runtime_external_write, which knows to send a located leaf through the
+     * image journal.
+     *
+     * Optional: a program built by an older STruC++ resolves these to NULL and
+     * the retain path simply never runs. */
+    extern size_t   (*ext_strucpp_retain_blob_size)  (void);
+    extern uint32_t (*ext_strucpp_retain_layout_hash)(void);
+    extern size_t   (*ext_strucpp_retain_pack)       (uint8_t *out, size_t cap);
+    extern uint8_t  (*ext_strucpp_retain_unpack)     (const uint8_t *blob, size_t len,
+                                                      uint8_t (*write_leaf)(uint8_t, uint16_t,
+                                                                            const uint8_t *, uint16_t));
+
     /* Located-variable classifier. Reports whether a debug (arr, elem) leaf is
      * a LOCATED variable and, if so, its image location (area / size /
      * byte_index / bit_index). Returns 1 + fills the out-params if located, 0

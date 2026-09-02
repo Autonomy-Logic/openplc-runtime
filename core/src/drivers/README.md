@@ -94,6 +94,15 @@ void cleanup(void);     // Called when plugin is being unloaded
 // Per-cycle hooks (called during each PLC scan cycle, synchronized with PLC execution)
 void cycle_start(void); // Called at start of each scan cycle, before PLC logic
 void cycle_end(void);   // Called at end of each scan cycle, after PLC logic
+
+// Optional: retain-variable storage. A plugin exporting both retain_save and
+// retain_load becomes the device's retain store (first one found wins),
+// displacing the runtime's built-in file store. retain_flush is optional on top
+// of that; a plugin without it is assumed to commit inside retain_save.
+int retain_save(const uint8_t *blob, uint16_t len);                 // Persist the blob. Must not block.
+int retain_load(const char *program_md5, uint16_t md5_len,
+                uint8_t *out, uint16_t cap, uint16_t *out_len);     // Restore the blob for THIS program.
+int retain_flush(void);                                             // Commit anything still held.
 ```
 
 **Important: Native Plugin Args Lifetime**
@@ -581,6 +590,19 @@ void plugin_driver_cycle_start(plugin_driver_t *driver);
 // Plugins opt-in by implementing cycle_end(); opt-out by not implementing it
 void plugin_driver_cycle_end(plugin_driver_t *driver);
 
+// Find the plugin acting as this device's retain store (first plugin that
+// exports both retain_save and retain_load), or NULL if none does
+plugin_instance_t *plugin_driver_find_retain_store(plugin_driver_t *driver);
+
+// Save/load/flush the retain blob through the chosen store plugin
+// Return 0 on success; retain_save/retain_load return -1 if `store` isn't a
+// valid store, retain_flush is a no-op (returns 0) if the plugin has no
+// retain_flush export
+int plugin_driver_retain_save(plugin_instance_t *store, const uint8_t *blob, uint16_t len);
+int plugin_driver_retain_load(plugin_instance_t *store, const char *program_md5, uint16_t md5_len,
+                              uint8_t *out, uint16_t cap, uint16_t *out_len);
+int plugin_driver_retain_flush(plugin_instance_t *store);
+
 // Destroy the plugin driver and free resources (calls 'cleanup' on plugins)
 void plugin_driver_destroy(plugin_driver_t *driver);
 ```
@@ -683,7 +705,25 @@ void plugin_driver_destroy(plugin_driver_t *driver);
     }
     ```
 
-4.  **Memory Management (Python):**
+4.  **Native Plugin Retain Store:**
+
+    A native plugin that owns retention hardware (FRAM, battery-backed SRAM, a data partition, etc.) can become the device's retain store by exporting `retain_save()` and `retain_load()`, displacing the runtime's built-in file store. The runtime marshals retained variables into an opaque blob and hands it to the store; the plugin only needs to persist and return bytes, with no knowledge of what they mean.
+
+    The three calls map onto the PLC lifecycle, and the same three names and the same contract describe baremetal's `openplc_retain.h` — one page, written twice:
+
+    | Flow | Call |
+    |---|---|
+    | start | `retain_load()`, once, before the first scan |
+    | scan | `retain_save()`, every cycle, **while running only** |
+    | stop | `retain_flush()`, once, as the program is unloaded |
+
+    *   `retain_save(blob, len)`: Called once per scan cycle, unconditionally, from the scan's quiescent window, for as long as the PLC is running. Must return promptly and must not block — this runs inside the scan cycle. **This is the durability path.** The runtime does not diff and does not rate-limit: holding the bytes, skipping an unchanged commit, and committing on a schedule the medium can sustain are all the plugin's job, because only the plugin knows what a write costs on this board.
+    *   `retain_load(program_md5, md5_len, out, cap, out_len)`: Called at program start to restore the blob **for this program**. `program_md5` is `md5_len` characters of lower-case hex and is **not guaranteed NUL-terminated** — compare it with `memcmp`, never `strcmp`. The plugin decides whether the bytes it holds still belong to the running program: if the identity differs, discard them, log one line saying storage was cleared, and report empty (`*out_len = 0`) so every retained variable starts at its declared initial value. **Do not persist the new identity here** — hold it and commit it alongside the blob on the next `retain_save`, so a load never mutates storage and identity and bytes are always written as one unit.
+    *   `retain_flush(void)`: Optional. Commit anything still held, now. Called once as the program is unloaded. **A hint, not the durability mechanism** — retention exists for the power cut nobody schedules, and a power cut does not call `retain_flush`. A plugin that commits solely here loses everything in exactly the case it was written for. A plugin that already commits inside `retain_save` has nothing to do and should return 0.
+
+    **Both `retain_save` and `retain_load` are required** to be selected as the store; a plugin exporting only one is ignored. If more than one plugin exports both, the first one found wins and the rest are logged and ignored.
+
+5.  **Memory Management (Python):**
     *   Python's garbage collector handles memory. However, explicitly close files, sockets, or release other external resources in `cleanup()`.
 
 ## Dependencies

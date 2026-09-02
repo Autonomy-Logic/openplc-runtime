@@ -224,7 +224,7 @@ Editors that predate `/api/capabilities` get a 404 and fall back to
 - `POST /api/logout` - Logout and revoke JWT token
 - `GET /api/get-users-info` - Check if users exist
 - `GET /api/get-user-info/<user_id>` - Get user information
-- `PUT /api/password-change/<user_id>` - Change password
+- `PUT /api/update-user/<user_id>` - Update a user's username, password or role (admin, or your own account)
 - `DELETE /api/delete-user/<user_id>` - Delete user
 
 ### PLC Operations
