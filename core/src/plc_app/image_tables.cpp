@@ -148,10 +148,21 @@ namespace {
         return rc;
     }
 
+    /* Optional lookups go through the QUIET variant. plugin_manager_get_symbol
+     * reports every miss as "dlsym error", which is right for a symbol the
+     * runtime cannot work without and wrong for one it can: a program built by
+     * an editor older than a feature is correct, runs correctly, and used to
+     * announce itself with a burst of errors describing a healthy device as a
+     * broken one. Where absence is worth mentioning, the owning subsystem says
+     * so in its own words (see the located-globals warning below). */
     void *resolve(PluginManager *pm, const char *name, bool required)
     {
+        if (!required)
+        {
+            return plugin_manager_try_get_symbol(pm, name);
+        }
         void *sym = plugin_manager_get_symbol(pm, name);
-        if (!sym && required)
+        if (!sym)
         {
             log_error("[strucpp] required symbol '%s' missing from .so", name);
         }
