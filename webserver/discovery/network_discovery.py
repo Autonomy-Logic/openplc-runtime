@@ -9,7 +9,9 @@ The protocol is intentionally tiny and stateless:
 
     Request   : "OPENPLC_DISCOVER_V1"          (UTF-8, exact)
     Response  : JSON with {service, protocol_version, runtime_version,
-                           hostname, api_port}
+                           hostname, api_port} plus {project_name,
+                           project_timestamp} when a source project is
+                           stored on the device
 
 Only the magic string is accepted; anything else is dropped silently.
 Replies are unicast to the source address of the request, which is
@@ -26,6 +28,7 @@ import threading
 import time
 from typing import Optional
 
+from webserver import project_snapshot
 from webserver.logger import get_logger
 from webserver.version import RUNTIME_VERSION
 
@@ -136,6 +139,13 @@ class NetworkDiscoveryResponder:
                 ip: ts for ip, ts in self._last_seen.items() if ts >= cutoff
             }
 
+        # Name and timestamp of the stored source project, when there is one.
+        # This is what lets a client populate its "Retrieve Project from PLC"
+        # picker without logging in to every device on the LAN first. Absent
+        # keys mean no stored project, so there is no separate flag.
+        #
+        # Deliberately just these two: they are exactly what the picker shows.
+        # Everything else about the stored project needs authentication.
         payload = json.dumps(
             {
                 "service": "openplc-runtime",
@@ -143,6 +153,7 @@ class NetworkDiscoveryResponder:
                 "runtime_version": RUNTIME_VERSION,
                 "hostname": socket.gethostname(),
                 "api_port": API_PORT,
+                **project_snapshot.advertised_fields(),
             },
             separators=(",", ":"),
         ).encode("utf-8")

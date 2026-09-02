@@ -1,17 +1,27 @@
-from dataclasses import dataclass, field
-from enum import Enum, auto
+import glob
 import os
 import shutil
-import time
-import zipfile
 import subprocess
 import threading
-import glob
+import time
+import zipfile
+from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import Final
 
+from webserver import project_snapshot
+from webserver.logger import LogParser, get_logger
+from webserver.plugin_config_model import PluginConfig, PluginsConfiguration, PluginType
+from webserver.retain_config import (
+    RETAIN_CONF_PATH,
+    RetainConfigError,
+    read_retain_conf_file,
+    validate_flush_seconds,
+    validate_retain_path,
+    write_retain_conf_file,
+)
 from webserver.runtimemanager import RuntimeManager
-from webserver.logger import get_logger, LogParser
-from webserver.plugin_config_model import PluginsConfiguration, PluginConfig, PluginType
+from webserver.vpp_license_debug import derive_license_path, is_inside_root
 
 logger, _ = get_logger("runtime", use_buffer=True)
 
@@ -144,8 +154,14 @@ def safe_extract(zip_path, dest_dir, valid_files):
             out_path = os.path.join(dest_dir, filename)
             out_path = os.path.abspath(out_path)
 
-            # Ensure extraction stays inside destination
-            if not out_path.startswith(os.path.abspath(dest_dir)):
+            # Ensure extraction stays inside destination. Same containment rule
+            # as the VPP config copy below: a bare prefix check accepts a
+            # sibling sharing dest_dir as a string prefix (dest_dir
+            # "core/generated" vs. an entry resolving to "core/generatedX/..."),
+            # and it ignores symlinks entirely. analyze_zip() already rejects
+            # entries containing ".." before we get here, so this is defence in
+            # depth -- but it is the same bug class, so it gets the same fix.
+            if not is_inside_root(out_path, dest_dir):
                 # logger.warning("Skipping suspicious path: %s", filename)
                 continue
 
@@ -264,6 +280,69 @@ def _wait_for_plc_idle(runtime_manager: RuntimeManager, timeout_s: float) -> boo
     return False
 
 
+def validate_vpp_plugins_conf(conf_path: str, runtime_root: str, vpp_build_dir: str) -> tuple[bool, str]:
+    """Containment check for an upload-supplied ``vpp_plugins.conf``.
+
+    The ``path`` field of this file is what the C plugin loader passes straight
+    to ``dlopen`` (``core/src/drivers/plugin_driver.c``). It arrives verbatim
+    from the upload, and until this existed only ``config_path`` was checked --
+    so a forged conf could name ANY .so on the filesystem, including one the
+    attacker left there by an unrelated route, and verifying the plugin the
+    build produced would have proved nothing about the object actually loaded.
+
+    Two rules, and the whole file is refused if either is broken (rather than
+    dropping the offending line): a conf that tries to escape is not a conf we
+    want to partially honour, and leaving the rest installed would silently
+    load a subset of what the editor intended.
+
+    1. ``path`` must resolve inside the runtime root -- same
+       ``is_inside_root`` definition (symlink-resolving) every other write path
+       here uses.
+    2. ``path`` must resolve inside ``build/vpp/``. That is the only directory
+       compile.sh writes VPP artefacts into, and the only one whose contents
+       the compile-time seal covers, so anything outside it is by definition
+       unverified.
+
+    The C side repeats rule 1's spirit in ``parse_plugin_config_contained`` --
+    on purpose, so containment does not depend on Python alone.
+    """
+    plugins_conf = PluginsConfiguration.from_file(conf_path)
+    vpp_root = os.path.abspath(os.path.join(runtime_root, vpp_build_dir))
+
+    def against_root(candidate: str) -> str:
+        """Resolve a conf path the way the C loader will: relative entries are
+        relative to the runtime root (which is the loader's cwd). Resolving
+        against the process cwd instead would make the guard depend on where
+        the caller happened to be."""
+        return os.path.join(runtime_root, candidate)
+
+    for p in plugins_conf.plugins:
+        if not p.path:
+            return False, f"plugin '{p.name}' has an empty path"
+        if os.path.isabs(p.path):
+            # The C loader (plugin_config.c, require_contained=1) rejects EVERY
+            # absolute path; tolerating a contained absolute here produced a
+            # conf accepted by the upload and silently dropped at parse time --
+            # the VPP never loaded and nothing said why (review 2026-08-20,
+            # R5). The two guards must agree, and the editor only ever emits
+            # relative paths, so nothing legitimate breaks.
+            return False, (
+                f"plugin '{p.name}' path '{p.path}' is absolute -- plugin paths "
+                f"must be relative to the runtime root (./build/vpp/...)"
+            )
+        plugin_path = against_root(p.path)
+        if not is_inside_root(plugin_path, runtime_root):
+            return False, f"plugin '{p.name}' path '{p.path}' escapes the runtime root"
+        if not is_inside_root(plugin_path, vpp_root):
+            return False, (
+                f"plugin '{p.name}' path '{p.path}' is outside {vpp_build_dir}/ "
+                "(VPP plugins may only load objects built by this upload)"
+            )
+        if p.config_path and not is_inside_root(against_root(p.config_path), runtime_root):
+            return False, f"plugin '{p.name}' config_path '{p.config_path}' escapes the runtime root"
+    return True, ""
+
+
 def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
     """Apply or remove the VPP plugin configuration for this upload.
 
@@ -289,6 +368,19 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
     uploaded_conf = os.path.join(generated_dir, "vpp_plugins.conf")
 
     if os.path.exists(uploaded_conf):
+        runtime_root = os.path.abspath(".")
+
+        # Containment BEFORE the copy: once this file is in the runtime root the
+        # C loader will dlopen whatever `path` says, so an escaping entry has to
+        # be stopped while it is still just a file in core/generated/.
+        contained, reason = validate_vpp_plugins_conf(uploaded_conf, runtime_root, VPP_BUILD_DIR)
+        if not contained:
+            build_state.log(f"[ERROR] VPP: refusing vpp_plugins.conf from upload: {reason}\n")
+            if os.path.exists(VPP_CONF_DEST):
+                os.remove(VPP_CONF_DEST)
+                build_state.log("[INFO] VPP: removed previous vpp_plugins.conf\n")
+            return
+
         # Copy vpp_plugins.conf to runtime root
         shutil.copy2(uploaded_conf, VPP_CONF_DEST)
         build_state.log(f"[INFO] VPP: installed vpp_plugins.conf from upload\n")
@@ -300,7 +392,6 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
         # a separate destination.
         conf_dir = os.path.join(generated_dir, "conf")
         vpp_conf_plugins = PluginsConfiguration.from_file(VPP_CONF_DEST)
-        runtime_root = os.path.abspath(".")
         for p in vpp_conf_plugins.plugins:
             if not p.config_path:
                 continue
@@ -309,19 +400,131 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
                 build_state.log(f"[WARNING] VPP: conf/{p.name}.json not found in upload, skipping\n")
                 continue
             dest_config = os.path.normpath(p.config_path)
-            # Guard against path traversal in editor-generated vpp_plugins.conf
-            if not os.path.abspath(dest_config).startswith(runtime_root):
+            # Guard against path traversal in editor-generated vpp_plugins.conf.
+            # Shares one containment definition with the 0x49 write path (see
+            # is_inside_root): rejects a sibling that merely shares runtime_root
+            # as a string prefix, AND resolves symlinks, which a lexical
+            # abspath check does not -- a link out of the tree would otherwise
+            # let an innocent-looking relative path write outside the root.
+            if not is_inside_root(dest_config, runtime_root):
                 build_state.log(f"[WARNING] VPP: config_path '{p.config_path}' escapes runtime root, skipping\n")
                 continue
             os.makedirs(os.path.dirname(dest_config), exist_ok=True)
             shutil.copy2(src_config, dest_config)
             build_state.log(f"[INFO] VPP: copied {p.name}.json to {dest_config}\n")
+
+            # Deliver the optional device license blob alongside the config, at
+            # the sibling path the licensed plugin derives from its config path
+            # (derive_license_path, shared with vpp_license_debug.py's 0x49
+            # handler so both write the SAME file the .so reads). Present only
+            # for a licensed VPP whose device was activated; absent for free
+            # VPPs or demo devices. dest_config already passed the traversal
+            # guard above, so no need to re-check its .license sibling.
+            src_license = os.path.join(conf_dir, f"{p.name}.license")
+            if os.path.exists(src_license):
+                dest_license = derive_license_path(dest_config)
+                shutil.copy2(src_license, dest_license)
+                build_state.log(f"[INFO] VPP: copied {p.name}.license to {dest_license}\n")
     else:
         # No VPP in this upload — remove any stale vpp_plugins.conf so
         # the plugin loader does not attempt to load old VPP drivers.
         if os.path.exists(VPP_CONF_DEST):
             os.remove(VPP_CONF_DEST)
             build_state.log("[INFO] VPP: removed stale vpp_plugins.conf (no VPP in upload)\n")
+
+
+def apply_retain_conf(generated_dir: str = "core/generated") -> None:
+    """Apply or remove the persistent-storage settings for this upload.
+
+    Retain settings are owned by the PROJECT, not by the device: the editor
+    emits ``retain.conf`` from the project's Persistent Storage screen and the
+    upload carries it here, exactly as it carries ``vpp_plugins.conf``. This
+    function is the single authoritative gate, with the same two cases:
+
+    * **Upload includes retain.conf** → validate it and copy it to the runtime
+      root, where the PLC application reads it at the next program load.
+
+    * **Upload does not include retain.conf** → delete any existing copy from
+      the runtime root, so the built-in file store goes back to being switched
+      off. This is not tidiness: it is how a target whose VPP owns retention
+      turns the built-in store off. Such a VPP declares
+      ``hidesNativeScreens: ['persistent-storage']``, the editor emits no
+      retain.conf, and the built-in store then declines the role — leaving the
+      vendor's driver as the only store on the device.
+
+    Validation happens HERE rather than at first use. A path whose directory
+    does not exist, or a flush period outside the bounds the core accepts, would
+    otherwise fail on every flush for the life of the program with nothing but a
+    log line to show for it. Refusing it once, with a line in the build log the
+    user is already watching, is the difference between a mistake they can see
+    and one they cannot.
+
+    Note what this function does NOT do: it does not touch retained VALUES. The
+    store itself decides at program start whether what it holds belongs to the
+    program now running, by comparing the program MD5 it stored alongside the
+    bytes. Keeping that decision in the store is what makes baremetal and
+    runtime v4 behave identically — baremetal has no webserver to notice an
+    upload at all.
+    """
+    RETAIN_CONF_NAME = "retain.conf"
+    uploaded_conf = os.path.join(generated_dir, RETAIN_CONF_NAME)
+    dest = str(RETAIN_CONF_PATH)
+
+    if not os.path.exists(uploaded_conf):
+        if os.path.exists(dest):
+            os.remove(dest)
+            build_state.log(
+                "[INFO] Retain: removed stale retain.conf (persistent storage not "
+                "configured in this project)\n"
+            )
+        return
+
+    # Parse with the same reader the core's settings go through, so what is
+    # validated here is exactly what the core will read back.
+    cfg = read_retain_conf_file(uploaded_conf)
+
+    try:
+        if cfg["enabled"]:
+            # Both only meaningful when the store is on. A disabled stanza
+            # carrying a path that does not exist, or a flush period outside the
+            # bounds, is not worth refusing an upload over -- neither is read
+            # while enabled=0, and refusing would delete the device's existing
+            # config over a field nothing consults. That bites for real when a
+            # later release tightens MAX_FLUSH_SECONDS: every project still
+            # carrying the old value would have its whole retain.conf refused,
+            # including the ones that had storage switched off anyway.
+            validate_retain_path(cfg["path"])
+            validate_flush_seconds(cfg["flushSeconds"])
+    except RetainConfigError as e:
+        build_state.log(f"[ERROR] Retain: refusing retain.conf from upload: {e}\n")
+        # Leave no half-applied state: a refused stanza must not leave the
+        # PREVIOUS project's settings in force, because the user would then be
+        # looking at a device configured by a project they are no longer
+        # running.
+        if os.path.exists(dest):
+            os.remove(dest)
+            build_state.log("[INFO] Retain: removed previous retain.conf\n")
+        return
+
+    # WRITTEN, not copied — and that is load-bearing, not stylistic.
+    #
+    # The editor emits `path=` to mean "use this device's default": it does not
+    # know the device's filesystem layout and should not guess at one.
+    # `read_retain_conf_file` substitutes this device's default for that empty
+    # value, so writing the PARSED stanza is what materialises it. Copying the
+    # upload byte-for-byte would ship the empty value to the core, which treats
+    # enabled-with-no-path as a misconfiguration and leaves the store off — so
+    # "use the default" would silently become "no retention at all".
+    #
+    # It also means anyone reading retain.conf on the device sees the real
+    # location rather than a blank.
+    write_retain_conf_file(
+        dest, enabled=cfg["enabled"], path_value=cfg["path"], flush_seconds=cfg["flushSeconds"]
+    )
+    state = "on" if cfg["enabled"] else "off"
+    build_state.log(
+        f"[INFO] Retain: installed retain.conf from upload (persistent storage {state})\n"
+    )
 
 
 def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", clean: bool = False):
@@ -519,3 +722,21 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
         build_state.log(f"[ERROR] Compile orchestrator crashed: {e}\n")
         build_state.status = BuildStatus.FAILED
         build_state.exit_code = -1
+    finally:
+        # The stored project snapshot follows the program exactly. A snapshot
+        # staged by the upload becomes the stored one only once the build has
+        # actually produced a program; any other outcome discards it, and the
+        # upload already cleared whatever was stored before.
+        #
+        # In a `finally` so the outer crash guard above cannot leave a staged
+        # snapshot behind to be promoted by the NEXT build. Discarding is the
+        # honest end state either way: a failed build leaves the device with no
+        # program at all, because compile-clean.sh removes libplc_*.so before it
+        # has a replacement to move into place.
+        try:
+            if build_state.status == BuildStatus.SUCCESS:
+                project_snapshot.promote()
+            else:
+                project_snapshot.discard_staged()
+        except Exception as e:  # never let snapshot bookkeeping mask a build result
+            build_state.log(f"[WARNING] Project snapshot bookkeeping failed: {e}\n")

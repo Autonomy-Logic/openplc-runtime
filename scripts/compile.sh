@@ -109,9 +109,10 @@ make -j"$JOBS" -f scripts/Makefile.strucpp
 # into BUILD_PATH (next to new_libplc.so) so the runtime's plugin
 # loader picks it up under the same lookup rules as built-ins.
 #
-# Checksum cache: skip recompilation when the source hasn't changed
-# AND a previous build's .so is still present. Saves ~20-60 s per
-# upload on the slowest targets.
+# checksum.sha256 is a RECOMPILATION CACHE KEY: the editor writes it over the
+# files it copied, it travels inside the upload, and it is only ever compared
+# against a copy of itself saved by a previous build -- to decide whether the
+# plugin source changed since the last compile.
 # -----------------------------------------------------------------------
 VPP_PLUGIN_DIR="$GENERATED_DIR/vpp_plugin"
 VPP_CHECKSUM_FILE="$VPP_PLUGIN_DIR/checksum.sha256"
@@ -122,6 +123,36 @@ VPP_CHECKSUM_FILE="$VPP_PLUGIN_DIR/checksum.sha256"
 # without a vpp_plugin subtree present.
 VPP_OUTPUT_DIR="$BUILD_PATH/vpp"
 VPP_CACHED_CHECKSUM="$VPP_OUTPUT_DIR/checksum.sha256"
+# Seal the loader checks before dlopen (core/src/drivers/vpp_plugin_seal.c).
+VPP_OBJECT_SEAL="$VPP_OUTPUT_DIR/vpp_plugin.seal"
+
+# sha256 of a file, hex only. sha256sum (coreutils) on Linux targets, shasum on
+# hosts that ship the Perl tool instead. No tool means no verification, and a
+# security gate that cannot run must not be silently skipped -- so the caller
+# fails the build instead.
+sha256_hex() {
+    if command -v sha256sum > /dev/null 2>&1; then
+        sha256sum "$1" | awk '{ sub(/^\\/, "", $1); print $1; exit }'
+    elif command -v shasum > /dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{ sub(/^\\/, "", $1); print $1; exit }'
+    else
+        return 1
+    fi
+}
+
+# Every lib*_plugin.so on disk must hash to a line in the seal (review
+# 2026-08-20, R3). Decides whether a checksum cache hit may skip the
+# compile: objects the seal does not vouch for force a rebuild.
+vpp_object_seal_matches() {
+    [ -f "$VPP_OBJECT_SEAL" ] || return 1
+    local so so_hash
+    for so in "$VPP_OUTPUT_DIR"/lib*_plugin.so; do
+        [ -f "$so" ] || continue
+        so_hash=$(sha256_hex "$so") || return 1
+        grep -Fxq "$so_hash  $(basename "$so")" "$VPP_OBJECT_SEAL" || return 1
+    done
+    return 0
+}
 
 if [ -d "$VPP_PLUGIN_DIR" ] && [ -f "$VPP_PLUGIN_DIR/Makefile" ]; then
     NEEDS_COMPILE=1
@@ -130,8 +161,18 @@ if [ -d "$VPP_PLUGIN_DIR" ] && [ -f "$VPP_PLUGIN_DIR/Makefile" ]; then
     if [ -f "$VPP_CHECKSUM_FILE" ] && [ -f "$VPP_CACHED_CHECKSUM" ]; then
         if diff -q "$VPP_CHECKSUM_FILE" "$VPP_CACHED_CHECKSUM" > /dev/null 2>&1; then
             if ls "$VPP_OUTPUT_DIR"/lib*_plugin.so 1>/dev/null 2>&1; then
-                echo "[INFO] VPP plugin source unchanged (checksum match), skipping recompilation"
-                NEEDS_COMPILE=0
+                # A cache hit only stands when the SEAL vouches for the
+                # objects on disk (review 2026-08-20, R3): re-blessing
+                # whatever sits in build/vpp/ converted a detected tamper
+                # into a permanent pass on the next re-upload, and an
+                # upgraded runtime with no seal must REBUILD from the
+                # just-extracted tree, never bless unknown bytes.
+                if vpp_object_seal_matches; then
+                    echo "[INFO] VPP plugin source unchanged (checksum match), skipping recompilation"
+                    NEEDS_COMPILE=0
+                else
+                    echo "[INFO] Object seal missing or stale for cached .so -- recompiling from the uploaded tree"
+                fi
             fi
         fi
     fi
@@ -144,10 +185,33 @@ if [ -d "$VPP_PLUGIN_DIR" ] && [ -f "$VPP_PLUGIN_DIR/Makefile" ]; then
             OUTPUT_DIR="$(pwd)/$VPP_OUTPUT_DIR" \
             RUNTIME_ROOT="$(pwd)"
 
+        # Save the uploader's checksum file as the cache key for the next
+        # upload. Cache only -- see the header comment above: this is not, and
+        # never was, an integrity record.
         if [ -f "$VPP_CHECKSUM_FILE" ]; then
             cp "$VPP_CHECKSUM_FILE" "$VPP_CACHED_CHECKSUM"
         fi
         echo "[INFO] VPP plugin compiled successfully"
+    fi
+
+    # Record the sha256 of every .so this build produced, so the
+    # plugin loader can refuse an object swapped in AFTER the compile
+    # (core/src/drivers/vpp_plugin_seal.c, checked immediately before dlopen).
+    # ONLY when this run compiled (review 2026-08-20, R3): sealing on the
+    # cache-hit path blessed whatever bytes sat in build/vpp/; the upgrade-
+    # without-seal case is served by the forced recompile above.
+    if [ "$NEEDS_COMPILE" -eq 1 ]; then
+    : > "$VPP_OBJECT_SEAL"
+    for so in "$VPP_OUTPUT_DIR"/lib*_plugin.so; do
+        [ -f "$so" ] || continue
+        if ! so_hash=$(sha256_hex "$so"); then
+            echo "[ERROR] Cannot hash $so (no sha256sum/shasum on PATH)." >&2
+            rm -f "$VPP_OBJECT_SEAL"
+            exit 3
+        fi
+        printf '%s  %s\n' "$so_hash" "$(basename "$so")" >> "$VPP_OBJECT_SEAL"
+        echo "[INFO] Sealed $(basename "$so") (${so_hash:0:12}...)"
+    done
     fi
 else
     # No VPP plugin in this upload — clean up the entire VPP output dir

@@ -23,6 +23,7 @@
 #include "../plc_app/utils/utils.h"
 #include "plugin_config.h"
 #include "plugin_driver.h"
+#include "vpp_plugin_seal.h"
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -523,7 +524,10 @@ int plugin_driver_append_config(plugin_driver_t *driver, const char *config_file
     }
 
     plugin_config_t configs[MAX_PLUGINS];
-    int config_count = parse_plugin_config(config_file, configs, MAX_PLUGINS);
+    /* This config file comes from the user's upload (the editor writes it and
+     * webserver/plcapp_management.py copies it verbatim), so its paths are
+     * parsed under containment: no "..", no absolute paths. */
+    int config_count = parse_plugin_config_contained(config_file, configs, MAX_PLUGINS);
     if (config_count < 0)
     {
         return -1;
@@ -1341,6 +1345,22 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
         return -1;
     }
 
+    /* Last metre before execution: a VPP plugin .so must match the hash
+     * scripts/compile.sh sealed when it built that .so on this device. The
+     * check binds what the loader executes to what this runtime's compile
+     * step produced, so an object dropped into build/vpp/ after the compile
+     * is refused.
+     *
+     * Built-in plugins from plugins.conf are produced by the runtime's own
+     * CMake build and are not sealed -- vpp_plugin_seal_required() scopes the
+     * check to objects that resolve inside build/vpp/. */
+    if (vpp_plugin_seal_required(plugin->config.path) &&
+        vpp_plugin_seal_verify(plugin->config.path) != 0)
+    {
+        free(native_bundle);
+        return -1;
+    }
+
     // Load the shared library
     void *handle = dlopen(plugin->config.path, RTLD_LOCAL | RTLD_NOW);
     if (!handle)
@@ -1425,6 +1445,14 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     // get_stats is fully optional — plugins that don't publish statistics
     // simply don't export it. No warning.
 
+    // Retain store (NODE-94), fully optional. A plugin exporting both becomes
+    // a candidate for this device's retain store; see
+    // plugin_driver_find_retain_store. No warning when absent — most plugins
+    // have nothing to do with retention.
+    native_bundle->retain_save  = (plugin_retain_save_func_t)dlsym(handle, "retain_save");
+    native_bundle->retain_load  = (plugin_retain_load_func_t)dlsym(handle, "retain_load");
+    native_bundle->retain_flush = (plugin_retain_flush_func_t)dlsym(handle, "retain_flush");
+
     // Store the native bundle and handle in the plugin instance
     plugin->native_plugin = native_bundle;
 
@@ -1452,6 +1480,80 @@ void python_plugin_cycle(plugin_instance_t *plugin)
 // Call cycle_start for all active native plugins that have registered the hook
 // This should be called at the beginning of each PLC scan cycle, before PLC logic execution
 // Plugins opt-in by implementing cycle_start(); opt-out by not implementing it (NULL pointer)
+// ---------------------------------------------------------------------------
+// Retain store
+// ---------------------------------------------------------------------------
+
+static bool plugin_provides_retain_store(const plugin_instance_t *p)
+{
+    if (!p) return false;
+
+    // A DISABLED plugin is not a store, even though its symbols resolved.
+    //
+    // Loading resolves symbols for every plugin in plugins.conf; only starting
+    // is gated on `enabled`. Without this check a disabled plugin is still
+    // picked as the store, so retain reports itself active, hands it the blob
+    // every scan, and gets nothing back on the next boot — the values are
+    // simply gone, with a log line at start saying retain is configured and
+    // working. Found on hardware: an upload rewrote plugins.conf, disabled the
+    // storage plugin, and retain went on claiming to work.
+    if (!p->config.enabled) return false;
+
+    // BOTH halves required. A store that can save and not load is worse than
+    // none: it would accept values every scan and silently never give them
+    // back, which looks like working retention right up until the reboot that
+    // matters.
+    return p->native_plugin && p->native_plugin->retain_save && p->native_plugin->retain_load;
+}
+
+plugin_instance_t *plugin_driver_find_retain_store(plugin_driver_t *driver)
+{
+    if (!driver) return NULL;
+
+    plugin_instance_t *chosen = NULL;
+    for (int i = 0; i < driver->plugin_count; i++)
+    {
+        plugin_instance_t *p = &driver->plugins[i];
+        if (p->degraded || !plugin_provides_retain_store(p)) continue;
+
+        if (!chosen)
+        {
+            chosen = p;
+            continue;
+        }
+        // Two stores would both appear to work and disagree on the next boot,
+        // which is a worse failure than refusing the second. First wins, and
+        // the rest are named so the misconfiguration is visible.
+        log_warn("Retain: plugin '%s' also provides retain storage; ignoring it — "
+                 "'%s' was found first",
+                 p->config.name, chosen->config.name);
+    }
+    return chosen;
+}
+
+int plugin_driver_retain_save(plugin_instance_t *store, const uint8_t *blob, uint16_t len)
+{
+    if (!plugin_provides_retain_store(store)) return -1;
+    return store->native_plugin->retain_save(blob, len);
+}
+
+int plugin_driver_retain_load(plugin_instance_t *store, const char *program_md5, uint16_t md5_len,
+                              uint8_t *out, uint16_t cap, uint16_t *out_len)
+{
+    if (out_len) *out_len = 0;
+    if (!plugin_provides_retain_store(store)) return -1;
+    return store->native_plugin->retain_load(program_md5, md5_len, out, cap, out_len);
+}
+
+int plugin_driver_retain_flush(plugin_instance_t *store)
+{
+    // Optional third hook. A plugin without it is assumed to commit inside
+    // save(), which is where durability belongs anyway — so "nothing to do" is
+    // success, not a failure to report on every stop.
+    if (!store || !store->native_plugin || !store->native_plugin->retain_flush) return 0;
+    return store->native_plugin->retain_flush();
+}
+
 void plugin_driver_cycle_start(plugin_driver_t *driver)
 {
     if (!driver || driver->plugin_count == 0)
