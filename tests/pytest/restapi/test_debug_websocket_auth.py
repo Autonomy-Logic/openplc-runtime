@@ -12,10 +12,18 @@ say so in executable form.
 
 Three properties are pinned here:
 
-1. **Connect requires a valid token** -- the deleted-guard case.
-2. **Every COMMAND is re-authenticated**, not just the connect. An already-open
-   socket must stop working once its token is revoked or expires; the connect-time
-   verdict is not inherited for the life of the connection.
+1. **Connect requires a valid token** -- the deleted-guard case. Expiry is
+   enforced in full HERE, so an expired token can never open a session.
+2. **Every COMMAND is re-checked**, not just the connect, against the two things
+   that can change under an open socket: the token being REVOKED by ``/logout``,
+   and the ACCOUNT behind it being deleted. The connect-time verdict is not
+   inherited for the life of the connection.
+2b. **Plain expiry does NOT refuse a command.** A debug session is a long-lived
+   connection authenticated at the handshake, and refusing on expiry killed
+   every client without a token-renewal path (Editor v4.2.11 and older) about
+   15 minutes in. This is pinned as deliberately as (2) is, because the two
+   look identical from the outside and the difference is the whole reason
+   older editors can debug at all.
 3. **The license FCs require the admin role.** ``@jwt_required()`` never looks at
    the role, so a plain ``user`` account could read the anchor of any board and
    overwrite its license.
@@ -35,9 +43,13 @@ flask_socketio = pytest.importorskip(
     "flask_socketio", reason="flask_socketio not installed (no venv)"
 )
 
+from datetime import timedelta  # noqa: E402
+
 from conftest import auth, create_user, token_for  # noqa: E402
+from flask_jwt_extended import create_access_token, decode_token  # noqa: E402
 
 from webserver import debug_websocket as dws  # noqa: E402
+from webserver import restapi  # noqa: E402
 from webserver import vpp_license_debug as lic  # noqa: E402
 
 _NAMESPACE = "/api/debug"
@@ -99,6 +111,20 @@ def _command(client, command_hex):
     return received[-1]["args"][0]
 
 
+def _expired_token(app, token):
+    """The same subject and the same signing key, but already past ``exp``.
+
+    Minted from the live token's own ``sub`` so it is indistinguishable from a
+    token the client held a minute ago -- which is the case under test. Reaching
+    for a negative ``expires_delta`` rather than sleeping keeps the test instant
+    and independent of the configured lifetime.
+    """
+    with app.app_context():
+        identity = decode_token(token)["sub"]
+        user = restapi.User.query.filter_by(id=identity).one()
+        return create_access_token(identity=user, expires_delta=timedelta(seconds=-30))
+
+
 def _user_token(client_http, admin_token, username="tech", password="tech-pass"):
     resp = create_user(client_http, username, password, token=admin_token, role="user")
     assert resp.status_code == 201, resp.get_json()
@@ -136,9 +162,8 @@ def test_a_revoked_token_stops_working_on_an_already_open_socket(
 ):
     """/logout must actually end the session's access to the anchor.
 
-    The blacklist is only consulted by verify_jwt_in_request, so a socket that
-    authenticated once and never again kept serving 0x48 after logout. Expiry
-    goes through the very same call.
+    The blacklist is only consulted during verification, so a socket that
+    authenticated once and never again kept serving 0x48 after logout.
     """
     ws = _connect(socketio, app, token=admin_token)
     assert _command(ws, "48")["success"] is True
@@ -164,6 +189,83 @@ def test_a_command_on_a_session_with_no_captured_token_is_refused(
     refused = _command(ws, "48")
     assert refused["success"] is False
     assert refused["error"] == "Unauthorized"
+
+
+def test_an_expired_token_keeps_an_open_socket_working(socketio, app, admin_token, anchor):
+    """Expiry is not revocation, and must not end a live debug session.
+
+    A debug session is a long-lived connection authenticated at the handshake.
+    The access-token lifetime bounds how long a bearer token may be presented to
+    obtain NEW access -- which the connect handler enforces (see the test below)
+    -- not how long an already-authenticated connection may serve the party that
+    opened it.
+
+    Runtime v4.2.0 refused commands on expiry. With the flask-jwt-extended
+    default of 15 minutes and no client-side renewal in Editor v4.2.11 or older,
+    every debug session in the field started dying a quarter of an hour in with
+    a raw `token_expired` string and no way back. This test is what stops that
+    coming back.
+    """
+    ws = _connect(socketio, app, token=admin_token)
+    assert _command(ws, "48")["success"] is True
+
+    # Age the session's credential past its expiry, in place. Same identity,
+    # same signature, same blacklist state -- only `exp` differs.
+    dws._session_tokens[next(iter(dws._session_tokens))] = _expired_token(app, admin_token)
+
+    still_served = _command(ws, "48")
+    assert still_served["success"] is True, still_served
+    assert bytes(int(p, 16) for p in still_served["data"].split()[3:]) == anchor
+
+    # And an ordinary debug command, not just the license FCs.
+    assert _command(ws, "41 00 00")["success"] is True
+
+
+def test_connect_with_an_expired_token_is_refused(socketio, app, admin_token):
+    """The other half of the contract: expiry is still absolute at the handshake.
+
+    Relaxing expiry for commands would be a real weakening if it also let an
+    expired token OPEN a session, because then the lifetime would bound nothing
+    at all.
+    """
+    ws = _connect(socketio, app, token=_expired_token(app, admin_token))
+    assert not ws.is_connected(_NAMESPACE)
+
+
+def test_an_expired_token_cannot_be_installed_by_reauth(socketio, app, admin_token):
+    """reauth may replace a credential, never downgrade one."""
+    ws = _connect(socketio, app, token=admin_token)
+    ws.get_received(_NAMESPACE)
+
+    ws.emit("reauth", {"token": _expired_token(app, admin_token)}, namespace=_NAMESPACE)
+    result = ws.get_received(_NAMESPACE)[-1]["args"][0]
+
+    assert result == {"success": False, "error": "Unauthorized"}
+
+
+def test_a_deleted_account_stops_working_on_an_already_open_socket(
+    socketio, app, client, admin_token, anchor
+):
+    """The identity half of the re-check.
+
+    Deleting an account has to end its open debug sessions too -- the token is
+    unexpired and unrevoked, so nothing else would notice.
+    """
+    user_token = _user_token(client, admin_token)
+    ws = _connect(socketio, app, token=user_token)
+    assert _command(ws, "48")["success"] is True
+
+    with app.app_context():
+        user = restapi.User.query.filter_by(username="tech").one()
+        user_id = user.id
+    assert (
+        client.delete(f"/api/delete-user/{user_id}", headers=auth(admin_token)).status_code == 200
+    )
+
+    refused = _command(ws, "48")
+    assert refused["success"] is False
+    assert refused["error"] == "Unauthorized"
+    assert "data" not in refused
 
 
 def test_disconnect_drops_the_captured_token(socketio, app, admin_token):
