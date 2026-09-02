@@ -25,8 +25,9 @@
  *
  * CONFIGURATION
  * -------------
- * Read once, at program load, from a small key=value file the webserver owns
- * (`./retain.conf` beside `plugins.conf`):
+ * Read once, at program load, from a small key=value file that arrives with the
+ * program upload (`./retain.conf` beside `plugins.conf`) — the editor emits it
+ * from the project's Persistent Storage settings and the upload installs it:
  *
  *     enabled=1
  *     path=/var/lib/openplc-runtime/retain.bin
@@ -50,9 +51,9 @@ extern "C" {
 /**
  * @brief Read `retain.conf` and start the flush thread if enabled.
  *
- * Safe to call repeatedly; a second call re-reads the file so an operator's
- * change takes effect on the next PLC start without a daemon restart.
- * Returns true when the store is enabled and usable.
+ * Safe to call repeatedly; a second call re-reads the file, so settings that
+ * arrived with a program upload take effect on the next PLC start without a
+ * daemon restart. Returns true when the store is enabled and usable.
  */
 bool plc_retain_file_store_start(const char *config_path);
 
@@ -65,11 +66,19 @@ bool plc_retain_file_store_active(void);
 /** @brief The configured path, for logging. Empty when disabled. */
 const char *plc_retain_file_store_path(void);
 
-/* The three hooks, shaped exactly like the plugin ones so plc_retain.cpp can
- * route to either without caring which it got. 0 on success. */
+/* The three hooks, shaped exactly like the plugin ones (plugin_driver.h) so
+ * plc_retain.cpp routes to either through one uniform driver record and never
+ * learns which kind of store it got. 0 on success.
+ *
+ * `load` is handed the running program's identity and decides for itself
+ * whether the bytes on disk still belong to it — a file labelled with a
+ * different program is removed and reported empty. See the plugin contract in
+ * plugin_driver.h; this store is one implementation of it, not a special case
+ * beside it. */
 int plc_retain_file_store_save(const uint8_t *blob, uint16_t len);
-int plc_retain_file_store_load(uint8_t *out, uint16_t cap, uint16_t *out_len);
-int plc_retain_file_store_clear(void);
+int plc_retain_file_store_load(const char *program_md5, uint16_t md5_len, uint8_t *out,
+                               uint16_t cap, uint16_t *out_len);
+int plc_retain_file_store_flush(void);
 
 #ifdef __cplusplus
 }

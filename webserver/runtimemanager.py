@@ -337,62 +337,6 @@ class RuntimeManager:
             logger.error("Failed to stop PLC runtime (unexpected): %s", e)
             return "STOP:ERROR\n"
 
-    def clear_retained(self):
-        """
-        Discard the runtime's stored retained values.
-
-        Called on program upload. CODESYS clears retained memory on download,
-        and a new program's retained values have no business surviving into it
-        — the layout hash would refuse a genuinely different program, but two
-        programs that happen to share a retain layout would otherwise inherit
-        each other's values silently.
-
-        Failure is logged and swallowed: the upload itself is what matters, and
-        a runtime that is not currently reachable has nothing stored that this
-        program will read anyway.
-        """
-        try:
-            return self.runtime_socket.send_and_receive("RETAIN:CLEAR\n")
-        except (OSError, socket.error) as e:
-            logger.warning("Could not clear retained values: %s", e)
-            return "RETAIN:ERROR\n"
-        except Exception as e:
-            logger.warning("Could not clear retained values (unexpected): %s", e)
-            return "RETAIN:ERROR\n"
-
-    def retain_status(self):
-        """Ask the core which backend is actually holding the retained bytes.
-
-        Not the same question as what ``retain.conf`` says. A VPP plugin
-        overrides the built-in file store, so a device can have the file store
-        switched on in settings while a plugin does the work — and the
-        Persistent Storage screen has to be able to say so rather than report
-        a file that will never grow.
-
-        Returns ``{"active", "backend", "detail"}``; ``backend`` is one of
-        ``none`` / ``plugin`` / ``file``. A runtime that is not reachable, or
-        one too old to answer, reports ``unknown`` rather than guessing.
-        """
-        unknown = {"active": False, "backend": "unknown", "detail": ""}
-        try:
-            reply = self.runtime_socket.send_and_receive("RETAIN:STATUS\n")
-        except (OSError, socket.error) as e:
-            logger.warning("Could not read retain status: %s", e)
-            return unknown
-        except Exception as e:
-            logger.warning("Could not read retain status (unexpected): %s", e)
-            return unknown
-
-        parts = (reply or "").strip().split()
-        # "RETAIN:STATUS <active|inactive> <backend> [detail]"
-        if len(parts) < 3 or parts[0] != "RETAIN:STATUS":
-            return unknown
-        return {
-            "active": parts[1] == "active",
-            "backend": parts[2],
-            "detail": parts[3] if len(parts) > 3 else "",
-        }
-
     def status_plc(self):
         """
         Send STATUS command
