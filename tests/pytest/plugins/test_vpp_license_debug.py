@@ -572,3 +572,56 @@ def test_resolve_license_path_returns_none_for_a_prefix_sibling(tmp_path):
 
     assert lic.resolve_license_path(escaping, str(root)) is None
     assert lic.resolve_license_path(str(root / "plugin.json"), str(root)) == str(root / "plugin.license")
+
+
+def test_resolve_license_path_accepts_the_persistent_dir(tmp_path, monkeypatch):
+    """The widened guard accepts config.VPP_DATA_DIR as a SECOND root -- the
+    location apply_vpp_plugin_conf relocates configs to so a license survives a
+    runtime update -- while still refusing anything outside both roots."""
+    persist = tmp_path / "data" / "vpp"
+    persist.mkdir(parents=True)
+    monkeypatch.setattr(lic.config, "VPP_DATA_DIR", persist)
+    root = tmp_path / "runtime"
+    root.mkdir()
+
+    # A config_path under the persistent dir resolves, even though it is NOT
+    # under the runtime root passed in.
+    assert lic.resolve_license_path(str(persist / "rpi.json"), str(root)) == str(persist / "rpi.license")
+    # Still fails closed for a path outside BOTH roots.
+    assert lic.resolve_license_path(str(tmp_path / "elsewhere" / "x.json"), str(root)) is None
+
+
+def test_write_then_read_roundtrip_in_persistent_dir(tmp_path, monkeypatch):
+    """0x49/0x4A round-trip when config_path points at the persistent dir (as it
+    does after apply relocates it). The .license lands OUTSIDE the runtime cwd,
+    which is exactly what lets it survive a build/ wipe on the next update."""
+    persist = tmp_path / "data" / "vpp"
+    persist.mkdir(parents=True)
+    monkeypatch.setattr(lic.config, "VPP_DATA_DIR", persist)
+
+    cwd = tmp_path / "runtime"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)  # cwd != persist on purpose
+    (cwd / "vpp_plugins.conf").write_text("dummy\n")
+    config_path = str(persist / "rpi_gpio.json")
+
+    class _P:
+        name = "rpi_gpio"
+
+        def __init__(self, cp):
+            self.config_path = cp
+
+    class _Conf:
+        plugins = [_P(config_path)]
+
+    monkeypatch.setattr(lic.PluginsConfiguration, "from_file", classmethod(lambda cls, _p: _Conf()))
+
+    blob = _golden_blob()
+    assert lic.handle_license_command(_hex(bytes([0x49, 0x00, 0x62]) + blob)) == "49 7E"
+    # Landed in the persistent dir, not under cwd/build/vpp.
+    assert os.path.exists(persist / "rpi_gpio.license")
+    assert not os.path.exists(cwd / "build" / "vpp" / "rpi_gpio.license")
+
+    read = lic.handle_license_command("4A")
+    assert read.startswith("4A 7E 00 62")
+    assert bytes(int(p, 16) for p in read.split()[4:]) == blob
