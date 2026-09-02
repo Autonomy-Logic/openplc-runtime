@@ -28,8 +28,15 @@
 #include "debug_dispatch.hpp"
 #include "iec_located.hpp"
 #include "iec_std_lib.hpp"   // ConfigurationInstance + __CURRENT_TIME_NS
-#include "iec_retain.hpp"    // retain blob format + pack/unpack
 #include "generated.hpp"
+
+// Retain marshalling is conditional on the STruC++ that built this upload —
+// see the block at the bottom of this file, and retain_probe.cpp for how the
+// build decides. The include lives behind the same gate so a header set that
+// predates the retain API is never even asked for it.
+#ifdef STRUCPP_SHIM_HAS_RETAIN
+#include "iec_retain.hpp"    // retain blob format + pack/unpack
+#endif
 
 #include <cstddef>
 #include <cstdint>
@@ -145,6 +152,30 @@ extern "C" void strucpp_set_current_time(int64_t ns) {
 // ---------------------------------------------------------------------------
 // Retain marshalling.
 //
+// GATED ON THE UPLOAD'S STruC++ VERSION. `strucpp::retain` and
+// `strucpp::debug::retain_layout_hash` arrived in STruC++ v0.6.5, and this file
+// is compiled against the runtime headers the EDITOR shipped inside
+// program.zip — which on every OpenPLC Editor released to date are older than
+// that. Compiling this block unconditionally made an older editor's upload fail
+// to build (runtime v4.2.0), so scripts/Makefile.strucpp probes the header set
+// per upload and defines STRUCPP_SHIM_HAS_RETAIN only when the API is there.
+//
+// When it is not, these four exports are simply absent from the .so. That is a
+// state the runtime already handles rather than a degraded one to apologise
+// for: image_tables.cpp resolves all four as OPTIONAL symbols, and
+// plc_retain_init() stands the store down and says so in the log. Retained
+// variables then behave as NON_RETAIN, exactly as they did before these exports
+// existed.
+//
+// Anything added here that touches strucpp::retain or retain_layout_hash MUST
+// stay inside this #ifdef and be mirrored into retain_probe.cpp — a probe that
+// checks less than the shim uses would pass for a header set that cannot
+// actually build. Tests pin both halves
+// (tests/pytest/compile/test_retain_capability_probe.py).
+// ---------------------------------------------------------------------------
+#ifdef STRUCPP_SHIM_HAS_RETAIN
+
+// ---------------------------------------------------------------------------
 // The WALK lives here, inside the .so, because that is where the debug tables
 // and `handle_read` / `handle_write` are. The runtime is built once and loads
 // many .so files, so it cannot reach `strucpp::retain` by mangled name — and
@@ -200,3 +231,5 @@ extern "C" uint8_t strucpp_retain_unpack(
     return static_cast<uint8_t>(
         strucpp::retain::unpack(blob, len, write_leaf, retain_size_leaf));
 }
+
+#endif // STRUCPP_SHIM_HAS_RETAIN

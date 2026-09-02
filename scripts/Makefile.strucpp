@@ -19,6 +19,7 @@ GENERATED_DIR := core/generated
 RUNTIME_INC   := $(GENERATED_DIR)/strucpp_runtime/include
 PYTHON_INC    := core/src/plc_app/include
 RUNTIME_SHIM  := core/strucpp_runtime/runtime_v4_entry.cpp
+RETAIN_PROBE  := core/strucpp_runtime/retain_probe.cpp
 PYTHON_LOADER := core/src/plc_app/python_loader.c
 BUILD_DIR     := build
 
@@ -28,6 +29,11 @@ BUILD_DIR     := build
 CCACHE := $(shell command -v ccache 2>/dev/null)
 CXX    := $(if $(CCACHE),$(CCACHE) g++,g++)
 CC     := $(if $(CCACHE),$(CCACHE) gcc,gcc)
+
+# Raw compiler for the capability probe below. Deliberately NOT $(CXX):
+# ccache has nothing to cache for -fsyntax-only (no object is produced) and
+# would only add a layer between us and the exit status we are reading.
+CXX_BIN := g++
 
 # -O1 (not -O2): generated.cpp is mostly per-element IECVar assignments
 # and generated_debug.cpp is mostly constexpr address tables. -O2's
@@ -85,6 +91,48 @@ CXXFLAGS := -std=c++17 -O1 -pipe -fPIC -Wall -DSTRUCPP_THREADED -fno-gnu-unique 
 # any Python POU pay nothing; the header is declarations only.
 GENERATED_CXXFLAGS := $(CXXFLAGS) -include iec_python.h
 
+# ---------------------------------------------------------------------------
+# Retain capability probe.
+#
+# The shim (runtime_v4_entry.cpp) is the ONE runtime source file compiled
+# against headers the EDITOR shipped inside program.zip, so its dependencies
+# are only as new as the STruC++ the uploading editor was built with. Its
+# retain exports need `strucpp::retain` and `strucpp::debug::retain_layout_hash`,
+# which landed in STruC++ v0.6.5 -- newer than the STruC++ pinned by every
+# OpenPLC Editor released so far. Compiled unconditionally they turn any older
+# editor's upload into a build failure, which is what shipped in runtime v4.2.0.
+#
+# So ask, per upload, whether these headers can supply the API, and define
+# STRUCPP_SHIM_HAS_RETAIN only when they can. The shim compiles its retain block
+# out otherwise, the four strucpp_retain_* exports are simply absent from the
+# .so, and the runtime lands on the path it already implements for this exact
+# case: image_tables.cpp resolves them as OPTIONAL symbols and
+# plc_retain_init() stands the store down when they are missing.
+#
+# The probe is a compile, not a grep, because "does this expression compile
+# against these headers" is the actual question -- see retain_probe.cpp for why
+# a name-based check is not equivalent here.
+#
+# The wildcard guard keeps `make clean` (and a parse against a not-yet-extracted
+# tree) from invoking the compiler at all. A missing header set means legacy,
+# which is the safe verdict: it costs retain, never the build.
+#
+# $(strip) is load-bearing, not tidiness: GNU make's $(if) counts a lone space
+# as a non-empty condition, and the line continuations below each leave one
+# behind. Without it the verdict for a legacy header set is " " rather than
+# empty, the gate turns ON for exactly the uploads it exists to protect, and the
+# original build failure comes straight back.
+PROBE_CXXFLAGS := -std=c++17 -DSTRUCPP_THREADED \
+                  -I $(GENERATED_DIR) -I $(RUNTIME_INC) -I $(PYTHON_INC)
+SHIM_HAS_RETAIN := $(strip $(if $(wildcard $(RUNTIME_INC)/iec_retain.hpp),\
+                     $(shell $(CXX_BIN) $(PROBE_CXXFLAGS) -fsyntax-only $(RETAIN_PROBE) \
+                             > /dev/null 2>&1 && echo 1),))
+
+# The shim's flags are the common set plus the probe's verdict. Nothing else in
+# the build sees this define: the generated TUs come from the same STruC++ that
+# the probe just measured, so they are already internally consistent.
+SHIM_CXXFLAGS := $(CXXFLAGS) $(if $(SHIM_HAS_RETAIN),-DSTRUCPP_SHIM_HAS_RETAIN,)
+
 # Discover every .cpp emitted into core/generated/. STruC++ splits
 # across configuration.cpp + one pou_<NAME>.cpp per POU, but this
 # Makefile doesn't care — wildcard adapts.
@@ -140,9 +188,20 @@ $(BUILD_DIR)/%.o: $(GENERATED_DIR)/%.cpp | $(BUILD_DIR)
 # the shim has compiled at least once, so these explicit deps guarantee a
 # rebuild on the very first build after the headers change too -- without them,
 # a stale shim object survives and reports the previous program's var count.
+#
+# Those same two prerequisites also cover the retain probe's verdict changing
+# between uploads (a device whose editor was upgraded past STruC++ v0.6.5):
+# every upload rewrites defines.h, so the shim recompiles and picks up the new
+# SHIM_CXXFLAGS rather than keeping an object built under the old verdict.
 $(SHIM_OBJ): $(RUNTIME_SHIM) $(GENERATED_DIR)/generated.hpp $(GENERATED_DIR)/defines.h | $(BUILD_DIR)
 	@echo "[INFO] Compiling runtime_v4_entry.cpp..."
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+ifeq ($(SHIM_HAS_RETAIN),)
+	@echo "[INFO] RETAIN: this program's STruC++ runtime headers predate retain support"
+	@echo "[INFO] RETAIN: (added in STruC++ v0.6.5 / OpenPLC Editor v4.2.12). The program"
+	@echo "[INFO] RETAIN: builds and runs normally, but RETAIN variables will start at"
+	@echo "[INFO] RETAIN: their initial values on every start. Update the editor to keep them."
+endif
+	$(CXX) $(SHIM_CXXFLAGS) -c $< -o $@
 
 # Python loader (C, not C++). Compiled with the runtime tree's local
 # include path so it sees iec_python.h alongside its own headers.
