@@ -248,11 +248,13 @@ services:
       - TZ=America/New_York
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-k", "-f", "https://localhost:8443/api/ping"]
+      # /api/version, not /api/ping: ping is behind @jwt_required(), so a
+      # healthcheck against it always gets a 401 and `curl -f` always fails.
+      test: ["CMD", "curl", "-k", "-f", "https://localhost:8443/api/version"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 90s
 
 volumes:
   openplc-runtime-data:
@@ -494,8 +496,11 @@ docker port openplc-runtime
 
 **Test connectivity:**
 ```bash
-curl -k https://localhost:8443/api/ping
+curl -k https://localhost:8443/api/version
 ```
+
+`/api/version` is unauthenticated; `/api/ping` requires a token and will
+answer `401` even on a perfectly healthy runtime.
 
 ### Real-Time Performance Issues
 
@@ -607,7 +612,7 @@ jobs:
       - uses: actions/checkout@v2
       - name: Test API
         run: |
-          curl -k https://localhost:8443/api/ping
+          curl -k https://localhost:8443/api/version
 ```
 
 ## Related Documentation

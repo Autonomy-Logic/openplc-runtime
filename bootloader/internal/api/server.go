@@ -28,6 +28,7 @@ import (
 
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimeauth"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/supervisor"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/updater"
 )
 
 // DefaultPort is the bootloader's control port. 8445 keeps to the odd numbers
@@ -51,6 +52,14 @@ type LogReader interface {
 	ContainerLogs(ctx context.Context, name string, tail int) (string, error)
 }
 
+// Updater changes which runtime version the device runs. Start returns as
+// soon as the work is under way; a pull can run for many minutes on a plant
+// link, so the caller polls Progress rather than holding a request open.
+type Updater interface {
+	Start(ctx context.Context, targetVersion string) error
+	Progress() updater.Progress
+}
+
 // Authenticator resolves credentials against the runtime's account set.
 type Authenticator interface {
 	Authenticate(ctx context.Context, username, password, pepper string) (*runtimeauth.User, error)
@@ -70,6 +79,7 @@ type Config struct {
 	Users          Authenticator
 	Supervisor     Supervisor
 	Logs           LogReader
+	Updater        Updater
 	Log            *slog.Logger
 }
 
@@ -125,6 +135,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/bootloader/status", s.authenticated(s.handleStatus))
 	mux.HandleFunc("GET /api/bootloader/logs", s.authenticated(s.handleLogs))
 	mux.HandleFunc("POST /api/bootloader/restart", s.authenticated(s.handleRestart))
+	mux.HandleFunc("POST /api/bootloader/update", s.authenticated(s.handleUpdate))
+	mux.HandleFunc("GET /api/bootloader/update", s.authenticated(s.handleUpdateProgress))
 }
 
 // ListenAndServe blocks until ctx is cancelled or the listener fails.
@@ -360,6 +372,49 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		"state":  status.State,
 		"reason": status.Reason,
 	})
+}
+
+// updateRequest asks for a specific version. Upgrade and downgrade are the
+// same request: there is no separate direction, because there is no version
+// floor and nothing about the mechanism cares which way the number moves.
+type updateRequest struct {
+	Version string `json:"version"`
+}
+
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	var body updateRequest
+	if err := decodeJSON(w, r, &body, 4*1024); err != nil {
+		return
+	}
+
+	// No PLC-stopped gate: an authenticated request is sufficient, whether
+	// the PLC is running or not. The runtime flushes retained variables on
+	// SIGTERM and the stop grace period is sized for it.
+	if err := s.cfg.Updater.Start(r.Context(), body.Version); err != nil {
+		if errors.Is(err, updater.ErrInProgress) {
+			// 409, with the current progress attached so a second editor can
+			// simply follow along instead of guessing.
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":    err.Error(),
+				"progress": s.cfg.Updater.Progress(),
+			})
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	s.cfg.Log.Info("update requested", "version", body.Version)
+	// 202: accepted and running, not finished. The client polls GET on the
+	// same path.
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"accepted": true,
+		"progress": s.cfg.Updater.Progress(),
+	})
+}
+
+func (s *Server) handleUpdateProgress(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.cfg.Updater.Progress())
 }
 
 // --- helpers -------------------------------------------------------------

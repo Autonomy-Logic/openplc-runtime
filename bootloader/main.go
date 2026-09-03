@@ -38,6 +38,7 @@ import (
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimeauth"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimespec"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/supervisor"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/updater"
 )
 
 // version is stamped at build time via -ldflags. The bootloader has its own
@@ -132,6 +133,15 @@ func run(log *slog.Logger, cfg runConfig) error {
 		defer users.Close()
 	}
 
+	upd := updater.New(updater.Config{
+		Docker:     docker,
+		Supervisor: sup,
+		Spec:       spec,
+		SpecPath:   specPath,
+		StateDir:   cfg.stateDir,
+		Log:        log.With("component", "updater"),
+	})
+
 	server, err := api.New(api.Config{
 		Port:           cfg.port,
 		StateDir:       cfg.stateDir,
@@ -141,6 +151,7 @@ func run(log *slog.Logger, cfg runConfig) error {
 		Users:          users,
 		Supervisor:     sup,
 		Logs:           docker,
+		Updater:        upd,
 		Log:            log.With("component", "api"),
 	})
 	if err != nil {

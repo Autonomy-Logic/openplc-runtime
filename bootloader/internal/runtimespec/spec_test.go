@@ -299,3 +299,55 @@ func TestSaveLeavesNoTempFileBehind(t *testing.T) {
 		}
 	}
 }
+
+func TestTheRuntimeIsPointedAtTheMountedDataDirectory(t *testing.T) {
+	// The bind alone is not enough, and this is the bug that proved it on
+	// hardware. The runtime resolves its persistent data directory by
+	// DETECTION -- config.py returns /var/run/runtime whenever it thinks it
+	// is containerized -- so without this override it writes a fresh .env and
+	// restapi.db inside the container and ignores the mounted ones. Every
+	// version swap would then discard users, credentials, the stored project,
+	// retained variables and any VPP licenses.
+	cfg := &Config{Version: "v4.2.1", DataDir: "/var/lib/openplc-runtime"}
+	cfg.applyDefaults()
+	spec := decodeSpec(t, cfg)
+
+	var found bool
+	for _, raw := range spec["Env"].([]any) {
+		if raw.(string) == "OPENPLC_PERSISTENT_DATA_DIR=/var/lib/openplc-runtime" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the runtime must be told to use the mounted data directory, got %v",
+			spec["Env"])
+	}
+
+	// And the same path must actually be bound, or the override would point at
+	// a directory that only exists inside the container.
+	var bound bool
+	for _, raw := range spec["HostConfig"].(map[string]any)["Binds"].([]any) {
+		if raw.(string) == "/var/lib/openplc-runtime:/var/lib/openplc-runtime" {
+			bound = true
+		}
+	}
+	if !bound {
+		t.Fatal("the data directory must be bind-mounted at the same path")
+	}
+}
+
+func TestTheSocketDirectoryIsNotRedirected(t *testing.T) {
+	// The command and log sockets are ephemeral and both endpoints live in the
+	// same container, so they belong inside it. Redirecting them into the
+	// shared volume would export container-internal plumbing onto the host
+	// for no reason.
+	cfg := &Config{Version: "v4.2.1"}
+	cfg.applyDefaults()
+	spec := decodeSpec(t, cfg)
+
+	for _, raw := range spec["Env"].([]any) {
+		if strings.HasPrefix(raw.(string), "OPENPLC_RUNTIME_DIR=") {
+			t.Fatalf("the socket directory must keep its default, got %v", raw)
+		}
+	}
+}
