@@ -24,6 +24,10 @@ import (
 // webserver/config.py::generate_env_file, and never rotates: changing either
 // invalidates every stored password hash, which is why that function deletes
 // the database when it writes a new .env.
+//
+// The pepper is what the bootloader genuinely needs, since it is required to
+// verify a password against a stored hash. The JWT secret is used only to sign
+// the bootloader's own tokens -- the two services do not share sessions.
 type Secrets struct {
 	// JWTSecret signs and verifies access tokens (HS256).
 	JWTSecret string

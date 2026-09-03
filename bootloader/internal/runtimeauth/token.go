@@ -14,28 +14,33 @@ import (
 	"time"
 )
 
-// Tokens are HS256 JWTs interchangeable with the runtime's.
+// Tokens are HS256 JWTs in the same shape as the runtime's.
 //
-// Both sides sign with JWT_SECRET_KEY from the shared .env, so a token minted
-// by either is accepted by both. That matters in one direction in particular:
-// a token issued during recovery, when the runtime was down, keeps working
-// against the runtime once it comes back, so the editor is not forced to log
-// in twice around an update.
+// The bootloader issues and verifies its OWN tokens. What the two services
+// share is the credential database, not a session: the editor keeps the
+// user's credentials after login and logs in to the bootloader separately
+// when it needs to. Tokens are deliberately NOT treated as interchangeable,
+// because that would couple the two services' session handling for no gain --
+// and it cannot be relied on anyway, since the two may hold different
+// JWT_SECRET_KEY values depending on which .env each resolved.
 //
-// Only the claims flask_jwt_extended actually checks are produced -- "sub",
-// "type", "iat", "nbf", "exp" and "jti". A hand-rolled implementation rather
-// than a JWT library because HS256 is an HMAC over two base64url segments, and
-// the library-shaped risk here (accepting "alg": "none", or letting the token
-// choose its own algorithm) is precisely what an explicit implementation
-// avoids: the algorithm below is a constant, never read from the header.
+// The claim set still mirrors flask_jwt_extended's -- "sub", "type", "iat",
+// "nbf", "exp", "jti" -- so the two are recognisable to the same tooling and
+// so VerifyToken can read a runtime-issued token when one is presented. A
+// hand-rolled implementation rather than a JWT library because HS256 is an
+// HMAC over two base64url segments, and the library-shaped risk here
+// (accepting "alg": "none", or letting the token choose its own algorithm) is
+// precisely what an explicit implementation avoids: the algorithm below is a
+// constant, never read from the header.
 const (
 	// TokenType is flask_jwt_extended's discriminator. A refresh token
 	// presented as an access token must not be accepted.
 	TokenType = "access"
 	// DefaultTokenTTL is deliberately longer than the runtime's 15-minute
 	// default: a version change involves an image pull that can run for many
-	// minutes on a plant link, and having the caller's token expire midway
-	// through would strand a device mid-update.
+	// minutes on a slow device, and having the caller's token expire midway
+	// through would strand a device mid-update. The bootloader owns its own
+	// sessions, so this does not have to match the runtime's.
 	DefaultTokenTTL = 2 * time.Hour
 	// clockSkew tolerates a small disagreement between the editor's clock and
 	// the device's, which on an industrial box without NTP is routine.

@@ -268,6 +268,27 @@ func (c *Config) ContainerSpec(imageRef string) any {
 		// bootloader sets this, which is what makes the answer trustworthy.
 		"OPENPLC_UPDATE_POLICY=self",
 		fmt.Sprintf("OPENPLC_BOOTLOADER_PORT=%d", c.BootloaderPort),
+		// Point the runtime's persistent data at the bind mount.
+		//
+		// This is load-bearing and NOT redundant with the bind. The runtime
+		// resolves its own data directory by DETECTION, not by what is
+		// mounted: webserver/config.py::get_persistent_data_dir() returns
+		// /var/run/runtime whenever is_running_in_container() is true. Without
+		// this override the runtime writes a fresh .env and restapi.db inside
+		// the container and never touches the mounted ones -- so users,
+		// credentials, the stored project, retained variables and any VPP
+		// licenses would all be discarded on every single version swap, which
+		// is precisely what persisting them outside the container is for.
+		//
+		// Confirmed on hardware before this line existed: the container held
+		// its own .env under /var/run/runtime while the mounted restapi.db,
+		// project_snapshot/ and retain.bin sat unused beside it.
+		//
+		// Only the PERSISTENT dir is redirected. RUNTIME_DIR keeps its default
+		// so the command and log sockets stay container-internal, which is
+		// correct -- they are ephemeral and both endpoints live in the same
+		// container.
+		"OPENPLC_PERSISTENT_DATA_DIR=" + c.DataDir,
 	}
 	env = append(env, c.ExtraEnv...)
 

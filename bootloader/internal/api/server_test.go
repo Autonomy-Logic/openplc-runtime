@@ -197,9 +197,11 @@ func TestProtectedRoutesRejectATokenSignedWithAnotherSecret(t *testing.T) {
 	}
 }
 
-func TestARuntimeIssuedTokenIsAccepted(t *testing.T) {
-	// The point of sharing JWT_SECRET_KEY: the editor logs into the runtime
-	// and uses that token here, without a second login.
+func TestATokenTheBootloaderIssuedIsAccepted(t *testing.T) {
+	// The bootloader owns its own sessions: the editor logs in here with the
+	// credentials it already holds, and this token is only ever presented
+	// back to the bootloader. Cross-service acceptance is deliberately not a
+	// contract -- the two services may resolve different .env files.
 	srv := newTestServer(t, &fakeUsers{count: 1}, healthySupervisor(), &fakeLogs{})
 	resp, _ := get(t, srv, "/api/bootloader/status", validToken(t))
 	if resp.StatusCode != http.StatusOK {
