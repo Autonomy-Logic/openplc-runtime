@@ -434,3 +434,28 @@ func TestAMissingRoleColumnValueDefaultsToAdmin(t *testing.T) {
 		t.Fatalf("a NULL role must resolve to admin, got %q", user.Role)
 	}
 }
+
+// --- absent database -----------------------------------------------------
+
+func TestANilStoreReportsRatherThanPanics(t *testing.T) {
+	// On a device whose runtime has never started there is no restapi.db, and
+	// the bootloader still has to come up so an operator can find out why. A
+	// typed nil assigned to an interface is not nil at the call site, so
+	// without these guards the first request would panic the process into a
+	// Docker restart loop -- on precisely the device that most needs a way in.
+	var store *UserStore
+	ctx := context.Background()
+
+	if _, err := store.CountUsers(ctx); !errors.Is(err, ErrNoDatabase) {
+		t.Fatalf("CountUsers: want ErrNoDatabase, got %v", err)
+	}
+	if _, err := store.FindUser(ctx, "op"); !errors.Is(err, ErrNoDatabase) {
+		t.Fatalf("FindUser: want ErrNoDatabase, got %v", err)
+	}
+	if _, err := store.Authenticate(ctx, "op", "pw", vectorPepper); !errors.Is(err, ErrNoDatabase) {
+		t.Fatalf("Authenticate: want ErrNoDatabase, got %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close on a nil store must be a no-op, got %v", err)
+	}
+}

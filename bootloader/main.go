@@ -32,8 +32,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/api"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/health"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimeauth"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimespec"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/supervisor"
 )
@@ -56,6 +58,7 @@ func main() {
 		probeURL   = flag.String("probe-url", health.DefaultURL, "runtime health probe URL")
 		showVer    = flag.Bool("version", false, "print version and exit")
 		logLevel   = flag.String("log-level", "info", "log level: debug, info, warn, error")
+		port       = flag.Int("port", api.DefaultPort, "control API port")
 		maxCrashes = flag.Int("max-crashes", supervisor.DefaultMaxCrashes,
 			"unexpected runtime exits within the window before entering recovery")
 		crashWindow = flag.Duration("crash-window", supervisor.DefaultCrashWindow,
@@ -71,23 +74,36 @@ func main() {
 	log := newLogger(*logLevel)
 	log.Info("openplc-bootloader starting", "version", version, "stateDir", *stateDir)
 
-	if err := run(log, *stateDir, *socket, *probeURL, *maxCrashes, *crashWindow); err != nil {
+	if err := run(log, runConfig{
+		stateDir:    *stateDir,
+		socket:      *socket,
+		probeURL:    *probeURL,
+		port:        *port,
+		maxCrashes:  *maxCrashes,
+		crashWindow: *crashWindow,
+	}); err != nil {
 		log.Error("bootloader exiting", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(
-	log *slog.Logger,
-	stateDir, socket, probeURL string,
-	maxCrashes int,
-	crashWindow time.Duration,
-) error {
-	if err := os.MkdirAll(stateDir, 0o750); err != nil {
-		return fmt.Errorf("creating state dir %s: %w", stateDir, err)
+// runConfig groups what run needs, so adding a knob does not keep widening a
+// positional parameter list.
+type runConfig struct {
+	stateDir    string
+	socket      string
+	probeURL    string
+	port        int
+	maxCrashes  int
+	crashWindow time.Duration
+}
+
+func run(log *slog.Logger, cfg runConfig) error {
+	if err := os.MkdirAll(cfg.stateDir, 0o750); err != nil {
+		return fmt.Errorf("creating state dir %s: %w", cfg.stateDir, err)
 	}
 
-	specPath := filepath.Join(stateDir, "runtime-spec.json")
+	specPath := filepath.Join(cfg.stateDir, "runtime-spec.json")
 	spec, err := runtimespec.Load(specPath)
 	if err != nil {
 		// Without a spec the bootloader does not know which image to run or which
@@ -99,13 +115,37 @@ func run(
 	log.Info("loaded runtime spec",
 		"image", spec.ImageRef(), "dataDir", spec.DataDir, "extraBinds", len(spec.ExtraBinds))
 
-	docker := dockerapi.New(socket)
-	prober := health.New(probeURL, 5*time.Second)
+	docker := dockerapi.New(cfg.socket)
+	prober := health.New(cfg.probeURL, 5*time.Second)
 
 	sup := supervisor.New(docker, spec, prober, supervisor.Config{
-		MaxCrashes:  maxCrashes,
-		CrashWindow: crashWindow,
+		MaxCrashes:  cfg.maxCrashes,
+		CrashWindow: cfg.crashWindow,
 	}, log.With("component", "supervisor"))
+
+	// Authentication reads the runtime's own credentials out of the shared data
+	// directory. Missing or unreadable is not fatal: the control API still
+	// needs to come up so an operator can see WHY, and every authenticated
+	// route refuses cleanly until the files appear.
+	secrets, users := openRuntimeCredentials(log, spec.DataDir)
+	if users != nil {
+		defer users.Close()
+	}
+
+	server, err := api.New(api.Config{
+		Port:           cfg.port,
+		StateDir:       cfg.stateDir,
+		Version:        version,
+		RuntimeVersion: func() string { return spec.Version },
+		Secrets:        secrets,
+		Users:          users,
+		Supervisor:     sup,
+		Logs:           docker,
+		Log:            log.With("component", "api"),
+	})
+	if err != nil {
+		return err
+	}
 
 	// Signals: a container stop must not be read as a reason to tear the
 	// runtime down. The bootloader going away leaves the runtime running, which
@@ -113,11 +153,58 @@ func run(
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := sup.Run(ctx); err != nil && ctx.Err() == nil {
-		return err
+	// The control API and the supervisor run concurrently, and the API must
+	// outlive a supervisor that has given up: recovery mode is precisely the
+	// state where the supervisor has stopped trying and an operator needs to
+	// reach the device.
+	apiErr := make(chan error, 1)
+	go func() { apiErr <- server.ListenAndServe(ctx) }()
+
+	supErr := make(chan error, 1)
+	go func() { supErr <- sup.Run(ctx) }()
+
+	select {
+	case err := <-apiErr:
+		// Losing the control API is fatal to the process: without it the
+		// device is unmanageable, which is the one thing this binary exists
+		// to prevent. Docker's restart policy brings us back.
+		if err != nil && ctx.Err() == nil {
+			return err
+		}
+	case err := <-supErr:
+		if err != nil && ctx.Err() == nil {
+			return err
+		}
+	case <-ctx.Done():
 	}
+
 	log.Info("bootloader stopped; runtime container left running")
 	return nil
+}
+
+// openRuntimeCredentials loads the runtime's secrets and user database.
+//
+// Both live in the runtime's data directory, which the bootloader mounts
+// read-only. Failure returns nils rather than an error on purpose: a device
+// whose runtime has never started has neither file yet, and refusing to boot
+// would leave nothing listening on the very device that most needs a way in.
+func openRuntimeCredentials(
+	log *slog.Logger, dataDir string,
+) (*runtimeauth.Secrets, *runtimeauth.UserStore) {
+	secrets, err := runtimeauth.LoadSecrets(filepath.Join(dataDir, ".env"))
+	if err != nil {
+		log.Warn("runtime secrets unavailable; authenticated routes will refuse",
+			"error", err)
+		return &runtimeauth.Secrets{}, nil
+	}
+
+	users, err := runtimeauth.OpenUserStore(filepath.Join(dataDir, "restapi.db"))
+	if err != nil {
+		log.Warn("runtime account database unavailable; authenticated routes will refuse",
+			"error", err)
+		return secrets, nil
+	}
+	return secrets, users
 }
 
 func newLogger(level string) *slog.Logger {

@@ -38,6 +38,16 @@ var ErrNoSuchUser = errors.New("no such user")
 // access anyway.
 var ErrNoUsers = errors.New("no users have been created yet")
 
+// ErrNoDatabase means there is no account database to read.
+//
+// A nil UserStore is a legitimate state, not a programming error: on a device
+// whose runtime has never started there is no restapi.db yet, and the
+// bootloader must still come up so an operator can find out why. Every method
+// below tolerates a nil receiver, because a typed nil assigned to an interface
+// is NOT nil at the call site -- without these guards the first request on
+// such a device would panic the bootloader into a restart loop.
+var ErrNoDatabase = errors.New("the runtime account database is not available")
+
 // User is the subset of an account the bootloader needs.
 type User struct {
 	ID           string
@@ -86,6 +96,9 @@ func (s *UserStore) Close() error {
 // zero rather than an error: a runtime that has never started leaves the file
 // present but empty, and that is the no-users case, not a broken database.
 func (s *UserStore) CountUsers(ctx context.Context) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, ErrNoDatabase
+	}
 	var count int
 	query := "SELECT COUNT(*) FROM " + usersTable
 	if err := s.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
@@ -99,6 +112,9 @@ func (s *UserStore) CountUsers(ctx context.Context) (int, error) {
 
 // FindUser looks up an account by username.
 func (s *UserStore) FindUser(ctx context.Context, username string) (*User, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrNoDatabase
+	}
 	query := "SELECT id, username, password_hash, role FROM " + usersTable + " WHERE username = ?"
 	row := s.db.QueryRowContext(ctx, query, username)
 
@@ -133,6 +149,9 @@ func (s *UserStore) FindUser(ctx context.Context, username string) (*User, error
 // still hashed for an unknown user -- see below -- so the two paths cost
 // roughly the same time.
 func (s *UserStore) Authenticate(ctx context.Context, username, password, pepper string) (*User, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrNoDatabase
+	}
 	user, err := s.FindUser(ctx, username)
 	if err != nil {
 		if errors.Is(err, ErrNoSuchUser) {
