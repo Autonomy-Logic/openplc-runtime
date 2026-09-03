@@ -478,7 +478,18 @@ def test_a_version_that_does_not_exist_fails_without_touching_the_runtime():
     with open(os.path.join(STATE_DIR, "runtime-spec.json"), encoding="utf-8") as handle:
         if json.load(handle)["version"] != "v1.0.0":
             raise Failure("a failed pull must not change the recorded version")
-    _ = running_before  # the container may have been stopped by recovery, which is fine
+
+    # And the PLC must still be running. Nothing was touched, so a bad version
+    # name must not take a working plant offline -- which is exactly what
+    # happened on the SLM-RP4 before this was fixed, and what this assertion
+    # previously waved through.
+    running_after = container_state(RUNTIME_NAME)
+    if running_after.get("Id") != running_before:
+        raise Failure("a failed pull must not replace the runtime container")
+    if not running_after.get("State", {}).get("Running"):
+        raise Failure("a failed pull must not stop the running runtime")
+    if bootloader_state() == "recovery":
+        raise Failure("a failure before the swap must not enter recovery")
 
 
 @case
