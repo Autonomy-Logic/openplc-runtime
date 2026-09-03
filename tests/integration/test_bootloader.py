@@ -284,7 +284,20 @@ def runtime_version_served() -> dict:
 
 
 def image_present(reference: str) -> bool:
-    return sh("docker", "image", "inspect", reference, check=False) != ""
+    """Whether this exact image reference resolves locally.
+
+    `docker images -q <ref>` prints an id or nothing. `docker image inspect`
+    would not do: like its container counterpart it prints "[]" on stdout for
+    a missing image and signals absence only through its exit code, so an
+    empty-stdout check returns True for everything -- which quietly made this
+    assertion, and two others that rely on it, pass no matter what happened.
+
+    Note the stub versions in this harness are all tags of one image, so
+    "retired" here means the TAG is gone. That is exactly what the updater
+    removes, and Docker untags a shared image happily even while a container
+    is running from another of its tags.
+    """
+    return sh("docker", "images", "-q", reference, check=False) != ""
 
 
 def run_update(token: str, version: str) -> tuple[int, dict]:
