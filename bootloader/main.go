@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/api"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/discovery"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/health"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimeauth"
@@ -132,6 +133,23 @@ func run(log *slog.Logger, cfg runConfig) error {
 	if users != nil {
 		defer users.Close()
 	}
+
+	// LAN discovery, answered ONLY while in recovery. A device that cannot be
+	// found cannot be repaired, and without this a failed update makes the
+	// device vanish from the editor's list at exactly the wrong moment. The
+	// runtime owns this port the rest of the time; exclusivity holds because
+	// entering recovery stops the runtime first.
+	responder := discovery.New(discovery.Port, func() discovery.Reply {
+		status := sup.Status()
+		return discovery.Reply{
+			BootloaderPort: spec.BootloaderPort,
+			RuntimeVersion: spec.Version,
+			Reason:         status.Reason,
+		}
+	}, log.With("component", "discovery"))
+
+	sup.OnRecovery(func(supervisor.Status) { responder.Enable() })
+	sup.OnHealthy(func(supervisor.Status) { responder.Disable() })
 
 	upd := updater.New(updater.Config{
 		Docker:     docker,
