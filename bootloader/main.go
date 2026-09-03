@@ -1,14 +1,24 @@
-// Command openplc-sidecar is the bootloader and update manager for one local
-// OpenPLC runtime container (RTOP-283).
+// Command openplc-bootloader brings up and maintains one local OpenPLC runtime
+// container (RTOP-283).
 //
-// It is always resident and, in steady state, does nothing: after confirming
-// the runtime came up it blocks on the Docker events stream with no timers, no
-// polling and no listening socket beyond its own control API. It exists so a
-// device whose runtime will not start is still reachable from the editor, which
-// is the whole point -- many vendors do not allow SSH.
+// It plays the same role a bootloader plays on an embedded target, and the name
+// is meant literally. A bootloader is the small, rarely-changed program that
+// starts the real firmware, and that stays reachable to flash a new image when
+// the firmware is broken or missing. This does exactly that for the runtime: it
+// starts the runtime container, and when the runtime will not run it remains
+// available so a new version can be installed from the editor. That is the
+// whole reason it exists -- many vendors do not allow SSH, so without something
+// that survives a bad runtime there is no way back onto the device.
 //
-// Docker is the only dependency. The sidecar itself is started by Docker's own
-// restart policy, so nothing of ours goes into systemd.
+// The analogy holds on the other axis too. A bootloader is kept deliberately
+// dumb and stable because it is the one thing that cannot be recovered by any
+// other means, so it does the minimum: it does not accept programs, control the
+// PLC, or look at PLC state. It is always resident and, in steady state, does
+// nothing at all -- after confirming the runtime came up it blocks on the
+// Docker events stream, with no timers and no polling.
+//
+// Docker is the only dependency. Docker's own restart policy starts this
+// process, so nothing of ours goes into systemd.
 package main
 
 import (
@@ -22,26 +32,26 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Autonomy-Logic/openplc-runtime/sidecar/internal/dockerapi"
-	"github.com/Autonomy-Logic/openplc-runtime/sidecar/internal/health"
-	"github.com/Autonomy-Logic/openplc-runtime/sidecar/internal/runtimespec"
-	"github.com/Autonomy-Logic/openplc-runtime/sidecar/internal/supervisor"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/health"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimespec"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/supervisor"
 )
 
-// version is stamped at build time via -ldflags. The sidecar has its own
+// version is stamped at build time via -ldflags. The bootloader has its own
 // version line, independent of the runtime's: it changes rarely, and coupling
 // it to every runtime release would produce a long series of identical images.
 var version = "dev"
 
-// DefaultStateDir is the sidecar's own volume -- separate from the runtime's
+// DefaultStateDir is the bootloader's own volume -- separate from the runtime's
 // data directory on purpose. "Erase all data" wipes the runtime's volume, and
 // the board's device mounts must survive that; a board that came back with no
 // SPI after a data wipe would be a miserable failure mode.
-const DefaultStateDir = "/var/lib/openplc-sidecar"
+const DefaultStateDir = "/var/lib/openplc-bootloader"
 
 func main() {
 	var (
-		stateDir   = flag.String("state-dir", DefaultStateDir, "sidecar state directory")
+		stateDir   = flag.String("state-dir", DefaultStateDir, "bootloader state directory")
 		socket     = flag.String("docker-socket", dockerapi.DefaultSocket, "docker socket path")
 		probeURL   = flag.String("probe-url", health.DefaultURL, "runtime health probe URL")
 		showVer    = flag.Bool("version", false, "print version and exit")
@@ -59,10 +69,10 @@ func main() {
 	}
 
 	log := newLogger(*logLevel)
-	log.Info("openplc-sidecar starting", "version", version, "stateDir", *stateDir)
+	log.Info("openplc-bootloader starting", "version", version, "stateDir", *stateDir)
 
 	if err := run(log, *stateDir, *socket, *probeURL, *maxCrashes, *crashWindow); err != nil {
-		log.Error("sidecar exiting", "error", err)
+		log.Error("bootloader exiting", "error", err)
 		os.Exit(1)
 	}
 }
@@ -80,7 +90,7 @@ func run(
 	specPath := filepath.Join(stateDir, "runtime-spec.json")
 	spec, err := runtimespec.Load(specPath)
 	if err != nil {
-		// Without a spec the sidecar does not know which image to run or which
+		// Without a spec the bootloader does not know which image to run or which
 		// board mounts this device needs. Guessing would risk starting a
 		// runtime with no access to its own hardware, so this is fatal and
 		// install.sh is responsible for writing the file.
@@ -98,7 +108,7 @@ func run(
 	}, log.With("component", "supervisor"))
 
 	// Signals: a container stop must not be read as a reason to tear the
-	// runtime down. The sidecar going away leaves the runtime running, which
+	// runtime down. The bootloader going away leaves the runtime running, which
 	// is correct -- losing the manager should never stop the plant.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -106,7 +116,7 @@ func run(
 	if err := sup.Run(ctx); err != nil && ctx.Err() == nil {
 		return err
 	}
-	log.Info("sidecar stopped; runtime container left running")
+	log.Info("bootloader stopped; runtime container left running")
 	return nil
 }
 

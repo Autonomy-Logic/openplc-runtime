@@ -53,7 +53,7 @@ var (
 	ErrTokenExpired = errors.New("token expired")
 )
 
-// Claims is the payload the sidecar reads and writes.
+// Claims is the payload the bootloader reads and writes.
 type Claims struct {
 	Subject   string `json:"sub"`
 	Type      string `json:"type"`

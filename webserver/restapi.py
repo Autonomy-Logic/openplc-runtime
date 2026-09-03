@@ -20,7 +20,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import webserver.config
 from webserver import project_snapshot
 from webserver.logger import get_logger
-from webserver.update_policy import SIDECAR_PORT, UPDATE_POLICY
+from webserver.update_policy import BOOTLOADER_PORT, UPDATE_POLICY
 from webserver.version import MIN_EDITOR_VERSION, RUNTIME_VERSION
 
 logger, buffer = get_logger("logger", use_buffer=True)
@@ -116,9 +116,9 @@ def restapi_capabilities():
               type: string
               enum: [self, managed, manual, none]
               description: Which mechanism may change this runtime's version
-            sidecarPort:
+            bootloaderPort:
               type: integer
-              description: Port of the managing sidecar; null unless updatePolicy is "self"
+              description: Port of the managing bootloader; null unless updatePolicy is "self"
     """
     return (
         jsonify(
@@ -133,7 +133,7 @@ def restapi_capabilities():
                 # because the editor picks its actions before it has
                 # credentials. Resolution order: webserver/update_policy.py.
                 "updatePolicy": UPDATE_POLICY,
-                "sidecarPort": SIDECAR_PORT,
+                "bootloaderPort": BOOTLOADER_PORT,
             }
         ),
         200,

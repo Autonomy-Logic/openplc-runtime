@@ -8,7 +8,7 @@ import (
 // Defaults mirror webserver/runtimemanager.py's MAX_RAPID_CRASHES /
 // RAPID_CRASH_WINDOW one layer up. That module already does this for
 // plc_main: restart it, count crashes in a window, and stop restarting when
-// the fault is clearly not transient. The sidecar applies the same shape to
+// the fault is clearly not transient. The bootloader applies the same shape to
 // the container, so the two layers behave predictably alike and neither
 // masks the other's failure.
 const (
@@ -16,7 +16,7 @@ const (
 	DefaultCrashWindow  = 5 * time.Minute
 	DefaultRestartDelay = 2 * time.Second
 	// Restart backoff is capped so a persistent fault does not stretch to an
-	// interval where an operator concludes the sidecar has given up quietly.
+	// interval where an operator concludes the bootloader has given up quietly.
 	// It reaches the crash ceiling well inside the window either way.
 	MaxRestartDelay = 30 * time.Second
 )

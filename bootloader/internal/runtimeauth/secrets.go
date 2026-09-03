@@ -1,7 +1,7 @@
 // Package runtimeauth authenticates callers against the runtime's own
 // credentials.
 //
-// The sidecar deliberately does not keep a second user database. It reads the
+// The bootloader deliberately does not keep a second user database. It reads the
 // runtime's “.env“ and “restapi.db“ from the shared data directory --
 // mounted read-only, because it only ever needs to read them -- so there is
 // exactly one set of accounts on the device and no second thing to keep in

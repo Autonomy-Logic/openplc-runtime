@@ -16,11 +16,11 @@ import (
 // generate_password_hash and flask_jwt_extended create_access_token) and
 // pinned here verbatim.
 //
-// The Go side of the sidecar reimplements two formats the Python side owns.
+// The Go side of the bootloader reimplements two formats the Python side owns.
 // That is the same hazard as the ctypes mirror in shared/plugin_runtime_args.py:
 // the two can drift apart silently, and the symptom is every login failing on a
 // device nobody can log into to diagnose. The identical values are asserted
-// from Python in tests/pytest/restapi/test_sidecar_auth_vector.py, so a
+// from Python in tests/pytest/restapi/test_bootloader_auth_vector.py, so a
 // werkzeug or PyJWT upgrade that changes either format breaks a test on the
 // side that changed rather than a device in the field.
 const (
@@ -217,7 +217,7 @@ func TestIssuedTokensRoundTrip(t *testing.T) {
 }
 
 func TestAnIssuedTokenCarriesTheClaimsTheRuntimeChecks(t *testing.T) {
-	// The runtime must accept a token the sidecar minted during recovery, so
+	// The runtime must accept a token the bootloader minted during recovery, so
 	// the claim set has to match what flask_jwt_extended requires.
 	token, err := IssueToken(vectorSecret, "7", time.Hour)
 	if err != nil {
@@ -364,7 +364,7 @@ func TestAnUnknownUserAndABadPasswordAreIndistinguishable(t *testing.T) {
 }
 
 func TestCountUsersDrivesTheBootstrapRefusal(t *testing.T) {
-	// With no accounts the sidecar accepts nothing: first-user bootstrap
+	// With no accounts the bootloader accepts nothing: first-user bootstrap
 	// belongs to the runtime alone.
 	empty := seedDB(t, true)
 	store, err := OpenUserStore(empty)

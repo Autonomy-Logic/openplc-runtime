@@ -20,7 +20,7 @@ import (
 // Prober checks the runtime's unauthenticated version endpoint.
 //
 // /api/version, not /api/ping: ping sits behind @jwt_required(), so the
-// sidecar has no credentials for it and a probe there would report a healthy
+// bootloader has no credentials for it and a probe there would report a healthy
 // runtime as dead. (The healthcheck example in docs/DOCKER.md has this wrong
 // and always gets a 401.)
 type Prober struct {

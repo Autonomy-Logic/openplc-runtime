@@ -13,9 +13,9 @@ import (
 
 // The runtime's users table, from webserver/restapi.py::User.
 //
-// Read-only, and opened read-only. The sidecar authenticates against these
+// Read-only, and opened read-only. The bootloader authenticates against these
 // accounts but must never create, modify or promote one -- user management
-// stays entirely in the runtime, including the first-user bootstrap. A sidecar
+// stays entirely in the runtime, including the first-user bootstrap. A bootloader
 // that could write here would be a second, less-reviewed path to an admin
 // account on the device.
 const (
@@ -30,7 +30,7 @@ var ErrNoSuchUser = errors.New("no such user")
 
 // ErrNoUsers means the runtime has never had an account created.
 //
-// The sidecar refuses every command in that state, deliberately. First-user
+// The bootloader refuses every command in that state, deliberately. First-user
 // bootstrap is a sensitive flow and it lives in the runtime alone; duplicating
 // it here would mean two places that can mint the first admin on a device.
 // The practical consequence is narrow: it only bites if the very first runtime
@@ -38,7 +38,7 @@ var ErrNoSuchUser = errors.New("no such user")
 // access anyway.
 var ErrNoUsers = errors.New("no users have been created yet")
 
-// User is the subset of an account the sidecar needs.
+// User is the subset of an account the bootloader needs.
 type User struct {
 	ID           string
 	Username     string

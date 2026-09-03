@@ -5,16 +5,16 @@ The runtime never updates itself. It only reports which mechanism owns that
 job, so a client can offer the right action instead of a button that cannot
 work. Resolution order:
 
-  1. ``OPENPLC_UPDATE_POLICY`` -- explicit, and wins outright. The sidecar
-     bootloader sets ``self`` when it creates the runtime container. An OEM
-     shipping a vendor-managed device sets ``none``.
+  1. ``OPENPLC_UPDATE_POLICY`` -- explicit, and wins outright. The bootloader
+     sets ``self`` when it creates the runtime container. An OEM shipping a
+     vendor-managed device sets ``none``.
   2. Running in a container with no override -> ``managed``. Something else
      created this container, and whatever created it chose the image tag --
      which IS the version. An orchestrator-managed vPLC lands here.
   3. Otherwise -> ``manual``. A native source install, updated from a shell.
 
 This is deliberately capability-based rather than identity-based: we report
-what the deployment CAN do, never a guess at what it IS. Only our own sidecar
+what the deployment CAN do, never a guess at what it IS. Only our own bootloader
 sets ``self``, so a false positive is impossible -- an orchestrator vPLC never
 runs our installer and never receives that variable. Getting this backwards
 (sniffing for orchestrator-shaped networks or cgroup patterns) would be a
@@ -31,7 +31,7 @@ from typing import Optional
 
 from webserver.config import is_running_in_container
 
-# The sidecar owns the container spec and may replace the image (RTOP-283).
+# The bootloader owns the container spec and may replace the image (RTOP-283).
 POLICY_SELF: str = "self"
 # Some other supervisor owns the container; it must perform the swap.
 POLICY_MANAGED: str = "managed"
@@ -44,13 +44,19 @@ VALID_POLICIES: frozenset[str] = frozenset(
     {POLICY_SELF, POLICY_MANAGED, POLICY_MANUAL, POLICY_NONE}
 )
 
-# Port the sidecar's control API listens on. Reported so a client does not
-# have to hard-code it; the sidecar passes the real value when it differs.
-DEFAULT_SIDECAR_PORT: int = 8445
+# Port the bootloader's control API listens on. Reported so a client does not
+# have to hard-code it; the bootloader passes the real value when it differs.
+DEFAULT_BOOTLOADER_PORT: int = 8445
 
 
-def _resolve_update_policy() -> str:
-    """Return the update policy for this deployment. See module docstring."""
+def resolve_update_policy() -> str:
+    """Return the update policy for this deployment. See module docstring.
+
+    Public rather than private because the resolution rules -- not the cached
+    constant below -- are what the tests need to pin, and a decision this
+    security-relevant should be callable directly rather than reached through
+    a module reload.
+    """
     override = os.getenv("OPENPLC_UPDATE_POLICY", "").strip().lower()
     if override in VALID_POLICIES:
         return override
@@ -63,30 +69,30 @@ def _resolve_update_policy() -> str:
     return POLICY_MANUAL
 
 
-def _resolve_sidecar_port(policy: str) -> Optional[int]:
-    """Port of the managing sidecar, or ``None`` when there is not one.
+def resolve_bootloader_port(policy: str) -> Optional[int]:
+    """Port of the managing bootloader, or ``None`` when there is not one.
 
-    Only meaningful under ``self``: every other policy means no sidecar of
+    Only meaningful under ``self``: every other policy means no bootloader of
     ours is listening, and publishing a port nothing answers on would send
     clients somewhere useless.
     """
     if policy != POLICY_SELF:
         return None
 
-    raw = os.getenv("OPENPLC_SIDECAR_PORT", "").strip()
+    raw = os.getenv("OPENPLC_BOOTLOADER_PORT", "").strip()
     if not raw:
-        return DEFAULT_SIDECAR_PORT
+        return DEFAULT_BOOTLOADER_PORT
     try:
         port = int(raw)
     except ValueError:
-        return DEFAULT_SIDECAR_PORT
+        return DEFAULT_BOOTLOADER_PORT
     if not 1 <= port <= 65535:
-        return DEFAULT_SIDECAR_PORT
+        return DEFAULT_BOOTLOADER_PORT
     return port
 
 
-UPDATE_POLICY: str = _resolve_update_policy()
-SIDECAR_PORT: Optional[int] = _resolve_sidecar_port(UPDATE_POLICY)
+UPDATE_POLICY: str = resolve_update_policy()
+BOOTLOADER_PORT: Optional[int] = resolve_bootloader_port(UPDATE_POLICY)
 
 
 def device_info() -> dict[str, object]:
@@ -108,5 +114,5 @@ def device_info() -> dict[str, object]:
         "system": platform.system(),
         "containerized": is_running_in_container(),
         "updatePolicy": UPDATE_POLICY,
-        "sidecarPort": SIDECAR_PORT,
+        "bootloaderPort": BOOTLOADER_PORT,
     }

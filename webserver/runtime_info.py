@@ -53,9 +53,9 @@ def restapi_device_info():
               type: string
               enum: [self, managed, manual, none]
               description: Which mechanism may change this runtime's version
-            sidecarPort:
+            bootloaderPort:
               type: integer
-              description: Port of the managing sidecar; null unless updatePolicy is "self"
+              description: Port of the managing bootloader; null unless updatePolicy is "self"
       401:
         description: Missing or invalid token
     """

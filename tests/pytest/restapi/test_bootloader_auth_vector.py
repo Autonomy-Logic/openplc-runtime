@@ -1,6 +1,6 @@
-"""Python half of the sidecar's shared authentication vector (RTOP-283).
+"""Python half of the bootloader's shared authentication vector (RTOP-283).
 
-The sidecar is written in Go and reimplements two formats this codebase owns:
+The bootloader is written in Go and reimplements two formats this codebase owns:
 Werkzeug's PBKDF2 password hash and Flask-JWT-Extended's HS256 access token.
 It has to, because it authenticates callers while the runtime is DOWN -- cold
 recovery after a reboot is exactly when there is no runtime to ask.
@@ -12,7 +12,7 @@ login on the device stops working, on a device nobody can log in to in order
 to find out why.
 
 So both sides pin the identical constants. The Go half asserts them in
-``sidecar/internal/runtimeauth/runtimeauth_test.go``; this half asserts that
+``bootloader/internal/runtimeauth/runtimeauth_test.go``; this half asserts that
 the libraries here still produce and accept them. If a Werkzeug or PyJWT
 upgrade changes either format, the test on the side that changed fails, and
 the fix is to regenerate the vector in BOTH files together -- never in one.
@@ -59,7 +59,7 @@ def test_the_pepper_is_appended_not_prepended():
     assert not check_password_hash(STORED_HASH, PEPPER + PASSWORD)
 
 
-def test_the_hash_advertises_the_parameters_the_sidecar_parses():
+def test_the_hash_advertises_the_parameters_the_bootloader_parses():
     # The Go side reads the iteration count out of the hash rather than
     # assuming 600000, but it only understands pbkdf2/sha256.
     method, _salt, _digest = STORED_HASH.split("$", 2)
@@ -83,7 +83,7 @@ def test_pyjwt_verifies_the_vector_token_signature():
 
 
 def test_the_identity_claim_is_the_user_id_as_a_string():
-    # user_identity_lookup returns str(user.id). The sidecar mints tokens with
+    # user_identity_lookup returns str(user.id). The bootloader mints tokens with
     # the same shape so the runtime can consume one it did not issue.
     decoded = pyjwt.decode(
         VECTOR_TOKEN,

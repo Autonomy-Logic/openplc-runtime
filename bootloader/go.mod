@@ -1,4 +1,4 @@
-// The sidecar keeps its dependencies to the minimum the job actually needs.
+// The bootloader keeps its dependencies to the minimum the job actually needs.
 // It is the component that recovers a device when the runtime will not start,
 // so every dependency is a way for that recovery to fail: the Docker Engine
 // API is plain HTTP over a unix socket, JWT is an HMAC over two base64
@@ -8,11 +8,11 @@
 // The one exception is modernc.org/sqlite. Authenticating a caller while the
 // runtime is DOWN means reading the runtime's own users table, and cold
 // recovery after a reboot is exactly when there is no runtime to ask. A
-// second credential store in the sidecar would have avoided the dependency at
+// second credential store in the bootloader would have avoided the dependency at
 // the cost of another thing that can be forgotten when an account is revoked,
 // which is the worse trade. Pure Go, so it still cross-compiles with CGO off
 // and still runs on scratch.
-module github.com/Autonomy-Logic/openplc-runtime/sidecar
+module github.com/Autonomy-Logic/openplc-runtime/bootloader
 
 go 1.25.0
 

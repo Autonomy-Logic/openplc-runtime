@@ -115,7 +115,7 @@ func (c *Client) RemoveContainer(ctx context.Context, name string, force bool) e
 }
 
 // ContainerLogs returns the tail of a container's combined output. Used by the
-// sidecar's status endpoint so an operator can see why a runtime would not
+// bootloader's status endpoint so an operator can see why a runtime would not
 // start without needing shell access -- which is the entire point of RTOP-283.
 func (c *Client) ContainerLogs(ctx context.Context, name string, tail int) (string, error) {
 	params := url.Values{}
