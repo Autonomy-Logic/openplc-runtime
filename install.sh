@@ -137,7 +137,36 @@ EOF
 # Ensure we're in the project directory
 cd "$OPENPLC_DIR"
 
-echo "OpenPLC Runtime Installation"
+# Dispatch: Docker install by default, source build behind --native (RTOP-283).
+#
+# The Docker path installs no toolchain and compiles nothing, which is what
+# makes a version change from the editor possible at all -- and what removes
+# the failure this ticket exists to fix, where a half-finished source rebuild
+# leaves a device with no build/ and no way in.
+#
+# --native keeps today's behaviour verbatim for MSYS2 and for targets that
+# cannot host a container engine. It is a supported path, not a deprecated one.
+INSTALL_MODE="docker"
+declare -a DOCKER_INSTALL_ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --native) INSTALL_MODE="native" ;;
+        *)        DOCKER_INSTALL_ARGS+=("$arg") ;;
+    esac
+done
+
+# MSYS2 has no container engine, so it is always a source build regardless of
+# what was asked for. Saying so beats failing later inside a docker command.
+if is_msys2 && [ "$INSTALL_MODE" = "docker" ]; then
+    echo "Platform: MSYS2/Windows - installing from source (Docker is not available here)"
+    INSTALL_MODE="native"
+fi
+
+if [ "$INSTALL_MODE" = "docker" ]; then
+    exec bash "$SCRIPTS_DIR/install-docker.sh" "$OPENPLC_DIR" "${DOCKER_INSTALL_ARGS[@]}"
+fi
+
+echo "OpenPLC Runtime Installation (source build)"
 echo "Project directory: $OPENPLC_DIR"
 echo "Working directory: $(pwd)"
 

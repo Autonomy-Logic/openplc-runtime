@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +26,10 @@ type fakeDocker struct {
 	running bool
 	health  string // "", "starting", "healthy", "unhealthy"
 	exit    int
+	// configImage is the reference the container was created from, which is
+	// what Reconcile compares against the spec. Defaults to the spec's own
+	// image so existing tests keep describing a matching container.
+	configImage string
 
 	created  int
 	started  int
@@ -35,6 +40,16 @@ type fakeDocker struct {
 	// startMakesHealthy models the normal case: starting the container brings
 	// the webserver up.
 	startMakesHealthy bool
+
+	// imagePresent models the local image store. false means the supervisor
+	// has to pull before it can create anything -- the fresh-install case.
+	imagePresent bool
+	pullErr      error
+	pulls        []string
+	// onPullProgress runs from inside the pull's progress callback, so a test
+	// can observe supervisor state at that instant rather than afterwards.
+	onPullProgress func()
+	observed       Status
 }
 
 func (f *fakeDocker) Ping(context.Context) error { return nil }
@@ -46,6 +61,10 @@ func (f *fakeDocker) InspectContainer(_ context.Context, _ string) (*dockerapi.C
 		return nil, &dockerapi.APIError{Status: http.StatusNotFound, Path: "/containers/x/json"}
 	}
 	inspect := &dockerapi.ContainerInspect{ID: "deadbeef"}
+	inspect.Config.Image = f.configImage
+	if inspect.Config.Image == "" {
+		inspect.Config.Image = "test:1"
+	}
 	inspect.State.Running = f.running
 	inspect.State.ExitCode = f.exit
 	if f.health != "" {
@@ -62,6 +81,9 @@ func (f *fakeDocker) CreateContainer(_ context.Context, _ string, _ any) (*docke
 	f.created++
 	f.exists = true
 	f.running = false
+	// A freshly created container carries the spec's image, so a recreate
+	// resolves the mismatch rather than looping forever.
+	f.configImage = "test:1"
 	return &dockerapi.CreateContainerResponse{ID: "deadbeef"}, nil
 }
 
@@ -99,6 +121,43 @@ func (f *fakeDocker) RemoveContainer(context.Context, string, bool) error {
 func (f *fakeDocker) StreamEvents(ctx context.Context, _ string, _ func(dockerapi.Event)) error {
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+func (f *fakeDocker) InspectImage(_ context.Context, ref string) (*dockerapi.ImageInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.imagePresent {
+		return nil, &dockerapi.APIError{Status: http.StatusNotFound, Path: "/images/" + ref + "/json"}
+	}
+	return &dockerapi.ImageInfo{ID: "sha256:image", Size: 1000}, nil
+}
+
+func (f *fakeDocker) PullImage(_ context.Context, ref string, onProgress func(dockerapi.PullProgress)) error {
+	f.mu.Lock()
+	f.pulls = append(f.pulls, ref)
+	err := f.pullErr
+	f.mu.Unlock()
+
+	if err != nil {
+		return err
+	}
+	if onProgress != nil {
+		half := 50
+		onProgress(dockerapi.PullProgress{Phase: "Downloading", Percent: &half})
+		if f.onPullProgress != nil {
+			f.onPullProgress()
+		}
+	}
+	f.mu.Lock()
+	f.imagePresent = true
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeDocker) pullCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.pulls)
 }
 
 func (f *fakeDocker) counts() (created, started, stopped int) {
@@ -153,7 +212,7 @@ func dieEvent(code string) dockerapi.Event {
 // --- reconcile -----------------------------------------------------------
 
 func TestReconcileCreatesAndStartsAMissingContainer(t *testing.T) {
-	docker := &fakeDocker{startMakesHealthy: true}
+	docker := &fakeDocker{startMakesHealthy: true, imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 
 	if err := sup.Reconcile(context.Background()); err != nil {
@@ -172,7 +231,7 @@ func TestReconcileAdoptsAHealthyRunningContainer(t *testing.T) {
 	// The bootloader restarts far more often than the runtime does -- its own
 	// crash, a self-update. A reconcile that recreated or bounced a working
 	// runtime would turn a bootloader hiccup into a plant outage.
-	docker := &fakeDocker{exists: true, running: true, health: "healthy"}
+	docker := &fakeDocker{exists: true, running: true, health: "healthy", imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 
 	if err := sup.Reconcile(context.Background()); err != nil {
@@ -189,7 +248,7 @@ func TestReconcileAdoptsAHealthyRunningContainer(t *testing.T) {
 }
 
 func TestReconcileStartsAnExistingStoppedContainer(t *testing.T) {
-	docker := &fakeDocker{exists: true, running: false, startMakesHealthy: true}
+	docker := &fakeDocker{exists: true, running: false, startMakesHealthy: true, imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 
 	if err := sup.Reconcile(context.Background()); err != nil {
@@ -207,7 +266,7 @@ func TestReconcileStartsAnExistingStoppedContainer(t *testing.T) {
 func TestReconcileFallsBackToTheProbeWhenTheImageHasNoHealthcheck(t *testing.T) {
 	// Images built before the HEALTHCHECK landed report no health status. They
 	// must still be supervised rather than assumed fine.
-	docker := &fakeDocker{exists: true, running: true, health: ""}
+	docker := &fakeDocker{exists: true, running: true, health: "", imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 
 	if err := sup.Reconcile(context.Background()); err != nil {
@@ -228,7 +287,7 @@ func TestAnExpectedStopIsNotCountedAsACrash(t *testing.T) {
 	// This is the bug that would make the first successful update look like a
 	// crash-loop: the runtime exits because we asked it to, and if that counts,
 	// a perfectly healthy device drops into recovery.
-	docker := &fakeDocker{exists: true, running: true, health: "healthy", startMakesHealthy: true}
+	docker := &fakeDocker{exists: true, running: true, health: "healthy", startMakesHealthy: true, imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 	ctx := context.Background()
 
@@ -246,7 +305,7 @@ func TestAnExpectedStopIsNotCountedAsACrash(t *testing.T) {
 }
 
 func TestRepeatedUnexpectedExitsEnterRecovery(t *testing.T) {
-	docker := &fakeDocker{exists: true, running: true, health: "healthy", startMakesHealthy: true}
+	docker := &fakeDocker{exists: true, running: true, health: "healthy", startMakesHealthy: true, imagePresent: true}
 	sup := New(docker, fakeSpec{}, &fakeProbe{}, Config{
 		ContainerName:    "test-runtime",
 		MaxCrashes:       3,
@@ -274,7 +333,7 @@ func TestRecoveryStopsTheRuntimeSoDiscoveryStaysExclusive(t *testing.T) {
 	// Only one service on the host may answer the UDP discovery broadcast.
 	// Recovery is defined as "the runtime is not running", which is what lets
 	// the bootloader's responder switch on without ever racing the runtime's.
-	docker := &fakeDocker{exists: true, running: true, health: "healthy"}
+	docker := &fakeDocker{exists: true, running: true, health: "healthy", imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 
 	sup.EnterRecovery(context.Background(), "test")
@@ -293,7 +352,7 @@ func TestASuccessfulRestartDoesNotEraseTheCrashHistory(t *testing.T) {
 	// process down. If a healthy start cleared the count, the evidence would be
 	// zeroed between every crash, the threshold could never be reached, and the
 	// supervisor would restart forever instead of handing the device over.
-	docker := &fakeDocker{exists: true, running: true, health: "healthy", startMakesHealthy: true}
+	docker := &fakeDocker{exists: true, running: true, health: "healthy", startMakesHealthy: true, imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 	ctx := context.Background()
 
@@ -311,7 +370,7 @@ func TestTheCrashHistoryIsForgottenByAgeNotByRecovery(t *testing.T) {
 	// Forgetting still has to happen, or crashes weeks apart would accumulate
 	// into a false loop. The sliding window does it by aging entries out, which
 	// is the only forgetting that is wanted.
-	docker := &fakeDocker{exists: true, running: true, health: "healthy", startMakesHealthy: true}
+	docker := &fakeDocker{exists: true, running: true, health: "healthy", startMakesHealthy: true, imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 	now := time.Now()
 	sup.crashes.now = func() time.Time { return now }
@@ -332,7 +391,7 @@ func TestAnUnhealthyEventStopsTheWedgedRuntime(t *testing.T) {
 	// healthcheck the supervisor would idle forever beside a dead runtime.
 	// Stopping it converts the hang into a die, which then flows through the
 	// ordinary crash accounting.
-	docker := &fakeDocker{exists: true, running: true, health: "healthy"}
+	docker := &fakeDocker{exists: true, running: true, health: "healthy", imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 
 	event := dockerapi.Event{Type: "container", Action: "health_status: unhealthy"}
@@ -345,7 +404,7 @@ func TestAnUnhealthyEventStopsTheWedgedRuntime(t *testing.T) {
 }
 
 func TestEventsForOtherContainersAreIgnored(t *testing.T) {
-	docker := &fakeDocker{exists: true, running: true, health: "healthy"}
+	docker := &fakeDocker{exists: true, running: true, health: "healthy", imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 
 	event := dockerapi.Event{Type: "container", Action: "die"}
@@ -360,7 +419,7 @@ func TestEventsForOtherContainersAreIgnored(t *testing.T) {
 // --- update claim --------------------------------------------------------
 
 func TestBeginUpdateRefusesASecondConcurrentUpdate(t *testing.T) {
-	docker := &fakeDocker{exists: true, running: true, health: "healthy"}
+	docker := &fakeDocker{exists: true, running: true, health: "healthy", imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 
 	if err := sup.BeginUpdate(); err != nil {
@@ -372,7 +431,7 @@ func TestBeginUpdateRefusesASecondConcurrentUpdate(t *testing.T) {
 }
 
 func TestExitsDuringAnUpdateAreNotCrashes(t *testing.T) {
-	docker := &fakeDocker{exists: true, running: true, health: "healthy"}
+	docker := &fakeDocker{exists: true, running: true, health: "healthy", imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 
 	if err := sup.BeginUpdate(); err != nil {
@@ -440,7 +499,7 @@ func TestRestartDelayBacksOffAndIsCapped(t *testing.T) {
 func TestStartTimeoutIsReportedRatherThanHanging(t *testing.T) {
 	// A container that never becomes healthy emits no event to wait for, so a
 	// timeout is the only way to notice.
-	docker := &fakeDocker{exists: true, running: false, health: "starting"}
+	docker := &fakeDocker{exists: true, running: false, health: "starting", imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{err: errors.New("connection refused")})
 
 	err := sup.Reconcile(context.Background())
@@ -452,7 +511,7 @@ func TestStartTimeoutIsReportedRatherThanHanging(t *testing.T) {
 func TestRunEntersRecoveryWhenTheRuntimeCannotStart(t *testing.T) {
 	// Recovery must be reachable precisely when the runtime will not come up:
 	// that is the case RTOP-283 exists for.
-	docker := &fakeDocker{startErr: errors.New("no such image")}
+	docker := &fakeDocker{startErr: errors.New("no such image"), imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{err: errors.New("down")})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
@@ -461,5 +520,125 @@ func TestRunEntersRecoveryWhenTheRuntimeCannotStart(t *testing.T) {
 
 	if got := sup.Status().State; got != StateRecovery {
 		t.Fatalf("want %q when the runtime cannot start, got %q", StateRecovery, got)
+	}
+}
+
+// --- image acquisition ---------------------------------------------------
+
+func TestAFreshInstallPullsTheRuntimeImage(t *testing.T) {
+	// The bootloader is what fetches the runtime on a new device: install.sh
+	// writes the spec and starts the bootloader without pulling anything.
+	// Without this the very first boot goes straight to recovery with
+	// "No such image", which is what the integration suite caught.
+	docker := &fakeDocker{startMakesHealthy: true, imagePresent: false}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if docker.pullCount() != 1 {
+		t.Fatalf("want the image pulled once, got %d pulls", docker.pullCount())
+	}
+	if got := sup.Status().State; got != StateHealthy {
+		t.Fatalf("want %q after pulling and starting, got %q", StateHealthy, got)
+	}
+}
+
+func TestAPresentImageIsNotRePulled(t *testing.T) {
+	// Re-pulling on every restart would turn each one into a network round
+	// trip, and on a slow link into minutes of delay before a PLC that was
+	// working comes back.
+	docker := &fakeDocker{startMakesHealthy: true, imagePresent: true}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if docker.pullCount() != 0 {
+		t.Fatalf("a present image must not be re-pulled, got %d pulls", docker.pullCount())
+	}
+}
+
+func TestAFailedImagePullIsReportedWithTheImageName(t *testing.T) {
+	// An operator seeing "downloading X failed" can check the tag or the
+	// network; "reconcile failed" sends them nowhere.
+	docker := &fakeDocker{imagePresent: false, pullErr: errors.New("manifest unknown")}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+
+	err := sup.Reconcile(context.Background())
+	if err == nil {
+		t.Fatal("a failed pull must surface an error")
+	}
+	if !strings.Contains(err.Error(), "test:1") ||
+		!strings.Contains(err.Error(), "manifest unknown") {
+		t.Fatalf("the error must name the image and the cause, got %v", err)
+	}
+}
+
+func TestTheDownloadIsVisibleInTheStatusWhileItRuns(t *testing.T) {
+	// On a slow device this pull runs for minutes. The difference between
+	// "downloading 50%" and an apparently hung device is whether the editor
+	// has anything to show, so the reason has to be updated DURING the pull,
+	// not merely at the end. Captured from inside the progress callback,
+	// because by the time Reconcile returns the state is already healthy.
+	docker := &fakeDocker{startMakesHealthy: true, imagePresent: false}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+	docker.onPullProgress = func() { docker.observed = sup.Status() }
+
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if docker.observed.State != StateStarting {
+		t.Fatalf("want %q while downloading, got %q", StateStarting, docker.observed.State)
+	}
+	if !strings.Contains(docker.observed.Reason, "downloading") {
+		t.Fatalf("the reason must say what is happening, got %q", docker.observed.Reason)
+	}
+	if !strings.Contains(docker.observed.Reason, "50%") {
+		t.Fatalf("the reason must carry the percentage, got %q", docker.observed.Reason)
+	}
+}
+
+func TestAContainerOnTheWrongImageIsRecreated(t *testing.T) {
+	// The bug the integration suite caught. A container keeps the image
+	// reference it was created from for life, so after a version change the
+	// existing container is the OLD version. Reconcile used to see "exists but
+	// stopped" and simply start it again -- so the update reported success
+	// while the device carried on running the version it started with.
+	docker := &fakeDocker{
+		exists: true, running: false, imagePresent: true, startMakesHealthy: true,
+		// fakeSpec serves "test:1"; this container was built from something else.
+		configImage: "test:0",
+	}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if docker.created != 1 {
+		t.Fatalf("a container on the wrong image must be recreated, creates=%d", docker.created)
+	}
+	if docker.removed == 0 {
+		t.Fatal("the stale container must be removed before recreating")
+	}
+}
+
+func TestAContainerOnTheRightImageIsStillAdopted(t *testing.T) {
+	// The mismatch check must not cost us adoption: a healthy runtime on the
+	// image the spec asks for is left exactly as it is.
+	docker := &fakeDocker{
+		exists: true, running: true, health: "healthy", imagePresent: true,
+		configImage: "test:1", // what fakeSpec asks for
+	}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	created, started, stopped := docker.counts()
+	if created != 0 || started != 0 || stopped != 0 {
+		t.Fatalf("a matching healthy container must be untouched, got create=%d start=%d stop=%d",
+			created, started, stopped)
 	}
 }

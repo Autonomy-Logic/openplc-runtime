@@ -83,6 +83,12 @@ type DockerClient interface {
 	StopContainer(ctx context.Context, name string, grace time.Duration) error
 	RemoveContainer(ctx context.Context, name string, force bool) error
 	StreamEvents(ctx context.Context, name string, handle func(dockerapi.Event)) error
+	// Image access, so the supervisor can fetch a runtime it has been told to
+	// run but does not have. Needed on a fresh install -- install.sh writes
+	// the spec and starts the bootloader without pulling anything -- and
+	// after a data wipe or an operator editing the spec by hand.
+	InspectImage(ctx context.Context, ref string) (*dockerapi.ImageInfo, error)
+	PullImage(ctx context.Context, ref string, onProgress func(dockerapi.PullProgress)) error
 }
 
 // SpecProvider supplies the container definition to create the runtime from.
@@ -406,6 +412,29 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	s.status.Image = inspect.Config.Image
 	s.mu.Unlock()
 
+	// Does the existing container actually match what the spec now asks for?
+	//
+	// This is what makes Reconcile reconcile rather than merely "start
+	// whatever is there". A container is created from an image reference and
+	// keeps it for life, so after a version change the existing one is the OLD
+	// version -- and the branch below would have happily restarted it and
+	// reported success. The update then appeared to work while the device kept
+	// running the version it started with, which is precisely the bug the
+	// integration suite caught.
+	//
+	// It also covers an operator editing the spec by hand (a board mount, an
+	// env var) and restarting the bootloader: the container is rebuilt from
+	// the spec instead of silently keeping the old configuration.
+	desired := s.spec.ImageRef()
+	if inspect.Config.Image != desired {
+		s.log.Info("runtime container is on a different image, recreating",
+			"running", inspect.Config.Image, "desired", desired)
+		if err := s.create(ctx); err != nil {
+			return err
+		}
+		return s.startAndConfirm(ctx)
+	}
+
 	if !inspect.State.Running {
 		s.log.Info("runtime container present but not running",
 			"status", inspect.State.Status, "exitCode", inspect.State.ExitCode)
@@ -436,6 +465,9 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 // not usable.
 func (s *Supervisor) create(ctx context.Context) error {
 	imageRef := s.spec.ImageRef()
+	if err := s.ensureImage(ctx, imageRef); err != nil {
+		return err
+	}
 	if err := s.docker.RemoveContainer(ctx, s.cfg.ContainerName, true); err != nil {
 		return fmt.Errorf("removing stale container %s: %w", s.cfg.ContainerName, err)
 	}
@@ -450,6 +482,43 @@ func (s *Supervisor) create(ctx context.Context) error {
 	s.status.ContainerID = created.ID
 	s.status.Image = imageRef
 	s.mu.Unlock()
+	return nil
+}
+
+// ensureImage pulls imageRef when it is not already present.
+//
+// The bootloader is what fetches the runtime on a fresh device: install.sh
+// writes the spec and starts the bootloader without pulling anything, so
+// without this a brand-new install would go straight to recovery with "No
+// such image". It also covers a spec that names a version whose image was
+// retired, or one an operator edited by hand.
+//
+// Only pulls when the image is absent. A present image is never re-pulled --
+// that would turn every restart into a network round trip, and on a slow link
+// into minutes of delay before a PLC that was working comes back.
+func (s *Supervisor) ensureImage(ctx context.Context, imageRef string) error {
+	if _, err := s.docker.InspectImage(ctx, imageRef); err == nil {
+		return nil
+	} else if !dockerapi.IsNotFound(err) {
+		return fmt.Errorf("checking for image %s: %w", imageRef, err)
+	}
+
+	s.log.Info("runtime image not present locally, pulling", "image", imageRef)
+	// The reason is surfaced so the editor shows "downloading" rather than a
+	// silent wait: on a slow device this pull can run for many minutes.
+	s.setState(StateStarting, fmt.Sprintf("downloading %s", imageRef))
+
+	err := s.docker.PullImage(ctx, imageRef, func(p dockerapi.PullProgress) {
+		if p.Percent == nil {
+			return
+		}
+		s.setState(StateStarting,
+			fmt.Sprintf("downloading %s (%d%%)", imageRef, *p.Percent))
+	})
+	if err != nil {
+		return fmt.Errorf("downloading %s: %w", imageRef, err)
+	}
+	s.log.Info("runtime image pulled", "image", imageRef)
 	return nil
 }
 
