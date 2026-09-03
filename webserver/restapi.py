@@ -20,6 +20,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import webserver.config
 from webserver import project_snapshot
 from webserver.logger import get_logger
+from webserver.update_policy import SIDECAR_PORT, UPDATE_POLICY
 from webserver.version import MIN_EDITOR_VERSION, RUNTIME_VERSION
 
 logger, buffer = get_logger("logger", use_buffer=True)
@@ -111,6 +112,13 @@ def restapi_capabilities():
             minEditorVersion:
               type: string
               description: Oldest OpenPLC Editor version this runtime accepts programs from
+            updatePolicy:
+              type: string
+              enum: [self, managed, manual, none]
+              description: Which mechanism may change this runtime's version
+            sidecarPort:
+              type: integer
+              description: Port of the managing sidecar; null unless updatePolicy is "self"
     """
     return (
         jsonify(
@@ -121,6 +129,11 @@ def restapi_capabilities():
                 # upload and retrieve it later. Unauthenticated like the rest of
                 # this endpoint, so a client can decide before logging in.
                 "projectSnapshot": True,
+                # Who owns this runtime's version (RTOP-283) -- unauthenticated
+                # because the editor picks its actions before it has
+                # credentials. Resolution order: webserver/update_policy.py.
+                "updatePolicy": UPDATE_POLICY,
+                "sidecarPort": SIDECAR_PORT,
             }
         ),
         200,
