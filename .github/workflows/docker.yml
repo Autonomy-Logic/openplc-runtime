@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - 'v*'
+    # The sidecar has its own version line, so it also builds from a branch
+    # push without waiting for a runtime tag. Deliberately no `paths` filter:
+    # GitHub applies it to tag pushes as well, which would make the runtime
+    # release build conditional on sidecar files having changed. The jobs below
+    # gate themselves instead.
+    branches:
+      - development
+      - main
   workflow_dispatch:
     inputs:
       platforms:
@@ -18,6 +26,10 @@ on:
 
 jobs:
   build:
+    # Release tags and manual runs only -- unchanged from before the sidecar
+    # job was added. A branch push produces no semver tag for the metadata
+    # step, so letting it through would fail with an empty tag list.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -67,3 +79,48 @@ jobs:
           # default ("dev") for ad-hoc builds without a release tag.
           build-args: |
             RUNTIME_VERSION=${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+
+  # The sidecar is versioned independently of the runtime (sidecar/VERSION).
+  # Tying it to every runtime tag would publish a long run of byte-identical
+  # images and make "which sidecar is on this device" a meaningless question.
+  sidecar:
+    runs-on: ubuntu-latest
+    # Runs on release tags AND branch pushes: it is a seconds-long
+    # cross-compile, and re-pushing an unchanged sidecar/VERSION is an
+    # idempotent overwrite.
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read sidecar version
+        id: sidecar_version
+        run: echo "version=$(tr -d '[:space:]' < sidecar/VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      # No QEMU step, unlike the runtime build: the sidecar is pure Go and
+      # cross-compiles from the native runner for every target, which takes
+      # seconds instead of the many minutes emulation costs.
+      - name: Build and Push Sidecar
+        uses: docker/build-push-action@v6
+        with:
+          context: ./sidecar
+          push: true
+          platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64,linux/arm/v7' }}
+          build-args: |
+            SIDECAR_VERSION=${{ steps.sidecar_version.outputs.version }}
+          tags: |
+            ghcr.io/autonomy-logic/openplc-runtime-sidecar:${{ steps.sidecar_version.outputs.version }}
+            ghcr.io/autonomy-logic/openplc-runtime-sidecar:latest
