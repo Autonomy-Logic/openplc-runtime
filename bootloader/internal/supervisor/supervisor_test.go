@@ -26,6 +26,10 @@ type fakeDocker struct {
 	running bool
 	health  string // "", "starting", "healthy", "unhealthy"
 	exit    int
+	// configImage is the reference the container was created from, which is
+	// what Reconcile compares against the spec. Defaults to the spec's own
+	// image so existing tests keep describing a matching container.
+	configImage string
 
 	created  int
 	started  int
@@ -57,6 +61,10 @@ func (f *fakeDocker) InspectContainer(_ context.Context, _ string) (*dockerapi.C
 		return nil, &dockerapi.APIError{Status: http.StatusNotFound, Path: "/containers/x/json"}
 	}
 	inspect := &dockerapi.ContainerInspect{ID: "deadbeef"}
+	inspect.Config.Image = f.configImage
+	if inspect.Config.Image == "" {
+		inspect.Config.Image = "test:1"
+	}
 	inspect.State.Running = f.running
 	inspect.State.ExitCode = f.exit
 	if f.health != "" {
@@ -73,6 +81,9 @@ func (f *fakeDocker) CreateContainer(_ context.Context, _ string, _ any) (*docke
 	f.created++
 	f.exists = true
 	f.running = false
+	// A freshly created container carries the spec's image, so a recreate
+	// resolves the mismatch rather than looping forever.
+	f.configImage = "test:1"
 	return &dockerapi.CreateContainerResponse{ID: "deadbeef"}, nil
 }
 
@@ -586,5 +597,48 @@ func TestTheDownloadIsVisibleInTheStatusWhileItRuns(t *testing.T) {
 	}
 	if !strings.Contains(docker.observed.Reason, "50%") {
 		t.Fatalf("the reason must carry the percentage, got %q", docker.observed.Reason)
+	}
+}
+
+func TestAContainerOnTheWrongImageIsRecreated(t *testing.T) {
+	// The bug the integration suite caught. A container keeps the image
+	// reference it was created from for life, so after a version change the
+	// existing container is the OLD version. Reconcile used to see "exists but
+	// stopped" and simply start it again -- so the update reported success
+	// while the device carried on running the version it started with.
+	docker := &fakeDocker{
+		exists: true, running: false, imagePresent: true, startMakesHealthy: true,
+		// fakeSpec serves "test:1"; this container was built from something else.
+		configImage: "test:0",
+	}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if docker.created != 1 {
+		t.Fatalf("a container on the wrong image must be recreated, creates=%d", docker.created)
+	}
+	if docker.removed == 0 {
+		t.Fatal("the stale container must be removed before recreating")
+	}
+}
+
+func TestAContainerOnTheRightImageIsStillAdopted(t *testing.T) {
+	// The mismatch check must not cost us adoption: a healthy runtime on the
+	// image the spec asks for is left exactly as it is.
+	docker := &fakeDocker{
+		exists: true, running: true, health: "healthy", imagePresent: true,
+		configImage: "test:1", // what fakeSpec asks for
+	}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	created, started, stopped := docker.counts()
+	if created != 0 || started != 0 || stopped != 0 {
+		t.Fatalf("a matching healthy container must be untouched, got create=%d start=%d stop=%d",
+			created, started, stopped)
 	}
 }

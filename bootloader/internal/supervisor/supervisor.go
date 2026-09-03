@@ -412,6 +412,29 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	s.status.Image = inspect.Config.Image
 	s.mu.Unlock()
 
+	// Does the existing container actually match what the spec now asks for?
+	//
+	// This is what makes Reconcile reconcile rather than merely "start
+	// whatever is there". A container is created from an image reference and
+	// keeps it for life, so after a version change the existing one is the OLD
+	// version -- and the branch below would have happily restarted it and
+	// reported success. The update then appeared to work while the device kept
+	// running the version it started with, which is precisely the bug the
+	// integration suite caught.
+	//
+	// It also covers an operator editing the spec by hand (a board mount, an
+	// env var) and restarting the bootloader: the container is rebuilt from
+	// the spec instead of silently keeping the old configuration.
+	desired := s.spec.ImageRef()
+	if inspect.Config.Image != desired {
+		s.log.Info("runtime container is on a different image, recreating",
+			"running", inspect.Config.Image, "desired", desired)
+		if err := s.create(ctx); err != nil {
+			return err
+		}
+		return s.startAndConfirm(ctx)
+	}
+
 	if !inspect.State.Running {
 		s.log.Info("runtime container present but not running",
 			"status", inspect.State.Status, "exitCode", inspect.State.ExitCode)

@@ -164,7 +164,7 @@ def write_spec(repository: str, version: str, extra_env: list[str] | None = None
 
 
 def start_bootloader(extra_args: list[str] | None = None) -> None:
-    sh("docker", "rm", "-f", BOOTLOADER_NAME, check=False)
+    remove_container(BOOTLOADER_NAME)
     args = [
         "docker", "run", "-d", "--name", BOOTLOADER_NAME,
         "--restart", "always", "--network", "host",
@@ -176,12 +176,37 @@ def start_bootloader(extra_args: list[str] | None = None) -> None:
     args += extra_args or ["-log-level=debug"]
     sh(*args)
 
+    # Wait for THIS bootloader to answer before returning.
+    #
+    # Without it a case starts polling while nothing is listening on 8445 yet,
+    # and the failures read as "ConnectionRefused" or -- worse -- as progress
+    # belonging to a different case, because a poll can land on a bootloader
+    # that has not been replaced yet. Confirming a fresh, responsive process
+    # removes both by construction.
+    def responsive() -> bool:
+        state = container_state(BOOTLOADER_NAME)
+        if not state.get("State", {}).get("Running"):
+            # A bootloader that exits is restarted by its policy, so a
+            # crash-loop presents as "never becomes responsive". Surface its
+            # own output rather than leaving a bare timeout.
+            return False
+        status, _ = http("/api/bootloader/capabilities")
+        return status == 200
+
+    try:
+        wait_for("the bootloader to start answering", responsive, timeout=60, interval=0.25)
+    except Failure as err:
+        logs = sh("docker", "logs", "--tail", "30", BOOTLOADER_NAME, check=False)
+        raise Failure(f"{err}\nbootloader logs:\n{logs}") from err
+
 
 def reset(repository: str = STUB_REPO, version: str = "v1.0.0",
           extra_env: list[str] | None = None) -> None:
     """Return the host to a known state and start the bootloader."""
-    sh("docker", "rm", "-f", BOOTLOADER_NAME, check=False)
-    sh("docker", "rm", "-f", RUNTIME_NAME, check=False)
+    # Bootloader first: it would otherwise notice the runtime disappearing and
+    # helpfully recreate it, which is exactly its job and exactly wrong here.
+    remove_container(BOOTLOADER_NAME)
+    remove_container(RUNTIME_NAME)
     shutil.rmtree(STATE_DIR, ignore_errors=True)
     seed_data_dir()
     write_spec(repository, version, extra_env)
@@ -202,11 +227,43 @@ def login() -> str:
     return body["access_token"]
 
 
+def remove_container(name: str) -> None:
+    """Remove a container and wait until it is genuinely gone.
+
+    `docker rm -f` returns before removal completes. Starting a replacement
+    under the same name in that window fails with "container is marked for
+    removal", and -- more insidiously -- a bootloader that is still alive keeps
+    supervising with the spec it loaded at startup, so a later case sees
+    environment it never asked for. Both were real failures in this suite
+    before this wait existed.
+    """
+    sh("docker", "rm", "-f", name, check=False)
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        if not container_exists(name):
+            return
+        time.sleep(0.2)
+    raise Failure(f"container {name} was still present 60s after removal")
+
+
+def container_exists(name: str) -> bool:
+    """Whether a container of this exact name exists.
+
+    `docker ps -aq -f name=^x$` rather than `docker inspect`: inspect prints
+    "[]" on stdout for a missing container and only signals absence through
+    its exit code, so a naive empty-stdout check never sees the container go
+    away. This filter prints an id or nothing, with no ambiguity.
+    """
+    return sh("docker", "ps", "-aq", "-f", f"name=^{name}$", check=False) != ""
+
+
 def container_state(name: str) -> dict:
     raw = sh("docker", "inspect", name, check=False)
     if not raw:
         return {}
-    return json.loads(raw)[0]
+    parsed = json.loads(raw)
+    # A missing container inspects to an empty list, not to nothing.
+    return parsed[0] if parsed else {}
 
 
 def bootloader_state() -> str:
@@ -322,10 +379,21 @@ def test_restarting_the_bootloader_adopts_the_running_runtime():
     bootloader hiccup into a plant outage."""
     reset()
     wait_healthy()
-    before = container_state(RUNTIME_NAME)["Id"]
-    started_at = container_state(RUNTIME_NAME)["State"]["StartedAt"]
+    before_state = container_state(RUNTIME_NAME)
+    before, started_at = before_state["Id"], before_state["State"]["StartedAt"]
 
+    # Key off the BOOTLOADER's own start time. Trying to catch the restart
+    # window by polling for "not running" is a race the restart usually wins,
+    # and then the assertion runs against the old process having done nothing.
+    bootloader_started = container_state(BOOTLOADER_NAME)["State"]["StartedAt"]
     sh("docker", "restart", BOOTLOADER_NAME)
+    wait_for(
+        "the bootloader process to be replaced",
+        lambda: container_state(BOOTLOADER_NAME).get("State", {}).get("StartedAt")
+        not in (None, bootloader_started),
+        timeout=60,
+        interval=0.2,
+    )
     wait_healthy()
 
     after = container_state(RUNTIME_NAME)
@@ -458,7 +526,7 @@ def test_a_crash_looping_runtime_ends_in_recovery():
     then dies, which is the shape that matters: a healthy start must not clear
     the crash window, or the threshold is never reached."""
     reset(version="v1.0.0",
-          extra_env=["STUB_FAIL=crash-loop", "STUB_CRASH_AFTER=2"])
+          extra_env=["STUB_FAIL=crash-loop", "STUB_CRASH_AFTER=15"])
     wait_for("recovery after repeated crashes",
              lambda: bootloader_state() == "recovery", timeout=180)
 
@@ -589,16 +657,37 @@ def test_the_real_runtime_image_comes_up_under_the_bootloader():
     served = runtime_version_served()
     if served.get("updatePolicy") != "self":
         raise Failure(f"want updatePolicy self, got {served}")
-    if served.get("dataDir") != DATA_DIR:
-        raise Failure(f"the real runtime must use the mounted data dir, got {served}")
     if not served.get("runtimeVersion"):
         raise Failure(f"the real runtime must report a version, got {served}")
+
+    # The data-directory bug, checked against the real runtime rather than a
+    # field the stub invents. config.py resolves the persistent directory by
+    # container detection, so without the env override the runtime writes a
+    # fresh .env inside the container and ignores the mounted one -- losing
+    # users, the stored project, retain data and licences on every swap.
+    env = container_state(RUNTIME_NAME)["Config"]["Env"]
+    if f"OPENPLC_PERSISTENT_DATA_DIR={DATA_DIR}" not in env:
+        raise Failure(f"the runtime was not pointed at the mounted data dir: {env}")
+
+    inside = sh("docker", "exec", RUNTIME_NAME, "ls", "-a", "/var/run/runtime", check=False)
+    if ".env" in inside.split():
+        raise Failure(
+            "the real runtime wrote its .env inside the container instead of "
+            f"the mount, so a version swap would discard it: {inside!r}"
+        )
+    if not os.path.exists(os.path.join(DATA_DIR, ".env")):
+        raise Failure("the real runtime did not write .env into the mounted data dir")
 
 
 # --- runner ---------------------------------------------------------------
 
 
 def main() -> int:
+    # Leftovers from an interrupted run keep holding port 8445, and a poll that
+    # lands on one reports another run's progress entirely. Clear them first.
+    for name in (BOOTLOADER_NAME, RUNTIME_NAME):
+        remove_container(name)
+
     only = sys.argv[1] if len(sys.argv) > 1 else None
     selected = [c for c in CASES if not only or only in c.__name__]
     if not selected:
