@@ -12,7 +12,7 @@
 # will not start, and every byte in the image is a byte that could stop it
 # starting. There is no shell to debug with, which is the intended trade -- the
 # sidecar's job is to report over HTTP, not to be poked at over exec.
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
 
 ARG TARGETOS
 ARG TARGETARCH
