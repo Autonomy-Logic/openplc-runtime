@@ -22,11 +22,16 @@ os.environ.setdefault("FLASK_ENV", "development")
 import pytest  # noqa: E402
 
 from webserver import restapi  # noqa: E402
+from webserver.runtime_info import runtime_info_bp  # noqa: E402
 
 # The Flask app is a module-level singleton, so register the blueprint exactly
 # once (registering twice raises). Subsequent fixtures only reset the DB.
 if "restapi_blueprint" not in restapi.app_restapi.blueprints:
     restapi.app_restapi.register_blueprint(restapi.restapi_bp, url_prefix="/api")
+# Registered here too so /api/device-info is reachable under test, mirroring
+# what run_https() does in webserver/app.py.
+if "runtime_info" not in restapi.app_restapi.blueprints:
+    restapi.app_restapi.register_blueprint(runtime_info_bp)
 restapi.app_restapi.config.update(TESTING=True)
 
 

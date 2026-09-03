@@ -25,7 +25,9 @@ from webserver import project_snapshot
 from webserver.credentials import CertGen
 from webserver.debug_websocket import init_debug_websocket
 from webserver.discovery.discovery_routes import discovery_bp
-from webserver.discovery.network_discovery import responder as network_discovery_responder
+from webserver.discovery.network_discovery import (
+    responder as network_discovery_responder,
+)
 from webserver.logger import get_logger
 from webserver.plcapp_management import (
     MAX_FILE_SIZE,
@@ -47,6 +49,7 @@ from webserver.restapi import (
     repair_missing_admin,
     restapi_bp,
 )
+from webserver.runtime_info import runtime_info_bp
 from webserver.runtimemanager import RuntimeManager
 
 logger, _ = get_logger("logger", use_buffer=True)
@@ -488,6 +491,10 @@ def run_https():
     # rest api register
     app_restapi.register_blueprint(restapi_bp, url_prefix="/api")
     app_restapi.register_blueprint(discovery_bp)
+    # Carries its own /api prefix, like discovery_bp. Its /api/device-info rule
+    # is static, so Werkzeug matches it ahead of restapi_bp's /api/<command>
+    # catch-all regardless of registration order.
+    app_restapi.register_blueprint(runtime_info_bp)
     register_callback_get(restapi_callback_get)
     register_callback_post(restapi_callback_post)
 
