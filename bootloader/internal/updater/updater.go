@@ -177,6 +177,29 @@ func (u *Updater) run(ctx context.Context, targetVersion string) {
 
 	if err != nil {
 		u.cfg.Log.Error("update failed", "from", previousVersion, "to", targetVersion, "error", err)
+
+		// Only a failure that got as far as touching the container hands the
+		// device to an operator. A bad version name, a full disk or an
+		// unreachable registry changed nothing -- the runtime is still
+		// running the version it was, and stopping it would turn a harmless
+		// refusal into a plant outage. Observed on the SLM-RP4: a failed pull
+		// stopped a RUNNING PLC.
+		var beforeSwap errBeforeSwap
+		if errors.As(err, &beforeSwap) {
+			u.cfg.Log.Info("nothing was changed; leaving the runtime alone",
+				"version", previousVersion)
+			// Re-derive the supervisor's state from the container rather than
+			// leaving it on "updating" forever. BeginUpdate moved it there and
+			// EndUpdate only releases the claim, so without this a device that
+			// merely refused a bad version reports itself as mid-update to the
+			// editor for the rest of its life -- observed on the SLM-RP4.
+			if reconcileErr := u.cfg.Supervisor.Reconcile(ctx); reconcileErr != nil {
+				u.cfg.Log.Warn("could not re-check the runtime after a refused update",
+					"error", reconcileErr)
+			}
+			return
+		}
+
 		// Recovery, not rollback: the operator decides what to install next.
 		u.cfg.Supervisor.EnterRecovery(ctx, fmt.Sprintf(
 			"update from %s to %s failed: %v", previousVersion, targetVersion, err))
@@ -184,6 +207,13 @@ func (u *Updater) run(ctx context.Context, targetVersion string) {
 	}
 	u.cfg.Log.Info("update complete", "from", previousVersion, "to", targetVersion)
 }
+
+// errBeforeSwap marks a failure that happened while the runtime was still
+// untouched, so the caller knows not to enter recovery.
+type errBeforeSwap struct{ err error }
+
+func (e errBeforeSwap) Error() string { return e.err.Error() }
+func (e errBeforeSwap) Unwrap() error { return e.err }
 
 func (u *Updater) execute(ctx context.Context, previousVersion, targetVersion string) error {
 	if previousVersion == targetVersion {
@@ -197,7 +227,7 @@ func (u *Updater) execute(ctx context.Context, previousVersion, targetVersion st
 	previousRef := u.cfg.Spec.ImageRefFor(previousVersion)
 
 	if err := u.checkDiskSpace(ctx, targetRef); err != nil {
-		return err
+		return errBeforeSwap{err}
 	}
 
 	// 1. Pull. Non-destructive: the running version stays on disk.
@@ -206,7 +236,22 @@ func (u *Updater) execute(ctx context.Context, previousVersion, targetVersion st
 		u.setPhase(StatePulling, p.Phase, p.Percent)
 	})
 	if err != nil {
-		return fmt.Errorf("could not download %s: %w", targetRef, err)
+		// A pull can fail for a reason that does not matter: the image is
+		// already here. That covers an air-gapped device with a side-loaded
+		// image, a locally built one, and a registry that is merely
+		// unreachable right now. Refusing in that case would make a version
+		// the device already holds uninstallable -- which is exactly what
+		// happened on the SLM-RP4, where a locally tagged image produced
+		// "pull access denied" and failed an update that could not have
+		// been more ready to succeed.
+		//
+		// Same policy as orchestrator-agent's _pull_runtime_image: only a
+		// confirmed local copy excuses a failed pull.
+		if _, inspectErr := u.cfg.Docker.InspectImage(ctx, targetRef); inspectErr != nil {
+			return errBeforeSwap{fmt.Errorf("could not download %s: %w", targetRef, err)}
+		}
+		u.cfg.Log.Warn("pull failed but the image is already present; continuing",
+			"image", targetRef, "error", err)
 	}
 
 	// 2. Swap. The spec is written BEFORE the container is recreated, so a
@@ -217,7 +262,7 @@ func (u *Updater) execute(ctx context.Context, previousVersion, targetVersion st
 	u.cfg.Spec.Version = targetVersion
 	if err := u.cfg.Spec.Save(u.cfg.SpecPath); err != nil {
 		u.cfg.Spec.Version = previousVersion
-		return fmt.Errorf("could not record the new version: %w", err)
+		return errBeforeSwap{fmt.Errorf("could not record the new version: %w", err)}
 	}
 
 	if err := u.cfg.Supervisor.Stop(ctx); err != nil {
