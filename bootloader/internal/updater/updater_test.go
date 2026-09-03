@@ -270,8 +270,13 @@ func TestReinstallingTheCurrentVersionIsAllowed(t *testing.T) {
 
 // --- failures ------------------------------------------------------------
 
-func TestAFailedPullEntersRecoveryAndTouchesNothing(t *testing.T) {
-	docker := &fakeDocker{inspectSize: 100, pullErr: errors.New("manifest unknown")}
+func TestAFailedPullLeavesTheRunningRuntimeAlone(t *testing.T) {
+	// No local copy either, so there is genuinely nothing to install -- the
+	// case the local-image fallback must NOT swallow.
+	docker := &fakeDocker{
+		inspectErr: errors.New("no such image"),
+		pullErr:    errors.New("manifest unknown"),
+	}
 	sup := &fakeSupervisor{}
 	u, _, specPath := newTestUpdater(t, docker, sup)
 
@@ -284,15 +289,17 @@ func TestAFailedPullEntersRecoveryAndTouchesNothing(t *testing.T) {
 		t.Fatalf("the underlying cause must reach the operator, got %q", progress.Error)
 	}
 	order, reasons := sup.snapshot()
-	// The runtime must not have been stopped: the pull never succeeded, so
-	// there was never a reason to interrupt a working PLC.
+	// Nothing was touched, so nothing may be disturbed. Observed on real
+	// hardware before this was fixed: a failed pull stopped a RUNNING PLC and
+	// dropped the device into recovery, turning a harmless refusal into an
+	// outage.
 	for _, step := range order {
 		if step == "stop" {
 			t.Fatalf("a failed pull must not stop the running runtime: %v", order)
 		}
 	}
-	if len(reasons) != 1 {
-		t.Fatalf("want one recovery call, got %v", reasons)
+	if len(reasons) != 0 {
+		t.Fatalf("a failure before the swap must not enter recovery, got %v", reasons)
 	}
 	// And the recorded version must be unchanged.
 	reloaded, err := runtimespec.Load(specPath)
@@ -353,7 +360,10 @@ func TestTheSupervisorClaimIsAlwaysReleased(t *testing.T) {
 	// Leaking the claim would suppress crash accounting forever, so a runtime
 	// that started crash-looping after a failed update would never reach
 	// recovery.
-	docker := &fakeDocker{inspectSize: 100, pullErr: errors.New("boom")}
+	docker := &fakeDocker{
+		inspectErr: errors.New("no such image"),
+		pullErr:    errors.New("boom"),
+	}
 	sup := &fakeSupervisor{}
 	u, _, _ := newTestUpdater(t, docker, sup)
 
@@ -497,5 +507,111 @@ func TestHumanBytesReadsLikeAnErrorMessage(t *testing.T) {
 		if got := humanBytes(input); got != want {
 			t.Errorf("humanBytes(%d) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestAnImageAlreadyPresentSurvivesAFailedPull(t *testing.T) {
+	// A pull can fail for a reason that does not matter: the image is already
+	// here. That covers an air-gapped device with a side-loaded image, a
+	// locally built one, and a registry that is merely unreachable. Refusing
+	// would make a version the device already holds uninstallable -- which is
+	// what happened on the SLM-RP4, where a locally tagged image produced
+	// "pull access denied" and failed an update that was entirely ready.
+	docker := &fakeDocker{
+		inspectSize: 100,
+		pullErr:     errors.New("pull access denied for openplc-runtime"),
+	}
+	sup := &fakeSupervisor{}
+	u, _, _ := newTestUpdater(t, docker, sup)
+
+	if err := u.Start(context.Background(), "v4.2.1"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	waitForState(t, u, StateSuccess)
+
+	// And it must genuinely swap, not merely report success.
+	order, _ := sup.snapshot()
+	if strings.Join(order, ",") != "begin,stop,reconcile,end" {
+		t.Fatalf("want a real swap, got %v", order)
+	}
+}
+
+func TestAFailedPullWithNoLocalImageStillFails(t *testing.T) {
+	// The fallback must not swallow the case it exists to distinguish: no
+	// local copy means there is genuinely nothing to install.
+	docker := &fakeDocker{
+		inspectErr: errors.New("no such image"),
+		pullErr:    errors.New("manifest unknown"),
+	}
+	sup := &fakeSupervisor{}
+	u, _, _ := newTestUpdater(t, docker, sup)
+
+	if err := u.Start(context.Background(), "v9.9.9"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	progress := waitForState(t, u, StateFailed)
+	if !strings.Contains(progress.Error, "could not download") {
+		t.Fatalf("want a download failure, got %q", progress.Error)
+	}
+	if _, reasons := sup.snapshot(); len(reasons) != 0 {
+		t.Fatalf("nothing was touched, so no recovery, got %v", reasons)
+	}
+}
+
+func TestAFailureAfterTheSwapBeginsDoesEnterRecovery(t *testing.T) {
+	// The distinction matters in both directions: once the container has been
+	// replaced there IS something wrong with the device, and an operator has
+	// to be handed the controls.
+	docker := &fakeDocker{inspectSize: 100}
+	sup := &fakeSupervisor{reconcileErr: errors.New("exited during start-up with code 1")}
+	u, _, _ := newTestUpdater(t, docker, sup)
+
+	if err := u.Start(context.Background(), "v4.2.1"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	waitForState(t, u, StateFailed)
+
+	_, reasons := sup.snapshot()
+	if len(reasons) != 1 {
+		t.Fatalf("a failed start must enter recovery, got %v", reasons)
+	}
+}
+
+func TestARefusedUpdateLeavesTheSupervisorReportingReality(t *testing.T) {
+	// BeginUpdate moves the supervisor to "updating" and EndUpdate only
+	// releases the claim, so without re-deriving state a device that merely
+	// refused a bad version reports itself as mid-update forever. Seen on the
+	// SLM-RP4: a failed pull left the bootloader stuck on "updating" while the
+	// PLC ran happily underneath.
+	docker := &fakeDocker{
+		inspectErr: errors.New("no such image"),
+		pullErr:    errors.New("manifest unknown"),
+	}
+	sup := &fakeSupervisor{}
+	u, _, _ := newTestUpdater(t, docker, sup)
+
+	if err := u.Start(context.Background(), "v9.9.9"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	waitForState(t, u, StateFailed)
+
+	waitFor(t, func() bool {
+		order, _ := sup.snapshot()
+		for _, step := range order {
+			if step == "reconcile" {
+				return true
+			}
+		}
+		return false
+	})
+	// And still nothing stopped.
+	order, reasons := sup.snapshot()
+	for _, step := range order {
+		if step == "stop" {
+			t.Fatalf("nothing may be stopped: %v", order)
+		}
+	}
+	if len(reasons) != 0 {
+		t.Fatalf("no recovery either, got %v", reasons)
 	}
 }
