@@ -14,6 +14,7 @@ import (
 
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimeauth"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/supervisor"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/updater"
 )
 
 const (
@@ -444,5 +445,143 @@ func TestTheApiOffersNoProgramOrPlcControl(t *testing.T) {
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("%s must not exist, got %d", path, resp.StatusCode)
 		}
+	}
+}
+
+// --- update --------------------------------------------------------------
+
+type fakeUpdater struct {
+	startErr error
+	started  []string
+	progress updater.Progress
+}
+
+func (f *fakeUpdater) Start(_ context.Context, version string) error {
+	if f.startErr != nil {
+		return f.startErr
+	}
+	f.started = append(f.started, version)
+	return nil
+}
+
+func (f *fakeUpdater) Progress() updater.Progress { return f.progress }
+
+// newTestServerWithUpdater is newTestServer plus an updater, kept separate so
+// the existing tests keep exercising the routes that do not need one.
+func newTestServerWithUpdater(t *testing.T, up Updater) *httptest.Server {
+	t.Helper()
+	srv := &Server{cfg: Config{
+		Version:        "bootloader-v1.0.0-test",
+		RuntimeVersion: func() string { return "v4.2.1" },
+		Secrets:        &runtimeauth.Secrets{JWTSecret: testSecret, Pepper: testPepper},
+		Users:          &fakeUsers{count: 1},
+		Supervisor:     healthySupervisor(),
+		Logs:           &fakeLogs{},
+		Updater:        up,
+		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}}
+	mux := http.NewServeMux()
+	srv.routes(mux)
+	httpSrv := httptest.NewServer(mux)
+	t.Cleanup(httpSrv.Close)
+	return httpSrv
+}
+
+func TestAnUpdateIsAcceptedAndRunsInTheBackground(t *testing.T) {
+	// 202, not 200: a pull can run for many minutes on a plant link, so the
+	// request returns as soon as the work is under way and the client polls.
+	up := &fakeUpdater{}
+	srv := newTestServerWithUpdater(t, up)
+
+	resp, body := postJSON(t, srv, "/api/bootloader/update", validToken(t),
+		`{"version":"v4.2.2"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("want 202, got %d (%v)", resp.StatusCode, body)
+	}
+	if len(up.started) != 1 || up.started[0] != "v4.2.2" {
+		t.Fatalf("want the requested version started, got %v", up.started)
+	}
+}
+
+func TestDowngradeUsesTheSameRequestAsUpgrade(t *testing.T) {
+	// There is no separate direction and no version floor: a user may
+	// deliberately pair an older runtime with an older editor.
+	up := &fakeUpdater{}
+	srv := newTestServerWithUpdater(t, up)
+
+	resp, _ := postJSON(t, srv, "/api/bootloader/update", validToken(t),
+		`{"version":"v4.1.10"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("a downgrade must be accepted like any other version, got %d",
+			resp.StatusCode)
+	}
+}
+
+func TestASecondUpdateAnswers409WithTheProgressAttached(t *testing.T) {
+	// Attaching the progress lets a second editor follow along rather than
+	// guess what the first one asked for.
+	up := &fakeUpdater{
+		startErr: updater.ErrInProgress,
+		progress: updater.Progress{State: updater.StatePulling, To: "v4.2.2"},
+	}
+	srv := newTestServerWithUpdater(t, up)
+
+	resp, body := postJSON(t, srv, "/api/bootloader/update", validToken(t),
+		`{"version":"v4.2.3"}`)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("want 409, got %d", resp.StatusCode)
+	}
+	progress, ok := body["progress"].(map[string]any)
+	if !ok {
+		t.Fatalf("the in-flight progress must be attached, got %v", body)
+	}
+	if progress["to"] != "v4.2.2" {
+		t.Fatalf("want the in-flight target, got %v", progress["to"])
+	}
+}
+
+func TestAnInvalidVersionIsRefusedWithTheReason(t *testing.T) {
+	up := &fakeUpdater{startErr: errors.New(`"evil.example.com/x:v1" is not a valid version tag`)}
+	srv := newTestServerWithUpdater(t, up)
+
+	resp, body := postJSON(t, srv, "/api/bootloader/update", validToken(t),
+		`{"version":"evil.example.com/x:v1"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+	if msg, _ := body["error"].(string); !strings.Contains(msg, "not a valid version tag") {
+		t.Fatalf("the reason must reach the operator, got %q", msg)
+	}
+}
+
+func TestUpdateProgressIsPollable(t *testing.T) {
+	fifty := 50
+	up := &fakeUpdater{progress: updater.Progress{
+		State: updater.StatePulling, From: "v4.2.1", To: "v4.2.2",
+		Phase: "Downloading", Percent: &fifty,
+	}}
+	srv := newTestServerWithUpdater(t, up)
+
+	resp, body := get(t, srv, "/api/bootloader/update", validToken(t))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if body["state"] != string(updater.StatePulling) {
+		t.Fatalf("want pulling, got %v", body["state"])
+	}
+	if body["percent"].(float64) != 50 {
+		t.Fatalf("want 50%%, got %v", body["percent"])
+	}
+}
+
+func TestUpdateRoutesRequireAToken(t *testing.T) {
+	srv := newTestServerWithUpdater(t, &fakeUpdater{})
+	resp, _ := postJSON(t, srv, "/api/bootloader/update", "", `{"version":"v4.2.2"}`)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", resp.StatusCode)
+	}
+	resp, _ = get(t, srv, "/api/bootloader/update", "")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401 on progress too, got %d", resp.StatusCode)
 	}
 }
