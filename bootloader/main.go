@@ -38,6 +38,7 @@ import (
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/health"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimeauth"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimespec"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/selfupdate"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/supervisor"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/updater"
 )
@@ -74,6 +75,26 @@ func main() {
 	}
 
 	log := newLogger(*logLevel)
+
+	// Self-update helper mode.
+	//
+	// A container cannot replace itself, so a bootloader being updated spawns
+	// a one-shot child from the NEW image and that child does the swap from
+	// outside. This is that child: it replaces its parent and exits, and it
+	// must never fall through into ordinary bootloader operation -- two
+	// bootloaders supervising one runtime is exactly the race this design
+	// exists to avoid.
+	if selfupdate.IsChild() {
+		log.Info("running as a self-update helper", "version", version)
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		if err := selfupdate.Execute(ctx, dockerapi.New(*socket), log.With("component", "selfupdate")); err != nil {
+			log.Error("self-update failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	log.Info("openplc-bootloader starting", "version", version, "stateDir", *stateDir)
 
 	if err := run(log, runConfig{
@@ -170,6 +191,7 @@ func run(log *slog.Logger, cfg runConfig) error {
 		Supervisor:     sup,
 		Logs:           docker,
 		Updater:        upd,
+		SelfUpdater:    bootloaderSelfUpdater{docker: docker, log: log.With("component", "selfupdate")},
 		Log:            log.With("component", "api"),
 	})
 	if err != nil {
@@ -209,6 +231,25 @@ func run(log *slog.Logger, cfg runConfig) error {
 
 	log.Info("bootloader stopped; runtime container left running")
 	return nil
+}
+
+// bootloaderSelfUpdater adapts the selfupdate package to the API's interface.
+//
+// The repository is left empty so the package's default applies: a bootloader
+// pulling its replacement from somewhere an API caller chose would be a way to
+// run arbitrary images as host root.
+type bootloaderSelfUpdater struct {
+	docker *dockerapi.Client
+	log    *slog.Logger
+}
+
+func (b bootloaderSelfUpdater) Start(ctx context.Context, version string) error {
+	// The repository is NOT taken from the API request: a bootloader pulling
+	// its replacement from wherever a caller named would be a way to run an
+	// arbitrary image as host root. The env override exists for the
+	// integration harness, which has no route to ghcr.io, and is set at
+	// install time rather than per request.
+	return selfupdate.Start(ctx, b.docker, os.Getenv("OPENPLC_BOOTLOADER_REPOSITORY"), version, b.log)
 }
 
 // openRuntimeCredentials loads the runtime's secrets and user database.

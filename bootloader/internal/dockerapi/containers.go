@@ -24,6 +24,26 @@ type ContainerState struct {
 	} `json:"Health"`
 }
 
+// ContainerHostConfig is the part of a container's host configuration the
+// bootloader needs to reproduce when it replaces itself.
+//
+// Captured from the RUNNING container rather than reconstructed from defaults:
+// an operator may have installed with extra mounts or a different port, and
+// a self-update that silently dropped them would leave a device subtly
+// misconfigured in a way nobody would connect to "the bootloader updated".
+type ContainerHostConfig struct {
+	Binds         []string      `json:"Binds"`
+	NetworkMode   string        `json:"NetworkMode"`
+	Privileged    bool          `json:"Privileged"`
+	RestartPolicy RestartPolicy `json:"RestartPolicy"`
+}
+
+// RestartPolicy mirrors Docker's shape.
+type RestartPolicy struct {
+	Name              string `json:"Name"`
+	MaximumRetryCount int    `json:"MaximumRetryCount,omitempty"`
+}
+
 // ContainerInspect is the subset of GET /containers/{id}/json we use.
 type ContainerInspect struct {
 	ID     string         `json:"Id"`
@@ -32,9 +52,11 @@ type ContainerInspect struct {
 	Config struct {
 		Image  string   `json:"Image"`
 		Env    []string `json:"Env"`
+		Cmd    []string `json:"Cmd"`
 		Labels map[string]string
 	} `json:"Config"`
-	Image string `json:"Image"` // resolved image ID, not the tag
+	HostConfig ContainerHostConfig `json:"HostConfig"`
+	Image      string              `json:"Image"` // resolved image ID, not the tag
 }
 
 // HealthStatus returns the container's healthcheck verdict, or "" when the

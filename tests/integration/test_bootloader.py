@@ -658,6 +658,70 @@ def test_restart_brings_the_runtime_back():
 
 
 @case
+def test_the_bootloader_replaces_itself_without_disturbing_the_runtime():
+    """A bootloader update must not interrupt a running PLC.
+
+    Losing the ability to manage a device is a bad afternoon; stopping its
+    plant is a different category of problem. This is the whole reason the
+    swap is done by a one-shot helper from outside rather than by the
+    bootloader trying to remove itself.
+    """
+    reset(version="v1.0.0")
+    wait_healthy()
+    token = login()
+
+    runtime_before = container_state(RUNTIME_NAME)["Id"]
+    started_before = container_state(RUNTIME_NAME)["State"]["StartedAt"]
+    bootloader_before = container_state(BOOTLOADER_NAME)["Id"]
+
+    # The bootloader pulls its replacement from its own repository, so point
+    # that at the local registry and publish a tag there to pull.
+    sh("docker", "tag", BOOTLOADER_IMAGE, f"{REGISTRY}/openplc-bootloader:v2")
+    sh("docker", "push", "-q", f"{REGISTRY}/openplc-bootloader:v2")
+    # Restart the bootloader with the repository override so its self-update
+    # resolves inside the harness rather than reaching for ghcr.io.
+    remove_container(BOOTLOADER_NAME)
+    sh("docker", "run", "-d", "--name", BOOTLOADER_NAME,
+       "--restart", "always", "--network", "host",
+       "-e", f"OPENPLC_BOOTLOADER_REPOSITORY={REGISTRY}/openplc-bootloader",
+       "-v", "/var/run/docker.sock:/var/run/docker.sock",
+       "-v", f"{STATE_DIR}:{STATE_DIR}",
+       "-v", f"{DATA_DIR}:{DATA_DIR}:ro",
+       BOOTLOADER_IMAGE, "-log-level=debug")
+    wait_healthy()
+    token = login()
+    bootloader_before = container_state(BOOTLOADER_NAME)["Id"]
+
+    status, body = http("/api/bootloader/self-update", "POST", {"version": "v2"}, token)
+    if status != 202:
+        raise Failure(f"want 202, got {status}: {body}")
+
+    # The bootloader is replaced, so it goes away and comes back under the
+    # same name with a new container id.
+    wait_for(
+        "the bootloader to be replaced",
+        lambda: container_state(BOOTLOADER_NAME).get("Id") not in (None, "", bootloader_before),
+        timeout=120,
+        interval=0.5,
+    )
+    wait_healthy(timeout=120)
+
+    runtime_after = container_state(RUNTIME_NAME)
+    if runtime_after["Id"] != runtime_before:
+        raise Failure("the runtime container was replaced by a bootloader update")
+    if runtime_after["State"]["StartedAt"] != started_before:
+        raise Failure("the runtime was restarted by a bootloader update")
+    if not runtime_after["State"]["Running"]:
+        raise Failure("the runtime must keep running throughout a bootloader update")
+
+    # The one-shot helper must not be left with a restart policy, or it would
+    # re-run the swap on every daemon start.
+    helper = container_state(f"{BOOTLOADER_NAME}-selfupdate")
+    if helper and helper.get("HostConfig", {}).get("RestartPolicy", {}).get("Name") != "no":
+        raise Failure(f"the helper must never restart: {helper.get('HostConfig')}")
+
+
+@case
 def test_the_real_runtime_image_comes_up_under_the_bootloader():
     """Everything above uses the stub. This proves the real thing works: the
     actual OpenPLC runtime, started by the bootloader, reaching healthy and
