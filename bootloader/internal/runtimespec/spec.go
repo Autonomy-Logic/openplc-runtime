@@ -35,7 +35,7 @@
 //     also restart it would race the crash-loop accounting and hide exactly
 //     the signal recovery mode depends on.
 //
-// Board-specific additions come from a JSON file in the sidecar's own volume,
+// Board-specific additions come from a JSON file in the bootloader's own volume,
 // written by install.sh. That file may only ADD binds and environment; it can
 // never remove privilege, change the network mode, or introduce a CPU limit.
 // Validation is strict because the file is the one operator-supplied input to
@@ -84,7 +84,7 @@ type CreatePayload struct {
 type Config struct {
 	// Repository is the image repository, without a tag.
 	Repository string `json:"repository"`
-	// Version is the tag currently desired. The sidecar rewrites this when an
+	// Version is the tag currently desired. The bootloader rewrites this when an
 	// update succeeds, which is what makes the choice survive a reboot.
 	Version string `json:"version"`
 	// DataDir is the host path holding the runtime's persistent data. Bound
@@ -97,21 +97,21 @@ type Config struct {
 	ExtraBinds []string `json:"extraBinds,omitempty"`
 	// ExtraEnv are additional KEY=VALUE pairs.
 	ExtraEnv []string `json:"extraEnv,omitempty"`
-	// SidecarPort is advertised to the runtime so /api/capabilities can tell
+	// BootloaderPort is advertised to the runtime so /api/capabilities can tell
 	// the editor where to send an update request.
-	SidecarPort int `json:"sidecarPort,omitempty"`
+	BootloaderPort int `json:"bootloaderPort,omitempty"`
 }
 
 const (
-	DefaultRepository  = "ghcr.io/autonomy-logic/openplc-runtime"
-	DefaultDataDir     = "/var/lib/openplc-runtime"
-	DefaultSidecarPort = 8445
+	DefaultRepository     = "ghcr.io/autonomy-logic/openplc-runtime"
+	DefaultDataDir        = "/var/lib/openplc-runtime"
+	DefaultBootloaderPort = 8445
 )
 
 // forbiddenBindTargets are host paths that must never be handed to the runtime
 // container. The docker socket is the important one: mounting it would give
 // the runtime's HTTP API control of every container on the host, which is
-// precisely the privilege the sidecar exists to keep away from it.
+// precisely the privilege the bootloader exists to keep away from it.
 var forbiddenBindSources = []string{
 	"/var/run/docker.sock",
 	"/run/docker.sock",
@@ -140,7 +140,7 @@ func Load(path string) (*Config, error) {
 }
 
 // Save writes the config back, atomically, so a crash mid-write cannot leave
-// the sidecar unable to parse its own spec on the next boot.
+// the bootloader unable to parse its own spec on the next boot.
 func (c *Config) Save(path string) error {
 	encoded, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
@@ -180,8 +180,8 @@ func (c *Config) applyDefaults() {
 	if c.DataDir == "" {
 		c.DataDir = DefaultDataDir
 	}
-	if c.SidecarPort == 0 {
-		c.SidecarPort = DefaultSidecarPort
+	if c.BootloaderPort == 0 {
+		c.BootloaderPort = DefaultBootloaderPort
 	}
 }
 
@@ -196,8 +196,8 @@ func (c *Config) Validate() error {
 	if !filepath.IsAbs(c.DataDir) {
 		return fmt.Errorf("dataDir %q must be an absolute path", c.DataDir)
 	}
-	if c.SidecarPort < 1 || c.SidecarPort > 65535 {
-		return fmt.Errorf("sidecarPort %d is out of range", c.SidecarPort)
+	if c.BootloaderPort < 1 || c.BootloaderPort > 65535 {
+		return fmt.Errorf("bootloaderPort %d is out of range", c.BootloaderPort)
 	}
 	for _, bind := range c.ExtraBinds {
 		if err := validateBind(bind); err != nil {
@@ -265,9 +265,9 @@ func (c *Config) ContainerSpec(imageRef string) any {
 
 	env := []string{
 		// Tells /api/capabilities to report updatePolicy "self". Only our
-		// sidecar sets this, which is what makes the answer trustworthy.
+		// bootloader sets this, which is what makes the answer trustworthy.
 		"OPENPLC_UPDATE_POLICY=self",
-		fmt.Sprintf("OPENPLC_SIDECAR_PORT=%d", c.SidecarPort),
+		fmt.Sprintf("OPENPLC_BOOTLOADER_PORT=%d", c.BootloaderPort),
 	}
 	env = append(env, c.ExtraEnv...)
 

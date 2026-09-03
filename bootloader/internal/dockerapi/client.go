@@ -1,7 +1,7 @@
 // Package dockerapi is a minimal client for the Docker Engine API over the
 // host's unix socket.
 //
-// Hand-rolled rather than using the official SDK on purpose: the sidecar needs
+// Hand-rolled rather than using the official SDK on purpose: the bootloader needs
 // eight calls, and the SDK brings a dependency tree into the one component
 // whose job is to still work when everything else is broken. The Engine API is
 // JSON over HTTP; the only unusual part is dialing a unix socket instead of a
@@ -23,8 +23,8 @@ import (
 )
 
 // DefaultSocket is where the Docker daemon listens on a standard install. The
-// sidecar bind-mounts it read-write; there is no read-only mode for a socket,
-// which is why the sidecar stays small enough to audit.
+// bootloader bind-mounts it read-write; there is no read-only mode for a socket,
+// which is why the bootloader stays small enough to audit.
 const DefaultSocket = "/var/run/docker.sock"
 
 // apiVersion is pinned low enough to work on the oldest engine we support.
@@ -213,7 +213,7 @@ func (c *Client) Version(ctx context.Context) (Version, error) {
 	return v, err
 }
 
-// Version is the subset of /version the sidecar reports.
+// Version is the subset of /version the bootloader reports.
 type Version struct {
 	Version    string `json:"Version"`
 	APIVersion string `json:"ApiVersion"`

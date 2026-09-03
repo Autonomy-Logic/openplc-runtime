@@ -1,17 +1,19 @@
 // Package supervisor owns the runtime container's lifecycle.
 //
-// It is the bootloader half of RTOP-283: at boot it reconciles the runtime
-// container into existence, then sits blocked on the Docker events stream and
-// does nothing until something happens. When the runtime dies it restarts it,
-// and when it dies repeatedly it stops trying and enters recovery so an
-// operator can reach the device from the editor.
+// This is the part of the bootloader that decides what the runtime container
+// should be doing: at boot it reconciles that container into existence, then
+// sits blocked on the Docker events stream and does nothing until something
+// happens. When the runtime dies it restarts it, and when it dies repeatedly
+// it stops trying and enters recovery, so an operator can reach the device
+// from the editor instead of the bootloader hammering a runtime that will
+// never come up.
 //
 // Two boundaries are deliberate and easy to get wrong:
 //
 //   - Health means the runtime WEBSERVER came up. Whether plc_main is running,
 //     whether a program is loaded, and whether that program errors are all the
 //     webserver's concern -- it already restarts plc_main and drops to safe
-//     mode on rapid crashes. If the sidecar looked at PLC state, a user
+//     mode on rapid crashes. If the bootloader looked at PLC state, a user
 //     uploading broken logic would trigger a runtime recovery, which would be
 //     a spectacular way to turn a program bug into a device outage.
 //
@@ -28,7 +30,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autonomy-Logic/openplc-runtime/sidecar/internal/dockerapi"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
 )
 
 // State is the supervisor's externally visible condition, reported by the
@@ -240,7 +242,7 @@ func (s *Supervisor) setState(state State, reason string) {
 // reconnected, because losing the watch is not a reason to stop supervising.
 func (s *Supervisor) Run(ctx context.Context) error {
 	if err := s.docker.Ping(ctx); err != nil {
-		// Without the socket the sidecar cannot do its job at all, and saying
+		// Without the socket the bootloader cannot do its job at all, and saying
 		// so plainly beats failing later inside a container create.
 		return fmt.Errorf("docker socket unreachable at start-up: %w", err)
 	}
@@ -381,9 +383,9 @@ func (s *Supervisor) handleWedged(ctx context.Context) {
 // call at any time.
 //
 // Adoption is the important property: a running healthy container is left
-// exactly as it is. The sidecar restarts (its own crash, a self-update) far
+// exactly as it is. The bootloader restarts (its own crash, a self-update) far
 // more often than the runtime does, and a reconcile that recreated or bounced
-// a working runtime would turn a sidecar hiccup into a plant outage.
+// a working runtime would turn a bootloader hiccup into a plant outage.
 func (s *Supervisor) Reconcile(ctx context.Context) error {
 	inspect, err := s.docker.InspectContainer(ctx, s.cfg.ContainerName)
 	switch {
@@ -464,7 +466,7 @@ func (s *Supervisor) startAndConfirm(ctx context.Context) error {
 //
 // Polling, not events: a container that never becomes healthy emits no event
 // to wait for, so a timeout is the only way to notice. The poll is on the
-// sidecar's own clock and touches nothing in the scan path.
+// bootloader's own clock and touches nothing in the scan path.
 func (s *Supervisor) awaitHealthy(ctx context.Context) error {
 	deadline := time.Now().Add(s.cfg.StartTimeout)
 	const pollInterval = 2 * time.Second

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autonomy-Logic/openplc-runtime/sidecar/internal/dockerapi"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
 )
 
 // --- fakes ---------------------------------------------------------------
@@ -169,9 +169,9 @@ func TestReconcileCreatesAndStartsAMissingContainer(t *testing.T) {
 }
 
 func TestReconcileAdoptsAHealthyRunningContainer(t *testing.T) {
-	// The sidecar restarts far more often than the runtime does -- its own
+	// The bootloader restarts far more often than the runtime does -- its own
 	// crash, a self-update. A reconcile that recreated or bounced a working
-	// runtime would turn a sidecar hiccup into a plant outage.
+	// runtime would turn a bootloader hiccup into a plant outage.
 	docker := &fakeDocker{exists: true, running: true, health: "healthy"}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 
@@ -273,7 +273,7 @@ func TestRepeatedUnexpectedExitsEnterRecovery(t *testing.T) {
 func TestRecoveryStopsTheRuntimeSoDiscoveryStaysExclusive(t *testing.T) {
 	// Only one service on the host may answer the UDP discovery broadcast.
 	// Recovery is defined as "the runtime is not running", which is what lets
-	// the sidecar's responder switch on without ever racing the runtime's.
+	// the bootloader's responder switch on without ever racing the runtime's.
 	docker := &fakeDocker{exists: true, running: true, health: "healthy"}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 

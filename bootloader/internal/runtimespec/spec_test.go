@@ -32,8 +32,8 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if cfg.DataDir != DefaultDataDir {
 		t.Fatalf("want default data dir, got %q", cfg.DataDir)
 	}
-	if cfg.SidecarPort != DefaultSidecarPort {
-		t.Fatalf("want default sidecar port, got %d", cfg.SidecarPort)
+	if cfg.BootloaderPort != DefaultBootloaderPort {
+		t.Fatalf("want default bootloader port, got %d", cfg.BootloaderPort)
 	}
 }
 
@@ -57,7 +57,7 @@ func TestLoadRequiresAVersion(t *testing.T) {
 // --- bind validation -----------------------------------------------------
 
 func TestTheDockerSocketCannotBeMountedIntoTheRuntime(t *testing.T) {
-	// This is the whole security argument for the split: the sidecar holds the
+	// This is the whole security argument for the split: the bootloader holds the
 	// socket, the runtime never does. Mounting it into the runtime would give
 	// its HTTP API control of every container on the host.
 	for _, bind := range []string{
@@ -219,11 +219,11 @@ func TestContainerSpecSetsTheRealTimeUlimits(t *testing.T) {
 	}
 }
 
-func TestContainerSpecTellsTheRuntimeItIsSidecarManaged(t *testing.T) {
+func TestContainerSpecTellsTheRuntimeItIsBootloaderManaged(t *testing.T) {
 	// This is what makes /api/capabilities report updatePolicy "self". Only our
-	// sidecar sets it, which is what makes the answer trustworthy -- an
+	// bootloader sets it, which is what makes the answer trustworthy -- an
 	// orchestrator vPLC never gets it and so reports "managed".
-	cfg := &Config{Version: "v4.2.1", SidecarPort: 8445}
+	cfg := &Config{Version: "v4.2.1", BootloaderPort: 8445}
 	cfg.applyDefaults()
 	spec := decodeSpec(t, cfg)
 
@@ -232,15 +232,15 @@ func TestContainerSpecTellsTheRuntimeItIsSidecarManaged(t *testing.T) {
 		switch raw.(string) {
 		case "OPENPLC_UPDATE_POLICY=self":
 			sawPolicy = true
-		case "OPENPLC_SIDECAR_PORT=8445":
+		case "OPENPLC_BOOTLOADER_PORT=8445":
 			sawPort = true
 		}
 	}
 	if !sawPolicy {
-		t.Error("the runtime must be told it is sidecar-managed")
+		t.Error("the runtime must be told it is bootloader-managed")
 	}
 	if !sawPort {
-		t.Error("the runtime must be told where the sidecar listens")
+		t.Error("the runtime must be told where the bootloader listens")
 	}
 }
 
@@ -260,7 +260,7 @@ func TestExtraBindsAreAppendedNotSubstituted(t *testing.T) {
 // --- persistence ---------------------------------------------------------
 
 func TestSaveThenLoadRoundTrips(t *testing.T) {
-	// The sidecar rewrites version on a successful update; that choice has to
+	// The bootloader rewrites version on a successful update; that choice has to
 	// survive a reboot or the device would revert on next boot.
 	path := writeSpec(t, `{"version": "v4.2.0"}`)
 	cfg, err := Load(path)
