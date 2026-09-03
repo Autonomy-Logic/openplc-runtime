@@ -57,7 +57,12 @@ cmd_up() {
     # Privileged because it runs a Docker daemon. The repo is mounted
     # read-only so image builds inside can use it as a build context without
     # any risk of a test writing to the working tree.
+    # The runtime and bootloader run with --network host INSIDE this
+    # container, so publishing here is what lets a browser on the developer's
+    # machine reach them -- which is how the editor and web UI get tested
+    # against a real device without one on the desk.
     docker run -d --name "$HOST_CONTAINER" --privileged \
+        -p 8443:8443 -p 8445:8445 \
         -v "$DOCKER_VOLUME":/var/lib/docker \
         -v "$REPO_ROOT":/workspace:ro \
         "$HOST_IMAGE" sleep infinity >/dev/null

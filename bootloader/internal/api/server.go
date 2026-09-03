@@ -60,6 +60,16 @@ type Updater interface {
 	Progress() updater.Progress
 }
 
+// SelfUpdater replaces the bootloader with a newer version of itself.
+//
+// Start returns once the helper that performs the swap is running: this
+// process is about to be stopped by it, so there is no completion to report
+// and nothing to poll -- the client reconnects and reads the new version from
+// capabilities.
+type SelfUpdater interface {
+	Start(ctx context.Context, version string) error
+}
+
 // Authenticator resolves credentials against the runtime's account set.
 type Authenticator interface {
 	Authenticate(ctx context.Context, username, password, pepper string) (*runtimeauth.User, error)
@@ -80,6 +90,7 @@ type Config struct {
 	Supervisor     Supervisor
 	Logs           LogReader
 	Updater        Updater
+	SelfUpdater    SelfUpdater
 	Log            *slog.Logger
 }
 
@@ -137,6 +148,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/bootloader/restart", s.authenticated(s.handleRestart))
 	mux.HandleFunc("POST /api/bootloader/update", s.authenticated(s.handleUpdate))
 	mux.HandleFunc("GET /api/bootloader/update", s.authenticated(s.handleUpdateProgress))
+	mux.HandleFunc("POST /api/bootloader/self-update", s.authenticated(s.handleSelfUpdate))
 }
 
 // ListenAndServe blocks until ctx is cancelled or the listener fails.
@@ -415,6 +427,41 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateProgress(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.cfg.Updater.Progress())
+}
+
+// handleSelfUpdate replaces the bootloader itself.
+//
+// Separate from the runtime update on purpose: they change different things
+// and fail differently. A bootloader that will not come back costs the ability
+// to manage the device; a runtime that will not come back stops the plant. The
+// runtime container is untouched here, so a PLC keeps running throughout.
+//
+// There is no progress to poll. This process is replaced as part of the
+// operation, so the client's connection ends with it -- reconnecting and
+// reading /capabilities is how you learn the outcome.
+func (s *Server) handleSelfUpdate(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.SelfUpdater == nil {
+		writeError(w, http.StatusNotImplemented, "this bootloader cannot update itself")
+		return
+	}
+
+	var body updateRequest
+	if err := decodeJSON(w, r, &body, 4*1024); err != nil {
+		return
+	}
+
+	if err := s.cfg.SelfUpdater.Start(r.Context(), body.Version); err != nil {
+		s.cfg.Log.Error("self-update refused", "version", body.Version, "error", err)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	s.cfg.Log.Info("self-update accepted", "version", body.Version)
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"accepted": true,
+		"message": "The bootloader is being replaced. It will be unreachable for a few " +
+			"seconds; the runtime keeps running throughout.",
+	})
 }
 
 // --- helpers -------------------------------------------------------------

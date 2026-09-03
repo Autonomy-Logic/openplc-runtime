@@ -587,3 +587,91 @@ func TestUpdateRoutesRequireAToken(t *testing.T) {
 		t.Fatalf("want 401 on progress too, got %d", resp.StatusCode)
 	}
 }
+
+// --- self-update ---------------------------------------------------------
+
+type fakeSelfUpdater struct {
+	err       error
+	requested []string
+}
+
+func (f *fakeSelfUpdater) Start(_ context.Context, version string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.requested = append(f.requested, version)
+	return nil
+}
+
+func newTestServerWithSelfUpdater(t *testing.T, self SelfUpdater) *httptest.Server {
+	t.Helper()
+	srv := &Server{cfg: Config{
+		Version:        "bootloader-v1.0.0-test",
+		RuntimeVersion: func() string { return "v4.2.1" },
+		Secrets:        &runtimeauth.Secrets{JWTSecret: testSecret, Pepper: testPepper},
+		Users:          &fakeUsers{count: 1},
+		Supervisor:     healthySupervisor(),
+		Logs:           &fakeLogs{},
+		SelfUpdater:    self,
+		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}}
+	mux := http.NewServeMux()
+	srv.routes(mux)
+	httpSrv := httptest.NewServer(mux)
+	t.Cleanup(httpSrv.Close)
+	return httpSrv
+}
+
+func TestASelfUpdateIsAcceptedAndSaysWhatToExpect(t *testing.T) {
+	// There is nothing to poll: this process is replaced as part of the
+	// operation, so the response has to tell the operator what is about to
+	// happen instead of promising progress that will never arrive.
+	self := &fakeSelfUpdater{}
+	srv := newTestServerWithSelfUpdater(t, self)
+
+	resp, body := postJSON(t, srv, "/api/bootloader/self-update", validToken(t),
+		`{"version":"bootloader-v1.1.0"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("want 202, got %d (%v)", resp.StatusCode, body)
+	}
+	if len(self.requested) != 1 || self.requested[0] != "bootloader-v1.1.0" {
+		t.Fatalf("want the requested version passed through, got %v", self.requested)
+	}
+	message, _ := body["message"].(string)
+	if !strings.Contains(message, "runtime keeps running") {
+		t.Fatalf("the reply must say the PLC is unaffected, got %q", message)
+	}
+}
+
+func TestASelfUpdateRefusalIsSurfacedWithItsReason(t *testing.T) {
+	self := &fakeSelfUpdater{err: errors.New("downloading bootloader-v9.9.9: manifest unknown")}
+	srv := newTestServerWithSelfUpdater(t, self)
+
+	resp, body := postJSON(t, srv, "/api/bootloader/self-update", validToken(t),
+		`{"version":"bootloader-v9.9.9"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+	if msg, _ := body["error"].(string); !strings.Contains(msg, "manifest unknown") {
+		t.Fatalf("the cause must reach the operator, got %q", msg)
+	}
+}
+
+func TestSelfUpdateRequiresAToken(t *testing.T) {
+	srv := newTestServerWithSelfUpdater(t, &fakeSelfUpdater{})
+	resp, _ := postJSON(t, srv, "/api/bootloader/self-update", "", `{"version":"bootloader-v1.1.0"}`)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestSelfUpdateIsReportedUnavailableWhenNotConfigured(t *testing.T) {
+	// 501 rather than a panic on a nil interface: a bootloader built without
+	// this wired up should say so.
+	srv := newTestServer(t, &fakeUsers{count: 1}, healthySupervisor(), &fakeLogs{})
+	resp, _ := postJSON(t, srv, "/api/bootloader/self-update", validToken(t),
+		`{"version":"bootloader-v1.1.0"}`)
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("want 501, got %d", resp.StatusCode)
+	}
+}
