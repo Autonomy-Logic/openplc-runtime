@@ -3,24 +3,19 @@
 #
 # Two ways in, one script:
 #
-#   curl -fsSL https://runtime.getedge.me | sudo bash      no checkout, no toolchain
+#   curl -fsSL https://runtime.getedge.me | sudo bash      no checkout needed
 #   sudo ./install.sh                                      from a clone; execs this
 #
-# It installs no build toolchain and compiles nothing: it ensures a container
-# engine, writes the bootloader's spec, and starts the bootloader. The
-# bootloader then pulls the runtime image and brings it up.
+# Compiles nothing: it ensures a container engine, writes the bootloader's
+# spec, and starts the bootloader, which pulls the runtime image and brings it
+# up. Docker is the only dependency this path adds, and nothing of ours goes
+# into systemd -- Docker's restart policy starts the bootloader at boot.
 #
-# Docker is the ONLY dependency this path adds. Nothing of ours goes into
-# systemd -- Docker's own restart policy starts the bootloader at boot, and the
-# bootloader starts the runtime. That is deliberate: the fewer moving parts
-# between power-on and a running PLC, the fewer ways it fails.
+# --native keeps the source build, for MSYS2 and targets that cannot host a
+# container engine. It needs the repository on disk, so the piped one-liner
+# cannot reach it.
 #
-# `sudo ./install.sh --native` keeps the source build, for MSYS2 and for
-# targets that cannot host a container engine. That path needs the repository
-# on disk, so it is not reachable from the piped one-liner.
-#
-# `--uninstall` removes everything this script created and puts back whatever
-# it displaced, so a device ends up as it started.
+# --uninstall removes what this script created and puts back what it displaced.
 set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -38,13 +33,10 @@ BOOTLOADER_VERSION="${BOOTLOADER_VERSION:-latest}"
 
 # Two directories, deliberately separate.
 #
-# The runtime's holds everything a version change must preserve: .env,
-# restapi.db, retain.bin, vpp/ licences and the stored project.
-#
-# The bootloader's holds the container spec, including this board's device
-# mounts. It is separate because "erase all data" wipes the runtime's
-# directory, and a board that came back from a data wipe with no SPI would be
-# a miserable failure mode.
+# The runtime's holds what a version change must preserve: .env, restapi.db,
+# retain.bin, vpp/ licences, the stored project. The bootloader's holds the
+# container spec, including this board's device mounts -- separate because
+# "erase all data" wipes the runtime's directory.
 RUNTIME_DATA_DIR="${RUNTIME_DATA_DIR:-/var/lib/openplc-runtime}"
 BOOTLOADER_STATE_DIR="${BOOTLOADER_STATE_DIR:-/var/lib/openplc-bootloader}"
 
@@ -61,15 +53,10 @@ declare -a EXTRA_ENV=()
 # which accumulates across installs and is what --uninstall reads.
 declare -a DISPLACED_THIS_RUN=()
 
-# Where this script lives, for the self-elevation path below. A piped run has
-# no file to re-exec, so it fetches a fresh copy rather than trying to re-read
-# a stdin bash has already consumed.
-# Where the piped one-liner fetches this script.
-#
-# runtime.getedge.me serves this file verbatim from the release branch. Until
-# that host is stood up the raw GitHub URL below works identically, and
-# OPENPLC_INSTALLER_URL overrides both -- which is also how a fork or an
-# internal mirror points it somewhere else.
+# Where this script lives, for the self-elevation path below.
+# Where the piped one-liner fetches this script. runtime.getedge.me serves it
+# verbatim from the release branch; the raw GitHub URL works identically, and
+# OPENPLC_INSTALLER_URL overrides both, for a fork or an internal mirror.
 INSTALLER_URL="${OPENPLC_INSTALLER_URL:-https://runtime.getedge.me}"
 INSTALLER_URL_FALLBACK="https://raw.githubusercontent.com/Autonomy-Logic/openplc-runtime/main/scripts/install-docker.sh"
 
@@ -153,10 +140,8 @@ parse_args() {
 
 # require_root re-runs this script under sudo, or explains how to.
 #
-# The piped case has no file to re-exec: bash has already consumed the script
-# from stdin, so re-reading it would save a truncated copy. Fetching a fresh
-# one is the honest way to get a file, and when that is not possible the exact
-# command to run is more use than a partial install.
+# A piped run has no file to re-exec -- bash has consumed stdin -- so it
+# fetches a fresh copy rather than saving a truncated one.
 require_root() {
     [ "$(id -u)" -eq 0 ] && return 0
 
@@ -165,11 +150,9 @@ require_root() {
         exec sudo -E bash "${BASH_SOURCE[0]}" "$@"
     fi
 
-    # Piped, so there is no file to re-exec. Fetching a fresh copy and running
-    # it under sudo is the only way to elevate from here -- and it means
-    # downloading code and running it as root, so the URL and the hash of what
-    # arrived are printed first. An operator who did not expect a download can
-    # see it happen, and can compare the hash against the release.
+    # No file to re-exec, so elevating here means downloading code and running
+    # it as root. Print the URL and the hash of what arrived, so an operator can
+    # see the download and check it against the release.
     if command -v curl >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
         local copy
         copy="$(mktemp)"
@@ -284,13 +267,10 @@ unit_exists() {
 # stop_legacy_runtimes clears the way for the container.
 #
 # A source or v3 install binds 8443 from systemd. Left running, the runtime
-# container starts, fails to bind, and the bootloader reports a runtime that
-# will not come up -- while the editor still reaches *something* on 8443,
-# because the old one answered. That is a genuinely confusing failure, and it
-# is the single most likely thing to go wrong on a device that has been in the
-# field, so it is handled rather than documented.
+# container cannot bind it, while the editor still reaches the old one on that
+# port.
 #
-# The unit is stopped and disabled, never deleted: uninstall puts it back.
+# Units are stopped and disabled, never deleted: uninstall puts them back.
 stop_legacy_runtimes() {
     have_systemd || return 0
 
@@ -318,13 +298,9 @@ stop_legacy_runtimes() {
 
     [ ${#displaced[@]} -eq 0 ] && return 0
 
-    # What THIS run displaced, kept separately from the persisted record.
-    #
-    # Rollback used to read the persisted file, which on a re-run holds what
-    # the FIRST install displaced -- units already disabled and not touched
-    # this time. A failing re-run therefore started the old native runtime
-    # beside the container it had deliberately left alone, and then deleted
-    # the record, so a later --uninstall could no longer restore anything.
+    # What THIS run displaced, kept apart from the persisted record, which on a
+    # re-run holds what the FIRST install displaced. Rolling back from the
+    # persisted file restarted units this run had not touched.
     DISPLACED_THIS_RUN=("${displaced[@]}")
 
     mkdir -p "$BOOTLOADER_STATE_DIR"
@@ -338,11 +314,9 @@ stop_legacy_runtimes() {
     chmod 640 "$(disabled_units_file)"
 }
 
-# restore_legacy_runtimes undoes exactly what stop_legacy_runtimes did.
-#
-# Only units this installer stood down, and only to the state they were in:
-# a unit that was enabled-but-stopped is re-enabled and left stopped. Guessing
-# any wider than that would be inventing a configuration the device never had.
+# restore_legacy_runtimes undoes exactly what stop_legacy_runtimes did: only
+# units this installer stood down, and only to the state they were in. A unit
+# that was enabled but stopped is re-enabled and left stopped.
 restore_legacy_runtimes() {
     local record; record="$(disabled_units_file)"
     [ -f "$record" ] || return 0
@@ -365,9 +339,8 @@ restore_legacy_runtimes() {
 # rollback_on_failure puts the device back if the install dies partway.
 #
 # Between standing the old runtime down and the container reporting healthy
-# there is a window where the device has no PLC. Anything that fails in it --
-# a spec that cannot be written, a container that will not start -- must hand
-# the device back the runtime it had, rather than leaving it with neither.
+# the device has no PLC. Anything that fails in that window must hand back the
+# runtime it had.
 rollback_on_failure() {
     local status=$?
     [ "$status" -eq 0 ] && return 0
@@ -448,16 +421,14 @@ do_uninstall() {
         log_warning "Docker is not available; skipping container and image removal."
     fi
 
-    # Data BEFORE restoring the old runtime: restarting it first would have it
-    # recreate this directory, and the delete would then take out files the
-    # runtime we just handed back had already written.
+    # Data before restoring the old runtime: restarting it first would have it
+    # recreate this directory, and the delete would then take files the restored
+    # runtime had written.
     #
-    # Kept by default, because it is NOT exclusively ours. A native install
-    # reads and writes the same path (webserver/config.py resolves
-    # /var/lib/openplc-runtime on native Linux), which is what makes moving a
-    # device to containers keep its users and project -- and what makes
-    # deleting it on the way out destroy the data of the very runtime this
-    # uninstall is about to restore.
+    # Kept by default, because it is not exclusively ours: a native install reads
+    # and writes the same path (webserver/config.py resolves it on native Linux),
+    # so deleting it would destroy the data of the runtime this uninstall
+    # restores.
     if [ "$PURGE_DATA" = true ] && [ -f "$(disabled_units_file)" ]; then
         log_warning "Not deleting $RUNTIME_DATA_DIR: a systemd runtime is being"
         log_warning "restored and shares that directory. Remove it by hand if you"
@@ -512,16 +483,9 @@ resolve_runtime_version() {
 
 # resolve_latest_to_a_version turns "latest" into the version it points at.
 #
-# Installing the newest release is the right default; RECORDING it as "latest"
-# is not. The spec is what the device boots from and what the editor shows, so
-# a device that installed today would report its version as "latest" and would
-# silently follow the tag on every reconcile -- moving to a new runtime because
-# someone published one, not because anyone chose it here.
-#
-# The version comes out of the image itself (RUNTIME_VERSION, baked in by the
-# release build) rather than from a GitHub API call, so it needs nothing but
-# the registry, and the answer is by construction exactly what "latest" was
-# when this ran.
+# Recording "latest" would leave the device following the tag on every
+# reconcile. The version is read from the image (RUNTIME_VERSION, baked in by
+# the release build), so this needs nothing beyond the registry.
 resolve_latest_to_a_version() {
     [ "$RUNTIME_VERSION" = latest ] || return 0
 
@@ -531,14 +495,20 @@ resolve_latest_to_a_version() {
         "$image" 2>/dev/null || true)"
 
     if printf '%s' "$baked" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+'; then
+        # The daemon holds this image only as ":latest". Pin the spec to a name
+        # it does not have and the bootloader sees the container as stale, then
+        # has to reach the registry to resolve the new tag -- inside the window
+        # where the device has no runtime, and impossibly if it is offline.
+        if ! docker tag "$image" "$RUNTIME_REPOSITORY:$baked" 2>/dev/null; then
+            log_warning "Could not tag $image as $baked; the device will follow the 'latest' tag."
+            return 0
+        fi
         log_info "'latest' is $baked; recording that rather than the moving tag"
         RUNTIME_VERSION="$baked"
         return 0
     fi
 
-    # An image with no version baked in, or one whose value does not look like
-    # a release. Keep the moving tag rather than invent a version, and say so:
-    # the device works, it just follows `latest`.
+    # No version baked in, or not a release. Keep the moving tag.
     log_warning "Could not read a version from $image; the device will follow the 'latest' tag."
 }
 
@@ -588,26 +558,15 @@ write_spec() {
 
 # --- bootloader ----------------------------------------------------------
 
-# Both images are pulled BEFORE anything on the device is disturbed.
-#
-# Found by testing: with the pull inside start_bootloader, a device that could
-# not reach the registry had already had its systemd runtime stopped and
-# disabled by the time the download failed -- so a failed install left it with
-# no PLC at all. Nothing destructive happens until both images are on disk,
-# which also means the runtime download -- the long one -- happens while the
-# device is still serving its existing runtime.
-# pull_image fetches one image, showing the daemon's own progress.
-#
-# NOT quiet. The runtime image is a few hundred megabytes and on a plant link
-# the download runs for minutes; with output suppressed the installer sat on a
-# single "Pulling" line long enough that people reasonably concluded it had
-# hung and killed it. Docker's own per-layer progress is the right thing to
-# show -- it is what every other docker command shows, so it needs no
-# explaining.
+# Both images are pulled before anything on the device is disturbed. With the
+# pull inside start_bootloader, a device that could not reach the registry had
+# already had its systemd runtime disabled by the time the download failed,
+# leaving it with no PLC.
+# pull_image fetches one image, deliberately not quiet: the runtime image is
+# a few hundred megabytes, and with no output the installer looks hung.
 #
 # Returns 0 when the image is available afterwards, by pull or because a copy
-# was already here (an air-gapped device, or one side-loaded with `docker
-# load`). Same policy the updater applies.
+# was already here (air-gapped, or side-loaded with `docker load`).
 pull_image() {
     local image="$1" what="$2"
 
@@ -640,12 +599,11 @@ start_bootloader() {
     fi
 
     log_info "Starting the bootloader"
-    # --restart always is what makes this survive a reboot with no systemd
-    # unit of ours. The bootloader must never exit on its own for that reason.
+    # --restart always is what survives a reboot with no systemd unit of ours,
+    # so the bootloader must never exit on its own.
     #
-    # The runtime data directory is mounted READ-ONLY here: the bootloader
-    # authenticates against the runtime's accounts and must never be able to
-    # create or modify one.
+    # The runtime data directory is read-only here: the bootloader authenticates
+    # against the runtime's accounts and must not modify one.
     docker run -d \
         --name "$BOOTLOADER_CONTAINER" \
         --restart always \
@@ -661,22 +619,26 @@ start_bootloader() {
 }
 
 wait_for_runtime() {
-    # Says what it is waiting for and keeps saying it.
-    #
-    # The image is already on disk by now, so this is the container starting
-    # and the healthcheck's start-period elapsing -- up to about 90 seconds
-    # while plugin virtualenvs load. Silence for that long reads as a hang, so
-    # the bootloader's own state and the elapsed time go to the terminal as
-    # they change.
+    # The image is on disk by now, so this is the container starting and the
+    # healthcheck's start period elapsing -- up to about 90s while plugin
+    # virtualenvs load. Silence that long reads as a hang.
     log_info "Starting the runtime and waiting for it to report healthy"
 
-    local waited=0 state="" reason="" last_reported=""
-    while [ "$waited" -lt 900 ]; do
+    local timeout=900 started waited=0 state="" last_reported=""
+    started="$(date +%s)"
+
+    while :; do
+        # Measured, not counted: a stalled request adds its own timeout to an
+        # iteration, and a counted total would under-report the wait.
+        waited=$(( $(date +%s) - started ))
+        [ "$waited" -lt "$timeout" ] || break
+
         local caps
         caps="$(curl -sk --max-time 5 \
             "https://127.0.0.1:$BOOTLOADER_PORT/api/bootloader/capabilities" 2>/dev/null || true)"
+        # capabilities carries no reason; it is on the authenticated status
+        # endpoint, which needs a token this script does not have.
         state="$(printf '%s' "$caps" | sed -n 's/.*"state":"\([a-z]*\)".*/\1/p')"
-        reason="$(printf '%s' "$caps" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')"
 
         case "$state" in
             healthy)
@@ -687,17 +649,16 @@ wait_for_runtime() {
             recovery)
                 printf '\n' >&2
                 log_warning "The bootloader is in recovery mode: the runtime did not start."
-                [ -n "$reason" ] && log_warning "  $reason"
+                log_warning "The reason is in:  docker logs $BOOTLOADER_CONTAINER"
                 log_warning "Connect the OpenPLC Editor to port $BOOTLOADER_PORT to see why"
                 log_warning "and to install a different version."
                 return 0
                 ;;
         esac
 
-        # One line, rewritten in place, so a slow start looks like progress
-        # rather than a stall. Falls back to appending when stderr is not a
-        # terminal, which is how this reads in CI and in a piped log.
-        local shown="${state:-starting}${reason:+ -- $reason}"
+        # One line rewritten in place, so a slow start looks like progress.
+        # Appends instead when stderr is not a terminal (CI, piped logs).
+        local shown="${state:-starting}"
         if [ -t 2 ]; then
             printf '\r  %s (%ds)\033[K' "$shown" "$waited" >&2
         elif [ "$shown" != "$last_reported" ]; then
@@ -706,7 +667,6 @@ wait_for_runtime() {
         fi
 
         sleep 5
-        waited=$((waited + 5))
     done
 
     printf '\n' >&2
@@ -771,12 +731,10 @@ main() {
     detect_engine || install_engine
     start_engine
 
-    # Everything above this line is additive, and so are the pulls below: the
-    # device keeps serving its existing runtime throughout.
+    # Additive up to here, pulls included: the device keeps serving its
+    # existing runtime throughout.
     pull_image "$RUNTIME_REPOSITORY:$RUNTIME_VERSION" runtime
-    # Now that the image is here, "latest" can be turned into the version it
-    # actually resolved to, before the spec is written.
-    resolve_latest_to_a_version
+    resolve_latest_to_a_version  # needs the image, must precede write_spec
     pull_image "$BOOTLOADER_REPOSITORY:$BOOTLOADER_VERSION" bootloader
 
     # From here the old runtime is gone and the new one is not yet up, so a
