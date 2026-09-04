@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
-# Docker-based install of the OpenPLC Runtime (RTOP-283).
+# OpenPLC Runtime installer -- container edition (RTOP-283).
 #
-# This is what `sudo ./install.sh` does by default. It installs no build
-# toolchain and compiles nothing: it ensures a container engine, writes the
-# bootloader's spec, and starts the bootloader. The bootloader then pulls the
-# runtime image and brings it up.
+# Two ways in, one script:
+#
+#   curl -fsSL https://runtime.getedge.me | sudo bash      no checkout, no toolchain
+#   sudo ./install.sh                                      from a clone; execs this
+#
+# It installs no build toolchain and compiles nothing: it ensures a container
+# engine, writes the bootloader's spec, and starts the bootloader. The
+# bootloader then pulls the runtime image and brings it up.
 #
 # Docker is the ONLY dependency this path adds. Nothing of ours goes into
 # systemd -- Docker's own restart policy starts the bootloader at boot, and the
 # bootloader starts the runtime. That is deliberate: the fewer moving parts
 # between power-on and a running PLC, the fewer ways it fails.
 #
-# `sudo ./install.sh --native` keeps the source build for MSYS2 and for targets
-# that cannot host a container engine.
+# `sudo ./install.sh --native` keeps the source build, for MSYS2 and for
+# targets that cannot host a container engine. That path needs the repository
+# on disk, so it is not reachable from the piped one-liner.
+#
+# `--uninstall` removes everything this script created and puts back whatever
+# it displaced, so a device ends up as it started.
 set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -49,21 +57,62 @@ BOOTLOADER_PORT="${BOOTLOADER_PORT:-8445}"
 declare -a EXTRA_MOUNTS=()
 declare -a EXTRA_ENV=()
 
+# Where this script lives, for the self-elevation path below. A piped run has
+# no file to re-exec, so it fetches a fresh copy rather than trying to re-read
+# a stdin bash has already consumed.
+INSTALLER_URL="${OPENPLC_INSTALLER_URL:-https://runtime.getedge.me}"
+
+MODE=install
+ASSUME_YES=false
+KEEP_IMAGES=false
+PURGE_DATA=false
+REPO_ROOT=""
+
+# systemd units that run a pre-container OpenPLC. Two of them are real and in
+# the field: openplc.service is the v3 runtime, openplc-runtime.service is a v4
+# source install. Both bind 8443, so leaving one running means the container
+# starts and then fails to serve, with nothing obviously wrong on either side.
+LEGACY_UNITS=(openplc-runtime.service openplc.service openplc_v3.service openplc-v3.service)
+
+# What we stopped, so --uninstall can put it back. Kept in the bootloader's
+# state directory because that survives an "erase all data" of the runtime's.
+disabled_units_file() { printf '%s/displaced-systemd-units' "$BOOTLOADER_STATE_DIR"; }
+
 usage() {
     cat <<'EOF'
-Usage: sudo ./install.sh [options]
+OpenPLC Runtime installer (container edition)
 
-  --native                    Build and install from source instead (today's path)
-  --runtime-version VERSION   Runtime image tag to install (default: the VERSION file)
+Usage:
+  curl -fsSL https://runtime.getedge.me | sudo bash
+  curl -fsSL https://runtime.getedge.me | sudo bash -s -- --uninstall --yes
+  sudo ./install.sh [options]
+
+Install options:
+  --native                    Build from source instead (needs a checkout)
+  --runtime-version VERSION   Runtime image tag (default: the VERSION file, else latest)
   --bootloader-version VER    Bootloader image tag (default: latest)
   --mount HOST:CONTAINER[:ro] Extra bind mount for the runtime; repeatable
   --env KEY=VALUE             Extra environment variable for the runtime; repeatable
   --data-dir PATH             Runtime persistent data directory
   --port PORT                 Bootloader control port (default: 8445)
+  --repo-root PATH            Checkout to read VERSION from (set by install.sh)
+
+Uninstall options:
+  --uninstall                 Remove the containers, images and data this
+                              installed, and re-enable any systemd runtime it
+                              displaced
+  -y, --yes                   Do not ask for confirmation (required when piped)
+  --keep-images               Leave the pulled images on disk
+  --purge                     Also delete the runtime's data directory (users,
+                              credentials, stored project, retained variables).
+                              Refused when a systemd runtime is being restored,
+                              because it shares that directory
+
   -h, --help                  Show this help
 
-Re-running is safe: it rewrites the spec and restarts the bootloader without
-touching runtime data, so adding a mount does not mean reinstalling anything.
+Re-running the install is safe: it rewrites the spec and restarts the
+bootloader without touching runtime data, so adding a mount does not mean
+reinstalling anything.
 EOF
 }
 
@@ -76,10 +125,48 @@ parse_args() {
             --env)                EXTRA_ENV+=("$2"); shift 2 ;;
             --data-dir)           RUNTIME_DATA_DIR="$2"; shift 2 ;;
             --port)               BOOTLOADER_PORT="$2"; shift 2 ;;
+            --repo-root)          REPO_ROOT="$2"; shift 2 ;;
+            --uninstall)          MODE=uninstall; shift ;;
+            -y|--yes)             ASSUME_YES=true; shift ;;
+            --keep-images)        KEEP_IMAGES=true; shift ;;
+            --purge)              PURGE_DATA=true; shift ;;
             -h|--help)            usage; exit 0 ;;
             *) log_error "unknown option: $1"; usage; exit 1 ;;
         esac
     done
+
+    if [ "$MODE" = install ] && { [ "$KEEP_IMAGES" = true ] || [ "$PURGE_DATA" = true ]; }; then
+        log_warning "--keep-images and --purge only apply to --uninstall; ignoring."
+    fi
+}
+
+# require_root re-runs this script under sudo, or explains how to.
+#
+# The piped case has no file to re-exec: bash has already consumed the script
+# from stdin, so re-reading it would save a truncated copy. Fetching a fresh
+# one is the honest way to get a file, and when that is not possible the exact
+# command to run is more use than a partial install.
+require_root() {
+    [ "$(id -u)" -eq 0 ] && return 0
+
+    if [ -f "${BASH_SOURCE[0]:-}" ]; then
+        log_info "Root is required; re-running under sudo"
+        exec sudo -E bash "${BASH_SOURCE[0]}" "$@"
+    fi
+
+    if command -v curl >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+        local copy
+        copy="$(mktemp)"
+        if curl -fsSL "$INSTALLER_URL" -o "$copy" 2>/dev/null && [ -s "$copy" ]; then
+            log_info "Root is required; re-running under sudo"
+            exec sudo -E bash "$copy" "$@"
+        fi
+        rm -f "$copy"
+    fi
+
+    log_error "This installer must run as root. Re-run it as:"
+    log_error "  curl -fsSL $INSTALLER_URL | sudo bash"
+    exit 1
 }
 
 # --- engine --------------------------------------------------------------
@@ -157,6 +244,202 @@ start_engine() {
     fi
 }
 
+# --- displaced systemd runtimes -------------------------------------------
+
+have_systemd() {
+    command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
+}
+
+unit_exists() {
+    systemctl list-unit-files "$1" >/dev/null 2>&1 &&
+        [ -n "$(systemctl list-unit-files --no-legend "$1" 2>/dev/null)" ]
+}
+
+# stop_legacy_runtimes clears the way for the container.
+#
+# A source or v3 install binds 8443 from systemd. Left running, the runtime
+# container starts, fails to bind, and the bootloader reports a runtime that
+# will not come up -- while the editor still reaches *something* on 8443,
+# because the old one answered. That is a genuinely confusing failure, and it
+# is the single most likely thing to go wrong on a device that has been in the
+# field, so it is handled rather than documented.
+#
+# The unit is stopped and disabled, never deleted: uninstall puts it back.
+stop_legacy_runtimes() {
+    have_systemd || return 0
+
+    local unit displaced=()
+    for unit in "${LEGACY_UNITS[@]}"; do
+        unit_exists "$unit" || continue
+
+        local was_active=no was_enabled=no
+        systemctl is-active --quiet "$unit" 2>/dev/null && was_active=yes
+        systemctl is-enabled --quiet "$unit" 2>/dev/null && was_enabled=yes
+        [ "$was_active" = no ] && [ "$was_enabled" = no ] && continue
+
+        local state_desc="stopped"
+        [ "$was_active" = yes ] && state_desc="running"
+        [ "$was_enabled" = yes ] && state_desc="$state_desc, starts at boot"
+
+        log_warning "Found $unit ($state_desc)"
+        log_info "  It binds port 8443, which the runtime container needs. Standing it down."
+
+        [ "$was_active" = yes ] && systemctl stop "$unit" >/dev/null 2>&1 || true
+        [ "$was_enabled" = yes ] && systemctl disable "$unit" >/dev/null 2>&1 || true
+        displaced+=("$unit:$was_active:$was_enabled")
+        log_success "  $unit stopped and disabled"
+    done
+
+    [ ${#displaced[@]} -eq 0 ] && return 0
+
+    mkdir -p "$BOOTLOADER_STATE_DIR"
+    printf '%s\n' "${displaced[@]}" > "$(disabled_units_file)"
+    chmod 640 "$(disabled_units_file)"
+}
+
+# restore_legacy_runtimes undoes exactly what stop_legacy_runtimes did.
+#
+# Only units this installer stood down, and only to the state they were in:
+# a unit that was enabled-but-stopped is re-enabled and left stopped. Guessing
+# any wider than that would be inventing a configuration the device never had.
+restore_legacy_runtimes() {
+    local record; record="$(disabled_units_file)"
+    [ -f "$record" ] || return 0
+    have_systemd || { log_warning "No systemd here; cannot restore $record"; return 0; }
+
+    local line unit was_active was_enabled
+    while IFS=: read -r unit was_active was_enabled; do
+        [ -n "$unit" ] || continue
+        unit_exists "$unit" || { log_warning "  $unit is gone; nothing to restore"; continue; }
+        if [ "$was_enabled" = yes ]; then
+            systemctl enable "$unit" >/dev/null 2>&1 && log_success "  re-enabled $unit"
+        fi
+        if [ "$was_active" = yes ]; then
+            systemctl start "$unit" >/dev/null 2>&1 && log_success "  restarted $unit"
+        fi
+    done < "$record"
+    rm -f "$record"
+}
+
+# rollback_on_failure puts the device back if the install dies partway.
+#
+# Between standing the old runtime down and the container reporting healthy
+# there is a window where the device has no PLC. Anything that fails in it --
+# a spec that cannot be written, a container that will not start -- must hand
+# the device back the runtime it had, rather than leaving it with neither.
+INSTALL_DISPLACED_UNITS=false
+
+rollback_on_failure() {
+    local status=$?
+    [ "$status" -eq 0 ] && return 0
+    [ "$INSTALL_DISPLACED_UNITS" = true ] || return 0
+
+    log_error "Install failed; restoring the runtime that was here before."
+    restore_legacy_runtimes || true
+}
+
+# --- uninstall -------------------------------------------------------------
+
+confirm_uninstall() {
+    [ "$ASSUME_YES" = true ] && return 0
+    if [ ! -t 0 ]; then
+        log_error "Refusing to uninstall without confirmation when nothing is attached"
+        log_error "to answer. Re-run with --yes:"
+        log_error "  curl -fsSL $INSTALLER_URL | sudo bash -s -- --uninstall --yes"
+        exit 1
+    fi
+    echo
+    echo "This removes the OpenPLC bootloader and runtime containers from this device."
+    if [ "$PURGE_DATA" = true ]; then
+        echo "It also deletes $RUNTIME_DATA_DIR -- users, credentials, the stored"
+        echo "project, retained variables and any VPP licences."
+    else
+        echo "$RUNTIME_DATA_DIR is kept; pass --purge to delete it too."
+    fi
+    printf 'Continue? [y/N] '
+    local answer; read -r answer
+    case "$answer" in [yY]|[yY][eE][sS]) return 0 ;; esac
+    echo "Nothing was changed."
+    exit 0
+}
+
+remove_container() {
+    local name="$1"
+    docker inspect "$name" >/dev/null 2>&1 || return 0
+    # Force, because the restart policy would otherwise bring the bootloader
+    # back between the stop and the remove.
+    docker rm -f "$name" >/dev/null 2>&1 && log_success "  removed container $name"
+}
+
+remove_installed_images() {
+    [ "$KEEP_IMAGES" = true ] && { log_info "  keeping images (--keep-images)"; return 0; }
+    local ref
+    # Every tag of ours, not just the one currently recorded: a device that has
+    # been through a version change or two holds several, and leaving them
+    # behind is most of the disk this installer ever used.
+    for ref in $(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null |
+                 grep -E "^(${RUNTIME_REPOSITORY}|${BOOTLOADER_REPOSITORY}):" || true); do
+        docker rmi "$ref" >/dev/null 2>&1 && log_success "  removed image $ref"
+    done
+}
+
+do_uninstall() {
+    log_info "Uninstalling the OpenPLC Runtime"
+    confirm_uninstall
+
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        log_info "Removing containers"
+        remove_container "$RUNTIME_CONTAINER"
+        remove_container "$BOOTLOADER_CONTAINER"
+        log_info "Removing images"
+        remove_installed_images
+    else
+        log_warning "Docker is not available; skipping container and image removal."
+    fi
+
+    # Data BEFORE restoring the old runtime: restarting it first would have it
+    # recreate this directory, and the delete would then take out files the
+    # runtime we just handed back had already written.
+    #
+    # Kept by default, because it is NOT exclusively ours. A native install
+    # reads and writes the same path (webserver/config.py resolves
+    # /var/lib/openplc-runtime on native Linux), which is what makes moving a
+    # device to containers keep its users and project -- and what makes
+    # deleting it on the way out destroy the data of the very runtime this
+    # uninstall is about to restore.
+    if [ "$PURGE_DATA" = true ] && [ -f "$(disabled_units_file)" ]; then
+        log_warning "Not deleting $RUNTIME_DATA_DIR: a systemd runtime is being"
+        log_warning "restored and shares that directory. Remove it by hand if you"
+        log_warning "are certain nothing else needs it."
+    elif [ "$PURGE_DATA" = true ]; then
+        rm -rf "$RUNTIME_DATA_DIR"
+        log_success "  removed $RUNTIME_DATA_DIR"
+    else
+        log_info "  keeping $RUNTIME_DATA_DIR (pass --purge to delete it)"
+    fi
+
+    # The bootloader's own state is unambiguously ours, so it always goes --
+    # but only after the record inside it has been used to restore units.
+    log_info "Restoring anything this installer displaced"
+    restore_legacy_runtimes
+    rm -rf "$BOOTLOADER_STATE_DIR"
+    log_success "  removed $BOOTLOADER_STATE_DIR"
+
+    # Docker itself is left alone. It may well predate this install, and other
+    # things on the device may depend on it -- removing a container engine
+    # because one of its tenants moved out is not ours to decide.
+    cat <<EOF
+
+OpenPLC Runtime has been removed.
+
+$RUNTIME_DATA_DIR was left in place unless --purge was given: a native
+install uses the same directory, so it is not safe to assume it is ours.
+
+Docker was left installed: it may have been here first, and other containers
+may depend on it. Remove it yourself if this device no longer needs it.
+EOF
+}
+
 # --- spec ----------------------------------------------------------------
 
 resolve_runtime_version() {
@@ -165,8 +448,10 @@ resolve_runtime_version() {
     fi
     # The repo's VERSION file, so a plain checkout installs the matching
     # runtime rather than whatever "latest" happens to be that day.
-    local version_file="$1/VERSION"
-    if [ -f "$version_file" ]; then
+    # Empty when piped: there is no checkout, so "latest" is the only sensible
+    # answer and the warning below says so.
+    local version_file="${1:-}/VERSION"
+    if [ -n "${1:-}" ] && [ -f "$version_file" ]; then
         RUNTIME_VERSION="$(tr -d '[:space:]' < "$version_file")"
     fi
     if [ -z "$RUNTIME_VERSION" ]; then
@@ -221,15 +506,36 @@ write_spec() {
 
 # --- bootloader ----------------------------------------------------------
 
-start_bootloader() {
+# pull_bootloader_image runs BEFORE anything on the device is disturbed.
+#
+# Found by testing: with the pull inside start_bootloader, a device that could
+# not reach the registry had already had its systemd runtime stopped and
+# disabled by the time the download failed -- so a failed install left it with
+# no PLC at all. Nothing destructive happens until the image is on disk.
+pull_bootloader_image() {
     local image="$BOOTLOADER_REPOSITORY:$BOOTLOADER_VERSION"
 
     log_info "Pulling $image"
-    if ! docker pull "$image"; then
-        log_error "Could not pull the bootloader image."
-        log_error "Check the device's internet access, or use --native."
-        exit 1
+    if docker pull "$image" >/dev/null 2>&1; then
+        log_success "Bootloader image ready"
+        return 0
     fi
+
+    # A local copy is a legitimate answer: an air-gapped device, or one
+    # side-loaded with `docker load`. Same policy the updater applies.
+    if docker image inspect "$image" >/dev/null 2>&1; then
+        log_warning "Could not reach the registry; using the copy already on this device."
+        return 0
+    fi
+
+    log_error "Could not pull $image, and no local copy is present."
+    log_error "Check the device's internet access, or use --native to build from source."
+    log_error "Nothing on this device has been changed."
+    exit 1
+}
+
+start_bootloader() {
+    local image="$BOOTLOADER_REPOSITORY:$BOOTLOADER_VERSION"
 
     # Replace any previous bootloader. The RUNTIME container is deliberately
     # left alone: a re-run must not interrupt a running PLC, and the new
@@ -310,15 +616,27 @@ EOF
 }
 
 main() {
-    local repo_root="$1"; shift
-    parse_args "$@"
+    # Help before anything else, so `--help` never needs root and never has to
+    # reach the network.
+    for arg in "$@"; do
+        case "$arg" in -h|--help) usage; exit 0 ;; esac
+    done
 
-    if [ "$(id -u)" -ne 0 ]; then
-        log_error "This script must run as root (sudo ./install.sh)"
+    # After --help, so the usage text is readable from a developer machine.
+    if [ "${OSTYPE:-}" != "" ] && [[ ${OSTYPE} != linux-gnu* ]]; then
+        log_error "This installer supports Linux only."
         exit 1
     fi
 
-    resolve_runtime_version "$repo_root"
+    require_root "$@"
+    parse_args "$@"
+
+    if [ "$MODE" = uninstall ]; then
+        do_uninstall
+        return 0
+    fi
+
+    resolve_runtime_version "$REPO_ROOT"
 
     log_info "Installing the OpenPLC Runtime with Docker"
     log_info "  runtime:    $RUNTIME_REPOSITORY:$RUNTIME_VERSION"
@@ -329,9 +647,20 @@ main() {
 
     detect_engine || install_engine
     start_engine
+    # Everything above this line is additive, and the pull below is too. The
+    # device keeps working throughout.
+    pull_bootloader_image
+
+    # From here the old runtime is gone and the new one is not yet up, so a
+    # failure has to hand the device back what it had.
+    trap rollback_on_failure EXIT
+    stop_legacy_runtimes
+    INSTALL_DISPLACED_UNITS=true
     write_spec
     start_bootloader
     wait_for_runtime
+    trap - EXIT
+
     print_summary
 }
 

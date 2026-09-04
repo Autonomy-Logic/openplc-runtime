@@ -35,7 +35,35 @@ The runtime will start and listen on port 8443 for connections from the OpenPLC 
 
 ### Linux Installation
 
-For native Linux installation:
+#### Install (recommended)
+
+```bash
+curl -fsSL https://runtime.getedge.me | sudo bash
+```
+
+No checkout, no build toolchain, no dependencies to install first. The script
+installs Docker if it is missing, then starts the runtime and a small
+bootloader beside it. The bootloader is what lets the OpenPLC Editor change
+the runtime version later, without SSH.
+
+If the device already runs an OpenPLC from systemd, the installer stops and
+disables it first -- the two would otherwise fight over port 8443. Its data in
+`/var/lib/openplc-runtime` is reused, so users, credentials and the stored
+project carry over.
+
+To remove it again:
+
+```bash
+curl -fsSL https://runtime.getedge.me | sudo bash -s -- --uninstall --yes
+```
+
+That removes the containers and images, puts back any systemd runtime it
+displaced, and leaves `/var/lib/openplc-runtime` alone. Add `--purge` to
+delete that too. Docker itself is left installed.
+
+#### Install from source
+
+For a native build -- MSYS2, or a target that cannot run containers:
 
 ```bash
 # Clone repository
@@ -44,11 +72,15 @@ cd openplc-runtime
 git checkout development
 
 # Install dependencies and compile
-sudo ./install.sh
+sudo ./install.sh --native
 
 # Start the runtime
 sudo ./start_openplc.sh
 ```
+
+`--native` is required here: `sudo ./install.sh` on its own takes the
+container path above. The source build needs the repository on disk, which is
+why it is not reachable from the one-liner.
 
 The runtime will start and listen on port 8443. Connect to it from the OpenPLC Editor desktop application by configuring the runtime IP address and logging in from the Editor.
 

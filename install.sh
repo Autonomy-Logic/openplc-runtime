@@ -163,7 +163,7 @@ if is_msys2 && [ "$INSTALL_MODE" = "docker" ]; then
 fi
 
 if [ "$INSTALL_MODE" = "docker" ]; then
-    exec bash "$SCRIPTS_DIR/install-docker.sh" "$OPENPLC_DIR" "${DOCKER_INSTALL_ARGS[@]}"
+    exec bash "$SCRIPTS_DIR/install-docker.sh" --repo-root "$OPENPLC_DIR" "${DOCKER_INSTALL_ARGS[@]}"
 fi
 
 echo "OpenPLC Runtime Installation (source build)"
