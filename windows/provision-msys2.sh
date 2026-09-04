@@ -18,9 +18,12 @@ OPENPLC_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo "OpenPLC Directory: $OPENPLC_DIR"
 
-# Run the main install script which handles MSYS2 detection and installation
+# Run the main install script. --native explicitly: install.sh defaults to a
+# Docker install, which cannot work here and would compile nothing. It forces
+# native on MSYS2 anyway, but this script exists to build a Windows payload and
+# should say so rather than depend on that detection.
 cd "$OPENPLC_DIR"
-./install.sh
+./install.sh --native
 
 # Clean up to reduce size for the installer payload
 echo "Cleaning up to reduce size..."
