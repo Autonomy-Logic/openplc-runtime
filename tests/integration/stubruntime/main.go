@@ -80,16 +80,12 @@ func main() {
 		fmt.Fprintf(w, `{"version":%q}`, version)
 	})
 	mux.HandleFunc("/api/capabilities", func(w http.ResponseWriter, r *http.Request) {
-		policy := envOr("OPENPLC_UPDATE_POLICY", "manual")
-		port := envOr("OPENPLC_BOOTLOADER_PORT", "null")
 		dataDir := os.Getenv("OPENPLC_PERSISTENT_DATA_DIR")
 		w.Header().Set("Content-Type", "application/json")
 		// dataDir is echoed so a test can assert the bootloader passed it --
 		// the bug where the runtime ignored the mounted directory was invisible
 		// from outside until something reported what it had been told.
-		fmt.Fprintf(w,
-			`{"runtimeVersion":%q,"updatePolicy":%q,"bootloaderPort":%s,"dataDir":%q}`,
-			version, policy, port, dataDir)
+		fmt.Fprintf(w, `{"runtimeVersion":%q,"dataDir":%q}`, version, dataDir)
 	})
 
 	cert, err := selfSigned()

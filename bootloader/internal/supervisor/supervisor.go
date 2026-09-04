@@ -171,11 +171,17 @@ type Supervisor struct {
 	// container and a concurrent reconcile must not clear the suppression
 	// early, which would make our own stop look like a crash.
 	expectStop int
+
+	// preUpdateState is what BeginUpdate displaced, so an update that changes
+	// nothing can put it back exactly.
+	preUpdateState  State
+	preUpdateReason string
 	// consecutiveFailures drives restart backoff, reset by a healthy start.
 	consecutiveFailures int
 	// onRecovery is invoked when the supervisor enters recovery, so the UDP
 	// discovery responder can be switched on without this package importing it.
-	onRecovery func(Status)
+	onRecovery        func(Status)
+	onRuntimeStarting func()
 	// onHealthy is the mirror, used to switch discovery back off.
 	onHealthy func(Status)
 }
@@ -203,6 +209,10 @@ func New(
 // OnRecovery and OnHealthy register transition hooks. Set before Run.
 func (s *Supervisor) OnRecovery(fn func(Status)) { s.onRecovery = fn }
 func (s *Supervisor) OnHealthy(fn func(Status))  { s.onHealthy = fn }
+
+// OnRuntimeStarting runs immediately before the runtime container is started,
+// for anything the bootloader must hand back to it. Set before Run.
+func (s *Supervisor) OnRuntimeStarting(fn func()) { s.onRuntimeStarting = fn }
 
 // Status returns a snapshot of the current condition.
 func (s *Supervisor) Status() Status {
@@ -291,7 +301,30 @@ func (s *Supervisor) watch(ctx context.Context) error {
 		case <-time.After(reconnectDelay):
 		}
 
-		// Re-sync before trusting the new stream.
+		// Re-sync before trusting the new stream -- but NOT while recovery or
+		// an update owns the runtime.
+		//
+		// Reconcile starts any stopped container it finds. In recovery that
+		// would restart a runtime the supervisor deliberately stopped, flip
+		// the state to healthy and disable discovery, with no operator
+		// involved -- a daemon restart or a socket hiccup was enough. During
+		// an update it would race the updater's own Reconcile, and the loser
+		// of the create/remove contention fails the update into recovery.
+		s.mu.Lock()
+		state := s.status.State
+		s.mu.Unlock()
+		if state == StateRecovery || state == StateUpdating {
+			s.log.Info("events reconnected; leaving the runtime alone", "state", state)
+			// Still refresh what we know about the container, so ContainerID
+			// and Image are not stale after the gap.
+			if inspect, err := s.docker.InspectContainer(ctx, s.cfg.ContainerName); err == nil {
+				s.mu.Lock()
+				s.status.ContainerID = inspect.ID
+				s.status.Image = inspect.Config.Image
+				s.mu.Unlock()
+			}
+			continue
+		}
 		if err := s.Reconcile(ctx); err != nil {
 			s.log.Error("reconcile after events reconnect failed", "error", err)
 		}
@@ -380,7 +413,8 @@ func (s *Supervisor) handleWedged(ctx context.Context) {
 	if state == StateRecovery || state == StateUpdating {
 		return
 	}
-	if err := s.docker.StopContainer(ctx, s.cfg.ContainerName, s.cfg.StopGrace); err != nil {
+	if err := s.docker.StopContainer(ctx, s.cfg.ContainerName, s.cfg.StopGrace); err != nil &&
+		!errors.Is(err, dockerapi.ErrNotRunning) {
 		s.log.Error("stopping wedged runtime failed", "error", err)
 	}
 }
@@ -426,10 +460,10 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	// env var) and restarting the bootloader: the container is rebuilt from
 	// the spec instead of silently keeping the old configuration.
 	desired := s.spec.ImageRef()
-	if inspect.Config.Image != desired {
-		s.log.Info("runtime container is on a different image, recreating",
+	if s.containerIsStale(ctx, inspect, desired) {
+		s.log.Info("runtime container is not on the desired image, recreating",
 			"running", inspect.Config.Image, "desired", desired)
-		if err := s.create(ctx); err != nil {
+		if err := s.recreate(ctx, inspect); err != nil {
 			return err
 		}
 		return s.startAndConfirm(ctx)
@@ -457,6 +491,51 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	default:
 		return s.confirmByProbe(ctx)
 	}
+}
+
+// containerIsStale reports whether the running container needs replacing.
+//
+// Compares resolved image IDs, not tag strings. A container pins its image by
+// ID, so a re-pull of the same tag can leave the container on the OLD layers
+// while Config.Image still reads as a match -- which made "reinstall the
+// current version", the documented repair path, silently a no-op that started
+// the very layers the operator was trying to replace.
+//
+// The tag comparison stays as the first check because it is free and catches
+// the ordinary version change; the ID lookup only runs when the tags agree.
+func (s *Supervisor) containerIsStale(
+	ctx context.Context, inspect *dockerapi.ContainerInspect, desired string,
+) bool {
+	if inspect.Config.Image != desired {
+		return true
+	}
+	if inspect.Image == "" {
+		return false
+	}
+	image, err := s.docker.InspectImage(ctx, desired)
+	if err != nil || image == nil || image.ID == "" {
+		// No answer from the daemon: the tags match, so treat the container as
+		// current rather than recreating a working runtime on a failed lookup.
+		return false
+	}
+	return inspect.Image != image.ID
+}
+
+// recreate replaces the container, stopping it gracefully first if it runs.
+//
+// create() force-removes, and a SIGKILL skips the runtime's SIGTERM handler
+// that flushes retained variables. The kill's exit would also arrive as an
+// unmarked death and be counted as a crash.
+func (s *Supervisor) recreate(ctx context.Context, inspect *dockerapi.ContainerInspect) error {
+	if inspect != nil && inspect.State.Running {
+		if err := s.Stop(ctx); err != nil {
+			// Log and continue to the force-remove: a container we cannot stop
+			// still has to go, and refusing would leave the device on the
+			// wrong version with no way forward.
+			s.log.Warn("could not stop the runtime before replacing it", "error", err)
+		}
+	}
+	return s.create(ctx)
 }
 
 // create makes the container from the current spec. A stale container under
@@ -525,6 +604,20 @@ func (s *Supervisor) ensureImage(ctx context.Context, imageRef string) error {
 // startAndConfirm starts the container and waits for it to report healthy.
 func (s *Supervisor) startAndConfirm(ctx context.Context) error {
 	s.setState(StateStarting, "starting runtime")
+
+	// Release anything the bootloader holds that the runtime is about to
+	// claim -- the UDP discovery port -- BEFORE the container starts.
+	//
+	// Waiting for the Healthy transition was too late: the runtime binds
+	// 33333 once at start-up with SO_REUSEADDR and never retries, the
+	// bootloader's responder binds it without, and Linux only shares a UDP
+	// port when every socket asked to. So the runtime got EADDRINUSE, logged a
+	// warning, and the device was undiscoverable after every recovery until
+	// its next restart.
+	if s.onRuntimeStarting != nil {
+		s.onRuntimeStarting()
+	}
+
 	if err := s.docker.StartContainer(ctx, s.cfg.ContainerName); err != nil && !dockerapi.IsConflict(err) {
 		return fmt.Errorf("starting %s: %w", s.cfg.ContainerName, err)
 	}
@@ -627,8 +720,10 @@ func (s *Supervisor) enterRecovery(ctx context.Context, reason string) {
 		// Log and continue: recovery must be reachable even if the stop
 		// failed, and a container we could not stop is all the more reason to
 		// let an operator in.
-		s.log.Error("stopping runtime for recovery failed", "error", err)
 		s.consumeExpectedStop()
+		if !errors.Is(err, dockerapi.ErrNotRunning) {
+			s.log.Error("stopping runtime for recovery failed", "error", err)
+		}
 	}
 	s.setState(StateRecovery, reason)
 }
@@ -649,6 +744,10 @@ func (s *Supervisor) BeginUpdate() error {
 	if s.status.State == StateUpdating {
 		return errors.New("an update is already in progress")
 	}
+	// Remembered here so AbortUpdate can put it back without the caller
+	// having to know about supervisor states.
+	s.preUpdateState = s.status.State
+	s.preUpdateReason = s.status.Reason
 	s.status.State = StateUpdating
 	s.status.Reason = "version change in progress"
 	s.status.Since = time.Now()
@@ -656,7 +755,31 @@ func (s *Supervisor) BeginUpdate() error {
 	return nil
 }
 
-// EndUpdate releases the claim taken by BeginUpdate without asserting an
+// AbortUpdate undoes BeginUpdate for an update that changed nothing.
+//
+// The alternative was calling Reconcile, which re-derived the state by acting
+// on the device: from recovery -- the common case, where an operator typed a
+// version that does not exist -- it found the stopped container and started
+// it, leaving recovery with no operator decision. With the container absent it
+// set "starting", the pull failed again, and the device reported starting
+// indefinitely. "Nothing was changed" has to include the supervisor's state.
+func (s *Supervisor) AbortUpdate() {
+	s.mu.Lock()
+	if s.expectStop > 0 {
+		s.expectStop--
+	}
+	// Only if the update still owns the state: a crash during the attempt may
+	// legitimately have moved it to recovery, and that is newer information
+	// than what BeginUpdate displaced.
+	if s.status.State == StateUpdating {
+		s.status.State = s.preUpdateState
+		s.status.Reason = s.preUpdateReason
+		s.status.Since = time.Now()
+	}
+	s.mu.Unlock()
+}
+
+// EndUpdate releases the claim taken by BeginUpdate without asserting an// EndUpdate releases the claim taken by BeginUpdate without asserting an
 // outcome; the caller decides whether to reconcile or enter recovery.
 func (s *Supervisor) EndUpdate() {
 	s.mu.Lock()
@@ -671,6 +794,15 @@ func (s *Supervisor) markExpectedStop() {
 	s.mu.Lock()
 	s.expectStop++
 	s.mu.Unlock()
+}
+
+// expectStopCount exposes the outstanding suppression count to tests. A
+// non-zero value after a completed stop sequence is the leak that let a real
+// crash be read as a deliberate one.
+func (s *Supervisor) expectStopCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.expectStop
 }
 
 // consumeExpectedStop reports whether the exit we just saw was one we asked
@@ -688,8 +820,16 @@ func (s *Supervisor) consumeExpectedStop() bool {
 // Stop takes the runtime down deliberately, without it counting as a crash.
 func (s *Supervisor) Stop(ctx context.Context) error {
 	s.markExpectedStop()
-	if err := s.docker.StopContainer(ctx, s.cfg.ContainerName, s.cfg.StopGrace); err != nil {
+	err := s.docker.StopContainer(ctx, s.cfg.ContainerName, s.cfg.StopGrace)
+	if err != nil {
+		// Give the token back. Nothing is going to exit, so a suppression left
+		// standing here would be spent on the next genuine crash instead --
+		// the runtime would stay down while Status() still read healthy.
 		s.consumeExpectedStop()
+		if errors.Is(err, dockerapi.ErrNotRunning) {
+			// Already stopped is the state the caller wanted.
+			return nil
+		}
 		return err
 	}
 	return nil

@@ -175,6 +175,31 @@ func (s *UserStore) Authenticate(ctx context.Context, username, password, pepper
 	return user, nil
 }
 
+// RoleByID reports the role of the account a token was issued for.
+//
+// Read at request time rather than carried in the token. The token has no role
+// claim, and adding one would mean a role change only took effect when the
+// token expired -- a demoted account would keep administrative access to the
+// component that can pull and run any image on the device.
+func (s *UserStore) RoleByID(ctx context.Context, userID string) (string, error) {
+	if s == nil || s.db == nil {
+		return "", ErrNoDatabase
+	}
+	var role string
+	query := "SELECT role FROM " + usersTable + " WHERE id = ?"
+	if err := s.db.QueryRowContext(ctx, query, userID).Scan(&role); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// The account behind a still-valid token has been deleted.
+			return "", ErrNoSuchUser
+		}
+		if isMissingTable(err) {
+			return "", ErrNoSuchUser
+		}
+		return "", fmt.Errorf("reading the role for user %q: %w", userID, err)
+	}
+	return role, nil
+}
+
 // dummyHash is a real 600k-iteration PBKDF2 hash of a value nobody knows,
 // used only to spend comparable time on an unknown username.
 const dummyHash = "pbkdf2:sha256:600000$KMV1LlY0aXBhZGRpbmc$" +

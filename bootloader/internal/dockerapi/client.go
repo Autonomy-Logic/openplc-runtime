@@ -36,8 +36,10 @@ const apiVersion = "v1.41"
 // Client talks to the Docker daemon. Safe for concurrent use: the embedded
 // http.Client is, and nothing else here holds mutable state.
 type Client struct {
-	http   *http.Client
-	socket string
+	http *http.Client
+	// streamHTTP has no request timeout, for long-lived response bodies.
+	streamHTTP *http.Client
+	socket     string
 }
 
 // New returns a client bound to socket. A zero-value socket means
@@ -58,22 +60,42 @@ func New(socket string) *Client {
 	}
 	return &Client{
 		http: &http.Client{
-			Transport: &http.Transport{DialContext: dial},
-			Timeout:   30 * time.Second,
+			Transport: &http.Transport{
+				DialContext:         dial,
+				IdleConnTimeout:     90 * time.Second,
+				MaxIdleConnsPerHost: 4,
+			},
+			Timeout: 30 * time.Second,
 		},
-		socket: socket,
+		streamHTTP: newStreamClient(socket),
+		socket:     socket,
 	}
 }
 
-// streamClient is New's client without the request timeout, for long-lived
-// response bodies. It shares nothing with the unary client but the socket
-// path.
-func (c *Client) streamClient() *http.Client {
+// newStreamClient builds the timeout-free client used for long-lived response
+// bodies. Called ONCE, from New.
+//
+// It used to be built per call, from stream() and doLongRunning(). Each
+// throwaway Transport kept its own idle connection pool with no
+// IdleConnTimeout, and a drained-and-closed body returns its connection to
+// that pool -- where the read and write goroutines pin it forever. Every
+// StopContainer, PullImage and ContainerLogs therefore leaked a unix socket
+// and two goroutines, fastest while an operator reads logs in recovery, which
+// is the state this component exists for. It ends in EMFILE.
+//
+// An http.Client is safe for concurrent use, so one is all that is needed.
+func newStreamClient(socket string) *http.Client {
 	dial := func(ctx context.Context, _, _ string) (net.Conn, error) {
 		var d net.Dialer
-		return d.DialContext(ctx, "unix", c.socket)
+		return d.DialContext(ctx, "unix", socket)
 	}
-	return &http.Client{Transport: &http.Transport{DialContext: dial}}
+	return &http.Client{Transport: &http.Transport{
+		DialContext: dial,
+		// Bound the pool anyway: a socket that goes quiet should not be held
+		// open indefinitely just because the pool has room for it.
+		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConnsPerHost: 2,
+	}}
 }
 
 // APIError is a non-2xx response from the daemon. The daemon's own message is
@@ -146,7 +168,7 @@ func (c *Client) stream(ctx context.Context, method, path string, body any) (io.
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.streamClient().Do(req)
+	resp, err := c.streamHTTP.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("docker %s: %w", path, err)
 	}
@@ -207,7 +229,7 @@ func (c *Client) doLongRunning(ctx context.Context, method, path string, body an
 	if err != nil {
 		return err
 	}
-	resp, err := c.streamClient().Do(req)
+	resp, err := c.streamHTTP.Do(req)
 	if err != nil {
 		return fmt.Errorf("docker %s: %w", path, err)
 	}

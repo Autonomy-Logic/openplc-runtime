@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
@@ -82,10 +83,18 @@ type HostReporter interface {
 	SystemInfo(ctx context.Context) (*dockerapi.Info, error)
 }
 
-// Authenticator resolves credentials against the runtime's account set.
+// Authenticator resolves credentials against the runtime's account set, and
+// serves the signing secret behind the tokens it issues.
+//
+// Secrets() is read per request rather than snapshotted at start-up: on a
+// fresh install the runtime writes .env and restapi.db AFTER the bootloader is
+// already running, and a snapshot taken before that left every authenticated
+// route answering 503 until the container was restarted.
 type Authenticator interface {
 	Authenticate(ctx context.Context, username, password, pepper string) (*runtimeauth.User, error)
 	CountUsers(ctx context.Context) (int, error)
+	Secrets() *runtimeauth.Secrets
+	RoleByID(ctx context.Context, userID string) (string, error)
 }
 
 // Config wires the server.
@@ -97,7 +106,6 @@ type Config struct {
 	// RuntimeVersion is the image tag the bootloader intends to run, which is
 	// not necessarily what is running right now (mid-update, or in recovery).
 	RuntimeVersion func() string
-	Secrets        *runtimeauth.Secrets
 	Users          Authenticator
 	Supervisor     Supervisor
 	Host           HostReporter
@@ -111,6 +119,18 @@ type Config struct {
 type Server struct {
 	cfg  Config
 	http *http.Server
+
+	// Created on first use rather than in New, so a Server built any other
+	// way (the tests build literals) still has it. A nil-safe throttle was
+	// the alternative and a worse one: it would leave the rate limit silently
+	// absent instead of simply present.
+	throttleOnce sync.Once
+	throttleImpl *loginThrottle
+}
+
+func (s *Server) loginLimiter() *loginThrottle {
+	s.throttleOnce.Do(func() { s.throttleImpl = newLoginThrottle() })
+	return s.throttleImpl
 }
 
 // New builds the server, generating a TLS certificate on first use.
@@ -159,10 +179,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/bootloader/status", s.authenticated(s.handleStatus))
 	mux.HandleFunc("GET /api/bootloader/device-info", s.authenticated(s.handleDeviceInfo))
 	mux.HandleFunc("GET /api/bootloader/logs", s.authenticated(s.handleLogs))
-	mux.HandleFunc("POST /api/bootloader/restart", s.authenticated(s.handleRestart))
-	mux.HandleFunc("POST /api/bootloader/update", s.authenticated(s.handleUpdate))
+	mux.HandleFunc("POST /api/bootloader/restart", s.adminOnly(s.handleRestart))
+	mux.HandleFunc("POST /api/bootloader/update", s.adminOnly(s.handleUpdate))
 	mux.HandleFunc("GET /api/bootloader/update", s.authenticated(s.handleUpdateProgress))
-	mux.HandleFunc("POST /api/bootloader/self-update", s.authenticated(s.handleSelfUpdate))
+	mux.HandleFunc("POST /api/bootloader/self-update", s.adminOnly(s.handleSelfUpdate))
 }
 
 // ListenAndServe blocks until ctx is cancelled or the listener fails.
@@ -223,7 +243,7 @@ func (s *Server) authenticated(next func(http.ResponseWriter, *http.Request)) ht
 			writeError(w, http.StatusUnauthorized, "a bearer token is required")
 			return
 		}
-		claims, err := runtimeauth.VerifyToken(s.cfg.Secrets.JWTSecret, token)
+		claims, err := runtimeauth.VerifyToken(s.cfg.Users.Secrets().JWTSecret, token)
 		if err != nil {
 			if errors.Is(err, runtimeauth.ErrTokenExpired) {
 				writeError(w, http.StatusUnauthorized, "token expired; log in again")
@@ -234,8 +254,60 @@ func (s *Server) authenticated(next func(http.ResponseWriter, *http.Request)) ht
 		}
 		s.cfg.Log.Debug("authenticated request",
 			"path", r.URL.Path, "subject", claims.Subject)
-		next(w, r)
+		next(w, r.WithContext(withSubject(r.Context(), claims.Subject)))
 	}
+}
+
+// subjectKey carries the authenticated user id to the admin check below.
+type subjectKey struct{}
+
+func withSubject(ctx context.Context, subject string) context.Context {
+	return context.WithValue(ctx, subjectKey{}, subject)
+}
+
+func subjectFrom(ctx context.Context) string {
+	subject, _ := ctx.Value(subjectKey{}).(string)
+	return subject
+}
+
+// RoleAdmin is the role the runtime gives an account that may change the
+// device. Matched against the runtime's own value (webserver/restapi.py).
+const RoleAdmin = "admin"
+
+// adminOnly restricts a route to administrators.
+//
+// Applied to the routes that can change what this device runs. Without it any
+// runtime account -- including one the runtime itself treats as restricted --
+// could change the runtime version or self-update the bootloader, and a
+// self-update starts a container with the Docker socket bound, which is host
+// root. The runtime distinguishes these roles; the component that can replace
+// the runtime must not be the one that ignores the distinction.
+//
+// The role is read from the database per request. The token carries none, and
+// a role claim would mean a demotion did not take effect until the token
+// expired.
+func (s *Server) adminOnly(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
+	return s.authenticated(func(w http.ResponseWriter, r *http.Request) {
+		subject := subjectFrom(r.Context())
+		role, err := s.cfg.Users.RoleByID(r.Context(), subject)
+		if err != nil {
+			// Includes the account having been deleted while its token was
+			// still valid. Refuse rather than guess.
+			s.cfg.Log.Warn("could not read the role for an authenticated request",
+				"subject", subject, "path", r.URL.Path, "error", err)
+			writeError(w, http.StatusForbidden,
+				"this account's role could not be confirmed; log in again")
+			return
+		}
+		if role != RoleAdmin {
+			s.cfg.Log.Warn("refused a non-admin request",
+				"subject", subject, "role", role, "path", r.URL.Path)
+			writeError(w, http.StatusForbidden,
+				"this action requires an administrator account")
+			return
+		}
+		next(w, r)
+	})
 }
 
 func bearerToken(r *http.Request) (string, bool) {
@@ -324,6 +396,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	source := requestSource(r)
+	if wait := s.loginLimiter().blockedFor(source); wait > 0 {
+		s.cfg.Log.Warn("refused a login from a backed-off source",
+			"source", source, "retry_after", wait.Round(time.Second))
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Round(time.Second).Seconds())))
+		writeError(w, http.StatusTooManyRequests,
+			"too many failed attempts from this address; try again shortly")
+		return
+	}
+
 	count, err := s.cfg.Users.CountUsers(r.Context())
 	if err != nil {
 		s.cfg.Log.Error("counting users", "error", err)
@@ -337,7 +419,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.cfg.Users.Authenticate(r.Context(), body.Username, body.Password, s.cfg.Secrets.Pepper)
+	// The PBKDF2 verification below is the expensive part, so the slot is
+	// taken around it and nothing else. Refusing rather than queueing: a
+	// queue would let an attacker hold connections open and still consume the
+	// CPU eventually.
+	if !s.loginLimiter().acquire() {
+		s.cfg.Log.Warn("refused a login: too many verifications in flight", "source", source)
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests,
+			"the bootloader is busy verifying another sign-in; try again shortly")
+		return
+	}
+	user, err := s.cfg.Users.Authenticate(r.Context(), body.Username, body.Password, s.cfg.Users.Secrets().Pepper)
+	s.loginLimiter().release()
 	if err != nil {
 		if errors.Is(err, runtimeauth.ErrUnsupportedHash) {
 			// A deployment problem, not a wrong password. Saying so is what
@@ -350,12 +444,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		// Unknown user and wrong password answer identically; distinguishing
 		// them enumerates valid accounts.
-		s.cfg.Log.Warn("failed login", "username", body.Username)
+		s.loginLimiter().recordFailure(source)
+		s.cfg.Log.Warn("failed login", "username", body.Username, "source", source)
 		writeError(w, http.StatusUnauthorized, "wrong username or password")
 		return
 	}
+	s.loginLimiter().recordSuccess(source)
 
-	token, err := runtimeauth.IssueToken(s.cfg.Secrets.JWTSecret, user.ID, runtimeauth.DefaultTokenTTL)
+	token, err := runtimeauth.IssueToken(s.cfg.Users.Secrets().JWTSecret, user.ID, runtimeauth.DefaultTokenTTL)
 	if err != nil {
 		s.cfg.Log.Error("issuing token", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not issue a token")

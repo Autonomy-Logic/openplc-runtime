@@ -81,6 +81,12 @@ type fakeSupervisor struct {
 	stops         int
 	reconciles    int
 	recoveryCalls []string
+	aborted       int
+	// state and preUpdateState model what AbortUpdate has to restore: the
+	// refused-update path must leave the supervisor exactly where it found
+	// it, not re-derive it by acting on the container.
+	state          string
+	preUpdateState string
 	// order records the sequence of operations, which is the property that
 	// actually matters for safety.
 	order []string
@@ -90,6 +96,8 @@ func (f *fakeSupervisor) BeginUpdate() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.begins++
+	f.preUpdateState = f.state
+	f.state = "updating"
 	f.order = append(f.order, "begin")
 	return f.beginErr
 }
@@ -99,6 +107,16 @@ func (f *fakeSupervisor) EndUpdate() {
 	defer f.mu.Unlock()
 	f.ends++
 	f.order = append(f.order, "end")
+}
+
+// AbortUpdate models the real one: release the claim and restore what
+// BeginUpdate displaced, without touching the container.
+func (f *fakeSupervisor) AbortUpdate() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.aborted++
+	f.order = append(f.order, "abort")
+	f.state = f.preUpdateState
 }
 
 func (f *fakeSupervisor) Stop(context.Context) error {
@@ -428,9 +446,13 @@ func (b *blockingDocker) RemoveImage(context.Context, string, bool) error { retu
 
 // --- disk pre-check ------------------------------------------------------
 
-func TestAnImpossiblyLargeImageIsRefusedBeforeAnythingIsTouched(t *testing.T) {
-	// Refusing up front with a number is far better than a half-finished
-	// pull and an ENOSPC an operator has to interpret.
+func TestATightDiskIsWarnedAboutRatherThanRefused(t *testing.T) {
+	// This used to refuse the update. The measurement is of the bootloader's
+	// filesystem, which is only Docker's on a default install -- so on a
+	// device whose data-root had been moved, a perfectly possible update was
+	// blocked by a figure about the wrong disk. It is a warning now, carried
+	// on the progress the editor polls, and the pull goes ahead: if the
+	// estimate was right, Docker reports ENOSPC in its own words.
 	docker := &fakeDocker{inspectSize: 1 << 62} // larger than any real disk
 	sup := &fakeSupervisor{}
 	u, _, _ := newTestUpdater(t, docker, sup)
@@ -438,17 +460,20 @@ func TestAnImpossiblyLargeImageIsRefusedBeforeAnythingIsTouched(t *testing.T) {
 	if err := u.Start(context.Background(), "v4.2.1"); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	progress := waitForState(t, u, StateFailed)
+	progress := waitForState(t, u, StateSuccess)
 
 	// Only meaningful where free space can actually be measured.
 	if free, err := freeBytes(t.TempDir()); err != nil || free == 0 {
 		t.Skip("free space is not measurable on this platform")
 	}
-	if !strings.Contains(progress.Error, "not enough free space") {
-		t.Fatalf("want a free-space refusal, got %q", progress.Error)
+	if !strings.Contains(progress.Warning, "looks tight") {
+		t.Errorf("want a free-space warning on the progress, got %q", progress.Warning)
 	}
-	if got := docker.pulls(); len(got) != 0 {
-		t.Fatalf("nothing may be pulled after the pre-check fails, got %v", got)
+	if progress.Error != "" {
+		t.Errorf("a tight disk must not fail the update, got error %q", progress.Error)
+	}
+	if got := docker.pulls(); len(got) == 0 {
+		t.Error("the pull must still be attempted")
 	}
 }
 
@@ -579,15 +604,21 @@ func TestAFailureAfterTheSwapBeginsDoesEnterRecovery(t *testing.T) {
 
 func TestARefusedUpdateLeavesTheSupervisorReportingReality(t *testing.T) {
 	// BeginUpdate moves the supervisor to "updating" and EndUpdate only
-	// releases the claim, so without re-deriving state a device that merely
+	// releases the claim, so without restoring state a device that merely
 	// refused a bad version reports itself as mid-update forever. Seen on the
 	// SLM-RP4: a failed pull left the bootloader stuck on "updating" while the
 	// PLC ran happily underneath.
+	//
+	// It restores rather than reconciles. Reconcile re-derives the state by
+	// ACTING on the container: from recovery it would start the runtime that
+	// recovery deliberately stopped and call the device healthy, and with the
+	// container absent it would leave the state on "starting" for good after
+	// the pull failed again.
 	docker := &fakeDocker{
 		inspectErr: errors.New("no such image"),
 		pullErr:    errors.New("manifest unknown"),
 	}
-	sup := &fakeSupervisor{}
+	sup := &fakeSupervisor{state: "recovery"}
 	u, _, _ := newTestUpdater(t, docker, sup)
 
 	if err := u.Start(context.Background(), "v9.9.9"); err != nil {
@@ -598,12 +629,27 @@ func TestARefusedUpdateLeavesTheSupervisorReportingReality(t *testing.T) {
 	waitFor(t, func() bool {
 		order, _ := sup.snapshot()
 		for _, step := range order {
-			if step == "reconcile" {
+			if step == "abort" {
 				return true
 			}
 		}
 		return false
 	})
+
+	// The state it found is the state it left: recovery, not a restarted
+	// runtime and not "starting" forever.
+	sup.mu.Lock()
+	restored := sup.state
+	sup.mu.Unlock()
+	if restored != "recovery" {
+		t.Errorf("the refused update left the supervisor on %q, want the recovery it found", restored)
+	}
+	order0, _ := sup.snapshot()
+	for _, step := range order0 {
+		if step == "reconcile" {
+			t.Errorf("a refused update reconciled, which acts on the container: %v", order0)
+		}
+	}
 	// And still nothing stopped.
 	order, reasons := sup.snapshot()
 	for _, step := range order {

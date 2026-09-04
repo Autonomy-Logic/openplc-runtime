@@ -57,6 +57,10 @@ type fakeUsers struct {
 	countErr error
 	user     *runtimeauth.User
 	authErr  error
+	// role answers RoleByID. Defaults to admin so the existing cases, which
+	// are about routing and auth rather than authorization, keep passing.
+	role    string
+	roleErr error
 }
 
 func (f *fakeUsers) CountUsers(context.Context) (int, error) { return f.count, f.countErr }
@@ -67,6 +71,20 @@ func (f *fakeUsers) Authenticate(context.Context, string, string, string) (*runt
 	return f.user, nil
 }
 
+func (f *fakeUsers) Secrets() *runtimeauth.Secrets {
+	return &runtimeauth.Secrets{JWTSecret: testSecret, Pepper: testPepper}
+}
+
+func (f *fakeUsers) RoleByID(context.Context, string) (string, error) {
+	if f.roleErr != nil {
+		return "", f.roleErr
+	}
+	if f.role == "" {
+		return RoleAdmin, nil
+	}
+	return f.role, nil
+}
+
 // newTestServer builds a server with an httptest mux, bypassing TLS: the
 // certificate path is covered separately, and routing plus auth is what these
 // tests are about.
@@ -75,7 +93,6 @@ func newTestServer(t *testing.T, users *fakeUsers, sup *fakeSupervisor, logs *fa
 	srv := &Server{cfg: Config{
 		Version:        "bootloader-v1.0.0-test",
 		RuntimeVersion: func() string { return "v4.2.1" },
-		Secrets:        &runtimeauth.Secrets{JWTSecret: testSecret, Pepper: testPepper},
 		Users:          users,
 		Supervisor:     sup,
 		Logs:           logs,
@@ -475,7 +492,6 @@ func newTestServerWithUpdater(t *testing.T, up Updater) *httptest.Server {
 	srv := &Server{cfg: Config{
 		Version:        "bootloader-v1.0.0-test",
 		RuntimeVersion: func() string { return "v4.2.1" },
-		Secrets:        &runtimeauth.Secrets{JWTSecret: testSecret, Pepper: testPepper},
 		Users:          &fakeUsers{count: 1},
 		Supervisor:     healthySupervisor(),
 		Logs:           &fakeLogs{},
@@ -608,7 +624,6 @@ func newTestServerWithSelfUpdater(t *testing.T, self SelfUpdater) *httptest.Serv
 	srv := &Server{cfg: Config{
 		Version:        "bootloader-v1.0.0-test",
 		RuntimeVersion: func() string { return "v4.2.1" },
-		Secrets:        &runtimeauth.Secrets{JWTSecret: testSecret, Pepper: testPepper},
 		Users:          &fakeUsers{count: 1},
 		Supervisor:     healthySupervisor(),
 		Logs:           &fakeLogs{},

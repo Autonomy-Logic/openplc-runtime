@@ -62,14 +62,6 @@ func (w *crashWindow) count() int {
 	return len(w.times)
 }
 
-// reset clears the history. Called once a runtime has been confirmed healthy,
-// so an isolated crash weeks apart never accumulates into a false loop.
-func (w *crashWindow) reset() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.times = nil
-}
-
 // prune drops entries that have aged out. Caller holds the lock.
 func (w *crashWindow) prune(now time.Time) {
 	cutoff := now.Add(-w.window)

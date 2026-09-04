@@ -219,28 +219,45 @@ func TestContainerSpecSetsTheRealTimeUlimits(t *testing.T) {
 	}
 }
 
-func TestContainerSpecTellsTheRuntimeItIsBootloaderManaged(t *testing.T) {
-	// This is what makes /api/capabilities report updatePolicy "self". Only our
-	// bootloader sets it, which is what makes the answer trustworthy -- an
-	// orchestrator vPLC never gets it and so reports "managed".
-	cfg := &Config{Version: "v4.2.1", BootloaderPort: 8445}
+func TestContainerSpecSetsNoEnvironmentTheRuntimeIgnores(t *testing.T) {
+	// OPENPLC_UPDATE_POLICY and OPENPLC_BOOTLOADER_PORT were set here for
+	// /api/capabilities to echo back. That runtime-side reporting was removed
+	// as dead weight -- a client learns both facts from the bootloader
+	// answering at all -- so these told nobody anything, while reading like a
+	// feature that existed.
+	cfg := &Config{
+		Repository:     "ghcr.io/x/runtime",
+		Version:        "v4.2.1",
+		DataDir:        "/var/lib/openplc-runtime",
+		BootloaderPort: 8445,
+	}
 	cfg.applyDefaults()
 	spec := decodeSpec(t, cfg)
 
-	var sawPolicy, sawPort bool
+	var env []string
 	for _, raw := range spec["Env"].([]any) {
-		switch raw.(string) {
-		case "OPENPLC_UPDATE_POLICY=self":
-			sawPolicy = true
-		case "OPENPLC_BOOTLOADER_PORT=8445":
-			sawPort = true
+		env = append(env, raw.(string))
+	}
+
+	for _, dead := range []string{"OPENPLC_UPDATE_POLICY", "OPENPLC_BOOTLOADER_PORT"} {
+		for _, entry := range env {
+			if strings.HasPrefix(entry, dead+"=") {
+				t.Errorf("%s is set but nothing in the runtime reads it", dead)
+			}
 		}
 	}
-	if !sawPolicy {
-		t.Error("the runtime must be told it is bootloader-managed")
+
+	// The one env var that IS load-bearing must still be there: the runtime
+	// resolves its data directory by detection, and without this it writes a
+	// fresh database inside the container that a version change then destroys.
+	var found bool
+	for _, entry := range env {
+		if entry == "OPENPLC_PERSISTENT_DATA_DIR=/var/lib/openplc-runtime" {
+			found = true
+		}
 	}
-	if !sawPort {
-		t.Error("the runtime must be told where the bootloader listens")
+	if !found {
+		t.Errorf("the persistent data directory must be passed explicitly, got %v", env)
 	}
 }
 

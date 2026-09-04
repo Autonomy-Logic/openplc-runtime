@@ -22,10 +22,12 @@ ARG BOOTLOADER_VERSION=dev
 
 WORKDIR /src
 
-# go.mod first so the dependency layer survives source-only changes. There are
-# no third-party dependencies today, which keeps this honest rather than
-# theatrical: `go mod download` is a no-op and the layer is a cache anchor.
-COPY go.mod ./
+# Manifest and checksums first, so the dependency layer survives source-only
+# changes. go.sum belongs here rather than arriving later with the source:
+# without it `go mod download` fetches modernc.org/sqlite (the one third-party
+# dependency, for reading the runtime's user database) unverified, and the
+# pinning only happens by accident when COPY . . brings the real go.sum in.
+COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .

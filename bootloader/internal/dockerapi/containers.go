@@ -2,6 +2,7 @@ package dockerapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -129,10 +130,18 @@ func (c *Client) StopContainer(ctx context.Context, name string, grace time.Dura
 
 	err := c.doLongRunning(stopCtx, http.MethodPost, path, nil)
 	if err != nil && (IsNotFound(err) || hasStatus(err, http.StatusNotModified)) {
-		return nil
+		// Nothing was running, so nothing will exit. Reported rather than
+		// swallowed: a caller that suppresses crash accounting for the exit it
+		// is about to cause must know when that exit is never coming, or the
+		// suppression outlives the stop and eats the next real crash.
+		return ErrNotRunning
 	}
 	return err
 }
+
+// ErrNotRunning means the container was already stopped or absent, so this
+// stop was a no-op and no `die` event will follow it.
+var ErrNotRunning = errors.New("container was not running")
 
 // stopTimeoutMargin is the slack on top of the grace period, covering the
 // daemon's own teardown after the container has exited.
@@ -167,4 +176,16 @@ func (c *Client) ContainerLogs(ctx context.Context, name string, tail int) (stri
 	}
 	defer body.Close()
 	return readMultiplexed(body, 512*1024)
+}
+
+// RenameContainer gives an existing container a new name.
+//
+// Used by the self-update so a replacement can be created under a temporary
+// name and only then take over the real one -- which means a failed create
+// leaves the old container untouched instead of removing it first and hoping.
+func (c *Client) RenameContainer(ctx context.Context, name, newName string) error {
+	params := url.Values{}
+	params.Set("name", newName)
+	path := "/containers/" + url.PathEscape(name) + "/rename" + encodeQuery(params)
+	return c.do(ctx, http.MethodPost, path, nil, nil)
 }

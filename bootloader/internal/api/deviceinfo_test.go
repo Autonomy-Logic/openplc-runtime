@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
-	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimeauth"
 )
 
 type fakeHost struct {
@@ -27,7 +26,6 @@ func newTestServerWithHost(t *testing.T, host HostReporter) *httptest.Server {
 	srv := &Server{cfg: Config{
 		Version:        "bootloader-v1.0.0-test",
 		RuntimeVersion: func() string { return "v4.2.1" },
-		Secrets:        &runtimeauth.Secrets{JWTSecret: testSecret, Pepper: testPepper},
 		Users:          &fakeUsers{count: 1},
 		Supervisor:     healthySupervisor(),
 		Host:           host,

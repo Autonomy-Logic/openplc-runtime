@@ -150,10 +150,12 @@ func run(log *slog.Logger, cfg runConfig) error {
 	// directory. Missing or unreadable is not fatal: the control API still
 	// needs to come up so an operator can see WHY, and every authenticated
 	// route refuses cleanly until the files appear.
-	secrets, users := openRuntimeCredentials(log, spec.DataDir)
-	if users != nil {
-		defer users.Close()
-	}
+	// Re-read on use rather than snapshotted: on a fresh install the runtime
+	// creates .env and restapi.db only once the bootloader has already started
+	// it, and a snapshot from before that made every login fail until the
+	// container was restarted.
+	creds := runtimeauth.NewProvider(spec.DataDir, log.With("component", "auth"))
+	defer creds.Close()
 
 	// LAN discovery, answered ONLY while in recovery. A device that cannot be
 	// found cannot be repaired, and without this a failed update makes the
@@ -164,12 +166,19 @@ func run(log *slog.Logger, cfg runConfig) error {
 		status := sup.Status()
 		return discovery.Reply{
 			BootloaderPort: spec.BootloaderPort,
-			RuntimeVersion: spec.Version,
+			RuntimeVersion: spec.DesiredVersion(),
 			Reason:         status.Reason,
 		}
 	}, log.With("component", "discovery"))
 
 	sup.OnRecovery(func(supervisor.Status) { responder.Enable() })
+	// Released before the runtime container starts, not when it reports
+	// healthy: the runtime binds the discovery port once at start-up and never
+	// retries, so a bootloader still holding it left the device
+	// undiscoverable until the next restart.
+	sup.OnRuntimeStarting(func() { responder.Disable() })
+	// Belt and braces for a path that reaches healthy without going through
+	// a start (adoption of an already-running container).
 	sup.OnHealthy(func(supervisor.Status) { responder.Disable() })
 
 	upd := updater.New(updater.Config{
@@ -185,9 +194,8 @@ func run(log *slog.Logger, cfg runConfig) error {
 		Port:           cfg.port,
 		StateDir:       cfg.stateDir,
 		Version:        version,
-		RuntimeVersion: func() string { return spec.Version },
-		Secrets:        secrets,
-		Users:          users,
+		RuntimeVersion: func() string { return spec.DesiredVersion() },
+		Users:          creds,
 		Supervisor:     sup,
 		Host:           docker,
 		Logs:           docker,
@@ -251,31 +259,6 @@ func (b bootloaderSelfUpdater) Start(ctx context.Context, version string) error 
 	// integration harness, which has no route to ghcr.io, and is set at
 	// install time rather than per request.
 	return selfupdate.Start(ctx, b.docker, os.Getenv("OPENPLC_BOOTLOADER_REPOSITORY"), version, b.log)
-}
-
-// openRuntimeCredentials loads the runtime's secrets and user database.
-//
-// Both live in the runtime's data directory, which the bootloader mounts
-// read-only. Failure returns nils rather than an error on purpose: a device
-// whose runtime has never started has neither file yet, and refusing to boot
-// would leave nothing listening on the very device that most needs a way in.
-func openRuntimeCredentials(
-	log *slog.Logger, dataDir string,
-) (*runtimeauth.Secrets, *runtimeauth.UserStore) {
-	secrets, err := runtimeauth.LoadSecrets(filepath.Join(dataDir, ".env"))
-	if err != nil {
-		log.Warn("runtime secrets unavailable; authenticated routes will refuse",
-			"error", err)
-		return &runtimeauth.Secrets{}, nil
-	}
-
-	users, err := runtimeauth.OpenUserStore(filepath.Join(dataDir, "restapi.db"))
-	if err != nil {
-		log.Warn("runtime account database unavailable; authenticated routes will refuse",
-			"error", err)
-		return secrets, nil
-	}
-	return secrets, users
 }
 
 func newLogger(level string) *slog.Logger {

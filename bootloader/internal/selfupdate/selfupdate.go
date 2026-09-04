@@ -61,6 +61,7 @@ type DockerClient interface {
 	StartContainer(ctx context.Context, name string) error
 	StopContainer(ctx context.Context, name string, grace time.Duration) error
 	RemoveContainer(ctx context.Context, name string, force bool) error
+	RenameContainer(ctx context.Context, name, newName string) error
 	InspectImage(ctx context.Context, ref string) (*dockerapi.ImageInfo, error)
 	PullImage(ctx context.Context, ref string, onProgress func(dockerapi.PullProgress)) error
 }
@@ -182,17 +183,38 @@ func Execute(ctx context.Context, docker DockerClient, log *slog.Logger) error {
 	case <-time.After(settleDelay):
 	}
 
+	// Create the replacement FIRST, under a temporary name.
+	//
+	// Removing the parent first meant a rejected create -- an invalid
+	// HostConfig on an older daemon, a full disk, an image pruned between the
+	// pull and the create -- left the device with no bootloader at all, on
+	// hardware this feature exists because it has no SSH. The helper runs with
+	// RestartPolicy: no, so nothing would have come back for it.
+	staging := target + "-next"
+	// A leftover from an interrupted attempt would take the name.
+	if err := docker.RemoveContainer(ctx, staging, true); err != nil {
+		return fmt.Errorf("clearing a previous staged bootloader: %w", err)
+	}
+	if _, err := docker.CreateContainer(ctx, staging, spec); err != nil {
+		return fmt.Errorf("creating the new bootloader: %w", err)
+	}
+
 	if parent != nil {
 		// Force: the parent's restart policy would otherwise bring it back
 		// between the stop and the remove, and the name would still be taken.
 		if err := docker.RemoveContainer(ctx, target, true); err != nil {
+			// The staged container is removed so a retry starts clean; the
+			// parent is still there and still running.
+			_ = docker.RemoveContainer(ctx, staging, true)
 			return fmt.Errorf("removing the old bootloader: %w", err)
 		}
 		log.Info("old bootloader removed", "container", target)
 	}
 
-	if _, err := docker.CreateContainer(ctx, target, spec); err != nil {
-		return fmt.Errorf("creating the new bootloader: %w", err)
+	// Take over the real name, then start. A rename is metadata only, so the
+	// window where neither container holds the name is as small as it can be.
+	if err := docker.RenameContainer(ctx, staging, target); err != nil {
+		return fmt.Errorf("renaming the new bootloader to %s: %w", target, err)
 	}
 	if err := docker.StartContainer(ctx, target); err != nil {
 		return fmt.Errorf("starting the new bootloader: %w", err)

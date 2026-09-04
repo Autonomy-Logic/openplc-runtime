@@ -41,6 +41,13 @@ The runtime will start and listen on port 8443 for connections from the OpenPLC 
 curl -fsSL https://runtime.getedge.me | sudo bash
 ```
 
+`runtime.getedge.me` serves `scripts/install-docker.sh` verbatim. Until that
+host is published, the same one-liner works against GitHub directly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Autonomy-Logic/openplc-runtime/main/scripts/install-docker.sh | sudo bash
+```
+
 No checkout, no build toolchain, no dependencies to install first. The script
 installs Docker if it is missing, then starts the runtime and a small
 bootloader beside it. The bootloader is what lets the OpenPLC Editor change

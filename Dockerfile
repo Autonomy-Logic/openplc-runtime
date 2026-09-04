@@ -22,7 +22,10 @@ RUN mkdir -p /var/run/runtime && \
 RUN rm -rf build/ venvs/ .venv/ 2>/dev/null || true
 
 # Run installation script
-RUN ./install.sh
+# --native, because install.sh now defaults to installing Docker and
+# compiling nothing -- and there is no engine to install inside a build
+# layer. Without this the image build fails at the installer's curl check.
+RUN ./install.sh --native
 
 # Clean up apt cache to reduce image size (Docker-specific optimization)
 RUN rm -rf /var/lib/apt/lists/*

@@ -58,7 +58,10 @@ type Progress struct {
 	Percent *int   `json:"percent,omitempty"`
 	// Error is written for a person: what failed and, where there is one,
 	// what to do about it.
-	Error      string     `json:"error,omitempty"`
+	Error string `json:"error,omitempty"`
+	// Warning is a concern that did not stop the update -- currently a tight
+	// disk measurement. Shown alongside progress rather than instead of it.
+	Warning    string     `json:"warning,omitempty"`
 	StartedAt  time.Time  `json:"startedAt,omitempty"`
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`
 }
@@ -79,6 +82,9 @@ type Supervisor interface {
 	// the stop that is about to happen.
 	BeginUpdate() error
 	EndUpdate()
+	// AbortUpdate releases the claim and restores the state BeginUpdate
+	// displaced, for an attempt that changed nothing on the device.
+	AbortUpdate()
 	Stop(ctx context.Context) error
 	Reconcile(ctx context.Context) error
 	EnterRecovery(ctx context.Context, reason string)
@@ -142,7 +148,7 @@ func (u *Updater) Start(ctx context.Context, targetVersion string) error {
 	u.running = true
 	u.progress = Progress{
 		State:     StatePulling,
-		From:      u.cfg.Spec.Version,
+		From:      u.cfg.Spec.DesiredVersion(),
 		To:        targetVersion,
 		StartedAt: time.Now(),
 	}
@@ -156,7 +162,7 @@ func (u *Updater) Start(ctx context.Context, targetVersion string) error {
 }
 
 func (u *Updater) run(ctx context.Context, targetVersion string) {
-	previousVersion := u.cfg.Spec.Version
+	previousVersion := u.cfg.Spec.DesiredVersion()
 	defer u.cfg.Supervisor.EndUpdate()
 
 	err := u.execute(ctx, previousVersion, targetVersion)
@@ -188,15 +194,12 @@ func (u *Updater) run(ctx context.Context, targetVersion string) {
 		if errors.As(err, &beforeSwap) {
 			u.cfg.Log.Info("nothing was changed; leaving the runtime alone",
 				"version", previousVersion)
-			// Re-derive the supervisor's state from the container rather than
-			// leaving it on "updating" forever. BeginUpdate moved it there and
-			// EndUpdate only releases the claim, so without this a device that
-			// merely refused a bad version reports itself as mid-update to the
-			// editor for the rest of its life -- observed on the SLM-RP4.
-			if reconcileErr := u.cfg.Supervisor.Reconcile(ctx); reconcileErr != nil {
-				u.cfg.Log.Warn("could not re-check the runtime after a refused update",
-					"error", reconcileErr)
-			}
+			// Put back exactly the state this attempt found. Reconcile used to
+			// do the re-deriving, but it re-derives by ACTING: from recovery
+			// it restarted the stopped container and called the device
+			// healthy, and with the container absent it left the state on
+			// "starting" forever after the pull failed again.
+			u.cfg.Supervisor.AbortUpdate()
 			return
 		}
 
@@ -226,9 +229,7 @@ func (u *Updater) execute(ctx context.Context, previousVersion, targetVersion st
 	targetRef := u.cfg.Spec.ImageRefFor(targetVersion)
 	previousRef := u.cfg.Spec.ImageRefFor(previousVersion)
 
-	if err := u.checkDiskSpace(ctx, targetRef); err != nil {
-		return errBeforeSwap{err}
-	}
+	u.checkDiskSpace(ctx, targetRef)
 
 	// 1. Pull. Non-destructive: the running version stays on disk.
 	u.setPhase(StatePulling, "", nil)
@@ -262,9 +263,9 @@ func (u *Updater) execute(ctx context.Context, previousVersion, targetVersion st
 	// to rather than silently reverting -- and the image for it is already on
 	// disk by now.
 	u.setPhase(StateSwapping, "", nil)
-	u.cfg.Spec.Version = targetVersion
+	u.cfg.Spec.SetDesiredVersion(targetVersion)
 	if err := u.cfg.Spec.Save(u.cfg.SpecPath); err != nil {
-		u.cfg.Spec.Version = previousVersion
+		u.cfg.Spec.SetDesiredVersion(previousVersion)
 		return errBeforeSwap{fmt.Errorf("could not record the new version: %w", err)}
 	}
 
@@ -297,22 +298,28 @@ func (u *Updater) execute(ctx context.Context, previousVersion, targetVersion st
 	return nil
 }
 
-// checkDiskSpace warns, with numbers, when the target is unlikely to fit.
+// checkDiskSpace reports, with numbers, when the target is unlikely to fit.
 //
-// Advisory rather than blocking. The measurement is of the bootloader's own
-// filesystem, which is the same one Docker uses on a default install but not
-// on a device whose data-root has been moved; blocking on a figure that can be
-// about the wrong disk would refuse updates that would have worked. Docker's
-// own pull will fail with a clear ENOSPC if the estimate was wrong, so the
-// cost of being permissive is a legible failure rather than a silent one.
-func (u *Updater) checkDiskSpace(ctx context.Context, targetRef string) error {
+// Advisory, and now actually advisory: it used to return an error that the
+// caller turned into a failed update, contradicting this comment and refusing
+// updates on any device whose Docker data-root had been moved -- the estimate
+// is taken from the bootloader's own filesystem, which is only the same disk
+// on a default install. The operator on the moved-data-root board was the one
+// who lost.
+//
+// So a tight measurement is surfaced as a warning on the progress the editor
+// polls, and the pull goes ahead. If the estimate was right, Docker's own pull
+// fails with a clear ENOSPC, which is a legible failure rather than a silent
+// one -- and if it was about the wrong disk, nothing was refused for no
+// reason.
+func (u *Updater) checkDiskSpace(ctx context.Context, targetRef string) {
 	free, err := freeBytes(u.cfg.StateDir)
 	if err != nil {
 		u.cfg.Log.Warn("could not measure free space", "error", err)
-		return nil
+		return
 	}
 	if free == 0 {
-		return nil // measurement unavailable on this platform
+		return // measurement unavailable on this platform
 	}
 
 	// Estimate the target's size from the image already installed: successive
@@ -325,17 +332,22 @@ func (u *Updater) checkDiskSpace(ctx context.Context, targetRef string) error {
 	if estimate == 0 {
 		u.cfg.Log.Info("no local image to estimate from; skipping the disk pre-check",
 			"free", free)
-		return nil
+		return
 	}
 
 	if free < estimate {
-		return fmt.Errorf(
-			"not enough free space to download %s: about %s needed, %s available",
-			targetRef, humanBytes(estimate), humanBytes(free))
+		warning := fmt.Sprintf(
+			"free space looks tight for %s: about %s needed, %s available on %s. "+
+				"Continuing; the download will report a clear error if it does not fit.",
+			targetRef, humanBytes(estimate), humanBytes(free), u.cfg.StateDir)
+		u.cfg.Log.Warn("disk pre-check is tight", "detail", warning)
+		u.mu.Lock()
+		u.progress.Warning = warning
+		u.mu.Unlock()
+		return
 	}
 	u.cfg.Log.Info("disk pre-check passed",
 		"free", humanBytes(free), "estimate", humanBytes(estimate))
-	return nil
 }
 
 func (u *Updater) setPhase(state State, phase string, percent *int) {

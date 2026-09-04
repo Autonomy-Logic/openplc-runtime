@@ -49,6 +49,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // Ulimit is Docker's rlimit shape.
@@ -86,6 +87,12 @@ type Config struct {
 	Repository string `json:"repository"`
 	// Version is the tag currently desired. The bootloader rewrites this when an
 	// update succeeds, which is what makes the choice survive a reboot.
+	//
+	// Read and written from different goroutines -- the updater writes it, the
+	// API and discovery replies read it, and the supervisor's event loop reads
+	// it through ImageRef -- so it goes through Version()/SetVersion() and
+	// the mutex below. Touching the field directly is a data race; the tests
+	// only passed under -race because nothing in them read it concurrently.
 	Version string `json:"version"`
 	// DataDir is the host path holding the runtime's persistent data. Bound
 	// into the container at the same path so the runtime's own defaults apply
@@ -100,6 +107,9 @@ type Config struct {
 	// BootloaderPort is advertised to the runtime so /api/capabilities can tell
 	// the editor where to send an update request.
 	BootloaderPort int `json:"bootloaderPort,omitempty"`
+
+	// mu guards Version. Not serialised: it is a lock, not configuration.
+	mu sync.RWMutex `json:"-"`
 }
 
 const (
@@ -142,7 +152,12 @@ func Load(path string) (*Config, error) {
 // Save writes the config back, atomically, so a crash mid-write cannot leave
 // the bootloader unable to parse its own spec on the next boot.
 func (c *Config) Save(path string) error {
+	// Under the read lock: the updater sets Version and saves, while the API
+	// and the event loop read it. Marshalling without the lock would race the
+	// very write this call exists to persist.
+	c.mu.RLock()
 	encoded, err := json.MarshalIndent(c, "", "  ")
+	c.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("encoding runtime spec: %w", err)
 	}
@@ -243,7 +258,25 @@ func validateBind(bind string) error {
 
 // ImageRef is the fully qualified image the runtime should run.
 func (c *Config) ImageRef() string {
-	return c.Repository + ":" + c.Version
+	return c.Repository + ":" + c.DesiredVersion()
+}
+
+// DesiredVersion reports the tag currently desired.
+//
+// Every read outside (de)serialisation goes through here. The Version field
+// stays exported because encoding/json needs it to be, but reading it
+// directly from a goroutine other than the one that wrote it is a data race.
+func (c *Config) DesiredVersion() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Version
+}
+
+// SetDesiredVersion records a new desired tag.
+func (c *Config) SetDesiredVersion(version string) {
+	c.mu.Lock()
+	c.Version = version
+	c.mu.Unlock()
 }
 
 // ImageRefFor is ImageRef for an arbitrary version, used to pull a target
@@ -264,10 +297,12 @@ func (c *Config) ContainerSpec(imageRef string) any {
 	binds = append(binds, c.ExtraBinds...)
 
 	env := []string{
-		// Tells /api/capabilities to report updatePolicy "self". Only our
-		// bootloader sets this, which is what makes the answer trustworthy.
-		"OPENPLC_UPDATE_POLICY=self",
-		fmt.Sprintf("OPENPLC_BOOTLOADER_PORT=%d", c.BootloaderPort),
+		// OPENPLC_UPDATE_POLICY and OPENPLC_BOOTLOADER_PORT used to be set
+		// here for /api/capabilities to echo back. The runtime side of that
+		// was removed as dead weight -- the editor learns both facts from the
+		// bootloader answering at all -- so setting them told nobody
+		// anything. Passing environment a runtime does not read is how a
+		// reader ends up believing a feature exists.
 		// Point the runtime's persistent data at the bind mount.
 		//
 		// This is load-bearing and NOT redundant with the bind. The runtime

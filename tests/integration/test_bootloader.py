@@ -117,12 +117,36 @@ def wait_for(description: str, predicate, timeout: float = 90.0, interval: float
     raise Failure(f"timed out waiting for {description} (last observed: {last!r})")
 
 
+TESTHOST_SENTINEL = "/run/openplc-testhost"
+
+
+def require_testhost() -> None:
+    """Refuse to run anywhere but the disposable test host.
+
+    Everything below wipes DATA_DIR and force-removes the runtime container.
+    On a real device that destroys users, credentials, the stored project,
+    retained variables and any VPP licences, and stops a running PLC -- and a
+    bare ``pytest`` from the repository root used to collect this file, because
+    ``testpaths = tests`` and the filename matches ``python_files``. The
+    conftest beside this file excludes it from collection; this is the second
+    lock, because the first one is a line in a file somebody can delete.
+    """
+    if not os.path.exists(TESTHOST_SENTINEL):
+        raise Failure(
+            f"refusing to run: {TESTHOST_SENTINEL} is absent, so this is not the "
+            "disposable test host. These tests erase the runtime's data "
+            "directory and remove its container. Run them through "
+            "tests/integration/harness.sh."
+        )
+
+
 def seed_data_dir() -> None:
     """Create the runtime data directory the bootloader authenticates against.
 
     A real .env and a real users row, so login exercises the actual PBKDF2 and
     SQLite paths rather than a mock.
     """
+    require_testhost()
     shutil.rmtree(DATA_DIR, ignore_errors=True)
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(os.path.join(DATA_DIR, ".env"), "w", encoding="utf-8") as handle:
@@ -373,16 +397,17 @@ def test_the_runtime_is_told_to_use_the_mounted_data_directory():
 
 
 @case
-def test_the_runtime_is_told_it_is_bootloader_managed():
-    """updatePolicy 'self' is what makes the editor offer the update action,
-    and only our bootloader sets it."""
+def test_the_runtime_is_given_no_environment_it_ignores():
+    """OPENPLC_UPDATE_POLICY and OPENPLC_BOOTLOADER_PORT were passed for
+    /api/capabilities to echo back. That runtime-side reporting was removed as
+    dead weight -- a client learns both facts from the bootloader answering at
+    all -- so these told nobody anything while reading like a live feature."""
     reset()
     wait_healthy()
-    served = runtime_version_served()
-    if served.get("updatePolicy") != "self":
-        raise Failure(f"want updatePolicy self, got {served.get('updatePolicy')!r}")
-    if str(served.get("bootloaderPort")) != "8445":
-        raise Failure(f"want bootloaderPort 8445, got {served.get('bootloaderPort')!r}")
+    env = container_state(RUNTIME_NAME)["Config"]["Env"]
+    for dead in ("OPENPLC_UPDATE_POLICY", "OPENPLC_BOOTLOADER_PORT"):
+        if any(entry.startswith(dead + "=") for entry in env):
+            raise Failure(f"{dead} is set but nothing in the runtime reads it: {env}")
 
 
 @case
@@ -743,8 +768,6 @@ def test_the_real_runtime_image_comes_up_under_the_bootloader():
     wait_healthy(timeout=300)
 
     served = runtime_version_served()
-    if served.get("updatePolicy") != "self":
-        raise Failure(f"want updatePolicy self, got {served}")
     if not served.get("runtimeVersion"):
         raise Failure(f"the real runtime must report a version, got {served}")
 

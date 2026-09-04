@@ -2,7 +2,10 @@ package runtimeauth
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -98,19 +101,77 @@ func TestAnAbsurdIterationCountIsRefused(t *testing.T) {
 
 // --- tokens --------------------------------------------------------------
 
-func TestARealFlaskTokenSignatureVerifies(t *testing.T) {
-	// The cross-language check: our HMAC over the signing input must equal the
-	// signature PyJWT produced, which proves the base64url variant and the
-	// "header.payload" framing agree. Asserted directly rather than through
-	// VerifyToken because the vector's exp is a fixed timestamp -- routing it
-	// through the time checks would make this test pass or fail depending on
-	// how long ago the vector was generated.
+func TestOurHMACAgreesWithPyJWTOnTheWireFormat(t *testing.T) {
+	// The cross-language check, kept because it is what proves the base64url
+	// variant and the "header.payload" framing agree with flask_jwt_extended.
+	// It signs with the RUNTIME's secret directly, which is what PyJWT did --
+	// this is a statement about the encoding, not about which tokens we accept.
 	parts := strings.Split(vectorToken, ".")
 	if len(parts) != 3 {
 		t.Fatalf("vector token is malformed: %d segments", len(parts))
 	}
-	if got := sign(vectorSecret, parts[0]+"."+parts[1]); got != parts[2] {
-		t.Fatalf("signature mismatch with PyJWT:\n want %s\n  got %s", parts[2], got)
+	mac := hmac.New(sha256.New, []byte(vectorSecret))
+	mac.Write([]byte(parts[0] + "." + parts[1]))
+	got := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	if got != parts[2] {
+		t.Fatalf("encoding disagrees with PyJWT:\n want %s\n  got %s", parts[2], got)
+	}
+}
+
+func TestARuntimeTokenIsNotAcceptedByTheBootloader(t *testing.T) {
+	// The two services share a credential database, NOT a session. They
+	// previously shared JWT_SECRET_KEY directly, which made a 2-hour
+	// bootloader token a valid runtime token -- eight times the runtime's own
+	// TTL, and revoked by neither side's logout. The bootloader now signs with
+	// a key derived from that secret, so a real runtime token fails here on
+	// the signature.
+	if _, err := VerifyToken(vectorSecret, vectorToken); err == nil {
+		t.Fatal("a runtime-issued token was accepted by the bootloader")
+	}
+}
+
+func TestABootloaderTokenIsNotValidForTheRuntime(t *testing.T) {
+	// The other direction, checked the way the runtime would: flask_jwt_extended
+	// verifies HS256 with JWT_SECRET_KEY itself.
+	token, err := IssueToken(vectorSecret, "7", time.Hour)
+	if err != nil {
+		t.Fatalf("issuing: %v", err)
+	}
+	parts := strings.Split(token, ".")
+	mac := hmac.New(sha256.New, []byte(vectorSecret))
+	mac.Write([]byte(parts[0] + "." + parts[1]))
+	asRuntimeWouldSign := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	if asRuntimeWouldSign == parts[2] {
+		t.Fatal("a bootloader token carries a signature the runtime would accept")
+	}
+}
+
+func TestABootloaderTokenNamesThisServiceAsItsAudience(t *testing.T) {
+	// Belt and braces on top of the derived key: legible in a decoded token,
+	// and it would catch a future change that reunified the signing keys.
+	token, err := IssueToken(vectorSecret, "7", time.Hour)
+	if err != nil {
+		t.Fatalf("issuing: %v", err)
+	}
+	claims, err := VerifyToken(vectorSecret, token)
+	if err != nil {
+		t.Fatalf("verifying our own token: %v", err)
+	}
+	if claims.Audience != Audience {
+		t.Errorf("aud = %q, want %q", claims.Audience, Audience)
+	}
+}
+
+func TestATokenWithoutOurAudienceIsRefused(t *testing.T) {
+	// Correctly signed but minted for something else, e.g. a bootloader from
+	// before the audience existed. Refused, so it cannot be replayed here.
+	noAudience := signedToken(t, vectorSecret, Claims{
+		Subject: "7", Type: TokenType,
+		IssuedAt: time.Now().Unix(), NotBefore: time.Now().Unix(),
+		Expires: time.Now().Add(time.Hour).Unix(), JTI: "test",
+	})
+	if _, err := VerifyToken(vectorSecret, noAudience); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("want ErrInvalidToken for a token with no audience, got %v", err)
 	}
 }
 
@@ -159,6 +220,7 @@ func TestAnExpiredTokenIsReportedAsExpiredNotInvalid(t *testing.T) {
 	expired := signedToken(t, vectorSecret, Claims{
 		Subject: "7", Type: TokenType,
 		IssuedAt: past, NotBefore: past, Expires: past + 60, JTI: "test",
+		Audience: Audience,
 	})
 	if _, err := VerifyToken(vectorSecret, expired); !errors.Is(err, ErrTokenExpired) {
 		t.Fatalf("want ErrTokenExpired, got %v", err)
@@ -169,7 +231,7 @@ func TestATokenFromTheFutureIsRejected(t *testing.T) {
 	future := time.Now().Add(2 * time.Hour).Unix()
 	notYet := signedToken(t, vectorSecret, Claims{
 		Subject: "7", Type: TokenType,
-		IssuedAt: future, NotBefore: future, Expires: future + 3600, JTI: "test",
+		IssuedAt: future, NotBefore: future, Expires: future + 3600, JTI: "test", Audience: Audience,
 	})
 	if _, err := VerifyToken(vectorSecret, notYet); !errors.Is(err, ErrInvalidToken) {
 		t.Fatalf("want ErrInvalidToken for a not-yet-valid token, got %v", err)

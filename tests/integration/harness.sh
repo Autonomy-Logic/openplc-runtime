@@ -27,9 +27,18 @@ REGISTRY=localhost:5000
 STUB_REPO="$REGISTRY/openplc-stub"
 REAL_REPO="$REGISTRY/openplc-runtime"
 
-# The real runtime image on the developer's machine, used as the base for the
-# end-to-end case. Any locally built runtime image works.
-REAL_BASE="${REAL_BASE:-openplc-runtime:retain-gate-final}"
+# Base for the end-to-end case against a real runtime.
+#
+# A published image by default, so this harness reproduces anywhere. It used to
+# default to a tag that existed only on the author's machine, which meant the
+# reported pass count could not be reproduced by anyone else -- and quietly
+# meant the repository's own Dockerfile was never exercised.
+#
+# REAL_BASE=build builds from the repository Dockerfile instead. Slower by
+# minutes (it is a full source install), and the only setting that covers the
+# Dockerfile itself -- which is where `./install.sh` silently switching to the
+# container path broke the release build.
+REAL_BASE="${REAL_BASE:-ghcr.io/autonomy-logic/openplc-runtime:v4.2.1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -152,18 +161,25 @@ cmd_seed() {
         inner docker push -q "$STUB_REPO:$tag" >/dev/null
     done
 
-    log "building the real runtime image with the RTOP-283 changes"
-    # A thin layer over a locally built runtime, carrying the webserver files
-    # this ticket touches. Deriving rather than rebuilding from source keeps
-    # this to seconds instead of the full install.sh build.
-    transfer "$REAL_BASE"
-    inner sh -c "cat > /tmp/real.Dockerfile <<'EOF'
+    if [ "$REAL_BASE" = build ]; then
+        log "building the real runtime image from the repository Dockerfile (slow)"
+        # The only path that covers the Dockerfile. Its `RUN ./install.sh` has
+        # to reach the source build; when install.sh started defaulting to the
+        # container path, nothing here noticed and the release build broke.
+        inner docker build -q -t "$REAL_REPO:v4.2.1" /workspace >/dev/null
+    else
+        log "building the real runtime image from $REAL_BASE"
+        # A thin layer over a published runtime, carrying the webserver files
+        # this ticket touches. Seconds instead of a full source install.
+        transfer "$REAL_BASE"
+        inner sh -c "cat > /tmp/real.Dockerfile <<'EOF'
 FROM $REAL_BASE
 COPY webserver/restapi.py webserver/app.py /workdir/webserver/
 HEALTHCHECK --interval=10s --timeout=10s --start-period=90s --retries=3 \\
     CMD curl -kfsS https://127.0.0.1:8443/api/version >/dev/null || exit 1
 EOF
 docker build -q -f /tmp/real.Dockerfile -t $REAL_REPO:v4.2.1 /workspace >/dev/null"
+    fi
     inner docker push -q "$REAL_REPO:v4.2.1" >/dev/null
 
     log "registry contents:"

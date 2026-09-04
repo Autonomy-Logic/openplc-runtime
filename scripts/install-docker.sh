@@ -57,10 +57,21 @@ BOOTLOADER_PORT="${BOOTLOADER_PORT:-8445}"
 declare -a EXTRA_MOUNTS=()
 declare -a EXTRA_ENV=()
 
+# Units this run stood down, for rollback. Distinct from the persisted record,
+# which accumulates across installs and is what --uninstall reads.
+declare -a DISPLACED_THIS_RUN=()
+
 # Where this script lives, for the self-elevation path below. A piped run has
 # no file to re-exec, so it fetches a fresh copy rather than trying to re-read
 # a stdin bash has already consumed.
+# Where the piped one-liner fetches this script.
+#
+# runtime.getedge.me serves this file verbatim from the release branch. Until
+# that host is stood up the raw GitHub URL below works identically, and
+# OPENPLC_INSTALLER_URL overrides both -- which is also how a fork or an
+# internal mirror points it somewhere else.
 INSTALLER_URL="${OPENPLC_INSTALLER_URL:-https://runtime.getedge.me}"
+INSTALLER_URL_FALLBACK="https://raw.githubusercontent.com/Autonomy-Logic/openplc-runtime/main/scripts/install-docker.sh"
 
 MODE=install
 ASSUME_YES=false
@@ -154,11 +165,26 @@ require_root() {
         exec sudo -E bash "${BASH_SOURCE[0]}" "$@"
     fi
 
+    # Piped, so there is no file to re-exec. Fetching a fresh copy and running
+    # it under sudo is the only way to elevate from here -- and it means
+    # downloading code and running it as root, so the URL and the hash of what
+    # arrived are printed first. An operator who did not expect a download can
+    # see it happen, and can compare the hash against the release.
     if command -v curl >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
         local copy
         copy="$(mktemp)"
-        if curl -fsSL "$INSTALLER_URL" -o "$copy" 2>/dev/null && [ -s "$copy" ]; then
-            log_info "Root is required; re-running under sudo"
+        local fetched_from="$INSTALLER_URL"
+        if ! { curl -fsSL "$INSTALLER_URL" -o "$copy" 2>/dev/null && [ -s "$copy" ]; }; then
+            # The branded host may not resolve yet; GitHub always does.
+            fetched_from="$INSTALLER_URL_FALLBACK"
+            curl -fsSL "$INSTALLER_URL_FALLBACK" -o "$copy" 2>/dev/null || true
+        fi
+        if [ -s "$copy" ]; then
+            log_warning "Root is required. Re-fetching this installer and running it as root:"
+            log_warning "  source: $fetched_from"
+            if command -v sha256sum >/dev/null 2>&1; then
+                log_warning "  sha256: $(sha256sum "$copy" | cut -d' ' -f1)"
+            fi
             exec sudo -E bash "$copy" "$@"
         fi
         rm -f "$copy"
@@ -292,8 +318,23 @@ stop_legacy_runtimes() {
 
     [ ${#displaced[@]} -eq 0 ] && return 0
 
+    # What THIS run displaced, kept separately from the persisted record.
+    #
+    # Rollback used to read the persisted file, which on a re-run holds what
+    # the FIRST install displaced -- units already disabled and not touched
+    # this time. A failing re-run therefore started the old native runtime
+    # beside the container it had deliberately left alone, and then deleted
+    # the record, so a later --uninstall could no longer restore anything.
+    DISPLACED_THIS_RUN=("${displaced[@]}")
+
     mkdir -p "$BOOTLOADER_STATE_DIR"
-    printf '%s\n' "${displaced[@]}" > "$(disabled_units_file)"
+    # Merged with anything already recorded, so an earlier install's
+    # displacement is not forgotten by a later one that displaced nothing.
+    {
+        [ -f "$(disabled_units_file)" ] && cat "$(disabled_units_file)"
+        printf '%s\n' "${displaced[@]}"
+    } | awk 'NF && !seen[$0]++' > "$(disabled_units_file).tmp"
+    mv "$(disabled_units_file).tmp" "$(disabled_units_file)"
     chmod 640 "$(disabled_units_file)"
 }
 
@@ -307,7 +348,7 @@ restore_legacy_runtimes() {
     [ -f "$record" ] || return 0
     have_systemd || { log_warning "No systemd here; cannot restore $record"; return 0; }
 
-    local line unit was_active was_enabled
+    local unit was_active was_enabled
     while IFS=: read -r unit was_active was_enabled; do
         [ -n "$unit" ] || continue
         unit_exists "$unit" || { log_warning "  $unit is gone; nothing to restore"; continue; }
@@ -327,15 +368,25 @@ restore_legacy_runtimes() {
 # there is a window where the device has no PLC. Anything that fails in it --
 # a spec that cannot be written, a container that will not start -- must hand
 # the device back the runtime it had, rather than leaving it with neither.
-INSTALL_DISPLACED_UNITS=false
-
 rollback_on_failure() {
     local status=$?
     [ "$status" -eq 0 ] && return 0
-    [ "$INSTALL_DISPLACED_UNITS" = true ] || return 0
+    [ ${#DISPLACED_THIS_RUN[@]} -eq 0 ] && return 0
 
     log_error "Install failed; restoring the runtime that was here before."
-    restore_legacy_runtimes || true
+    local entry unit was_active was_enabled
+    for entry in "${DISPLACED_THIS_RUN[@]}"; do
+        IFS=: read -r unit was_active was_enabled <<<"$entry"
+        [ -n "$unit" ] || continue
+        if [ "$was_enabled" = yes ]; then
+            systemctl enable "$unit" >/dev/null 2>&1 && log_success "  re-enabled $unit"
+        fi
+        if [ "$was_active" = yes ]; then
+            systemctl start "$unit" >/dev/null 2>&1 && log_success "  restarted $unit"
+        fi
+    done
+    # The persisted record is deliberately left in place: --uninstall still
+    # needs it, and this rollback is not the end of the device's life.
 }
 
 # --- uninstall -------------------------------------------------------------
@@ -655,7 +706,6 @@ main() {
     # failure has to hand the device back what it had.
     trap rollback_on_failure EXIT
     stop_legacy_runtimes
-    INSTALL_DISPLACED_UNITS=true
     write_spec
     start_bootloader
     wait_for_runtime

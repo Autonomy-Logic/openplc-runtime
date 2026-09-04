@@ -14,24 +14,35 @@ import (
 	"time"
 )
 
-// Tokens are HS256 JWTs in the same shape as the runtime's.
+// Tokens are HS256 JWTs in the same shape as the runtime's, but they are NOT
+// the runtime's tokens and neither service will accept the other's.
 //
-// The bootloader issues and verifies its OWN tokens. What the two services
-// share is the credential database, not a session: the editor keeps the
-// user's credentials after login and logs in to the bootloader separately
-// when it needs to. Tokens are deliberately NOT treated as interchangeable,
-// because that would couple the two services' session handling for no gain --
-// and it cannot be relied on anyway, since the two may hold different
-// JWT_SECRET_KEY values depending on which .env each resolved.
+// What the two share is the credential database, not a session: the editor
+// keeps the user's credentials after login and signs in to the bootloader
+// separately when it needs to.
 //
-// The claim set still mirrors flask_jwt_extended's -- "sub", "type", "iat",
-// "nbf", "exp", "jti" -- so the two are recognisable to the same tooling and
-// so VerifyToken can read a runtime-issued token when one is presented. A
-// hand-rolled implementation rather than a JWT library because HS256 is an
-// HMAC over two base64url segments, and the library-shaped risk here
-// (accepting "alg": "none", or letting the token choose its own algorithm) is
-// precisely what an explicit implementation avoids: the algorithm below is a
-// constant, never read from the header.
+// Separation is enforced by the signing key, not by a claim. Both services
+// read the same JWT_SECRET_KEY from the same .env, so signing with it
+// directly made the two token spaces identical: a 2-hour bootloader token was
+// a valid runtime token, eight times the runtime's own 15-minute TTL, and the
+// runtime's /logout revoked neither. The bootloader therefore signs with a key
+// DERIVED from that secret (see bootloaderKey), which the runtime does not
+// know how to compute. A runtime token fails the signature check here, and a
+// bootloader token fails it there -- with no change required in the runtime,
+// and no reliance on a verifier bothering to check an audience claim.
+//
+// The `aud` claim below is belt and braces: it makes the intent legible in a
+// decoded token and would catch a future signing change that reunified the
+// keys by accident.
+//
+// The rest of the claim set still mirrors flask_jwt_extended's -- "sub",
+// "type", "iat", "nbf", "exp", "jti" -- so the two are recognisable to the
+// same tooling. A hand-rolled implementation rather than a JWT library
+// because HS256 is an HMAC over two base64url segments, and the
+// library-shaped risk here (accepting "alg": "none", or letting the token
+// choose its own algorithm) is precisely what an explicit implementation
+// avoids: the algorithm below is a constant, never read from the header.
+
 const (
 	// TokenType is flask_jwt_extended's discriminator. A refresh token
 	// presented as an access token must not be accepted.
@@ -45,7 +56,25 @@ const (
 	// clockSkew tolerates a small disagreement between the editor's clock and
 	// the device's, which on an industrial box without NTP is routine.
 	clockSkew = 60 * time.Second
+	// Audience names the only service that may accept these tokens.
+	Audience = "openplc-bootloader"
+	// keyDomain separates the bootloader's signing key from the runtime's.
+	// Versioned so a future change of scheme can be told apart from this one.
+	keyDomain = "openplc-bootloader/token/v1"
 )
+
+// bootloaderKey derives the bootloader's signing key from the runtime's
+// secret.
+//
+// HMAC with a fixed domain string: a one-way function of the shared secret
+// that the runtime never computes, so neither service can verify the other's
+// tokens. Anyone who can read .env can derive it, which is the point -- this
+// separates two token spaces on one device, it is not a secret from the host.
+func bootloaderKey(secret string) []byte {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(keyDomain))
+	return mac.Sum(nil)
+}
 
 var (
 	// ErrInvalidToken covers every rejection reason. The cause is logged but
@@ -66,6 +95,7 @@ type Claims struct {
 	NotBefore int64  `json:"nbf"`
 	Expires   int64  `json:"exp"`
 	JTI       string `json:"jti"`
+	Audience  string `json:"aud,omitempty"`
 }
 
 type jwtHeader struct {
@@ -99,6 +129,7 @@ func IssueToken(secret, userID string, ttl time.Duration) (string, error) {
 		NotBefore: now.Unix(),
 		Expires:   now.Add(ttl).Unix(),
 		JTI:       jti,
+		Audience:  Audience,
 	}
 
 	header, err := json.Marshal(jwtHeader{Alg: "HS256", Typ: "JWT"})
@@ -147,6 +178,13 @@ func VerifyToken(secret, token string) (*Claims, error) {
 	if claims.Type != TokenType {
 		return nil, ErrInvalidToken
 	}
+	// A token minted for anything but this service is refused even if it
+	// somehow verified. The derived signing key already makes a runtime token
+	// fail above; this catches the case where a future change reunifies the
+	// keys without anyone noticing.
+	if claims.Audience != Audience {
+		return nil, ErrInvalidToken
+	}
 	if claims.Subject == "" {
 		return nil, ErrInvalidToken
 	}
@@ -161,8 +199,11 @@ func VerifyToken(secret, token string) (*Claims, error) {
 	return &claims, nil
 }
 
+// sign computes the signature with the DERIVED key, never the runtime's
+// secret itself. That single substitution is what keeps the two token spaces
+// apart in both directions.
 func sign(secret, signingInput string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
+	mac := hmac.New(sha256.New, bootloaderKey(secret))
 	mac.Write([]byte(signingInput))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }

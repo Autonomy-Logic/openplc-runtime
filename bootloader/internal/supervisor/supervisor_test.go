@@ -105,8 +105,30 @@ func (f *fakeDocker) StopContainer(context.Context, string, time.Duration) error
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped++
+	// The daemon answers 304/404 for a container that is not running, and
+	// emits no `die` event for it. Modelling that is the whole point: with
+	// this returning nil unconditionally, the expected-stop token leaked and
+	// no test could see it.
+	if !f.running {
+		return dockerapi.ErrNotRunning
+	}
 	f.running = false
 	return nil
+}
+
+// markExited reflects what a `die` event means: the container is no longer
+// running. Without this the fake reports a dead container as running, a stop
+// against it "succeeds", and the leak this models cannot be reproduced.
+func (f *fakeDocker) markExited() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.running = false
+}
+
+func (f *fakeDocker) startCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.started
 }
 
 func (f *fakeDocker) RemoveContainer(context.Context, string, bool) error {
@@ -640,5 +662,71 @@ func TestAContainerOnTheRightImageIsStillAdopted(t *testing.T) {
 	if created != 0 || started != 0 || stopped != 0 {
 		t.Fatalf("a matching healthy container must be untouched, got create=%d start=%d stop=%d",
 			created, started, stopped)
+	}
+}
+
+// A crash after a stop that did nothing must still count as a crash.
+//
+// The leak this pins: enterRecovery and Stop suppress crash accounting for the
+// exit they are about to cause, but a container that has ALREADY exited never
+// emits a `die` event -- and the daemon answers the stop with 304/404. The
+// suppression therefore outlived the stop and was spent on the next genuine
+// crash instead, which the supervisor then read as "stopped as expected" and
+// did not restart. The PLC stayed down while Status() still said healthy.
+//
+// The crash-loop path always ends in that state: the third die is what calls
+// enterRecovery, so by then the container is already gone.
+func TestAStopThatDidNothingDoesNotSuppressTheNextCrash(t *testing.T) {
+	docker := &fakeDocker{
+		exists: true, running: true, health: "healthy",
+		startMakesHealthy: true, imagePresent: true,
+	}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+	ctx := context.Background()
+
+	// A controllable clock, so the fourth crash below can be placed outside
+	// the window: inside it, going to recovery again would be correct
+	// behaviour and would hide whether the crash was counted at all.
+	now := time.Now()
+	sup.crashes.now = func() time.Time { return now }
+
+	// Three deaths inside the window: the third hands the device to recovery,
+	// which stops a container that has already exited.
+	for _, id := range []string{"1", "2", "3"} {
+		docker.markExited()
+		sup.handleEvent(ctx, dieEvent(id))
+	}
+
+	if got := sup.Status().State; got != StateRecovery {
+		t.Fatalf("three crashes must reach recovery, got %q", got)
+	}
+	if sup.expectStopCount() != 0 {
+		t.Fatalf("a stop that stopped nothing left %d suppression(s) behind",
+			sup.expectStopCount())
+	}
+
+	// The operator installs a working version: back to healthy and running.
+	if err := sup.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := sup.Status().State; got != StateHealthy {
+		t.Fatalf("want healthy after reconcile, got %q", got)
+	}
+
+	// A fourth, genuine crash. With the token leaked this was swallowed:
+	// handleDeath returned early and the runtime was left stopped.
+	// Well past the window, so this is a first crash again and the supervisor
+	// should simply restart it.
+	now = now.Add(time.Hour)
+
+	before := docker.startCount()
+	docker.markExited()
+	sup.handleEvent(ctx, dieEvent("4"))
+
+	if docker.startCount() == before {
+		t.Error("the crash was treated as an expected stop; the runtime was not restarted")
+	}
+	if got := sup.Status().CrashCount; got < 1 {
+		t.Errorf("the crash was not counted, CrashCount=%d", got)
 	}
 }

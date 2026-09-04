@@ -21,11 +21,14 @@ type fakeDocker struct {
 	imagePresent bool
 	pullErr      error
 
-	created  map[string]any
-	started  []string
-	removed  []string
-	pulls    []string
-	startErr error
+	created   map[string]any
+	started   []string
+	removed   []string
+	pulls     []string
+	startErr  error
+	renamed   []string
+	renameErr error
+	createErr error
 }
 
 func newFake() *fakeDocker {
@@ -47,6 +50,9 @@ func (f *fakeDocker) InspectContainer(_ context.Context, name string) (*dockerap
 func (f *fakeDocker) CreateContainer(_ context.Context, name string, spec any) (*dockerapi.CreateContainerResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
 	f.created[name] = spec
 	return &dockerapi.CreateContainerResponse{ID: "created-" + name}, nil
 }
@@ -56,6 +62,22 @@ func (f *fakeDocker) StartContainer(_ context.Context, name string) error {
 	defer f.mu.Unlock()
 	f.started = append(f.started, name)
 	return f.startErr
+}
+
+// RenameContainer models the metadata move: the spec follows the new name, so
+// assertions about what was created under `target` still hold.
+func (f *fakeDocker) RenameContainer(_ context.Context, name, newName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.renameErr != nil {
+		return f.renameErr
+	}
+	f.renamed = append(f.renamed, name+"->"+newName)
+	if spec, ok := f.created[name]; ok {
+		f.created[newName] = spec
+		delete(f.created, name)
+	}
+	return nil
 }
 
 func (f *fakeDocker) StopContainer(context.Context, string, time.Duration) error { return nil }
@@ -249,7 +271,15 @@ func TestTheChildReplacesTheParentPreservingItsConfiguration(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 
-	if len(docker.removed) != 1 || docker.removed[0] != "openplc-bootloader" {
+	// The staged name is cleared first (a leftover from an interrupted
+	// attempt would hold it), then the parent goes.
+	var removedParent bool
+	for _, name := range docker.removed {
+		if name == "openplc-bootloader" {
+			removedParent = true
+		}
+	}
+	if !removedParent {
 		t.Fatalf("want the parent removed, got %v", docker.removed)
 	}
 	spec, ok := docker.created["openplc-bootloader"]
@@ -402,5 +432,36 @@ func TestTheRuntimeContainerIsNeverTouched(t *testing.T) {
 	}
 	if docker.containers["openplc-runtime"] == nil {
 		t.Fatal("the runtime container must still exist")
+	}
+}
+
+// A create that fails must leave the device with the bootloader it has.
+//
+// The parent used to be force-removed first. If the create was then rejected
+// -- an invalid HostConfig on an older daemon, a full disk, an image pruned
+// between the pull and the create -- the helper exited with RestartPolicy: no
+// and the device had no bootloader at all, on hardware that by this feature's
+// own framing has no SSH.
+func TestAFailedCreateLeavesTheOldBootloaderRunning(t *testing.T) {
+	docker := newFake()
+	docker.containers["openplc-bootloader"] = parentContainer()
+	docker.createErr = errors.New("invalid HostConfig")
+	setChildEnv(t, "openplc-bootloader", "ghcr.io/x/bootloader:bootloader-v1.1.0")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := Execute(ctx, docker, quietLogger())
+	if err == nil {
+		t.Fatal("a rejected create must be reported, not swallowed")
+	}
+
+	for _, name := range docker.removed {
+		if name == "openplc-bootloader" {
+			t.Fatalf("the running bootloader was removed before the replacement existed: %v",
+				docker.removed)
+		}
+	}
+	if len(docker.started) != 0 {
+		t.Errorf("nothing should have been started, got %v", docker.started)
 	}
 }

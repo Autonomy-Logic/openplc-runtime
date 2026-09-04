@@ -409,8 +409,9 @@ setup_plugin_venvs() {
     local plugins_with_requirements=()
     while IFS= read -r -d '' requirements_file; do
         # Get the directory name (plugin name)
-        local plugin_dir=$(dirname "$requirements_file")
-        local plugin_name=$(basename "$plugin_dir")
+        local plugin_dir plugin_name
+        plugin_dir=$(dirname "$requirements_file")
+        plugin_name=$(basename "$plugin_dir")
 
         # Skip if it's in examples or shared directories (common libraries)
         if [[ "$plugin_dir" == *"/examples/"* ]] || [[ "$plugin_dir" == *"/shared/"* ]]; then
@@ -499,7 +500,8 @@ build_native_plugins() {
         # Skip if not a directory
         [ -d "$plugin_dir" ] || continue
 
-        local plugin_name=$(basename "$plugin_dir")
+        local plugin_name
+        plugin_name=$(basename "$plugin_dir")
         local cmake_file="$plugin_dir/CMakeLists.txt"
 
         # Skip if no CMakeLists.txt
@@ -541,7 +543,8 @@ build_native_plugins() {
 
         if [ $? -eq 0 ]; then
             # Copy built plugin to central plugins directory
-            local built_lib=$(find "$plugin_build_dir" -name "*.so" -type f 2>/dev/null | head -1)
+            local built_lib
+            built_lib=$(find "$plugin_build_dir" -name "*.so" -type f 2>/dev/null | head -1)
             if [ -n "$built_lib" ] && [ -f "$built_lib" ]; then
                 cp "$built_lib" "$plugins_output_dir/"
                 log_success "Built and installed: $plugin_name ($(basename "$built_lib"))"

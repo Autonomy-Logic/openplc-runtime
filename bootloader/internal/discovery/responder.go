@@ -18,11 +18,13 @@
 package discovery
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -116,7 +118,22 @@ func (r *Responder) Enable() {
 		r.mu.Unlock()
 		return
 	}
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: r.port})
+	var conn *net.UDPConn
+	// SO_REUSEADDR and SO_REUSEPORT, matching how the runtime binds the same
+	// port. Linux shares a UDP port only when EVERY socket asked to, so
+	// without these a lingering bootloader socket makes the runtime's own bind
+	// fail -- and the runtime does not retry. The release now happens before
+	// the runtime starts; this is the safety net for a race in between.
+	listener := net.ListenConfig{Control: reusePort}
+	generic, err := listener.ListenPacket(
+		context.Background(), "udp", ":"+strconv.Itoa(r.port))
+	if err == nil {
+		var ok bool
+		if conn, ok = generic.(*net.UDPConn); !ok {
+			generic.Close()
+			err = errors.New("discovery: listener is not a UDP socket")
+		}
+	}
 	if err != nil {
 		r.mu.Unlock()
 		r.log.Warn("discovery responder could not bind; the device will not "+

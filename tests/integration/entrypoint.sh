@@ -9,6 +9,11 @@ set -euo pipefail
 
 log() { printf '[testhost] %s\n' "$*" >&2; }
 
+# Marks this container as the disposable host the integration suite may wipe.
+# test_bootloader.py refuses to run without it, so the suite cannot destroy a
+# real device's data if it is ever collected somewhere it should not be.
+mkdir -p /run && : > /run/openplc-testhost
+
 if [ ! -w /var/run ]; then
     log "ERROR: /var/run is not writable; the container needs --privileged"
     exit 1
