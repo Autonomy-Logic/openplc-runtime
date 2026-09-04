@@ -198,6 +198,28 @@ func checkResponse(resp *http.Response, path string) error {
 	return &APIError{Status: resp.StatusCode, Message: message, Path: path}
 }
 
+// doLongRunning issues a request whose duration the caller bounds with the
+// context, rather than the shared client's fixed timeout. For calls the daemon
+// legitimately holds open -- stopping a container waits out its grace period --
+// a fixed client timeout is a race the caller cannot widen.
+func (c *Client) doLongRunning(ctx context.Context, method, path string, body any) error {
+	req, err := c.newRequest(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	resp, err := c.streamClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("docker %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	if err := checkResponse(resp, path); err != nil {
+		return err
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
 // Ping reports whether the daemon is reachable. Used at start-up so a missing
 // or unmountable socket is reported as exactly that, instead of surfacing later
 // as a confusing container-create failure.

@@ -115,12 +115,28 @@ func (c *Client) StopContainer(ctx context.Context, name string, grace time.Dura
 	params := url.Values{}
 	params.Set("t", strconv.Itoa(int(grace.Seconds())))
 	path := "/containers/" + url.PathEscape(name) + "/stop" + encodeQuery(params)
-	err := c.do(ctx, http.MethodPost, path, nil, nil)
+
+	// The daemon holds this request open for the whole grace period before it
+	// resorts to SIGKILL, so the client must be allowed to wait longer than
+	// the grace itself. The shared unary client's fixed 30s timeout is exactly
+	// equal to the default grace, so every swap raced it: observed on the
+	// SLM-RP4 as "Client.Timeout exceeded while awaiting headers" on a stop
+	// that was proceeding perfectly well, leaving the runtime to be killed by
+	// the force-remove path instead of shut down cleanly -- which for a PLC
+	// means skipping the SIGTERM handler that flushes retained variables.
+	stopCtx, cancel := context.WithTimeout(ctx, grace+stopTimeoutMargin)
+	defer cancel()
+
+	err := c.doLongRunning(stopCtx, http.MethodPost, path, nil)
 	if err != nil && (IsNotFound(err) || hasStatus(err, http.StatusNotModified)) {
 		return nil
 	}
 	return err
 }
+
+// stopTimeoutMargin is the slack on top of the grace period, covering the
+// daemon's own teardown after the container has exited.
+const stopTimeoutMargin = 30 * time.Second
 
 // RemoveContainer deletes a container, forcing it down if still running.
 // A missing container is success: the goal is "not present".
