@@ -55,10 +55,36 @@ jobs:
           echo "Installing OpenPLC Runtime via install.sh"
           echo "=========================================="
 
-          # Run the install script which handles all dependencies and build
-          ./install.sh
+          # --native explicitly, even though install.sh forces it on MSYS2 anyway.
+          # The Windows installer ships a built runtime inside an MSYS2 tree;
+          # the default path installs Docker and compiles nothing, which would
+          # produce a payload with no runtime in it. Relying on the script's own
+          # platform detection means a change to that detection silently breaks
+          # this build, so the intent is stated here where it is needed.
+          ./install.sh --native
 
           echo "Installation complete!"
+
+      # The payload is assembled by copying whatever is on disk, with no idea
+      # what produced it. This is the check that a native build actually
+      # happened: venvs/runtime is created only by install.sh's source path,
+      # never by the container one.
+      - name: Verify the native install produced its artifacts
+        shell: msys2 {0}
+        run: |
+          missing=0
+          for path in venvs/runtime webserver/app.py; do
+            if [ ! -e "$path" ]; then
+              echo "::error::$path is missing -- install.sh did not complete a native install"
+              missing=1
+            fi
+          done
+          if [ ! -x venvs/runtime/bin/python3 ] && [ ! -x venvs/runtime/Scripts/python.exe ]; then
+            echo "::error::the runtime virtualenv has no interpreter"
+            missing=1
+          fi
+          [ "$missing" -eq 0 ] || exit 1
+          echo "Native install verified."
 
       - name: Prepare installer payload
         shell: pwsh

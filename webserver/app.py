@@ -25,7 +25,9 @@ from webserver import project_snapshot
 from webserver.credentials import CertGen
 from webserver.debug_websocket import init_debug_websocket
 from webserver.discovery.discovery_routes import discovery_bp
-from webserver.discovery.network_discovery import responder as network_discovery_responder
+from webserver.discovery.network_discovery import (
+    responder as network_discovery_responder,
+)
 from webserver.logger import get_logger
 from webserver.plcapp_management import (
     MAX_FILE_SIZE,

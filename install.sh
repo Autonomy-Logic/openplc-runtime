@@ -137,7 +137,36 @@ EOF
 # Ensure we're in the project directory
 cd "$OPENPLC_DIR"
 
-echo "OpenPLC Runtime Installation"
+# Dispatch: Docker install by default, source build behind --native (RTOP-283).
+#
+# The Docker path installs no toolchain and compiles nothing, which is what
+# makes a version change from the editor possible at all -- and what removes
+# the failure this ticket exists to fix, where a half-finished source rebuild
+# leaves a device with no build/ and no way in.
+#
+# --native keeps today's behaviour verbatim for MSYS2 and for targets that
+# cannot host a container engine. It is a supported path, not a deprecated one.
+INSTALL_MODE="docker"
+declare -a DOCKER_INSTALL_ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --native) INSTALL_MODE="native" ;;
+        *)        DOCKER_INSTALL_ARGS+=("$arg") ;;
+    esac
+done
+
+# MSYS2 has no container engine, so it is always a source build regardless of
+# what was asked for. Saying so beats failing later inside a docker command.
+if is_msys2 && [ "$INSTALL_MODE" = "docker" ]; then
+    echo "Platform: MSYS2/Windows - installing from source (Docker is not available here)"
+    INSTALL_MODE="native"
+fi
+
+if [ "$INSTALL_MODE" = "docker" ]; then
+    exec bash "$SCRIPTS_DIR/install-docker.sh" --repo-root "$OPENPLC_DIR" "${DOCKER_INSTALL_ARGS[@]}"
+fi
+
+echo "OpenPLC Runtime Installation (source build)"
 echo "Project directory: $OPENPLC_DIR"
 echo "Working directory: $(pwd)"
 
@@ -380,8 +409,9 @@ setup_plugin_venvs() {
     local plugins_with_requirements=()
     while IFS= read -r -d '' requirements_file; do
         # Get the directory name (plugin name)
-        local plugin_dir=$(dirname "$requirements_file")
-        local plugin_name=$(basename "$plugin_dir")
+        local plugin_dir plugin_name
+        plugin_dir=$(dirname "$requirements_file")
+        plugin_name=$(basename "$plugin_dir")
 
         # Skip if it's in examples or shared directories (common libraries)
         if [[ "$plugin_dir" == *"/examples/"* ]] || [[ "$plugin_dir" == *"/shared/"* ]]; then
@@ -470,7 +500,8 @@ build_native_plugins() {
         # Skip if not a directory
         [ -d "$plugin_dir" ] || continue
 
-        local plugin_name=$(basename "$plugin_dir")
+        local plugin_name
+        plugin_name=$(basename "$plugin_dir")
         local cmake_file="$plugin_dir/CMakeLists.txt"
 
         # Skip if no CMakeLists.txt
@@ -512,7 +543,8 @@ build_native_plugins() {
 
         if [ $? -eq 0 ]; then
             # Copy built plugin to central plugins directory
-            local built_lib=$(find "$plugin_build_dir" -name "*.so" -type f 2>/dev/null | head -1)
+            local built_lib
+            built_lib=$(find "$plugin_build_dir" -name "*.so" -type f 2>/dev/null | head -1)
             if [ -n "$built_lib" ] && [ -f "$built_lib" ]; then
                 cp "$built_lib" "$plugins_output_dir/"
                 log_success "Built and installed: $plugin_name ($(basename "$built_lib"))"
