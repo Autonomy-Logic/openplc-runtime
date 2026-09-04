@@ -1,0 +1,138 @@
+name: Tests
+
+# Nothing in this repository used to run on a pull request: docker.yml fires on
+# tag and branch pushes, windows-installer.yml on tags. Every "tests pass" in a
+# review was therefore a claim about somebody's laptop, and a bootloader change
+# without a VERSION bump got no automated testing at all -- the only `go test`
+# was inside bootloader/Dockerfile, which only builds when the version is new.
+on:
+  pull_request:
+  push:
+    branches:
+      - development
+      - main
+  workflow_dispatch:
+
+# A new push supersedes an in-flight run for the same ref.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bootloader:
+    name: Bootloader (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: bootloader/go.mod
+          cache-dependency-path: bootloader/go.sum
+
+      - name: gofmt
+        working-directory: bootloader
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would change these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        working-directory: bootloader
+        run: go vet ./...
+
+      # -race because the bugs this package is prone to are concurrency ones:
+      # the spec was being written by the updater while the API read it.
+      - name: go test -race
+        working-directory: bootloader
+        run: go test -race -count=1 ./...
+
+  webserver:
+    name: Webserver (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install -e .
+          # Every plugin's requirements, not just one.
+          #
+          # The plugin suites import their driver modules at collection time --
+          # pymodbus, asyncua -- so a missing dependency is a COLLECTION error
+          # that takes the whole run down rather than skipping those files.
+          # scripts/run-pytest.sh installs only modbus_master's, which is why
+          # it fails the same way when run by hand.
+          for req in core/src/drivers/plugins/python/*/requirements.txt; do
+            echo "Installing $req"
+            pip install -r "$req"
+          done
+          pip install pytest pytest-asyncio
+
+      # The plugin suites are excluded, and that is a statement about them
+      # rather than about this gate.
+      #
+      # They are red on `development` today: 48 failures and 10 collection
+      # errors across tests/pytest/plugins, modbus_master and modbus_slave,
+      # reproducible on a clean checkout of the base branch. They expect the
+      # per-plugin virtualenvs that install.sh builds, and in some cases a
+      # running OPC-UA server. Gating on them would mean a check that can
+      # never pass, which is a check everyone learns to ignore.
+      #
+      # What remains is 147 tests that do pass, covering the REST API,
+      # compile pipeline and webserver behaviour this repository's own changes
+      # touch. Repairing the plugin suites is real work and deserves its own
+      # ticket; when it is done, delete these three lines.
+      - name: pytest
+        run: |
+          pytest tests/pytest -q \
+            --ignore=tests/pytest/plugins \
+            --ignore=tests/pytest/modbus_master \
+            --ignore=tests/pytest/modbus_slave
+
+  shell:
+    name: Installer scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning install.sh scripts/install-docker.sh \
+            windows/provision-msys2.sh tests/integration/harness.sh
+
+      # The Windows installer ships a compiled runtime inside an MSYS2 tree, so
+      # its callers must ask install.sh for the source build. install.sh does
+      # force native on MSYS2, but relying on that made a change to its
+      # platform detection able to break the Windows build from another file.
+      - name: The Windows build asks for a native install
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in .github/workflows/windows-installer.yml windows/provision-msys2.sh; do
+            if grep -qE '(^|[^-])\./install\.sh[[:space:]]*$' "$f"; then
+              echo "::error file=$f::calls ./install.sh without --native"
+              fail=1
+            fi
+          done
+          # The image builds are the same story: there is no engine to install
+          # inside a build layer.
+          for f in Dockerfile Dockerfile.dev; do
+            if ! grep -q 'install\.sh --native' "$f"; then
+              echo "::error file=$f::must RUN ./install.sh --native"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          echo "All installer callers ask for the build they need."

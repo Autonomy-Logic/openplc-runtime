@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - 'v*'
+    # The bootloader has its own version line, so it also builds from a branch
+    # push without waiting for a runtime tag. Deliberately no `paths` filter:
+    # GitHub applies it to tag pushes as well, which would make the runtime
+    # release build conditional on bootloader files having changed. The jobs below
+    # gate themselves instead.
+    branches:
+      - development
+      - main
   workflow_dispatch:
     inputs:
       platforms:
@@ -18,6 +26,10 @@ on:
 
 jobs:
   build:
+    # Release tags and manual runs only -- unchanged from before the bootloader
+    # job was added. A branch push produces no semver tag for the metadata
+    # step, so letting it through would fail with an empty tag list.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -67,3 +79,132 @@ jobs:
           # default ("dev") for ad-hoc builds without a release tag.
           build-args: |
             RUNTIME_VERSION=${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+
+  # The bootloader is versioned independently of the runtime (bootloader/VERSION).
+  # Tying it to every runtime tag would publish a long run of byte-identical
+  # images and make "which bootloader is on this device" a meaningless question.
+  #
+  # So a runtime release does NOT imply a bootloader release. This job reads
+  # bootloader/VERSION, and if that tag is already in the registry it publishes
+  # nothing: the runtime ships, the bootloader stays where it is. Bumping
+  # bootloader/VERSION is the only thing that produces a new bootloader image.
+  bootloader:
+    runs-on: ubuntu-latest
+    # Runs on release tags AND branch pushes: it is a seconds-long
+    # cross-compile, and the existence check below makes a run with an
+    # unchanged version free.
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Decide what needs publishing
+        id: plan
+        run: |
+          set -euo pipefail
+          image=ghcr.io/autonomy-logic/openplc-runtime-bootloader
+          version="$(tr -d '[:space:]' < bootloader/VERSION)"
+
+          if [ -z "$version" ]; then
+            echo "::error::bootloader/VERSION is empty"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+          # A published version is immutable. Rebuilding one would replace a
+          # digest that devices in the field have already installed, with no
+          # version change to show for it -- so an existing tag is left alone
+          # even when the source has drifted.
+          if docker manifest inspect "$image:$version" >/dev/null 2>&1; then
+            exists=true
+          else
+            exists=false
+          fi
+          echo "exists=$exists" >> "$GITHUB_OUTPUT"
+
+          # `latest` is what a fresh install pulls, so it only ever moves for a
+          # stable version from a release tag or main. A development push can
+          # publish its own version for testing, but must not become the
+          # default every new device gets.
+          case "${GITHUB_REF}" in
+            refs/tags/v*|refs/heads/main) releasable=true ;;
+            *) releasable=false ;;
+          esac
+          case "$version" in
+            *-rc*|*-beta*|*-alpha*|*-dev*) releasable=false ;;
+          esac
+          echo "releasable=$releasable" >> "$GITHUB_OUTPUT"
+
+          if [ "$exists" = false ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "Publishing bootloader $version (not yet in the registry)."
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "Bootloader $version is already published; nothing to build."
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.plan.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      # No QEMU step, unlike the runtime build: the bootloader is pure Go and
+      # cross-compiles from the native runner for every target, which takes
+      # seconds instead of the many minutes emulation costs.
+      - name: Build and Push Bootloader
+        if: steps.plan.outputs.build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./bootloader
+          push: true
+          platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64,linux/arm/v7' }}
+          build-args: |
+            BOOTLOADER_VERSION=${{ steps.plan.outputs.version }}
+          # `latest` only when this build is releasable; a development push
+          # publishes its own version and nothing else.
+          tags: ${{ steps.plan.outputs.releasable == 'true' && format('{0}:{1},{0}:latest', steps.plan.outputs.image, steps.plan.outputs.version) || format('{0}:{1}', steps.plan.outputs.image, steps.plan.outputs.version) }}
+
+      # The version was already published, but this is a release and `latest`
+      # may still be behind it -- a bootloader bumped on development and only
+      # later merged to main lands here. Repointing a tag is a registry-side
+      # manifest copy, not a rebuild, so the digest devices already hold stays
+      # exactly as it was.
+      - name: Point latest at the published bootloader
+        if: steps.plan.outputs.build == 'false' && steps.plan.outputs.releasable == 'true'
+        run: |
+          set -euo pipefail
+          image='${{ steps.plan.outputs.image }}'
+          version='${{ steps.plan.outputs.version }}'
+
+          current="$(docker manifest inspect "$image:latest" 2>/dev/null | sha256sum | cut -d' ' -f1 || true)"
+          target="$(docker manifest inspect "$image:$version" | sha256sum | cut -d' ' -f1)"
+          if [ "$current" = "$target" ]; then
+            echo "latest already points at $version."
+            exit 0
+          fi
+          echo "Moving latest to $version."
+          docker buildx imagetools create --tag "$image:latest" "$image:$version"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Bootloader"
+            echo
+            echo "- version: \`${{ steps.plan.outputs.version }}\`"
+            if [ '${{ steps.plan.outputs.build }}' = 'true' ]; then
+              echo "- published a new image"
+            else
+              echo "- already published; no rebuild"
+            fi
+            echo "- latest updated: ${{ steps.plan.outputs.releasable }}"
+          } >> "$GITHUB_STEP_SUMMARY"

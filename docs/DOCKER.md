@@ -15,6 +15,48 @@ OpenPLC Runtime v4 provides official Docker images for easy deployment across mu
 - `linux/arm64` - ARM 64-bit (Raspberry Pi 4, etc.)
 - `linux/arm/v7` - ARM 32-bit (Raspberry Pi 3, etc.)
 
+## The managed install (recommended)
+
+Everything below describes running the runtime container by hand, which is
+still supported and is what the rest of this document covers. On a device you
+intend to keep, prefer the managed install:
+
+```bash
+curl -fsSL https://runtime.getedge.me | sudo bash
+```
+
+That installs Docker if needed, then two containers: the runtime, and a
+**bootloader** on port 8445 that starts it, watches it, and can change its
+version from the OpenPLC Editor without SSH. Neither has a systemd unit --
+Docker's restart policy starts the bootloader, and the bootloader starts the
+runtime.
+
+- **Runtime data** lives in `/var/lib/openplc-runtime` on the host: `.env`,
+  `restapi.db`, the stored project, retained variables, VPP licences. A version
+  change never touches it. A native install uses the same directory, so moving
+  a device to containers carries its users and project across.
+- **Bootloader state** lives in `/var/lib/openplc-bootloader`: the container
+  spec, including this board's device mounts. Separate on purpose, so "erase
+  all runtime data" cannot leave a board without its SPI mount.
+- **A systemd OpenPLC already on the device** (`openplc.service` from v3,
+  `openplc-runtime.service` from a source install) is stopped and disabled
+  first -- both bind 8443. What was displaced is recorded so it can be put
+  back.
+
+To remove it:
+
+```bash
+curl -fsSL https://runtime.getedge.me | sudo bash -s -- --uninstall --yes
+```
+
+Containers and images go, any displaced systemd runtime comes back, and
+`/var/lib/openplc-runtime` is kept unless `--purge` is given -- a native
+install shares that directory, so deleting it is not assumed to be safe.
+Docker itself is left installed.
+
+`sudo ./install.sh --native` from a checkout still builds from source, for
+MSYS2 and for targets that cannot run containers.
+
 ## Quick Start
 
 ### Pull and Run
@@ -248,11 +290,13 @@ services:
       - TZ=America/New_York
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-k", "-f", "https://localhost:8443/api/ping"]
+      # /api/version, not /api/ping: ping is behind @jwt_required(), so a
+      # healthcheck against it always gets a 401 and `curl -f` always fails.
+      test: ["CMD", "curl", "-k", "-f", "https://localhost:8443/api/version"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 90s
 
 volumes:
   openplc-runtime-data:
@@ -494,8 +538,11 @@ docker port openplc-runtime
 
 **Test connectivity:**
 ```bash
-curl -k https://localhost:8443/api/ping
+curl -k https://localhost:8443/api/version
 ```
+
+`/api/version` is unauthenticated; `/api/ping` requires a token and will
+answer `401` even on a perfectly healthy runtime.
 
 ### Real-Time Performance Issues
 
@@ -569,20 +616,27 @@ docker run -d \
 
 ### GitHub Actions
 
-The official images are built automatically via GitHub Actions:
+**Images** -- `.github/workflows/docker.yml`
 
-**Workflow:** `.github/workflows/docker.yml`
+Triggers: a `v*` release tag, a push to `development` or `main`, or a manual
+dispatch. There is no pull-request trigger here: a branch push produces no
+semver tag for the metadata step.
 
-**Triggers:**
-- Push to development branch
-- Pull request to development
-- Manual workflow dispatch
+- The runtime image builds for release tags and manual runs only, multi-arch,
+  tagged `vX.Y.Z` and (for a stable release) `latest`.
+- The bootloader is versioned separately, from `bootloader/VERSION`. A version
+  already in the registry is not rebuilt, so a run of runtime releases does not
+  republish an unchanged bootloader; `latest` moves only for a stable version
+  from a release tag or `main`.
 
-**Process:**
-1. Build multi-architecture images
-2. Run tests
-3. Push to GHCR
-4. Tag with commit SHA and latest
+**Tests** -- `.github/workflows/tests.yml`
+
+Runs on every pull request: `gofmt`, `go vet` and `go test -race` for the
+bootloader, `pytest tests/pytest`, `shellcheck` on the installer scripts, and a
+check that every caller of `install.sh` asks for the build it needs.
+
+Not in CI: `tests/integration/harness.sh` (it needs a privileged
+Docker-in-Docker host) and anything hardware-dependent. Both are run by hand.
 
 ### Using in CI/CD
 
@@ -607,7 +661,7 @@ jobs:
       - uses: actions/checkout@v2
       - name: Test API
         run: |
-          curl -k https://localhost:8443/api/ping
+          curl -k https://localhost:8443/api/version
 ```
 
 ## Related Documentation
