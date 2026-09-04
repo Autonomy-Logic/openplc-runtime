@@ -248,7 +248,10 @@ func (u *Updater) execute(ctx context.Context, previousVersion, targetVersion st
 		// Same policy as orchestrator-agent's _pull_runtime_image: only a
 		// confirmed local copy excuses a failed pull.
 		if _, inspectErr := u.cfg.Docker.InspectImage(ctx, targetRef); inspectErr != nil {
-			return errBeforeSwap{fmt.Errorf("could not download %s: %w", targetRef, err)}
+			// The full chain goes to the log; the operator gets one sentence.
+			u.cfg.Log.Error("pull failed", "image", targetRef, "error", err)
+			return errBeforeSwap{errors.New(describePullFailure(
+				u.cfg.Spec.Repository, targetRef, err))}
 		}
 		u.cfg.Log.Warn("pull failed but the image is already present; continuing",
 			"image", targetRef, "error", err)
@@ -391,4 +394,39 @@ func humanBytes(n int64) string {
 		}
 	}
 	return fmt.Sprintf("%.1f PiB", value/unit)
+}
+
+// describePullFailure turns a failed pull into a sentence an operator can act
+// on.
+//
+// The default is the daemon's own reason, which is usually specific ("manifest
+// unknown", "pull access denied"). What it cannot know is the trap behind the
+// most confusing case: a device whose spec names a repository with no registry
+// host -- "openplc-runtime" rather than "ghcr.io/autonomy-logic/openplc-runtime"
+// -- sends every pull to Docker Hub, where none of these images exist. That
+// happens on a device installed from a side-loaded image, and the resulting
+// "repository does not exist" points nowhere near the actual problem, so the
+// configured repository is named explicitly.
+func describePullFailure(repository, ref string, err error) string {
+	reason := dockerapi.Reason(err)
+	if isUnqualifiedRepository(repository) {
+		return fmt.Sprintf(
+			"could not download %s: %s. This device is configured to use the image "+
+				"repository %q, which has no registry host, so the download went to "+
+				"Docker Hub instead of the OpenPLC registry.",
+			ref, reason, repository)
+	}
+	return fmt.Sprintf("could not download %s: %s", ref, reason)
+}
+
+// isUnqualifiedRepository reports whether Docker would resolve repository
+// against Docker Hub. The daemon's rule: the part before the first slash is a
+// registry only when it contains a dot or a colon, or is exactly "localhost".
+func isUnqualifiedRepository(repository string) bool {
+	slash := strings.Index(repository, "/")
+	if slash < 0 {
+		return true
+	}
+	host := repository[:slash]
+	return host != "localhost" && !strings.ContainsAny(host, ".:")
 }

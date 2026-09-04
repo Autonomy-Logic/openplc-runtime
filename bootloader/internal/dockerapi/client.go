@@ -250,3 +250,27 @@ func encodeQuery(params url.Values) string {
 	}
 	return "?" + params.Encode()
 }
+
+// Reason extracts the most useful human-readable part of a daemon error.
+//
+// Errors here accumulate layers on the way up -- "could not download X:
+// pulling X: docker /images/create?fromImage=X&tag=Y: HTTP 500: pull access
+// denied" -- and every layer but the last is machinery. The daemon's own
+// message is the only part that tells an operator what to do about it, so
+// that is what gets shown; the full chain still goes to the log.
+func Reason(err error) string {
+	if err == nil {
+		return ""
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Message != "" {
+		return apiErr.Message
+	}
+	// Not a daemon response (a transport failure, a stall). Keep the
+	// innermost segment, which is where the cause is.
+	message := err.Error()
+	if index := strings.LastIndex(message, ": "); index >= 0 && index+2 < len(message) {
+		return message[index+2:]
+	}
+	return message
+}
