@@ -507,8 +507,39 @@ resolve_runtime_version() {
     fi
     if [ -z "$RUNTIME_VERSION" ]; then
         RUNTIME_VERSION="latest"
-        log_warning "No VERSION file found; installing the 'latest' runtime tag."
     fi
+}
+
+# resolve_latest_to_a_version turns "latest" into the version it points at.
+#
+# Installing the newest release is the right default; RECORDING it as "latest"
+# is not. The spec is what the device boots from and what the editor shows, so
+# a device that installed today would report its version as "latest" and would
+# silently follow the tag on every reconcile -- moving to a new runtime because
+# someone published one, not because anyone chose it here.
+#
+# The version comes out of the image itself (RUNTIME_VERSION, baked in by the
+# release build) rather than from a GitHub API call, so it needs nothing but
+# the registry, and the answer is by construction exactly what "latest" was
+# when this ran.
+resolve_latest_to_a_version() {
+    [ "$RUNTIME_VERSION" = latest ] || return 0
+
+    local image="$RUNTIME_REPOSITORY:latest" baked
+    baked="$(docker image inspect --format \
+        '{{range .Config.Env}}{{if eq (index (split . "=") 0) "RUNTIME_VERSION"}}{{index (split . "=") 1}}{{end}}{{end}}' \
+        "$image" 2>/dev/null || true)"
+
+    if printf '%s' "$baked" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+'; then
+        log_info "'latest' is $baked; recording that rather than the moving tag"
+        RUNTIME_VERSION="$baked"
+        return 0
+    fi
+
+    # An image with no version baked in, or one whose value does not look like
+    # a release. Keep the moving tag rather than invent a version, and say so:
+    # the device works, it just follows `latest`.
+    log_warning "Could not read a version from $image; the device will follow the 'latest' tag."
 }
 
 # json_array renders arguments as a JSON string array.
@@ -557,25 +588,37 @@ write_spec() {
 
 # --- bootloader ----------------------------------------------------------
 
-# pull_bootloader_image runs BEFORE anything on the device is disturbed.
+# Both images are pulled BEFORE anything on the device is disturbed.
 #
 # Found by testing: with the pull inside start_bootloader, a device that could
 # not reach the registry had already had its systemd runtime stopped and
 # disabled by the time the download failed -- so a failed install left it with
-# no PLC at all. Nothing destructive happens until the image is on disk.
-pull_bootloader_image() {
-    local image="$BOOTLOADER_REPOSITORY:$BOOTLOADER_VERSION"
+# no PLC at all. Nothing destructive happens until both images are on disk,
+# which also means the runtime download -- the long one -- happens while the
+# device is still serving its existing runtime.
+# pull_image fetches one image, showing the daemon's own progress.
+#
+# NOT quiet. The runtime image is a few hundred megabytes and on a plant link
+# the download runs for minutes; with output suppressed the installer sat on a
+# single "Pulling" line long enough that people reasonably concluded it had
+# hung and killed it. Docker's own per-layer progress is the right thing to
+# show -- it is what every other docker command shows, so it needs no
+# explaining.
+#
+# Returns 0 when the image is available afterwards, by pull or because a copy
+# was already here (an air-gapped device, or one side-loaded with `docker
+# load`). Same policy the updater applies.
+pull_image() {
+    local image="$1" what="$2"
 
-    log_info "Pulling $image"
-    if docker pull "$image" >/dev/null 2>&1; then
-        log_success "Bootloader image ready"
+    log_info "Downloading the $what image: $image"
+    if docker pull "$image"; then
+        log_success "$what image ready"
         return 0
     fi
 
-    # A local copy is a legitimate answer: an air-gapped device, or one
-    # side-loaded with `docker load`. Same policy the updater applies.
     if docker image inspect "$image" >/dev/null 2>&1; then
-        log_warning "Could not reach the registry; using the copy already on this device."
+        log_warning "Could not reach the registry; using the $what copy already on this device."
         return 0
     fi
 
@@ -618,29 +661,58 @@ start_bootloader() {
 }
 
 wait_for_runtime() {
-    log_info "Waiting for the runtime to come up (this pulls the image on first install)"
-    local waited=0
-    local state=""
+    # Says what it is waiting for and keeps saying it.
+    #
+    # The image is already on disk by now, so this is the container starting
+    # and the healthcheck's start-period elapsing -- up to about 90 seconds
+    # while plugin virtualenvs load. Silence for that long reads as a hang, so
+    # the bootloader's own state and the elapsed time go to the terminal as
+    # they change.
+    log_info "Starting the runtime and waiting for it to report healthy"
+
+    local waited=0 state="" reason="" last_reported=""
     while [ "$waited" -lt 900 ]; do
-        state="$(curl -sk "https://127.0.0.1:$BOOTLOADER_PORT/api/bootloader/capabilities" \
-            2>/dev/null | sed -n 's/.*"state":"\([a-z]*\)".*/\1/p')"
+        local caps
+        caps="$(curl -sk --max-time 5 \
+            "https://127.0.0.1:$BOOTLOADER_PORT/api/bootloader/capabilities" 2>/dev/null || true)"
+        state="$(printf '%s' "$caps" | sed -n 's/.*"state":"\([a-z]*\)".*/\1/p')"
+        reason="$(printf '%s' "$caps" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')"
+
         case "$state" in
             healthy)
+                printf '\n' >&2
                 log_success "Runtime is up"
                 return 0
                 ;;
             recovery)
+                printf '\n' >&2
                 log_warning "The bootloader is in recovery mode: the runtime did not start."
+                [ -n "$reason" ] && log_warning "  $reason"
                 log_warning "Connect the OpenPLC Editor to port $BOOTLOADER_PORT to see why"
                 log_warning "and to install a different version."
                 return 0
                 ;;
         esac
+
+        # One line, rewritten in place, so a slow start looks like progress
+        # rather than a stall. Falls back to appending when stderr is not a
+        # terminal, which is how this reads in CI and in a piped log.
+        local shown="${state:-starting}${reason:+ -- $reason}"
+        if [ -t 2 ]; then
+            printf '\r  %s (%ds)\033[K' "$shown" "$waited" >&2
+        elif [ "$shown" != "$last_reported" ]; then
+            log_info "  $shown (${waited}s)"
+            last_reported="$shown"
+        fi
+
         sleep 5
         waited=$((waited + 5))
     done
-    log_warning "The runtime has not reported healthy yet. Check:"
+
+    printf '\n' >&2
+    log_warning "The runtime has not reported healthy after ${waited}s. Check:"
     log_warning "  docker logs $BOOTLOADER_CONTAINER"
+    log_warning "  docker logs $RUNTIME_CONTAINER"
     return 0
 }
 
@@ -698,9 +770,14 @@ main() {
 
     detect_engine || install_engine
     start_engine
-    # Everything above this line is additive, and the pull below is too. The
-    # device keeps working throughout.
-    pull_bootloader_image
+
+    # Everything above this line is additive, and so are the pulls below: the
+    # device keeps serving its existing runtime throughout.
+    pull_image "$RUNTIME_REPOSITORY:$RUNTIME_VERSION" runtime
+    # Now that the image is here, "latest" can be turned into the version it
+    # actually resolved to, before the spec is written.
+    resolve_latest_to_a_version
+    pull_image "$BOOTLOADER_REPOSITORY:$BOOTLOADER_VERSION" bootloader
 
     # From here the old runtime is gone and the new one is not yet up, so a
     # failure has to hand the device back what it had.
