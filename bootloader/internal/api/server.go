@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimeauth"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/supervisor"
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/updater"
@@ -70,6 +71,17 @@ type SelfUpdater interface {
 	Start(ctx context.Context, version string) error
 }
 
+// HostReporter answers for the machine the runtime runs on.
+//
+// The bootloader is the right place for this. It exists on every device that
+// can be updated from an editor, including one running a runtime far older
+// than these endpoints -- so a Runtime Status screen fed from here is
+// populated regardless of which runtime version is installed, which is not
+// true of anything served by the runtime itself.
+type HostReporter interface {
+	SystemInfo(ctx context.Context) (*dockerapi.Info, error)
+}
+
 // Authenticator resolves credentials against the runtime's account set.
 type Authenticator interface {
 	Authenticate(ctx context.Context, username, password, pepper string) (*runtimeauth.User, error)
@@ -88,6 +100,7 @@ type Config struct {
 	Secrets        *runtimeauth.Secrets
 	Users          Authenticator
 	Supervisor     Supervisor
+	Host           HostReporter
 	Logs           LogReader
 	Updater        Updater
 	SelfUpdater    SelfUpdater
@@ -144,6 +157,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	// Authenticated.
 	mux.HandleFunc("GET /api/bootloader/status", s.authenticated(s.handleStatus))
+	mux.HandleFunc("GET /api/bootloader/device-info", s.authenticated(s.handleDeviceInfo))
 	mux.HandleFunc("GET /api/bootloader/logs", s.authenticated(s.handleLogs))
 	mux.HandleFunc("POST /api/bootloader/restart", s.authenticated(s.handleRestart))
 	mux.HandleFunc("POST /api/bootloader/update", s.authenticated(s.handleUpdate))
@@ -236,6 +250,47 @@ func bearerToken(r *http.Request) (string, bool) {
 }
 
 // --- handlers ------------------------------------------------------------
+
+// handleDeviceInfo reports the machine the runtime runs on.
+//
+// Sourced from the Docker daemon, which runs on the host and answers for it.
+// The obvious alternative -- have the runtime report on itself -- is what this
+// replaces: that endpoint exists only in runtimes new enough to have it, so
+// every device in the field today answered it with a catch-all body and the
+// screen had nothing to show. The bootloader is present wherever an update is
+// possible at all, which makes it the one source that is always there.
+//
+// Deliberately only facts that VARY between devices. "This runtime runs in a
+// container" and "this device updates itself" were both here at one point and
+// are neither: a client reaching this handler at all has already learned them
+// from the bootloader answering, so reporting them again was a field that
+// could only ever hold one value.
+func (s *Server) handleDeviceInfo(w http.ResponseWriter, r *http.Request) {
+	payload := map[string]any{
+		"bootloaderVersion": s.cfg.Version,
+		"runtimeVersion":    s.cfg.RuntimeVersion(),
+	}
+
+	if s.cfg.Host != nil {
+		info, err := s.cfg.Host.SystemInfo(r.Context())
+		if err != nil {
+			// Report the versions rather than failing the request: a daemon
+			// that will not answer says nothing about the bootloader, and a
+			// half-filled header beats an error where there is no fault.
+			s.cfg.Log.Warn("could not read host information", "error", err)
+		} else {
+			payload["hostname"] = info.Name
+			payload["architecture"] = info.Architecture
+			payload["kernel"] = info.KernelVersion
+			payload["system"] = info.OperatingSystem
+			payload["cpus"] = info.NCPU
+			payload["memoryBytes"] = info.MemTotal
+			payload["dockerVersion"] = info.ServerVersion
+		}
+	}
+
+	writeJSON(w, http.StatusOK, payload)
+}
 
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	status := s.cfg.Supervisor.Status()

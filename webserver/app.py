@@ -49,7 +49,6 @@ from webserver.restapi import (
     repair_missing_admin,
     restapi_bp,
 )
-from webserver.runtime_info import runtime_info_bp
 from webserver.runtimemanager import RuntimeManager
 
 logger, _ = get_logger("logger", use_buffer=True)
@@ -491,10 +490,6 @@ def run_https():
     # rest api register
     app_restapi.register_blueprint(restapi_bp, url_prefix="/api")
     app_restapi.register_blueprint(discovery_bp)
-    # Carries its own /api prefix, like discovery_bp. Its /api/device-info rule
-    # is static, so Werkzeug matches it ahead of restapi_bp's /api/<command>
-    # catch-all regardless of registration order.
-    app_restapi.register_blueprint(runtime_info_bp)
     register_callback_get(restapi_callback_get)
     register_callback_post(restapi_callback_post)
 

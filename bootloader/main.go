@@ -189,6 +189,7 @@ func run(log *slog.Logger, cfg runConfig) error {
 		Secrets:        secrets,
 		Users:          users,
 		Supervisor:     sup,
+		Host:           docker,
 		Logs:           docker,
 		Updater:        upd,
 		SelfUpdater:    bootloaderSelfUpdater{docker: docker, log: log.With("component", "selfupdate")},

@@ -159,7 +159,7 @@ cmd_seed() {
     transfer "$REAL_BASE"
     inner sh -c "cat > /tmp/real.Dockerfile <<'EOF'
 FROM $REAL_BASE
-COPY webserver/update_policy.py webserver/runtime_info.py webserver/restapi.py webserver/app.py /workdir/webserver/
+COPY webserver/restapi.py webserver/app.py /workdir/webserver/
 HEALTHCHECK --interval=10s --timeout=10s --start-period=90s --retries=3 \\
     CMD curl -kfsS https://127.0.0.1:8443/api/version >/dev/null || exit 1
 EOF
