@@ -39,6 +39,17 @@ from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 from asyncua import Server, ua
 
+# asyncua compatibility between 1.x and 2.x
+def _make_data_value(**kwargs):
+    try:
+        return ua.DataValue(**kwargs)
+    except TypeError as exc:
+        if "unexpected keyword argument 'StatusCode'" not in str(exc):
+            raise
+        kwargs["StatusCode_"] = kwargs.pop("StatusCode")
+        return ua.DataValue(**kwargs)
+
+
 # Import local modules (handle both package and direct loading)
 try:
     from .opcua_logging import log_debug, log_error, log_info, log_warn
@@ -259,16 +270,16 @@ class SynchronizationManager:
                         v = self._get_default_value(datatype)
                     variant = ua.Variant(convert_value_for_opcua(datatype, v), expected_type)
                 now = datetime.now(timezone.utc)
-                return ua.DataValue(
+                return _make_data_value(
                     Value=variant,
-                    StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
+                    StatusCode=ua.StatusCode(ua.StatusCodes.Good),
                     SourceTimestamp=now,
                     ServerTimestamp=now,
                 )
             except Exception as e:
                 log_error(f"Read callback ({base_arr},{base_elem}) failed: {e}")
-                return ua.DataValue(
-                    StatusCode_=ua.StatusCode(ua.StatusCodes.BadInternalError)
+                return _make_data_value(
+                    StatusCode=ua.StatusCode(ua.StatusCodes.BadInternalError)
                 )
 
         return callback
@@ -413,9 +424,9 @@ class SynchronizationManager:
     async def _push_value(self, node: VariableNode, variant: ua.Variant) -> None:
         """Push one variant via write_attribute_value, tagging the DataValue
         so our own value_setter ignores it."""
-        data_value = ua.DataValue(
+        data_value = _make_data_value(
             Value=variant,
-            StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
+            StatusCode=ua.StatusCode(ua.StatusCodes.Good),
             SourceTimestamp=self._cycle_timestamp,
             ServerTimestamp=datetime.now(timezone.utc),
         )
