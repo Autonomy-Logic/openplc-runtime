@@ -107,9 +107,14 @@ static void free_buffers(void);
 static int register_all_areas(void);
 static void read_openplc_to_buffer(uint8_t *dest, int size, s7comm_buffer_type_t type, int start_buffer);
 static void write_buffer_to_openplc_journal(uint8_t *src, int size, s7comm_buffer_type_t type, int start_buffer);
+static void write_openplc_bool_bit(const uint8_t *src, s7comm_buffer_type_t type,
+                                   int buffer_index, int bit_index);
 static s7comm_db_runtime_t* find_db_runtime(int db_number);
 static s7comm_area_runtime_t* find_area_runtime(int area);
 static int get_type_size(s7comm_buffer_type_t type);
+static bool is_bool_type(s7comm_buffer_type_t type);
+static bool resolve_bit_address(int bit_address, int area_size_bytes, int mapping_start,
+                                int *buffer_index, int *bit_index);
 
 /*
  * =============================================================================
@@ -717,6 +722,40 @@ static int get_type_size(s7comm_buffer_type_t type)
     }
 }
 
+/**
+ * @brief Check whether a mapping uses an OpenPLC BOOL image table
+ */
+static bool is_bool_type(s7comm_buffer_type_t type)
+{
+    return type == BUFFER_TYPE_BOOL_INPUT ||
+           type == BUFFER_TYPE_BOOL_OUTPUT ||
+           type == BUFFER_TYPE_BOOL_MEMORY;
+}
+
+/**
+ * @brief Resolve an S7 bit offset to an OpenPLC BOOL byte/bit position
+ *
+ * Snap7 passes TS7Tag::Start in bits when WordLen is S7WLBit. For example,
+ * DBX0.1 arrives as bit_address=1, while DBX1.0 arrives as bit_address=8.
+ */
+static bool resolve_bit_address(int bit_address, int area_size_bytes, int mapping_start,
+                                int *buffer_index, int *bit_index)
+{
+    if (buffer_index == NULL || bit_index == NULL || bit_address < 0 ||
+        bit_address >= area_size_bytes * 8) {
+        return false;
+    }
+
+    int resolved_buffer_index = mapping_start + (bit_address / 8);
+    if (resolved_buffer_index < 0 || resolved_buffer_index >= g_runtime_args.buffer_size) {
+        return false;
+    }
+
+    *buffer_index = resolved_buffer_index;
+    *bit_index = bit_address % 8;
+    return true;
+}
+
 /*
  * =============================================================================
  * Read Functions: OpenPLC -> S7 Buffer (for S7 client READs)
@@ -933,6 +972,19 @@ static void write_bool_to_openplc_journal(uint8_t *src, int size, s7comm_buffer_
 }
 
 /**
+ * @brief Write one S7 bit payload to one OpenPLC BOOL journal entry
+ */
+static void write_openplc_bool_bit(const uint8_t *src, s7comm_buffer_type_t type,
+                                   int buffer_index, int bit_index)
+{
+    int journal_type = map_to_journal_type(type);
+    if (journal_type < 0) return;
+
+    g_runtime_args.journal_write_bool(journal_type, buffer_index, bit_index,
+                                      (src[0] & 0x01) != 0);
+}
+
+/**
  * @brief Write int buffer to OpenPLC via journal with endian conversion
  */
 static void write_int_to_openplc_journal(uint8_t *src, int size, s7comm_buffer_type_t type, int start_buffer)
@@ -1055,7 +1107,11 @@ static int s7comm_rw_area_callback(void *usrPtr, int Sender, int Operation, PS7T
 
     s7comm_buffer_type_t type;
     int start_buffer;
+    int mapping_start;
+    int area_size_bytes;
+    int bit_index = 0;
     int size = PTag->Size;
+    bool bit_access = PTag->WordLen == S7WLBit;
 
     /* Determine mapping based on S7 protocol area code */
     if (PTag->Area == S7AreaDB) {
@@ -1066,7 +1122,8 @@ static int s7comm_rw_area_callback(void *usrPtr, int Sender, int Operation, PS7T
             return 0;
         }
         type = db->type;
-        start_buffer = db->start_buffer + (PTag->Start / get_type_size(type));
+        mapping_start = db->start_buffer;
+        area_size_bytes = db->size_bytes;
     } else {
         /* System area (PE, PA, MK) */
         s7comm_area_runtime_t *area = find_area_runtime(PTag->Area);
@@ -1075,7 +1132,18 @@ static int s7comm_rw_area_callback(void *usrPtr, int Sender, int Operation, PS7T
             return 0;
         }
         type = area->type;
-        start_buffer = area->start_buffer + (PTag->Start / get_type_size(type));
+        mapping_start = area->start_buffer;
+        area_size_bytes = area->size_bytes;
+    }
+
+    if (bit_access) {
+        if (!is_bool_type(type) || size != 1 ||
+            !resolve_bit_address(PTag->Start, area_size_bytes, mapping_start,
+                                 &start_buffer, &bit_index)) {
+            return -1;
+        }
+    } else {
+        start_buffer = mapping_start + (PTag->Start / get_type_size(type));
     }
 
     if (Operation == OperationRead) {
@@ -1083,7 +1151,9 @@ static int s7comm_rw_area_callback(void *usrPtr, int Sender, int Operation, PS7T
          * S7 client is READing - provide fresh data from OpenPLC.
          * image_lock() takes the image mutex and drains the journal so the
          * copy sees freshly committed values; the snap7 TCP send happens
-         * after this callback returns, outside the lock.
+         * after this callback returns, outside the lock. For S7WLBit this
+         * copies the containing byte; Snap7 masks the requested bit after
+         * the callback returns.
          */
         g_runtime_args.image_lock();
         read_openplc_to_buffer((uint8_t *)pUsrData, size, type, start_buffer);
@@ -1093,7 +1163,11 @@ static int s7comm_rw_area_callback(void *usrPtr, int Sender, int Operation, PS7T
          * S7 client is WRITing - journal the changes
          * Journal writes are thread-safe, no mutex needed
          */
-        write_buffer_to_openplc_journal((uint8_t *)pUsrData, size, type, start_buffer);
+        if (bit_access) {
+            write_openplc_bool_bit((const uint8_t *)pUsrData, type, start_buffer, bit_index);
+        } else {
+            write_buffer_to_openplc_journal((uint8_t *)pUsrData, size, type, start_buffer);
+        }
     }
 
     return 0;  /* Accept operation */
