@@ -1,0 +1,17 @@
+# osv-scanner suppression baseline for openplc-runtime (VEX "not affected"/mitigated
+# decisions from the SBOM & Vulnerability Report).
+#
+# Intentionally EMPTY. requirements.txt is unpinned and CI resolves it into a clean
+# venv, so the scanned dependency set is the currently-resolved one — which has no
+# known advisory. The previous entries were suppressing IDs that no longer resolve
+# (all were reported "unused ignores"); a stale suppression can only fail OPEN (a
+# revived vulnerable version would stay hidden until its ignoreUntil), so they are
+# removed rather than kept. The live stack is left UNSUPPRESSED, so any advisory
+# that surfaces in a future scan is shown for human review (no AI triage on this
+# public repo). SOEM (C, EtherCAT) is a submodule tracked apart.
+#
+# When a real advisory surfaces and is triaged "not affected"/"mitigated", add an
+# [[IgnoredVulns]] entry carrying a CISA VEX status + justification, e.g.:
+#   node scripts/gen-osv-ignores.mjs <triaged.csv> <YYYY-MM-DD> >> osv-scanner.toml
+#   VEX not_affected/<cisa_justification> [pkg]: <basis>
+#   VEX affected/mitigated [pkg]: <compensating control>

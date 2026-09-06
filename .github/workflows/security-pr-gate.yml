@@ -1,0 +1,133 @@
+name: Security — PR gate
+
+# Python variant. Runs on every pull request and blocks ONLY on advisories the
+# PR *introduces* (present in head, absent in base) at/above the threshold —
+# pre-existing issues never block. Because requirements.txt is unpinned, the diff
+# is computed from RESOLVED SBOMs (cyclonedx-py in a clean venv). If the PR does
+# not touch a dependency manifest, no new dependency is possible, so we skip the
+# (expensive) base resolve and pass.
+#
+# The job never writes CODE (contents: read) — safe to require in branch
+# protection. It posts one sticky PR comment (pull-requests: write) with the
+# actionable result. The per-PR SBOM snapshot is archived on MERGE by
+# security-pr-archive.yml.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: security-pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  GATE_THRESHOLD: HIGH
+  # Repos with native deps set this (e.g. orchestrator-agent: "--only-binary av").
+  SBOM_PIP_ARGS: ""
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: "22" }
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: { python-version: "3.12" }
+
+      - name: Unit tests (security scripts)
+        run: node --test scripts/__tests__/*.test.mjs
+
+      - name: Install osv-scanner
+        run: |
+          OSV_VER=v2.4.0   # pinned; verified against the release SHA256SUMS
+          curl -sSfL "https://github.com/google/osv-scanner/releases/download/${OSV_VER}/osv-scanner_linux_amd64" -o /tmp/osv-scanner_linux_amd64
+          curl -sSfL "https://github.com/google/osv-scanner/releases/download/${OSV_VER}/osv-scanner_SHA256SUMS" -o /tmp/osv_SHA256SUMS
+          ( cd /tmp && grep " osv-scanner_linux_amd64$" osv_SHA256SUMS | sha256sum -c - )
+          install -m 0755 /tmp/osv-scanner_linux_amd64 /usr/local/bin/osv-scanner
+
+      - name: Did this PR change any dependency manifest?
+        id: deps
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags --depth=1 origin "$BASE" 2>/dev/null || true
+          # Includes the Python plugin manifests: their deps ship in the deployed
+          # product, so a PR adding a vulnerable plugin dependency must trigger a
+          # base resolve rather than passing without a diff.
+          CHANGED=$(git diff --name-only "$BASE" HEAD -- requirements.txt requirements-dev.txt pyproject.toml poetry.lock Pipfile Pipfile.lock 'core/src/drivers/plugins/python/*/requirements.txt' 2>/dev/null || true)
+          if [ -n "$CHANGED" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
+          echo "manifests changed: ${CHANGED:-<none>}"
+
+      - name: Resolve & scan HEAD SBOM
+        run: |
+          NAME=$(node -p "require('./security/report-config.json').sbomBasename")
+          bash scripts/generate-sbom.sh
+          CFG=""; [ -f osv-scanner.toml ] && CFG="--config=osv-scanner.toml"
+          set +e
+          osv-scanner scan $CFG --format=json --output=/tmp/head.json "sbom/$NAME.cdx.json"
+          rc=$?
+          set -e
+          # osv-scanner: 0 = no vulns, 1 = vulns found. Any other code = failure →
+          # fail the gate CLOSED, never pass a broken scan.
+          if [ "$rc" != "0" ] && [ "$rc" != "1" ]; then echo "::error::osv-scanner failed on HEAD (exit $rc)"; exit 1; fi
+          [ -s /tmp/head.json ] || echo '{"results":[]}' > /tmp/head.json
+
+      - name: Resolve & scan BASE SBOM (only if manifests changed)
+        run: |
+          if [ "${{ steps.deps.outputs.changed }}" != "true" ]; then
+            echo "No dependency manifest changed — base == head, nothing new can be introduced."
+            cp /tmp/head.json /tmp/base.json
+            exit 0
+          fi
+          NAME=$(node -p "require('./security/report-config.json').sbomBasename")
+          BASE="${{ github.event.pull_request.base.sha }}"
+          # Restore the BASE version of EVERY changed manifest (root + Python plugins)
+          # so the base SBOM reflects base deps; generate-sbom.sh resolves all of them.
+          MANIFESTS=$(git diff --name-only "$BASE" HEAD -- requirements.txt requirements-dev.txt 'core/src/drivers/plugins/python/*/requirements.txt' 2>/dev/null || true)
+          BAK=/tmp/manifest-bak; rm -rf "$BAK"; mkdir -p "$BAK"
+          for f in $MANIFESTS; do
+            mkdir -p "$BAK/$(dirname "$f")"
+            cp "$f" "$BAK/$f" 2>/dev/null || true
+            git show "$BASE:$f" > "$f" 2>/dev/null || : > "$f"
+          done
+          bash scripts/generate-sbom.sh
+          cp "sbom/$NAME.cdx.json" /tmp/base.cdx.json
+          for f in $MANIFESTS; do cp "$BAK/$f" "$f" 2>/dev/null || git checkout -- "$f" 2>/dev/null || true; done
+          CFG=""; [ -f osv-scanner.toml ] && CFG="--config=osv-scanner.toml"
+          set +e
+          osv-scanner scan $CFG --format=json --output=/tmp/base.json /tmp/base.cdx.json
+          rc=$?
+          set -e
+          if [ "$rc" != "0" ] && [ "$rc" != "1" ]; then echo "::error::osv-scanner failed on BASE (exit $rc)"; exit 1; fi
+          [ -s /tmp/base.json ] || echo '{"results":[]}' > /tmp/base.json
+          bash scripts/generate-sbom.sh   # restore HEAD sbom/ (overwritten by the base resolve)
+
+      - name: Evaluate — block on newly-introduced advisories
+        run: node scripts/pr-gate-diff.mjs /tmp/base.json /tmp/head.json "${GATE_THRESHOLD}"
+
+      - name: Comment result on the PR
+        if: ${{ always() && github.event.pull_request.head.repo.full_name == github.repository }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          STATUS=$(cat /tmp/gate-status 2>/dev/null || echo clean)
+          CID=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                  --jq '.[] | select(.body | contains("<!-- security-pr-gate -->")) | .id' | head -1)
+          if [ "$STATUS" = "clean" ] && [ -z "$CID" ]; then
+            echo "Clean and no existing comment — nothing to post."; exit 0
+          fi
+          if [ -n "$CID" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$CID" -F body=@/tmp/gate-comment.md >/dev/null && echo "Updated comment $CID"
+          else
+            gh pr comment "$PR" --repo "$REPO" --body-file /tmp/gate-comment.md && echo "Created comment"
+          fi
