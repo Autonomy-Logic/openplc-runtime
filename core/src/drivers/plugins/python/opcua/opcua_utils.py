@@ -222,12 +222,21 @@ def convert_value_for_opcua(datatype: str, value: Any) -> Any:
                 tv_sec, tv_nsec = value
                 try:
                     dt = datetime.fromtimestamp(tv_sec, tz=timezone.utc)
-                    dt = dt.replace(microsecond=tv_nsec // 1000)
-                    return dt
+                    return dt.replace(microsecond=tv_nsec // 1000)
                 except (OSError, OverflowError, ValueError):
                     return datetime(1970, 1, 1, tzinfo=timezone.utc)
             elif isinstance(value, datetime):
                 return value
+            elif isinstance(value, int):
+                # Some OpenPLC debug interfaces expose DT as Unix time
+                # in nanoseconds instead of an IEC_TIMESPEC tuple.
+                try:
+                    return datetime.fromtimestamp(
+                        value / 1_000_000_000,
+                        tz=timezone.utc
+                    )
+                except (OSError, OverflowError, ValueError):
+                    return datetime(1970, 1, 1, tzinfo=timezone.utc)
             return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
         else:
