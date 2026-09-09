@@ -11,6 +11,22 @@ import ctypes
 # Import IEC type definitions
 from .iec_types import IEC_BOOL, IEC_BYTE, IEC_UDINT, IEC_UINT, IEC_ULINT
 
+# The largest image any plugin may be handed.
+#
+# NOT a tuning value and not a safety margin: a located variable's table index
+# is a uint16_t in the STruC++ ABI, so no table can be addressed beyond this
+# many elements. The runtime refuses a larger image at install
+# (webserver/image_config.py) for the same reason, and this is the same number
+# arrived at the same way.
+#
+# It replaces a bare literal that appeared twice here and gated EVERY Python
+# plugin, not only Modbus: once the image stopped being a fixed 1024
+# (RTOP-284), any program needing more than that literal would have had its
+# plugins refuse to start before a line of their own logic ran -- and the
+# message said "buffer_size is invalid", which points at the runtime rather
+# than at the limit that actually rejected it.
+MAX_BUFFER_SIZE = 65536
+
 
 class PluginRuntimeArgs(ctypes.Structure):
     """
@@ -51,20 +67,35 @@ class PluginRuntimeArgs(ctypes.Structure):
         # debug_set toggles forcing; debug_write does a soft write that
         # respects existing forces (the next scan cycle can overwrite).
         ("debug_array_count", ctypes.CFUNCTYPE(ctypes.c_uint8)),
-        ("debug_elem_count",  ctypes.CFUNCTYPE(ctypes.c_uint16, ctypes.c_uint8)),
-        ("debug_size",        ctypes.CFUNCTYPE(ctypes.c_uint16, ctypes.c_uint8, ctypes.c_uint16)),
-        ("debug_read",        ctypes.CFUNCTYPE(ctypes.c_uint16,
-                                               ctypes.c_uint8, ctypes.c_uint16,
-                                               ctypes.POINTER(ctypes.c_uint8))),
-        ("debug_set",         ctypes.CFUNCTYPE(ctypes.c_uint8,
-                                               ctypes.c_uint8, ctypes.c_uint16,
-                                               ctypes.c_bool,
-                                               ctypes.POINTER(ctypes.c_uint8),
-                                               ctypes.c_uint16)),
-        ("debug_write",       ctypes.CFUNCTYPE(ctypes.c_uint8,
-                                               ctypes.c_uint8, ctypes.c_uint16,
-                                               ctypes.POINTER(ctypes.c_uint8),
-                                               ctypes.c_uint16)),
+        ("debug_elem_count", ctypes.CFUNCTYPE(ctypes.c_uint16, ctypes.c_uint8)),
+        ("debug_size", ctypes.CFUNCTYPE(ctypes.c_uint16, ctypes.c_uint8, ctypes.c_uint16)),
+        (
+            "debug_read",
+            ctypes.CFUNCTYPE(
+                ctypes.c_uint16, ctypes.c_uint8, ctypes.c_uint16, ctypes.POINTER(ctypes.c_uint8)
+            ),
+        ),
+        (
+            "debug_set",
+            ctypes.CFUNCTYPE(
+                ctypes.c_uint8,
+                ctypes.c_uint8,
+                ctypes.c_uint16,
+                ctypes.c_bool,
+                ctypes.POINTER(ctypes.c_uint8),
+                ctypes.c_uint16,
+            ),
+        ),
+        (
+            "debug_write",
+            ctypes.CFUNCTYPE(
+                ctypes.c_uint8,
+                ctypes.c_uint8,
+                ctypes.c_uint16,
+                ctypes.POINTER(ctypes.c_uint8),
+                ctypes.c_uint16,
+            ),
+        ),
         ("plugin_specific_config_file_path", ctypes.c_char * 256),
         # Buffer size information
         ("buffer_size", ctypes.c_int),
@@ -76,11 +107,26 @@ class PluginRuntimeArgs(ctypes.Structure):
         ("log_error", ctypes.CFUNCTYPE(None, ctypes.c_char_p)),
         # Journal write function pointers for race-condition-free buffer writes
         # int (*func)(int type, int index, int bit/value, int value)
-        ("journal_write_bool", ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)),
-        ("journal_write_byte", ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)),
-        ("journal_write_int", ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)),
-        ("journal_write_dint", ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint)),
-        ("journal_write_lint", ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulonglong)),
+        (
+            "journal_write_bool",
+            ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int),
+        ),
+        (
+            "journal_write_byte",
+            ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int),
+        ),
+        (
+            "journal_write_int",
+            ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int),
+        ),
+        (
+            "journal_write_dint",
+            ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint),
+        ),
+        (
+            "journal_write_lint",
+            ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulonglong),
+        ),
         # Async request to stop the whole PLC: void (*)(const char *reason).
         #
         # This entry was missing while the C struct had the field, so every
@@ -114,8 +160,11 @@ class PluginRuntimeArgs(ctypes.Structure):
                 return False, "image_unlock function pointer is NULL"
 
             # Check buffer size is reasonable
-            if self.buffer_size <= 0 or self.buffer_size > 10000:
-                return False, f"buffer_size is invalid: {self.buffer_size}"
+            if self.buffer_size <= 0 or self.buffer_size > MAX_BUFFER_SIZE:
+                return (
+                    False,
+                    f"buffer_size is {self.buffer_size}, outside 1..{MAX_BUFFER_SIZE}",
+                )
 
             if self.bits_per_buffer <= 0 or self.bits_per_buffer > 64:
                 return False, f"bits_per_buffer is invalid: {self.bits_per_buffer}"
@@ -140,8 +189,8 @@ class PluginRuntimeArgs(ctypes.Structure):
                 return -1, f"Validation failed: {msg}"
 
             size = self.buffer_size
-            if size <= 0 or size > 10000:
-                return -1, f"Invalid buffer size: {size}"
+            if size <= 0 or size > MAX_BUFFER_SIZE:
+                return -1, f"buffer_size is {size}, outside 1..{MAX_BUFFER_SIZE}"
 
             return size, "Success"
 
