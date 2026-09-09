@@ -70,13 +70,81 @@ extern "C"
         IEC_ULINT *lint_input[BUFFER_SIZE];
         IEC_ULINT *lint_output[BUFFER_SIZE];
 
-        IEC_UINT  *int_memory[BUFFER_SIZE];
+        IEC_UINT *int_memory[BUFFER_SIZE];
         IEC_UDINT *dint_memory[BUFFER_SIZE];
         IEC_ULINT *lint_memory[BUFFER_SIZE];
-        IEC_BOOL  *bool_memory[BUFFER_SIZE][8];
+        IEC_BOOL *bool_memory[BUFFER_SIZE][8];
     } image_tables_t;
 
     extern image_tables_t g_image;
+
+    /* -------------------------------------------------------------------------
+     * How big the image has to be (RTOP-284)
+     *
+     * Two independent answers, and the runtime takes the larger:
+     *
+     *   CONFIGURED -- `image.conf`, installed from the program upload. The
+     *   editor derives it from what the project contains: the addresses its
+     *   producers claim (Modbus master points, EtherCAT channels, VPP slots,
+     *   pins) and the located variables it declares. That is the only source
+     *   that knows about producers, because a Modbus master I/O group can claim
+     *   two thousand bits without the program declaring a single variable.
+     *
+     *   DERIVED -- walked out of the loaded .so's locatedVars[]. This one knows
+     *   only what the PROGRAM declares, which is a subset, but it is always
+     *   available and always current.
+     *
+     * The maximum of the two is what makes a missing or stale `image.conf`
+     * harmless: it can leave the image larger than needed, never smaller than
+     * the program requires. A device that was provisioned by some other route,
+     * or whose editor predates the file, still comes up correct.
+     * --------------------------------------------------------------------- */
+
+    /* One id per table, in the order image_tables_t declares them. Note the gap
+     * the list makes visible: byte_input and byte_output exist, byte_memory
+     * does not, so `%MB` has no storage on this runtime at all. */
+    typedef enum
+    {
+        IMAGE_TABLE_BOOL_INPUT = 0,
+        IMAGE_TABLE_BOOL_OUTPUT,
+        IMAGE_TABLE_BYTE_INPUT,
+        IMAGE_TABLE_BYTE_OUTPUT,
+        IMAGE_TABLE_INT_INPUT,
+        IMAGE_TABLE_INT_OUTPUT,
+        IMAGE_TABLE_DINT_INPUT,
+        IMAGE_TABLE_DINT_OUTPUT,
+        IMAGE_TABLE_LINT_INPUT,
+        IMAGE_TABLE_LINT_OUTPUT,
+        IMAGE_TABLE_INT_MEMORY,
+        IMAGE_TABLE_DINT_MEMORY,
+        IMAGE_TABLE_LINT_MEMORY,
+        IMAGE_TABLE_BOOL_MEMORY,
+        IMAGE_TABLE_COUNT
+    } image_table_id_t;
+
+    /* Elements per table, in that table's own unit -- which for the three BOOL
+     * tables is BYTES, because they are declared [N][8], and for every other
+     * table is the number of addresses. Zero is a real answer: a program with
+     * no `%QX` has no reason to carry a bool_output image. */
+    typedef struct
+    {
+        uint32_t elements[IMAGE_TABLE_COUNT];
+    } image_sizes_t;
+
+    /** The key `image.conf` uses for a table, which is the table's own name. */
+    const char *image_table_key(image_table_id_t id);
+
+    /** Read the installed `image.conf`. Every table zero when the file is
+     *  absent, which means "nothing configured, size from the program". */
+    void image_sizes_read_conf(const char *config_path, image_sizes_t *out);
+
+    /** Walk the loaded .so's locatedVars[] for the floor the PROGRAM requires.
+     *  Zeroes `out` first, so an unloaded or symbol-less program yields zeros
+     *  rather than stale numbers. */
+    void image_sizes_derive_floor(image_sizes_t *out);
+
+    /** Per table, the larger of the two. */
+    void image_sizes_take_max(image_sizes_t *dst, const image_sizes_t *other);
 
     /* -------------------------------------------------------------------------
      * Resolved .so symbols (populated by symbols_init).
@@ -97,24 +165,20 @@ extern "C"
 
     /* Hierarchical debug PDU shims (defined inside the .so by
      * debug_dispatch.hpp under STRUCPP_V4_DEBUG_EXPORTS_DEFINE). */
-    extern uint8_t  (*ext_strucpp_debug_array_count)(void);
-    extern uint16_t (*ext_strucpp_debug_elem_count) (uint8_t arr);
-    extern uint16_t (*ext_strucpp_debug_size)       (uint8_t arr, uint16_t elem);
-    extern uint8_t  (*ext_strucpp_debug_set)        (uint8_t arr, uint16_t elem,
-                                                     bool forcing,
-                                                     const uint8_t *bytes,
-                                                     uint16_t len);
-    extern uint16_t (*ext_strucpp_debug_read)       (uint8_t arr, uint16_t elem,
-                                                     uint8_t *dest);
+    extern uint8_t (*ext_strucpp_debug_array_count)(void);
+    extern uint16_t (*ext_strucpp_debug_elem_count)(uint8_t arr);
+    extern uint16_t (*ext_strucpp_debug_size)(uint8_t arr, uint16_t elem);
+    extern uint8_t (*ext_strucpp_debug_set)(uint8_t arr, uint16_t elem, bool forcing,
+                                            const uint8_t *bytes, uint16_t len);
+    extern uint16_t (*ext_strucpp_debug_read)(uint8_t arr, uint16_t elem, uint8_t *dest);
     /* Soft write — updates the variable's underlying value via
      * IECVar::set(). If the variable is currently forced, the write is
      * silently ignored (force remains authoritative). Distinct from
      * ext_strucpp_debug_set(forcing=true) which pins the value
      * indefinitely. Used by plugins (OPC-UA, BACnet) that want regular
      * write semantics rather than debugger-style forcing. */
-    extern uint8_t  (*ext_strucpp_debug_write)      (uint8_t arr, uint16_t elem,
-                                                     const uint8_t *bytes,
-                                                     uint16_t len);
+    extern uint8_t (*ext_strucpp_debug_write)(uint8_t arr, uint16_t elem, const uint8_t *bytes,
+                                              uint16_t len);
 
     /* ---- Retain marshalling (NODE-94) --------------------------------------
      *
@@ -131,12 +195,12 @@ extern "C"
      *
      * Optional: a program built by an older STruC++ resolves these to NULL and
      * the retain path simply never runs. */
-    extern size_t   (*ext_strucpp_retain_blob_size)  (void);
+    extern size_t (*ext_strucpp_retain_blob_size)(void);
     extern uint32_t (*ext_strucpp_retain_layout_hash)(void);
-    extern size_t   (*ext_strucpp_retain_pack)       (uint8_t *out, size_t cap);
-    extern uint8_t  (*ext_strucpp_retain_unpack)     (const uint8_t *blob, size_t len,
-                                                      uint8_t (*write_leaf)(uint8_t, uint16_t,
-                                                                            const uint8_t *, uint16_t));
+    extern size_t (*ext_strucpp_retain_pack)(uint8_t *out, size_t cap);
+    extern uint8_t (*ext_strucpp_retain_unpack)(const uint8_t *blob, size_t len,
+                                                uint8_t (*write_leaf)(uint8_t, uint16_t,
+                                                                      const uint8_t *, uint16_t));
 
     /* Located-variable classifier. Reports whether a debug (arr, elem) leaf is
      * a LOCATED variable and, if so, its image location (area / size /
@@ -145,10 +209,8 @@ extern "C"
      * through the image journal + forced-slot bitmap (copy_in would clobber a
      * direct IECVar poke). OPTIONAL: an older .so without it leaves the pointer
      * NULL, and the drain treats every leaf as a global (IECVar) write. */
-    extern int      (*ext_strucpp_debug_locate)     (uint8_t arr, uint16_t elem,
-                                                     uint8_t *area, uint8_t *size,
-                                                     uint16_t *byte_index,
-                                                     uint8_t *bit_index);
+    extern int (*ext_strucpp_debug_locate)(uint8_t arr, uint16_t elem, uint8_t *area, uint8_t *size,
+                                           uint16_t *byte_index, uint8_t *bit_index);
 
     /* -------------------------------------------------------------------------
      * Symbol resolution.

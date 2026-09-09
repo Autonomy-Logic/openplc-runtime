@@ -6,8 +6,10 @@
 // buffer pointers directly under the image-tables mutex.
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include <pthread.h>
 
@@ -347,6 +349,182 @@ static const void *located_pointer_at(const void *located_vars, uint32_t index)
 {
     const strucpp::LocatedVar *lv = (const strucpp::LocatedVar *)located_vars;
     return lv[index].pointer;
+}
+
+// ---------------------------------------------------------------------------
+// How big the image has to be (RTOP-284)
+// ---------------------------------------------------------------------------
+
+/* Local copy rather than shared with plc_retain_file_store.cpp, where the same
+ * three lines live in an anonymous namespace: hoisting a four-line string trim
+ * into a header shared between two config readers would couple them for no
+ * gain, and the parsers are deliberately independent -- each mirrors the file
+ * IT reads, key for key. */
+static std::string trimmed(const std::string &s)
+{
+    const size_t b = s.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return "";
+    const size_t e = s.find_last_not_of(" \t\r\n");
+    return s.substr(b, e - b + 1);
+}
+
+static const char *const kImageTableKeys[IMAGE_TABLE_COUNT] = {
+    "bool_input",  "bool_output", "byte_input",  "byte_output",
+    "int_input",   "int_output",  "dint_input",  "dint_output",
+    "lint_input",  "lint_output", "int_memory",  "dint_memory",
+    "lint_memory", "bool_memory",
+};
+
+// A key missing here would make image_table_key() read past the array, and a
+// spare one would go unnoticed. The count is the cheap half of keeping the enum
+// and the strings in step; the ORDER is checked from the Python side, in
+// tests/pytest/plugins/test_image_conf_contract.py, which is the only one of
+// the three implementations of this file format that CI actually runs.
+static_assert(sizeof(kImageTableKeys) / sizeof(kImageTableKeys[0]) == IMAGE_TABLE_COUNT,
+              "kImageTableKeys and image_table_id_t disagree on how many tables there are.");
+
+extern "C" const char *image_table_key(image_table_id_t id)
+{
+    return (id >= 0 && id < IMAGE_TABLE_COUNT) ? kImageTableKeys[id] : "";
+}
+
+/**
+ * (area, size) -> the table that stores it, or IMAGE_TABLE_COUNT for a
+ * combination this runtime has no storage for.
+ *
+ * There is exactly one such hole, and it is real rather than an oversight of
+ * this function: `%MB` (Memory + Byte). image_tables.h declares byte_input and
+ * byte_output but no byte_memory, so a program declaring `AT %MB4` names
+ * storage that does not exist. A current editor refuses that before the build
+ * (DOPE-615); an older one, or a hand-built .so, can still reach us, and the
+ * caller says so once rather than sizing a table that is not there.
+ */
+static image_table_id_t table_for(strucpp::LocatedArea area, strucpp::LocatedSize size)
+{
+    switch (area)
+    {
+    case strucpp::LocatedArea::Input:
+        switch (size)
+        {
+        case strucpp::LocatedSize::Bit:   return IMAGE_TABLE_BOOL_INPUT;
+        case strucpp::LocatedSize::Byte:  return IMAGE_TABLE_BYTE_INPUT;
+        case strucpp::LocatedSize::Word:  return IMAGE_TABLE_INT_INPUT;
+        case strucpp::LocatedSize::DWord: return IMAGE_TABLE_DINT_INPUT;
+        case strucpp::LocatedSize::LWord: return IMAGE_TABLE_LINT_INPUT;
+        }
+        break;
+    case strucpp::LocatedArea::Output:
+        switch (size)
+        {
+        case strucpp::LocatedSize::Bit:   return IMAGE_TABLE_BOOL_OUTPUT;
+        case strucpp::LocatedSize::Byte:  return IMAGE_TABLE_BYTE_OUTPUT;
+        case strucpp::LocatedSize::Word:  return IMAGE_TABLE_INT_OUTPUT;
+        case strucpp::LocatedSize::DWord: return IMAGE_TABLE_DINT_OUTPUT;
+        case strucpp::LocatedSize::LWord: return IMAGE_TABLE_LINT_OUTPUT;
+        }
+        break;
+    case strucpp::LocatedArea::Memory:
+        switch (size)
+        {
+        case strucpp::LocatedSize::Bit:   return IMAGE_TABLE_BOOL_MEMORY;
+        case strucpp::LocatedSize::Word:  return IMAGE_TABLE_INT_MEMORY;
+        case strucpp::LocatedSize::DWord: return IMAGE_TABLE_DINT_MEMORY;
+        case strucpp::LocatedSize::LWord: return IMAGE_TABLE_LINT_MEMORY;
+        case strucpp::LocatedSize::Byte:  break;  // %MB: no byte_memory table
+        }
+        break;
+    }
+    return IMAGE_TABLE_COUNT;
+}
+
+extern "C" void image_sizes_read_conf(const char *config_path, image_sizes_t *out)
+{
+    if (!out) return;
+    std::memset(out, 0, sizeof(*out));
+
+    // A missing file is not an error. It means nobody delivered sizes for this
+    // program, and the caller falls back to the floor derived below -- which is
+    // also what makes an older editor, or a device provisioned by hand, work.
+    FILE *f = fopen(config_path, "r");
+    if (!f) return;
+
+    char line[256];
+    while (fgets(line, sizeof(line), f))
+    {
+        std::string s = trimmed(line);
+        if (s.empty() || s[0] == '#') continue;
+        const size_t eq = s.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = trimmed(s.substr(0, eq));
+        const std::string val = trimmed(s.substr(eq + 1));
+
+        for (int i = 0; i < IMAGE_TABLE_COUNT; ++i)
+        {
+            if (key != kImageTableKeys[i]) continue;
+            const long v = strtol(val.c_str(), nullptr, 10);
+            // Clamped rather than refused: the webserver already validated this
+            // file at install and refused anything out of range, so a bad value
+            // here means a hand-edited device. Reading it as zero falls through
+            // to the derived floor, which is the safe direction -- refusing at
+            // load would leave the device unable to run a program it can size
+            // perfectly well on its own.
+            out->elements[i] = (v > 0) ? (uint32_t)v : 0u;
+            break;
+        }
+    }
+    fclose(f);
+}
+
+extern "C" void image_sizes_derive_floor(image_sizes_t *out)
+{
+    if (!out) return;
+    std::memset(out, 0, sizeof(*out));
+
+    if (!ext_strucpp_get_located_vars || !ext_strucpp_get_located_var_count)
+    {
+        // No program loaded, or one whose accessors did not resolve. Zeros, so
+        // the caller sizes from the configuration alone -- and at boot, when
+        // there is no program at all, from nothing.
+        return;
+    }
+
+    const strucpp::LocatedVar *lv = ext_strucpp_get_located_vars();
+    const uint32_t             n  = ext_strucpp_get_located_var_count();
+    if (!lv) return;
+
+    uint32_t unstorable = 0;
+
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        const image_table_id_t id = table_for(lv[i].area, lv[i].size);
+        if (id == IMAGE_TABLE_COUNT)
+        {
+            ++unstorable;
+            continue;
+        }
+        // byte_index IS the table index for every table, including the BOOL
+        // ones -- those are indexed [byte][bit], and bit_index selects within
+        // the byte. So the floor is uniformly the highest index plus one, and
+        // no table needs a different unit here.
+        const uint32_t needed = (uint32_t)lv[i].byte_index + 1u;
+        if (needed > out->elements[id]) out->elements[id] = needed;
+    }
+
+    if (unstorable)
+    {
+        log_warn("[image_tables] %u located variable(s) address %%MB, which this "
+                 "runtime has no table for - they will not be serviced",
+                 unstorable);
+    }
+}
+
+extern "C" void image_sizes_take_max(image_sizes_t *dst, const image_sizes_t *other)
+{
+    if (!dst || !other) return;
+    for (int i = 0; i < IMAGE_TABLE_COUNT; ++i)
+    {
+        if (other->elements[i] > dst->elements[i]) dst->elements[i] = other->elements[i];
+    }
 }
 
 void image_tables_bind_located_vars(void)

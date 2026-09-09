@@ -150,8 +150,8 @@ def validate_table_elements(key: str, value: object) -> int:
     """
     try:
         elements = int(value)
-    except (TypeError, ValueError):
-        raise ImageConfigError(f"{key} must be a whole number of elements.")
+    except (TypeError, ValueError) as exc:
+        raise ImageConfigError(f"{key} must be a whole number of elements.") from exc
     if elements < 0:
         raise ImageConfigError(f"{key} cannot be negative (got {elements}).")
     if elements > MAX_TABLE_ELEMENTS:
