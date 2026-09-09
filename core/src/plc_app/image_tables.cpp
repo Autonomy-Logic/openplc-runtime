@@ -32,25 +32,31 @@ extern "C" {
 // ---------------------------------------------------------------------------
 // Image-table storage
 // ---------------------------------------------------------------------------
-IEC_BOOL *bool_input[BUFFER_SIZE][8];
-IEC_BOOL *bool_output[BUFFER_SIZE][8];
+image_tables_t g_image;
 
-IEC_BYTE *byte_input[BUFFER_SIZE];
-IEC_BYTE *byte_output[BUFFER_SIZE];
-
-IEC_UINT *int_input[BUFFER_SIZE];
-IEC_UINT *int_output[BUFFER_SIZE];
-
-IEC_UDINT *dint_input[BUFFER_SIZE];
-IEC_UDINT *dint_output[BUFFER_SIZE];
-
-IEC_ULINT *lint_input[BUFFER_SIZE];
-IEC_ULINT *lint_output[BUFFER_SIZE];
-
-IEC_UINT  *int_memory[BUFFER_SIZE];
-IEC_UDINT *dint_memory[BUFFER_SIZE];
-IEC_ULINT *lint_memory[BUFFER_SIZE];
-IEC_BOOL  *bool_memory[BUFFER_SIZE][8];
+// THE TRIPWIRE FOR THE MOVE TO HEAP ALLOCATION (RTOP-284).
+//
+// These tables are due to become pointers plus counts, and that transition has
+// a failure mode with no diagnostic of its own: `sizeof` on a pointer-to-array
+// is 8 where `sizeof` on the array is 65536, indexing the two is
+// SYNTACTICALLY IDENTICAL, and both compile clean under -Wall -Wextra. So the
+// wrong version of image_tables_zero_slots() below would clear eight bytes,
+// build without a warning, and only misbehave on the SECOND program load --
+// fill_null_pointers would see the slots as already populated and not rebind
+// them, leaving plugins writing into the previous program's memory.
+//
+// Hence: assert the shape here, and keep `sizeof` on these tables confined to
+// image_tables_zero_slots(). When the types change, these fire immediately and
+// name what moved, and there is exactly one function body to follow them into.
+static_assert(sizeof(g_image.bool_input) == BUFFER_SIZE * 8 * sizeof(IEC_BOOL *),
+              "bool_input is no longer a flat array: image_tables_zero_slots() "
+              "must stop using sizeof and take the slot count instead.");
+static_assert(sizeof(g_image.byte_input) == BUFFER_SIZE * sizeof(IEC_BYTE *),
+              "byte_input is no longer a flat array: see image_tables_zero_slots().");
+static_assert(sizeof(g_image.int_memory) == BUFFER_SIZE * sizeof(IEC_UINT *),
+              "int_memory is no longer a flat array: see image_tables_zero_slots().");
+static_assert(sizeof(g_image) >= 14 * BUFFER_SIZE * sizeof(void *),
+              "the image struct lost a table, or a table stopped being inline storage.");
 
 // ---------------------------------------------------------------------------
 // strucpp shim: per-project located-variable descriptor accessors
@@ -515,30 +521,30 @@ uint64_t threaded_image_read(const strucpp::LocatedVar &v)
     case strucpp::LocatedArea::Input:
         switch (v.size)
         {
-        case strucpp::LocatedSize::Bit:   return (b < 8 && bool_input[bi][b]) ? (*bool_input[bi][b] ? 1u : 0u) : 0u;
-        case strucpp::LocatedSize::Byte:  return byte_input[bi] ? *byte_input[bi] : 0u;
-        case strucpp::LocatedSize::Word:  return int_input[bi]  ? *int_input[bi]  : 0u;
-        case strucpp::LocatedSize::DWord: return dint_input[bi] ? *dint_input[bi] : 0u;
-        case strucpp::LocatedSize::LWord: return lint_input[bi] ? *lint_input[bi] : 0u;
+        case strucpp::LocatedSize::Bit:   return (b < 8 && g_image.bool_input[bi][b]) ? (*g_image.bool_input[bi][b] ? 1u : 0u) : 0u;
+        case strucpp::LocatedSize::Byte:  return g_image.byte_input[bi] ? *g_image.byte_input[bi] : 0u;
+        case strucpp::LocatedSize::Word:  return g_image.int_input[bi]  ? *g_image.int_input[bi]  : 0u;
+        case strucpp::LocatedSize::DWord: return g_image.dint_input[bi] ? *g_image.dint_input[bi] : 0u;
+        case strucpp::LocatedSize::LWord: return g_image.lint_input[bi] ? *g_image.lint_input[bi] : 0u;
         }
         break;
     case strucpp::LocatedArea::Output:
         switch (v.size)
         {
-        case strucpp::LocatedSize::Bit:   return (b < 8 && bool_output[bi][b]) ? (*bool_output[bi][b] ? 1u : 0u) : 0u;
-        case strucpp::LocatedSize::Byte:  return byte_output[bi] ? *byte_output[bi] : 0u;
-        case strucpp::LocatedSize::Word:  return int_output[bi]  ? *int_output[bi]  : 0u;
-        case strucpp::LocatedSize::DWord: return dint_output[bi] ? *dint_output[bi] : 0u;
-        case strucpp::LocatedSize::LWord: return lint_output[bi] ? *lint_output[bi] : 0u;
+        case strucpp::LocatedSize::Bit:   return (b < 8 && g_image.bool_output[bi][b]) ? (*g_image.bool_output[bi][b] ? 1u : 0u) : 0u;
+        case strucpp::LocatedSize::Byte:  return g_image.byte_output[bi] ? *g_image.byte_output[bi] : 0u;
+        case strucpp::LocatedSize::Word:  return g_image.int_output[bi]  ? *g_image.int_output[bi]  : 0u;
+        case strucpp::LocatedSize::DWord: return g_image.dint_output[bi] ? *g_image.dint_output[bi] : 0u;
+        case strucpp::LocatedSize::LWord: return g_image.lint_output[bi] ? *g_image.lint_output[bi] : 0u;
         }
         break;
     case strucpp::LocatedArea::Memory:
         switch (v.size)
         {
-        case strucpp::LocatedSize::Bit:   return (b < 8 && bool_memory[bi][b]) ? (*bool_memory[bi][b] ? 1u : 0u) : 0u;
-        case strucpp::LocatedSize::Word:  return int_memory[bi]  ? *int_memory[bi]  : 0u;
-        case strucpp::LocatedSize::DWord: return dint_memory[bi] ? *dint_memory[bi] : 0u;
-        case strucpp::LocatedSize::LWord: return lint_memory[bi] ? *lint_memory[bi] : 0u;
+        case strucpp::LocatedSize::Bit:   return (b < 8 && g_image.bool_memory[bi][b]) ? (*g_image.bool_memory[bi][b] ? 1u : 0u) : 0u;
+        case strucpp::LocatedSize::Word:  return g_image.int_memory[bi]  ? *g_image.int_memory[bi]  : 0u;
+        case strucpp::LocatedSize::DWord: return g_image.dint_memory[bi] ? *g_image.dint_memory[bi] : 0u;
+        case strucpp::LocatedSize::LWord: return g_image.lint_memory[bi] ? *g_image.lint_memory[bi] : 0u;
         default: break;
         }
         break;
@@ -672,23 +678,42 @@ void image_tables_fill_null_pointers(void)
     {
         for (int b = 0; b < 8; ++b)
         {
-            if (!bool_input[i][b])  { temp_bool_input[i][b]  = 0; bool_input[i][b]  = &temp_bool_input[i][b];  ++filled; }
-            if (!bool_output[i][b]) { temp_bool_output[i][b] = 0; bool_output[i][b] = &temp_bool_output[i][b]; ++filled; }
-            if (!bool_memory[i][b]) { temp_bool_memory[i][b] = 0; bool_memory[i][b] = &temp_bool_memory[i][b]; ++filled; }
+            if (!g_image.bool_input[i][b])  { temp_bool_input[i][b]  = 0; g_image.bool_input[i][b]  = &temp_bool_input[i][b];  ++filled; }
+            if (!g_image.bool_output[i][b]) { temp_bool_output[i][b] = 0; g_image.bool_output[i][b] = &temp_bool_output[i][b]; ++filled; }
+            if (!g_image.bool_memory[i][b]) { temp_bool_memory[i][b] = 0; g_image.bool_memory[i][b] = &temp_bool_memory[i][b]; ++filled; }
         }
-        if (!byte_input[i])  { temp_byte_input[i]  = 0; byte_input[i]  = &temp_byte_input[i];  ++filled; }
-        if (!byte_output[i]) { temp_byte_output[i] = 0; byte_output[i] = &temp_byte_output[i]; ++filled; }
-        if (!int_input[i])   { temp_int_input[i]   = 0; int_input[i]   = &temp_int_input[i];   ++filled; }
-        if (!int_output[i])  { temp_int_output[i]  = 0; int_output[i]  = &temp_int_output[i];  ++filled; }
-        if (!dint_input[i])  { temp_dint_input[i]  = 0; dint_input[i]  = &temp_dint_input[i];  ++filled; }
-        if (!dint_output[i]) { temp_dint_output[i] = 0; dint_output[i] = &temp_dint_output[i]; ++filled; }
-        if (!lint_input[i])  { temp_lint_input[i]  = 0; lint_input[i]  = &temp_lint_input[i];  ++filled; }
-        if (!lint_output[i]) { temp_lint_output[i] = 0; lint_output[i] = &temp_lint_output[i]; ++filled; }
-        if (!int_memory[i])  { temp_int_memory[i]  = 0; int_memory[i]  = &temp_int_memory[i];  ++filled; }
-        if (!dint_memory[i]) { temp_dint_memory[i] = 0; dint_memory[i] = &temp_dint_memory[i]; ++filled; }
-        if (!lint_memory[i]) { temp_lint_memory[i] = 0; lint_memory[i] = &temp_lint_memory[i]; ++filled; }
+        if (!g_image.byte_input[i])  { temp_byte_input[i]  = 0; g_image.byte_input[i]  = &temp_byte_input[i];  ++filled; }
+        if (!g_image.byte_output[i]) { temp_byte_output[i] = 0; g_image.byte_output[i] = &temp_byte_output[i]; ++filled; }
+        if (!g_image.int_input[i])   { temp_int_input[i]   = 0; g_image.int_input[i]   = &temp_int_input[i];   ++filled; }
+        if (!g_image.int_output[i])  { temp_int_output[i]  = 0; g_image.int_output[i]  = &temp_int_output[i];  ++filled; }
+        if (!g_image.dint_input[i])  { temp_dint_input[i]  = 0; g_image.dint_input[i]  = &temp_dint_input[i];  ++filled; }
+        if (!g_image.dint_output[i]) { temp_dint_output[i] = 0; g_image.dint_output[i] = &temp_dint_output[i]; ++filled; }
+        if (!g_image.lint_input[i])  { temp_lint_input[i]  = 0; g_image.lint_input[i]  = &temp_lint_input[i];  ++filled; }
+        if (!g_image.lint_output[i]) { temp_lint_output[i] = 0; g_image.lint_output[i] = &temp_lint_output[i]; ++filled; }
+        if (!g_image.int_memory[i])  { temp_int_memory[i]  = 0; g_image.int_memory[i]  = &temp_int_memory[i];  ++filled; }
+        if (!g_image.dint_memory[i]) { temp_dint_memory[i] = 0; g_image.dint_memory[i] = &temp_dint_memory[i]; ++filled; }
+        if (!g_image.lint_memory[i]) { temp_lint_memory[i] = 0; g_image.lint_memory[i] = &temp_lint_memory[i]; ++filled; }
     }
     log_info("[image_tables] filled %d NULL slots with backing buffers", filled);
+}
+
+/**
+ * Null every slot of every table. THE ONLY PLACE `sizeof` IS TAKEN ON THEM.
+ *
+ * This used to be fourteen `memset(table, 0, sizeof(table))` calls at the top
+ * of image_tables_clear_null_pointers(). Fourteen call sites is fourteen
+ * places to miss when the tables become pointers plus counts (RTOP-284), and
+ * missing one is silent: `sizeof` drops from 65536 to 8, it compiles without a
+ * warning, and the damage only shows on the SECOND program load, when
+ * fill_null_pointers() finds the slots still populated and declines to rebind
+ * them -- so plugins keep writing into the previous program's memory.
+ *
+ * One function, so the heap version is one function body, and the
+ * static_asserts beside the definition of g_image say when to write it.
+ */
+static void image_tables_zero_slots(void)
+{
+    std::memset(&g_image, 0, sizeof(g_image));
 }
 
 void image_tables_clear_null_pointers(void)
@@ -702,20 +727,7 @@ void image_tables_clear_null_pointers(void)
     g_located_globals_idx = nullptr;
     g_located_globals_n   = 0;
 
-    std::memset(bool_input,   0, sizeof(bool_input));
-    std::memset(bool_output,  0, sizeof(bool_output));
-    std::memset(byte_input,   0, sizeof(byte_input));
-    std::memset(byte_output,  0, sizeof(byte_output));
-    std::memset(int_input,    0, sizeof(int_input));
-    std::memset(int_output,   0, sizeof(int_output));
-    std::memset(dint_input,   0, sizeof(dint_input));
-    std::memset(dint_output,  0, sizeof(dint_output));
-    std::memset(lint_input,   0, sizeof(lint_input));
-    std::memset(lint_output,  0, sizeof(lint_output));
-    std::memset(int_memory,   0, sizeof(int_memory));
-    std::memset(dint_memory,  0, sizeof(dint_memory));
-    std::memset(lint_memory,  0, sizeof(lint_memory));
-    std::memset(bool_memory,  0, sizeof(bool_memory));
+    image_tables_zero_slots();
 
     ext_strucpp_advance_time     = nullptr;
     ext_strucpp_set_current_time = nullptr;

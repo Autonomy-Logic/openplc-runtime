@@ -13,7 +13,16 @@ extern "C"
 {
 #endif
 
+/* Guarded so `-DBUFFER_SIZE=<n>` actually takes effect. It did not before:
+ * this was an unconditional #define, so the command-line value from
+ * project.yml (128, for the Ceedling build) was overridden by 1024 here with
+ * only a redefinition warning to show for it -- and the warning never
+ * appeared, because the one file that respected the 128 was the test stub,
+ * which declared the tables by hand instead of including this header. That is
+ * the whole story behind the stub disagreeing with plugin_driver.c. */
+#ifndef BUFFER_SIZE
 #define BUFFER_SIZE 1024
+#endif
 #define libplc_build_dir "./build"
 
     /* -------------------------------------------------------------------------
@@ -23,27 +32,51 @@ extern "C"
      * which walks strucpp::locatedVars[] and points each slot at the
      * matching IECVar's underlying primitive storage. Plugins read/write
      * these directly under the image-tables mutex.
+     *
+     * ONE SYMBOL, NOT FOURTEEN, and that is the point of the struct.
+     *
+     * These used to be fourteen separate globals, which meant fourteen chances
+     * for another translation unit to declare one by hand and get it subtly
+     * wrong. `plugin_driver.c` did exactly that: it redeclared all fourteen as
+     * extern while already including this header. Redundant while the shapes
+     * agree; two incompatible declarations in different TUs the moment they
+     * stop, which C does not diagnose across TUs -- it links, and the reader
+     * walks the wrong layout. With one struct there is one declaration to get
+     * right, and it lives here.
+     *
+     * What the struct deliberately does NOT do is make the eventual switch to
+     * heap allocation (RTOP-284) a compile error. Indexing `IEC_BOOL *(*p)[8]`
+     * is syntactically identical to indexing `IEC_BOOL *a[N][8]`, so every
+     * access site compiles unchanged either way -- verified, with -Wall
+     * -Wextra. The tripwires that do work are in image_tables.cpp: the size
+     * assertions next to the definition, and the fact that `sizeof` on these
+     * tables now appears in exactly one function.
      * --------------------------------------------------------------------- */
 
-    extern IEC_BOOL *bool_input[BUFFER_SIZE][8];
-    extern IEC_BOOL *bool_output[BUFFER_SIZE][8];
+    typedef struct
+    {
+        IEC_BOOL *bool_input[BUFFER_SIZE][8];
+        IEC_BOOL *bool_output[BUFFER_SIZE][8];
 
-    extern IEC_BYTE *byte_input[BUFFER_SIZE];
-    extern IEC_BYTE *byte_output[BUFFER_SIZE];
+        IEC_BYTE *byte_input[BUFFER_SIZE];
+        IEC_BYTE *byte_output[BUFFER_SIZE];
 
-    extern IEC_UINT *int_input[BUFFER_SIZE];
-    extern IEC_UINT *int_output[BUFFER_SIZE];
+        IEC_UINT *int_input[BUFFER_SIZE];
+        IEC_UINT *int_output[BUFFER_SIZE];
 
-    extern IEC_UDINT *dint_input[BUFFER_SIZE];
-    extern IEC_UDINT *dint_output[BUFFER_SIZE];
+        IEC_UDINT *dint_input[BUFFER_SIZE];
+        IEC_UDINT *dint_output[BUFFER_SIZE];
 
-    extern IEC_ULINT *lint_input[BUFFER_SIZE];
-    extern IEC_ULINT *lint_output[BUFFER_SIZE];
+        IEC_ULINT *lint_input[BUFFER_SIZE];
+        IEC_ULINT *lint_output[BUFFER_SIZE];
 
-    extern IEC_UINT  *int_memory[BUFFER_SIZE];
-    extern IEC_UDINT *dint_memory[BUFFER_SIZE];
-    extern IEC_ULINT *lint_memory[BUFFER_SIZE];
-    extern IEC_BOOL  *bool_memory[BUFFER_SIZE][8];
+        IEC_UINT  *int_memory[BUFFER_SIZE];
+        IEC_UDINT *dint_memory[BUFFER_SIZE];
+        IEC_ULINT *lint_memory[BUFFER_SIZE];
+        IEC_BOOL  *bool_memory[BUFFER_SIZE][8];
+    } image_tables_t;
+
+    extern image_tables_t g_image;
 
     /* -------------------------------------------------------------------------
      * Resolved .so symbols (populated by symbols_init).

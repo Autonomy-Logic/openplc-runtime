@@ -30,21 +30,12 @@
 #include <string.h>
 #include <unistd.h>
 
-// External buffer declarations from image_tables.c
-extern IEC_BOOL *bool_input[BUFFER_SIZE][8];
-extern IEC_BOOL *bool_output[BUFFER_SIZE][8];
-extern IEC_BYTE *byte_input[BUFFER_SIZE];
-extern IEC_BYTE *byte_output[BUFFER_SIZE];
-extern IEC_UINT *int_input[BUFFER_SIZE];
-extern IEC_UINT *int_output[BUFFER_SIZE];
-extern IEC_UDINT *dint_input[BUFFER_SIZE];
-extern IEC_UDINT *dint_output[BUFFER_SIZE];
-extern IEC_ULINT *lint_input[BUFFER_SIZE];
-extern IEC_ULINT *lint_output[BUFFER_SIZE];
-extern IEC_UINT *int_memory[BUFFER_SIZE];
-extern IEC_UDINT *dint_memory[BUFFER_SIZE];
-extern IEC_ULINT *lint_memory[BUFFER_SIZE];
-extern IEC_BOOL *bool_memory[BUFFER_SIZE][8];
+/* The image tables come from image_tables.h, included above. This file used to
+ * redeclare all fourteen of them by hand right here -- redundant while the
+ * shapes agreed, and two incompatible declarations in different translation
+ * units the moment they stopped, which C does not diagnose across TUs. Deleted
+ * for RTOP-284: there is one declaration now, `g_image`, and it lives in the
+ * header. */
 static PyThreadState *main_tstate = NULL;
 static PyGILState_STATE gstate;
 static int has_python_plugin = 0;
@@ -1053,20 +1044,20 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
     log_debug("Allocated runtime args structure (size: %zu bytes)", sizeof(plugin_runtime_args_t));
 
     // Initialize all buffer pointers
-    args->bool_input  = bool_input;
-    args->bool_output = bool_output;
-    args->byte_input  = byte_input;
-    args->byte_output = byte_output;
-    args->int_input   = int_input;
-    args->int_output  = int_output;
-    args->dint_input  = dint_input;
-    args->dint_output = dint_output;
-    args->lint_input  = lint_input;
-    args->lint_output = lint_output;
-    args->int_memory  = int_memory;
-    args->dint_memory = dint_memory;
-    args->lint_memory = lint_memory;
-    args->bool_memory = bool_memory;
+    args->bool_input  = g_image.bool_input;
+    args->bool_output = g_image.bool_output;
+    args->byte_input  = g_image.byte_input;
+    args->byte_output = g_image.byte_output;
+    args->int_input   = g_image.int_input;
+    args->int_output  = g_image.int_output;
+    args->dint_input  = g_image.dint_input;
+    args->dint_output = g_image.dint_output;
+    args->lint_input  = g_image.lint_input;
+    args->lint_output = g_image.lint_output;
+    args->int_memory  = g_image.int_memory;
+    args->dint_memory = g_image.dint_memory;
+    args->lint_memory = g_image.lint_memory;
+    args->bool_memory = g_image.bool_memory;
 
     // Flush-on-lock image read API (image mutex + journal drain). Points
     // directly at the runtime's image_tables entries; writes use the journal.

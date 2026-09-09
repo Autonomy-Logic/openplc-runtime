@@ -1,6 +1,7 @@
 #include "plugin_config.h"
 #include "plugin_driver.h"
 #include "journal_buffer.h"
+#include "image_tables.h"
 
 #include <pthread.h>
 #include <stdarg.h>
@@ -13,21 +14,12 @@
 // stub value is enough for the unit tests.
 uint64_t base_tick_ns = 0;
 
-// Stub implementations for external buffer variables (image_tables.c)
-IEC_BOOL *bool_input[BUFFER_SIZE][8];
-IEC_BOOL *bool_output[BUFFER_SIZE][8];
-IEC_BYTE *byte_input[BUFFER_SIZE];
-IEC_BYTE *byte_output[BUFFER_SIZE];
-IEC_UINT *int_input[BUFFER_SIZE];
-IEC_UINT *int_output[BUFFER_SIZE];
-IEC_UDINT *dint_input[BUFFER_SIZE];
-IEC_UDINT *dint_output[BUFFER_SIZE];
-IEC_ULINT *lint_input[BUFFER_SIZE];
-IEC_ULINT *lint_output[BUFFER_SIZE];
-IEC_UINT *int_memory[BUFFER_SIZE];
-IEC_UDINT *dint_memory[BUFFER_SIZE];
-IEC_ULINT *lint_memory[BUFFER_SIZE];
-IEC_BOOL *bool_memory[BUFFER_SIZE][8];
+// Stub storage for the image tables (defined in image_tables.cpp in the real
+// build). One symbol rather than fourteen, and it takes its shape from
+// image_tables.h -- which is the point: the stub used to spell the fourteen
+// arrays out by hand at BUFFER_SIZE=128 (project.yml) while plugin_driver.c
+// saw them at 1024, a disagreement the linker was happy to accept.
+image_tables_t g_image;
 
 // Stub: plugin_manager_destroy (plcapp_manager.c)
 void plugin_manager_destroy(PluginManager *manager)
