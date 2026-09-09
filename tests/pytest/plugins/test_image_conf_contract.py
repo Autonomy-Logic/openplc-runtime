@@ -57,12 +57,20 @@ def _c_keys() -> list[str]:
 
 
 def _struct_fields() -> list[str]:
-    """The tables `image_tables_t` actually declares, in order."""
+    """The tables `image_tables_t` actually declares, in order.
+
+    Matches the member NAME rather than any particular declarator, because the
+    tables have already changed shape once: they were `IEC_BYTE *x[N]` and
+    `IEC_BOOL *x[N][8]` inline arrays, and are now `IEC_BYTE **x` and
+    `IEC_BOOL *(*x)[8]` heap pointers. This test exists to catch a table being
+    added, removed or reordered, not to have an opinion on how it is spelled.
+    """
     body = re.search(
         r"typedef struct\s*\{(.*?)\}\s*image_tables_t", IMAGE_TABLES_H.read_text(), re.S
     )
     assert body, "image_tables_t not found — has the header been restructured?"
-    return re.findall(r"\*(\w+)\[", body.group(1))
+    lines = [line for line in body.group(1).splitlines() if line.strip().startswith(("IEC_",))]
+    return [re.search(r"\*(\w+)\)?(?:\[\d+\])?;", line).group(1) for line in lines]
 
 
 @pytest.mark.parametrize(

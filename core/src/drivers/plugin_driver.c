@@ -123,21 +123,20 @@ static uint16_t plugin_debug_read(uint8_t arr, uint16_t elem, uint8_t *dest)
 // bitmap. Return 0x7E (SUCCESS) once queued, 0x82 (OUT_OF_MEMORY) if the queue
 // is momentarily full, 0x81 (OUT_OF_BOUNDS) when no program is loaded.
 
-static uint8_t plugin_debug_set(uint8_t arr, uint16_t elem, bool forcing,
-                                const uint8_t *bytes, uint16_t len)
+static uint8_t plugin_debug_set(uint8_t arr, uint16_t elem, bool forcing, const uint8_t *bytes,
+                                uint16_t len)
 {
-    if (!ext_strucpp_debug_set) return 0x81; // no program loaded
+    if (!ext_strucpp_debug_set)
+        return 0x81; // no program loaded
     uint8_t op = forcing ? (uint8_t)DBGW_OP_FORCE : (uint8_t)DBGW_OP_UNFORCE;
-    int rc = runtime_external_write(arr, elem, op,
-                                    forcing ? bytes : NULL,
-                                    forcing ? len : 0);
+    int rc     = runtime_external_write(arr, elem, op, forcing ? bytes : NULL, forcing ? len : 0);
     return (rc == 0) ? 0x7E : 0x82;
 }
 
-static uint8_t plugin_debug_write(uint8_t arr, uint16_t elem,
-                                  const uint8_t *bytes, uint16_t len)
+static uint8_t plugin_debug_write(uint8_t arr, uint16_t elem, const uint8_t *bytes, uint16_t len)
 {
-    if (!ext_strucpp_debug_write) return 0x81; // no program loaded
+    if (!ext_strucpp_debug_write)
+        return 0x81; // no program loaded
     int rc = runtime_external_write(arr, elem, (uint8_t)DBGW_OP_WRITE, bytes, len);
     return (rc == 0) ? 0x7E : 0x82;
 }
@@ -216,7 +215,6 @@ static int plugin_get_plc_state(void)
     }
 }
 
-
 // Python capsule destructor for runtime args
 // Breakpoint here to debug capsule issues
 static void plugin_runtime_args_capsule_destructor(PyObject *capsule)
@@ -265,7 +263,8 @@ static PyObject *create_python_runtime_args_capsule(plugin_runtime_args_t *args)
  * its function pointers segfaults. */
 static void teardown_plugin_instance(plugin_instance_t *plugin)
 {
-    if (!plugin) return;
+    if (!plugin)
+        return;
 
     if (plugin->running)
     {
@@ -383,7 +382,7 @@ int plugin_driver_update_config(plugin_driver_t *driver, const char *config_file
      * GIL-holding after that), so for that loop we just need to make
      * sure we don't release the GIL we acquired here. */
     PyGILState_STATE plugin_gstate = PyGILState_LOCKED;
-    int plugin_have_gil = Py_IsInitialized();
+    int plugin_have_gil            = Py_IsInitialized();
     if (plugin_have_gil)
     {
         plugin_gstate = PyGILState_Ensure();
@@ -401,7 +400,7 @@ int plugin_driver_update_config(plugin_driver_t *driver, const char *config_file
      * and cause unnecessary GIL acquires throughout the driver. */
     has_python_plugin = 0;
 
-    int degraded_count = 0;
+    int degraded_count   = 0;
     driver->plugin_count = config_count;
 
     for (int w = 0; w < config_count; w++)
@@ -702,11 +701,13 @@ int plugin_driver_init(plugin_driver_t *driver)
 
 int plugin_driver_cleanup_init(plugin_driver_t *driver)
 {
-    if (!driver) return 0;
+    if (!driver)
+        return 0;
 
     PyGILState_STATE local_gstate = PyGILState_LOCKED;
-    int have_gil = has_python_plugin && Py_IsInitialized();
-    if (have_gil) local_gstate = PyGILState_Ensure();
+    int have_gil                  = has_python_plugin && Py_IsInitialized();
+    if (have_gil)
+        local_gstate = PyGILState_Ensure();
 
     int cleaned = 0;
     /* Reverse order so dependent plugins (declared later, depend on
@@ -714,7 +715,8 @@ int plugin_driver_cleanup_init(plugin_driver_t *driver)
     for (int i = driver->plugin_count - 1; i >= 0; --i)
     {
         plugin_instance_t *plugin = &driver->plugins[i];
-        if (!plugin->initialized) continue;
+        if (!plugin->initialized)
+            continue;
 
         if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin)
         {
@@ -729,7 +731,8 @@ int plugin_driver_cleanup_init(plugin_driver_t *driver)
         ++cleaned;
     }
 
-    if (have_gil) PyGILState_Release(local_gstate);
+    if (have_gil)
+        PyGILState_Release(local_gstate);
     return cleaned;
 }
 
@@ -1043,6 +1046,28 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
 
     log_debug("Allocated runtime args structure (size: %zu bytes)", sizeof(plugin_runtime_args_t));
 
+    /* THE ORDERING INVARIANT, checked rather than assumed, and checked BEFORE
+     * the pointers are copied because copying null ones is the whole problem.
+     *
+     * The image has to be allocated by now: what is copied below is what both
+     * native plugins cache BY VALUE inside their init(), and they hold it for
+     * the rest of the run. Nothing in the code enforces the order -- it is a
+     * property of where plc_state_manager.cpp happens to call things, and it is
+     * exactly the invariant a later refactor moves without noticing. The
+     * symptom would not be a crash: plugins would hold null tables and a
+     * buffer_size of zero, which every bounds check reads as "refuse every
+     * index", so it would present as I/O that silently does nothing.
+     *
+     * Deliberately not assert(), which vanishes under NDEBUG. This has to hold
+     * in the field, not only in a debug build. */
+    if (image_tables_capacity() == 0)
+    {
+        log_error("[PLUGIN]: runtime args requested before the image was allocated — "
+                  "plugins would cache null tables; refusing");
+        free(args);
+        return NULL;
+    }
+
     // Initialize all buffer pointers
     args->bool_input  = g_image.bool_input;
     args->bool_output = g_image.bool_output;
@@ -1083,7 +1108,13 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
            sizeof(driver->plugins[plugin_index].config.plugin_related_config_path));
 
     // Initialize buffer size info
-    args->buffer_size     = BUFFER_SIZE;
+    /* The allocated size, not a compile-time constant. Plugins bounds-check
+     * against this field -- ethercat_io.c refuses a byte_index at or above it,
+     * s7comm derives every clamp from it -- so it has to describe the image
+     * that actually exists. It describes all fourteen tables because they are
+     * all allocated at the same count; see image_sizes_largest() for why the
+     * ABI leaves no room for anything else. */
+    args->buffer_size     = (int)image_tables_capacity();
     args->bits_per_buffer = 8;
 
     // Initialize logging functions
@@ -1477,7 +1508,8 @@ void python_plugin_cycle(plugin_instance_t *plugin)
 
 static bool plugin_provides_retain_store(const plugin_instance_t *p)
 {
-    if (!p) return false;
+    if (!p)
+        return false;
 
     // A DISABLED plugin is not a store, even though its symbols resolved.
     //
@@ -1488,7 +1520,8 @@ static bool plugin_provides_retain_store(const plugin_instance_t *p)
     // simply gone, with a log line at start saying retain is configured and
     // working. Found on hardware: an upload rewrote plugins.conf, disabled the
     // storage plugin, and retain went on claiming to work.
-    if (!p->config.enabled) return false;
+    if (!p->config.enabled)
+        return false;
 
     // BOTH halves required. A store that can save and not load is worse than
     // none: it would accept values every scan and silently never give them
@@ -1499,13 +1532,15 @@ static bool plugin_provides_retain_store(const plugin_instance_t *p)
 
 plugin_instance_t *plugin_driver_find_retain_store(plugin_driver_t *driver)
 {
-    if (!driver) return NULL;
+    if (!driver)
+        return NULL;
 
     plugin_instance_t *chosen = NULL;
     for (int i = 0; i < driver->plugin_count; i++)
     {
         plugin_instance_t *p = &driver->plugins[i];
-        if (p->degraded || !plugin_provides_retain_store(p)) continue;
+        if (p->degraded || !plugin_provides_retain_store(p))
+            continue;
 
         if (!chosen)
         {
@@ -1524,15 +1559,18 @@ plugin_instance_t *plugin_driver_find_retain_store(plugin_driver_t *driver)
 
 int plugin_driver_retain_save(plugin_instance_t *store, const uint8_t *blob, uint16_t len)
 {
-    if (!plugin_provides_retain_store(store)) return -1;
+    if (!plugin_provides_retain_store(store))
+        return -1;
     return store->native_plugin->retain_save(blob, len);
 }
 
 int plugin_driver_retain_load(plugin_instance_t *store, const char *program_md5, uint16_t md5_len,
                               uint8_t *out, uint16_t cap, uint16_t *out_len)
 {
-    if (out_len) *out_len = 0;
-    if (!plugin_provides_retain_store(store)) return -1;
+    if (out_len)
+        *out_len = 0;
+    if (!plugin_provides_retain_store(store))
+        return -1;
     return store->native_plugin->retain_load(program_md5, md5_len, out, cap, out_len);
 }
 
@@ -1541,7 +1579,8 @@ int plugin_driver_retain_flush(plugin_instance_t *store)
     // Optional third hook. A plugin without it is assumed to commit inside
     // save(), which is where durability belongs anyway — so "nothing to do" is
     // success, not a failure to report on every stop.
-    if (!store || !store->native_plugin || !store->native_plugin->retain_flush) return 0;
+    if (!store || !store->native_plugin || !store->native_plugin->retain_flush)
+        return 0;
     return store->native_plugin->retain_flush();
 }
 
@@ -1657,11 +1696,10 @@ int plugin_driver_execute_command(plugin_driver_t *driver, const char *plugin_na
 // Output is best-effort: malformed plugin output (doesn't start with
 // '{' and end with '}') is silently dropped, overflow truncates, and
 // the core STATS response is always preserved.
-#define PLUGIN_STATS_SLOT_BUDGET   1024
-#define PLUGIN_STATS_TOTAL_BUDGET  8192
+#define PLUGIN_STATS_SLOT_BUDGET 1024
+#define PLUGIN_STATS_TOTAL_BUDGET 8192
 
-size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
-                                       size_t buffer_size)
+size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer, size_t buffer_size)
 {
     if (!buffer || buffer_size == 0)
         return 0;
@@ -1672,7 +1710,7 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
     int had_newline = 0;
     if (len > 0 && buffer[len - 1] == '\n')
     {
-        had_newline = 1;
+        had_newline   = 1;
         buffer[--len] = '\0';
     }
 
@@ -1682,7 +1720,7 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
     {
         if (had_newline && len + 1 < buffer_size)
         {
-            buffer[len] = '\n';
+            buffer[len]     = '\n';
             buffer[len + 1] = '\0';
             len++;
         }
@@ -1693,7 +1731,7 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
     {
         if (had_newline && len + 1 < buffer_size)
         {
-            buffer[len] = '\n';
+            buffer[len]     = '\n';
             buffer[len + 1] = '\0';
             len++;
         }
@@ -1723,8 +1761,8 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
         if (slen < 2 || slot[0] != '{' || slot[slen - 1] != '}')
             continue; // malformed — drop silently
 
-        int n = snprintf(scratch + spos, sizeof(scratch) - spos, "%s\"%s\":%s",
-                         emitted ? "," : "", p->config.name, slot);
+        int n = snprintf(scratch + spos, sizeof(scratch) - spos, "%s\"%s\":%s", emitted ? "," : "",
+                         p->config.name, slot);
         if (n < 0 || (size_t)n >= sizeof(scratch) - spos)
             break; // scratch full; commit what we have
 
@@ -1736,7 +1774,7 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
     {
         if (had_newline && len + 1 < buffer_size)
         {
-            buffer[len] = '\n';
+            buffer[len]     = '\n';
             buffer[len + 1] = '\0';
             len++;
         }
@@ -1746,14 +1784,14 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
     // Splice: overwrite the closing '}' with ,"plugin_stats":{...}} and
     // re-append the newline if present.
     size_t insert_pos = len - 1;
-    int n = snprintf(buffer + insert_pos, buffer_size - insert_pos,
-                     ",\"plugin_stats\":{%s}}%s", scratch, had_newline ? "\n" : "");
+    int n = snprintf(buffer + insert_pos, buffer_size - insert_pos, ",\"plugin_stats\":{%s}}%s",
+                     scratch, had_newline ? "\n" : "");
     if (n < 0)
     {
         // snprintf failure — restore newline and bail.
         if (had_newline && len + 1 < buffer_size)
         {
-            buffer[len] = '\n';
+            buffer[len]     = '\n';
             buffer[len + 1] = '\0';
             len++;
         }
@@ -1763,12 +1801,12 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
     {
         // Would overflow the response buffer; roll back by restoring the '}'
         // and the newline.
-        buffer[insert_pos] = '}';
+        buffer[insert_pos]     = '}';
         buffer[insert_pos + 1] = '\0';
-        len = insert_pos + 1;
+        len                    = insert_pos + 1;
         if (had_newline && len + 1 < buffer_size)
         {
-            buffer[len] = '\n';
+            buffer[len]     = '\n';
             buffer[len + 1] = '\0';
             len++;
         }

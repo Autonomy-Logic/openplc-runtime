@@ -36,29 +36,32 @@ extern "C" {
 // ---------------------------------------------------------------------------
 image_tables_t g_image;
 
-// THE TRIPWIRE FOR THE MOVE TO HEAP ALLOCATION (RTOP-284).
+// How many elements each table currently holds. Zero means nothing is
+// allocated and every table pointer is null, which is the state before the
+// first program load and after the last unload. Every index into the image is
+// bounded by this, so it lives beside the image rather than beside the
+// allocator that sets it.
+static uint32_t g_capacity = 0;
+
+// The tables are heap pointers now, and these assertions are what got us here
+// safely. In their previous form they pinned the inline-array shape, so the
+// moment the types changed the build stopped and named the function to follow.
+// They now pin the opposite invariant: nothing may quietly go back to inline
+// storage, and no table may drift to a shape whose element size differs from
+// the one image_tables_alloc() allocates it at.
 //
-// These tables are due to become pointers plus counts, and that transition has
-// a failure mode with no diagnostic of its own: `sizeof` on a pointer-to-array
-// is 8 where `sizeof` on the array is 65536, indexing the two is
-// SYNTACTICALLY IDENTICAL, and both compile clean under -Wall -Wextra. So the
-// wrong version of image_tables_zero_slots() below would clear eight bytes,
-// build without a warning, and only misbehave on the SECOND program load --
-// fill_null_pointers would see the slots as already populated and not rebind
-// them, leaving plugins writing into the previous program's memory.
-//
-// Hence: assert the shape here, and keep `sizeof` on these tables confined to
-// image_tables_zero_slots(). When the types change, these fire immediately and
-// name what moved, and there is exactly one function body to follow them into.
-static_assert(sizeof(g_image.bool_input) == BUFFER_SIZE * 8 * sizeof(IEC_BOOL *),
-              "bool_input is no longer a flat array: image_tables_zero_slots() "
-              "must stop using sizeof and take the slot count instead.");
-static_assert(sizeof(g_image.byte_input) == BUFFER_SIZE * sizeof(IEC_BYTE *),
-              "byte_input is no longer a flat array: see image_tables_zero_slots().");
-static_assert(sizeof(g_image.int_memory) == BUFFER_SIZE * sizeof(IEC_UINT *),
-              "int_memory is no longer a flat array: see image_tables_zero_slots().");
-static_assert(sizeof(g_image) >= 14 * BUFFER_SIZE * sizeof(void *),
-              "the image struct lost a table, or a table stopped being inline storage.");
+// The hazard they exist for has not gone away. Indexing a pointer-to-array is
+// syntactically identical to indexing an array, and `sizeof` on the two differs
+// by four orders of magnitude, so the compiler cannot tell a correct use site
+// from a wrong one. `sizeof` on these tables appears in no other function.
+static_assert(sizeof(g_image.bool_input) == sizeof(IEC_BOOL *(*)[8]),
+              "bool_input went back to inline storage: image_tables_alloc() and "
+              "image_tables_zero_slots() both assume a heap pointer.");
+static_assert(sizeof(g_image.byte_input) == sizeof(IEC_BYTE **),
+              "byte_input went back to inline storage: see image_tables_alloc().");
+static_assert(sizeof(g_image) == 14 * sizeof(void *),
+              "the image struct gained, lost, or inlined a table -- "
+              "image_tables_alloc() allocates exactly fourteen.");
 
 // ---------------------------------------------------------------------------
 // strucpp shim: per-project located-variable descriptor accessors
@@ -693,7 +696,7 @@ uint64_t threaded_image_read(const strucpp::LocatedVar &v)
 {
     uint16_t bi = v.byte_index;
     uint8_t  b  = v.bit_index;
-    if (bi >= BUFFER_SIZE) return 0;
+    if (bi >= g_capacity) return 0;
     switch (v.area)
     {
     case strucpp::LocatedArea::Input:
@@ -834,25 +837,174 @@ extern "C" void image_tables_copy_config_globals_out(void)
 // ---------------------------------------------------------------------------
 // Backing storage for slots not covered by located variables.
 // ---------------------------------------------------------------------------
-static IEC_BOOL  temp_bool_input[BUFFER_SIZE][8];
-static IEC_BOOL  temp_bool_output[BUFFER_SIZE][8];
-static IEC_BYTE  temp_byte_input[BUFFER_SIZE];
-static IEC_BYTE  temp_byte_output[BUFFER_SIZE];
-static IEC_UINT  temp_int_input[BUFFER_SIZE];
-static IEC_UINT  temp_int_output[BUFFER_SIZE];
-static IEC_UDINT temp_dint_input[BUFFER_SIZE];
-static IEC_UDINT temp_dint_output[BUFFER_SIZE];
-static IEC_ULINT temp_lint_input[BUFFER_SIZE];
-static IEC_ULINT temp_lint_output[BUFFER_SIZE];
-static IEC_UINT  temp_int_memory[BUFFER_SIZE];
-static IEC_UDINT temp_dint_memory[BUFFER_SIZE];
-static IEC_ULINT temp_lint_memory[BUFFER_SIZE];
-static IEC_BOOL  temp_bool_memory[BUFFER_SIZE][8];
+// Backing storage for image slots no located variable claims. Heap, and the
+// same length as the tables that point into it -- these were fourteen more
+// [BUFFER_SIZE] statics, and leaving them fixed while the tables grew would put
+// fill_null_pointers() to work handing out addresses past their end.
+static IEC_BOOL (*temp_bool_input)[8]  = nullptr;
+static IEC_BOOL (*temp_bool_output)[8] = nullptr;
+static IEC_BOOL (*temp_bool_memory)[8] = nullptr;
+static IEC_BYTE  *temp_byte_input      = nullptr;
+static IEC_BYTE  *temp_byte_output     = nullptr;
+static IEC_UINT  *temp_int_input       = nullptr;
+static IEC_UINT  *temp_int_output      = nullptr;
+static IEC_UDINT *temp_dint_input      = nullptr;
+static IEC_UDINT *temp_dint_output     = nullptr;
+static IEC_ULINT *temp_lint_input      = nullptr;
+static IEC_ULINT *temp_lint_output     = nullptr;
+static IEC_UINT  *temp_int_memory      = nullptr;
+static IEC_UDINT *temp_dint_memory     = nullptr;
+static IEC_ULINT *temp_lint_memory     = nullptr;
+
+/* The smallest image that is not no image at all.
+ *
+ * Not a tuning knob and not a guess: it is the least count that leaves every
+ * base pointer non-null and buffer_size non-zero, which is what plugins are
+ * promised even at boot, before any program exists. A plugin bounds-checking
+ * against it accepts index 0 and nothing else, which is the correct answer for
+ * an image with nothing in it. */
+static const uint32_t IMAGE_MIN_ELEMENTS = 1;
+
+extern "C" uint32_t image_tables_capacity(void) { return g_capacity; }
+
+extern "C" uint32_t image_sizes_largest(const image_sizes_t *sizes)
+{
+    if (!sizes) return 0;
+    uint32_t largest = 0;
+    for (int i = 0; i < IMAGE_TABLE_COUNT; ++i)
+    {
+        if (sizes->elements[i] > largest) largest = sizes->elements[i];
+    }
+    return largest;
+}
+
+extern "C" void image_tables_free(void)
+{
+    free(g_image.bool_input);
+    free(g_image.bool_output);
+    free(g_image.bool_memory);
+    free(g_image.byte_input);
+    free(g_image.byte_output);
+    free(g_image.int_input);
+    free(g_image.int_output);
+    free(g_image.dint_input);
+    free(g_image.dint_output);
+    free(g_image.lint_input);
+    free(g_image.lint_output);
+    free(g_image.int_memory);
+    free(g_image.dint_memory);
+    free(g_image.lint_memory);
+
+    free(temp_bool_input);
+    free(temp_bool_output);
+    free(temp_bool_memory);
+    free(temp_byte_input);
+    free(temp_byte_output);
+    free(temp_int_input);
+    free(temp_int_output);
+    free(temp_dint_input);
+    free(temp_dint_output);
+    free(temp_lint_input);
+    free(temp_lint_output);
+    free(temp_int_memory);
+    free(temp_dint_memory);
+    free(temp_lint_memory);
+
+    // Null every pointer, not just free it. A dangling table would index
+    // exactly as a live one does, and the next fill_null_pointers() would read
+    // freed memory to decide whether a slot needs backing.
+    std::memset(&g_image, 0, sizeof(g_image));
+    temp_bool_input  = nullptr;
+    temp_bool_output = nullptr;
+    temp_bool_memory = nullptr;
+    temp_byte_input  = nullptr;
+    temp_byte_output = nullptr;
+    temp_int_input   = nullptr;
+    temp_int_output  = nullptr;
+    temp_dint_input  = nullptr;
+    temp_dint_output = nullptr;
+    temp_lint_input  = nullptr;
+    temp_lint_output = nullptr;
+    temp_int_memory  = nullptr;
+    temp_dint_memory = nullptr;
+    temp_lint_memory = nullptr;
+
+    g_capacity = 0;
+}
+
+extern "C" bool image_tables_alloc(uint32_t elements)
+{
+    if (elements < IMAGE_MIN_ELEMENTS) elements = IMAGE_MIN_ELEMENTS;
+
+    // Replace wholesale rather than resize. The tables are rebound from
+    // scratch on every program load anyway, and a realloc would leave the
+    // question of what the surviving slots point at -- storage belonging to the
+    // program that just went away.
+    image_tables_free();
+
+    g_image.bool_input  = (IEC_BOOL *(*)[8])calloc(elements, sizeof(IEC_BOOL *[8]));
+    g_image.bool_output = (IEC_BOOL *(*)[8])calloc(elements, sizeof(IEC_BOOL *[8]));
+    g_image.bool_memory = (IEC_BOOL *(*)[8])calloc(elements, sizeof(IEC_BOOL *[8]));
+    g_image.byte_input  = (IEC_BYTE **)calloc(elements, sizeof(IEC_BYTE *));
+    g_image.byte_output = (IEC_BYTE **)calloc(elements, sizeof(IEC_BYTE *));
+    g_image.int_input   = (IEC_UINT **)calloc(elements, sizeof(IEC_UINT *));
+    g_image.int_output  = (IEC_UINT **)calloc(elements, sizeof(IEC_UINT *));
+    g_image.dint_input  = (IEC_UDINT **)calloc(elements, sizeof(IEC_UDINT *));
+    g_image.dint_output = (IEC_UDINT **)calloc(elements, sizeof(IEC_UDINT *));
+    g_image.lint_input  = (IEC_ULINT **)calloc(elements, sizeof(IEC_ULINT *));
+    g_image.lint_output = (IEC_ULINT **)calloc(elements, sizeof(IEC_ULINT *));
+    g_image.int_memory  = (IEC_UINT **)calloc(elements, sizeof(IEC_UINT *));
+    g_image.dint_memory = (IEC_UDINT **)calloc(elements, sizeof(IEC_UDINT *));
+    g_image.lint_memory = (IEC_ULINT **)calloc(elements, sizeof(IEC_ULINT *));
+
+    temp_bool_input  = (IEC_BOOL(*)[8])calloc(elements, sizeof(IEC_BOOL[8]));
+    temp_bool_output = (IEC_BOOL(*)[8])calloc(elements, sizeof(IEC_BOOL[8]));
+    temp_bool_memory = (IEC_BOOL(*)[8])calloc(elements, sizeof(IEC_BOOL[8]));
+    temp_byte_input  = (IEC_BYTE *)calloc(elements, sizeof(IEC_BYTE));
+    temp_byte_output = (IEC_BYTE *)calloc(elements, sizeof(IEC_BYTE));
+    temp_int_input   = (IEC_UINT *)calloc(elements, sizeof(IEC_UINT));
+    temp_int_output  = (IEC_UINT *)calloc(elements, sizeof(IEC_UINT));
+    temp_dint_input  = (IEC_UDINT *)calloc(elements, sizeof(IEC_UDINT));
+    temp_dint_output = (IEC_UDINT *)calloc(elements, sizeof(IEC_UDINT));
+    temp_lint_input  = (IEC_ULINT *)calloc(elements, sizeof(IEC_ULINT));
+    temp_lint_output = (IEC_ULINT *)calloc(elements, sizeof(IEC_ULINT));
+    temp_int_memory  = (IEC_UINT *)calloc(elements, sizeof(IEC_UINT));
+    temp_dint_memory = (IEC_UDINT *)calloc(elements, sizeof(IEC_UDINT));
+    temp_lint_memory = (IEC_ULINT *)calloc(elements, sizeof(IEC_ULINT));
+
+    const bool complete =
+        g_image.bool_input && g_image.bool_output && g_image.bool_memory &&
+        g_image.byte_input && g_image.byte_output && g_image.int_input &&
+        g_image.int_output && g_image.dint_input && g_image.dint_output &&
+        g_image.lint_input && g_image.lint_output && g_image.int_memory &&
+        g_image.dint_memory && g_image.lint_memory && temp_bool_input &&
+        temp_bool_output && temp_bool_memory && temp_byte_input &&
+        temp_byte_output && temp_int_input && temp_int_output &&
+        temp_dint_input && temp_dint_output && temp_lint_input &&
+        temp_lint_output && temp_int_memory && temp_dint_memory &&
+        temp_lint_memory;
+
+    if (!complete)
+    {
+        // All or nothing. A partial image is worse than none: every table
+        // indexes the same way whether it is real or null, so nothing
+        // downstream could tell which half it got, and the failure would
+        // surface as a segfault in a plugin rather than here.
+        image_tables_free();
+        log_error("[image_tables] could not allocate an image of %u elements per table",
+                  elements);
+        return false;
+    }
+
+    g_capacity = elements;
+    log_info("[image_tables] image allocated: %u elements per table", elements);
+    return true;
+}
 
 void image_tables_fill_null_pointers(void)
 {
     int filled = 0;
-    for (int i = 0; i < BUFFER_SIZE; ++i)
+    for (uint32_t i = 0; i < g_capacity; ++i)
     {
         for (int b = 0; b < 8; ++b)
         {
@@ -891,7 +1043,28 @@ void image_tables_fill_null_pointers(void)
  */
 static void image_tables_zero_slots(void)
 {
-    std::memset(&g_image, 0, sizeof(g_image));
+    // Was `memset(&g_image, 0, sizeof(g_image))` while the tables were inline
+    // arrays. That line still compiles now and is now WRONG: it would null the
+    // fourteen pointers and leak every table. This is the one function the
+    // static_asserts above point at, and this is the change they were asking
+    // for -- the length comes from g_capacity, never from sizeof.
+    const uint32_t n = g_capacity;
+    if (n == 0) return;
+
+    std::memset(g_image.bool_input, 0, (size_t)n * sizeof(IEC_BOOL *[8]));
+    std::memset(g_image.bool_output, 0, (size_t)n * sizeof(IEC_BOOL *[8]));
+    std::memset(g_image.bool_memory, 0, (size_t)n * sizeof(IEC_BOOL *[8]));
+    std::memset(g_image.byte_input, 0, (size_t)n * sizeof(IEC_BYTE *));
+    std::memset(g_image.byte_output, 0, (size_t)n * sizeof(IEC_BYTE *));
+    std::memset(g_image.int_input, 0, (size_t)n * sizeof(IEC_UINT *));
+    std::memset(g_image.int_output, 0, (size_t)n * sizeof(IEC_UINT *));
+    std::memset(g_image.dint_input, 0, (size_t)n * sizeof(IEC_UDINT *));
+    std::memset(g_image.dint_output, 0, (size_t)n * sizeof(IEC_UDINT *));
+    std::memset(g_image.lint_input, 0, (size_t)n * sizeof(IEC_ULINT *));
+    std::memset(g_image.lint_output, 0, (size_t)n * sizeof(IEC_ULINT *));
+    std::memset(g_image.int_memory, 0, (size_t)n * sizeof(IEC_UINT *));
+    std::memset(g_image.dint_memory, 0, (size_t)n * sizeof(IEC_UDINT *));
+    std::memset(g_image.lint_memory, 0, (size_t)n * sizeof(IEC_ULINT *));
 }
 
 void image_tables_clear_null_pointers(void)

@@ -150,6 +150,17 @@ int main(int argc, char *argv[])
         log_info("[PLUGIN]: Plugin driver system created");
         if (plugin_driver_load_config(plugin_driver, "./plugins.conf") == 0)
         {
+            /* An image before the plugins see one, even though no program is
+             * loaded yet. plugin_driver_init() copies the base pointers and
+             * buffer_size into every plugin's args, and a plugin is entitled to
+             * a valid image from the moment it initialises -- never a NULL base
+             * pointer and never a zero size. The minimum is what
+             * image_tables_alloc() clamps to: the smallest count that is not no
+             * image at all. A program load reallocates it properly. */
+            if (!image_tables_alloc(0))
+            {
+                log_error("[PLUGIN]: could not allocate the boot image");
+            }
             plugin_driver_init(plugin_driver);
             log_info("[PLUGIN]: All plugins initialized (not started)");
         }

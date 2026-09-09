@@ -13,16 +13,19 @@ extern "C"
 {
 #endif
 
-/* Guarded so `-DBUFFER_SIZE=<n>` actually takes effect. It did not before:
- * this was an unconditional #define, so the command-line value from
- * project.yml (128, for the Ceedling build) was overridden by 1024 here with
- * only a redefinition warning to show for it -- and the warning never
- * appeared, because the one file that respected the 128 was the test stub,
- * which declared the tables by hand instead of including this header. That is
- * the whole story behind the stub disagreeing with plugin_driver.c. */
-#ifndef BUFFER_SIZE
-#define BUFFER_SIZE 1024
-#endif
+/* BUFFER_SIZE is gone, and its absence is the point of RTOP-284.
+ *
+ * It was 1024 per table, compiled in, identical for every program that ever
+ * ran on the device: a project needing more could not have it, and a project
+ * needing less paid for the rest anyway, out of the memory its own program
+ * wanted. The image is now allocated per program load -- see
+ * image_tables_alloc() and image_tables_capacity() below, which is where a
+ * size comes from now.
+ *
+ * Nothing should reintroduce it. If some code needs to know how big the image
+ * is, the answer is image_tables_capacity(), and the answer changes between
+ * program loads. `-DBUFFER_SIZE=<n>` in project.yml is inert and can go
+ * whenever that file is next touched. */
 #define libplc_build_dir "./build"
 
     /* -------------------------------------------------------------------------
@@ -55,25 +58,36 @@ extern "C"
 
     typedef struct
     {
-        IEC_BOOL *bool_input[BUFFER_SIZE][8];
-        IEC_BOOL *bool_output[BUFFER_SIZE][8];
+        /* Heap-allocated by image_tables_alloc(), each one
+         * image_tables_capacity() elements long. These are the very types
+         * plugin_types.h already declares for the same tables, which is what
+         * lets the runtime args keep pointing straight at them.
+         *
+         * Indexing reads exactly as it did when these were [BUFFER_SIZE]
+         * arrays. That is not a convenience -- it is the hazard: the compiler
+         * cannot tell the two shapes apart at a use site, and `sizeof` silently
+         * went from 65536 to 8 when they changed. The size assertions and the
+         * single zeroing function in image_tables.cpp exist for exactly that,
+         * and they are what caught this transition. */
+        IEC_BOOL *(*bool_input)[8];
+        IEC_BOOL *(*bool_output)[8];
 
-        IEC_BYTE *byte_input[BUFFER_SIZE];
-        IEC_BYTE *byte_output[BUFFER_SIZE];
+        IEC_BYTE **byte_input;
+        IEC_BYTE **byte_output;
 
-        IEC_UINT *int_input[BUFFER_SIZE];
-        IEC_UINT *int_output[BUFFER_SIZE];
+        IEC_UINT **int_input;
+        IEC_UINT **int_output;
 
-        IEC_UDINT *dint_input[BUFFER_SIZE];
-        IEC_UDINT *dint_output[BUFFER_SIZE];
+        IEC_UDINT **dint_input;
+        IEC_UDINT **dint_output;
 
-        IEC_ULINT *lint_input[BUFFER_SIZE];
-        IEC_ULINT *lint_output[BUFFER_SIZE];
+        IEC_ULINT **lint_input;
+        IEC_ULINT **lint_output;
 
-        IEC_UINT *int_memory[BUFFER_SIZE];
-        IEC_UDINT *dint_memory[BUFFER_SIZE];
-        IEC_ULINT *lint_memory[BUFFER_SIZE];
-        IEC_BOOL *bool_memory[BUFFER_SIZE][8];
+        IEC_UINT **int_memory;
+        IEC_UDINT **dint_memory;
+        IEC_ULINT **lint_memory;
+        IEC_BOOL *(*bool_memory)[8];
     } image_tables_t;
 
     extern image_tables_t g_image;
@@ -145,6 +159,53 @@ extern "C"
 
     /** Per table, the larger of the two. */
     void image_sizes_take_max(image_sizes_t *dst, const image_sizes_t *other);
+
+    /**
+     * The single element count the whole image is allocated at.
+     *
+     * ONE NUMBER FOR FOURTEEN TABLES, and the reason is the plugin ABI rather
+     * than convenience. `plugin_runtime_args_t` carries a single `buffer_size`
+     * (plugin_types.h), and plugins bounds-check against it -- ethercat_io.c
+     * refuses a byte_index at or above it, s7comm derives every clamp from it.
+     * That works today only because the fourteen tables happen to be the same
+     * size, so one number describes them all.
+     *
+     * Give each table its own size and no value of that field is correct: the
+     * minimum makes every plugin refuse everything the moment one table is
+     * empty (a project with `%QW4096` and no `%IX` would have a floor of zero),
+     * and the maximum lets a plugin write past the end of the smaller tables --
+     * the exact overflow this work exists to prevent. Per-table sizes would
+     * need a field per table, which breaks the ABI compatibility the approved
+     * requirements guarantee (CON06) and invalidates pre-compiled plugins.
+     *
+     * So the image is square: every table allocated at the largest count any of
+     * them needs. The `image.conf` still carries all fourteen numbers, because
+     * bare metal DOES size each area independently -- it has no plugin ABI to
+     * satisfy, and each `MAX_*` there dimensions its own array. Only Runtime v4
+     * collapses them, and the file is ready if that ever stops being true.
+     *
+     * The cost is bounded and small: a program needing 4096 output words gets
+     * 4096 in all fourteen, which on a 64-bit Linux target is roughly 460 KB of
+     * pointers. The gain the demand actually asked for is untouched -- 240 I/O
+     * points stop hitting a ceiling of 1024, and a small project stops paying
+     * for 1024 of everything.
+     */
+    uint32_t image_sizes_largest(const image_sizes_t *sizes);
+
+    /**
+     * Allocate the image at `elements` per table, replacing whatever is there.
+     *
+     * Returns false and leaves NOTHING allocated if any allocation fails: a
+     * partial image is worse than none, since nothing downstream could tell
+     * which tables are real. The caller logs and stops.
+     */
+    bool image_tables_alloc(uint32_t elements);
+
+    /** Release the image. Safe to call when nothing is allocated. */
+    void image_tables_free(void);
+
+    /** How many elements each table currently holds; 0 before any allocation. */
+    uint32_t image_tables_capacity(void);
 
     /* -------------------------------------------------------------------------
      * Resolved .so symbols (populated by symbols_init).

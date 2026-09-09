@@ -467,7 +467,10 @@ void *plc_cycle_thread(void *arg)
         .lint_input   = g_image.lint_input,
         .lint_output  = g_image.lint_output,
         .lint_memory  = g_image.lint_memory,
-        .buffer_size  = BUFFER_SIZE,
+        /* Follows the image: journal_buffer.c bounds every forced write
+         * against this, so a stale constant here would silently drop writes to
+         * the part of the image beyond it. */
+        .buffer_size  = (int)image_tables_capacity(),
         .image_mutex  = itm,
     };
     if (journal_init(&journal_ptrs) != 0)
@@ -1055,6 +1058,50 @@ extern "C" int load_plc_program(PluginManager *pm)
                 plugin_manager_destroy(pm);
                 return -1;
             }
+            /* SIZE AND ALLOCATE THE IMAGE, and do it HERE.
+             *
+             * After plugin_manager_load, because the floor is derived by
+             * walking the loaded .so's locatedVars[] and there is no .so to
+             * walk before it. Before plugin_driver_init, because that is where
+             * plugin_driver.c copies the base pointers and buffer_size into the
+             * runtime args, and both native plugins copy that struct BY VALUE
+             * inside their init(). Allocate after, and every plugin spends the
+             * run holding pointers into the image of the program before this
+             * one.
+             *
+             * Two sources, larger wins: image.conf, which the editor derived
+             * from what the project contains, and the floor this runtime
+             * derives from the program itself. That is what makes a missing or
+             * stale image.conf unable to undersize -- see image_tables.h. */
+            {
+                image_sizes_t configured;
+                image_sizes_t floor;
+                image_sizes_read_conf("./image.conf", &configured);
+                image_sizes_derive_floor(&floor);
+                image_sizes_take_max(&configured, &floor);
+
+                pthread_mutex_t *itm = image_tables_mutex();
+                pthread_mutex_lock(itm);
+                const bool ok = image_tables_alloc(image_sizes_largest(&configured));
+                pthread_mutex_unlock(itm);
+
+                if (!ok)
+                {
+                    /* Log and stop, never a partial image. The alternative is
+                     * starting with tables that do not cover the program's own
+                     * addresses, which reads and writes nothing and reports
+                     * nothing. */
+                    log_error("[PLUGIN]: image allocation failed — refusing to start");
+                    pthread_mutex_lock(&state_mutex);
+                    plc_state = PLC_STATE_ERROR;
+                    pthread_mutex_unlock(&state_mutex);
+                    log_info("PLC State: ERROR");
+                    if (pm == plc_program) plc_program = NULL;
+                    plugin_manager_destroy(pm);
+                    return -1;
+                }
+            }
+
             if (plugin_driver_init(plugin_driver) != 0)
             {
                 /* Roll back any plugins that did initialise before the
@@ -1159,6 +1206,10 @@ extern "C" int unload_plc_program(PluginManager *pm)
         pthread_mutex_t *itm = image_tables_mutex();
         pthread_mutex_lock(itm);
         image_tables_clear_null_pointers();
+        /* Released only AFTER plugin_driver_stop above. Both native plugins
+         * cached these pointers by value at init(); freeing while they are
+         * still running would hand them memory that belongs to nobody. */
+        image_tables_free();
         pthread_mutex_unlock(itm);
 
         void (*python_cleanup)(void);
