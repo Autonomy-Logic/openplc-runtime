@@ -1077,7 +1077,7 @@ extern "C" int load_plc_program(PluginManager *pm)
                 image_sizes_t configured;
                 image_sizes_t floor;
                 image_sizes_read_conf("./image.conf", &configured);
-                image_sizes_derive_floor(&floor);
+                image_sizes_derive_floor(pm, &floor);
                 image_sizes_take_max(&configured, &floor);
 
                 pthread_mutex_t *itm = image_tables_mutex();

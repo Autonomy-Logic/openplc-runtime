@@ -154,8 +154,14 @@ extern "C"
 
     /** Walk the loaded .so's locatedVars[] for the floor the PROGRAM requires.
      *  Zeroes `out` first, so an unloaded or symbol-less program yields zeros
-     *  rather than stale numbers. */
-    void image_sizes_derive_floor(image_sizes_t *out);
+     *  rather than stale numbers.
+     *
+     *  Takes the PluginManager and resolves the accessors from it rather than
+     *  reading the file-scope ones: those are populated by `symbols_init`,
+     *  which runs on the cycle thread and therefore AFTER the load path has
+     *  already sized and allocated the image. Reading them here made the floor
+     *  a zero vector on every load. */
+    void image_sizes_derive_floor(PluginManager *pm, image_sizes_t *out);
 
     /** Per table, the larger of the two. */
     void image_sizes_take_max(image_sizes_t *dst, const image_sizes_t *other);

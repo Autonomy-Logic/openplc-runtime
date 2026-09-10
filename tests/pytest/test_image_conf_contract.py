@@ -33,7 +33,12 @@ import pytest
 
 from webserver import image_config
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+# parents[2] because this file sits at tests/pytest/, not tests/pytest/plugins/.
+# It was moved out of plugins/ because .github/workflows/tests.yml passes
+# --ignore=tests/pytest/plugins for pre-existing failures there, so a guard
+# living in that directory would never fire in CI -- which is the one thing
+# this test was written to be.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 IMAGE_TABLES_H = REPO_ROOT / "core" / "src" / "plc_app" / "image_tables.h"
 IMAGE_TABLES_CPP = REPO_ROOT / "core" / "src" / "plc_app" / "image_tables.cpp"
 

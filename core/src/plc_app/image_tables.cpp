@@ -478,21 +478,48 @@ extern "C" void image_sizes_read_conf(const char *config_path, image_sizes_t *ou
     fclose(f);
 }
 
-extern "C" void image_sizes_derive_floor(image_sizes_t *out)
+extern "C" void image_sizes_derive_floor(PluginManager *pm, image_sizes_t *out)
 {
     if (!out) return;
     std::memset(out, 0, sizeof(*out));
 
-    if (!ext_strucpp_get_located_vars || !ext_strucpp_get_located_var_count)
+    /* RESOLVED HERE, NOT READ FROM THE GLOBALS, and that is the whole point of
+     * taking `pm`.
+     *
+     * The obvious version of this function read ext_strucpp_get_located_vars.
+     * Those globals are populated by symbols_init, which runs on the cycle
+     * thread (plc_state_manager.cpp) — created AFTER the load path sizes and
+     * allocates the image. So they were always null here, the floor was always
+     * a zero vector, and max(configured, derived) silently degraded to
+     * "whatever image.conf said". With no image.conf that meant capacity 1 for
+     * every program, every located address above index 0 rejected by the
+     * bounds check, and no log to show for it — precisely the safety net this
+     * function exists to be. Unload nulls them again, so the second load would
+     * not have escaped it either.
+     *
+     * Resolving from the PluginManager makes the answer depend on the program
+     * being dlopen'd, which the caller has just done, rather than on the order
+     * two threads happen to run in. */
+    GetLocatedVarsFn     get_vars  = nullptr;
+    GetLocatedCountFn    get_count = nullptr;
+    if (pm)
     {
-        // No program loaded, or one whose accessors did not resolve. Zeros, so
-        // the caller sizes from the configuration alone -- and at boot, when
-        // there is no program at all, from nothing.
+        *(void **)&get_vars  = plugin_manager_get_symbol(pm, "strucpp_get_located_vars");
+        *(void **)&get_count = plugin_manager_get_symbol(pm, "strucpp_get_located_var_count");
+    }
+    if (!get_vars) get_vars = ext_strucpp_get_located_vars;
+    if (!get_count) get_count = ext_strucpp_get_located_var_count;
+
+    if (!get_vars || !get_count)
+    {
+        // No program loaded, or one whose accessors are absent. Zeros, so the
+        // caller sizes from the configuration alone -- and at boot, when there
+        // is no program at all, from nothing.
         return;
     }
 
-    const strucpp::LocatedVar *lv = ext_strucpp_get_located_vars();
-    const uint32_t             n  = ext_strucpp_get_located_var_count();
+    const strucpp::LocatedVar *lv = get_vars();
+    const uint32_t             n  = get_count();
     if (!lv) return;
 
     uint32_t unstorable = 0;

@@ -151,8 +151,13 @@ static void apply_write_raw(const journal_entry_t *entry)
 {
     uint16_t idx = entry->index;
 
-    /* Bounds check */
-    if (idx >= (uint16_t)g_buffer_ptrs.buffer_size)
+    /* Bounds check. Compared as a signed int rather than through a
+     * (uint16_t) cast: buffer_size is an int and the image may reach 65536,
+     * which that cast turns into 0 -- dropping EVERY journal write with no
+     * diagnostic, at exactly the largest legal image. It is the same wrap the
+     * comment above g_force_size describes, and this was the one site the
+     * widening there missed. `idx` is uint16_t and promotes cleanly. */
+    if ((int)idx >= g_buffer_ptrs.buffer_size)
     {
         return;
     }
@@ -614,19 +619,21 @@ int journal_init(const journal_buffer_ptrs_t *buffer_ptrs)
         return -1;
     }
 
-    pthread_mutex_lock(&g_journal_mutex);
-    memcpy(&g_buffer_ptrs, buffer_ptrs, sizeof(journal_buffer_ptrs_t));
-
-    /* The forced-slot bitmap follows the image, so forcing works across the
-     * whole of it rather than the first 1024 slots. buffer_size comes from
-     * image_tables_capacity(), set when the image was allocated for this
-     * program. */
-    if (force_map_alloc((uint32_t)g_buffer_ptrs.buffer_size) != 0)
+    /* Allocated BEFORE the lock is taken, deliberately. Inside it, the early
+     * return on failure would skip the unlock at the end of this function and
+     * leave g_journal_mutex held forever -- every later journal_add,
+     * journal_apply_and_clear and journal_is_initialized would block, taking
+     * the scan thread with them, and journal_cleanup could not recover it. The
+     * map depends on nothing this lock protects. */
+    if (force_map_alloc((uint32_t)buffer_ptrs->buffer_size) != 0)
     {
         log_error("Journal: could not allocate the forced-slot map for %d slots",
-                  g_buffer_ptrs.buffer_size);
+                  buffer_ptrs->buffer_size);
         return -1;
     }
+
+    pthread_mutex_lock(&g_journal_mutex);
+    memcpy(&g_buffer_ptrs, buffer_ptrs, sizeof(journal_buffer_ptrs_t));
     g_count         = 0;
     g_next_sequence = 0;
     memset(g_entries, 0, sizeof(g_entries));
