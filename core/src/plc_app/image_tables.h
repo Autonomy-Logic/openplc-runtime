@@ -190,24 +190,49 @@ extern "C"
      * satisfy, and each `MAX_*` there dimensions its own array. Only Runtime v4
      * collapses them, and the file is ready if that ever stops being true.
      *
-     * The cost is bounded and small: a program needing 4096 output words gets
-     * 4096 in all fourteen, which on a 64-bit Linux target is roughly 460 KB of
-     * pointers. The gain the demand actually asked for is untouched -- 240 I/O
-     * points stop hitting a ceiling of 1024, and a small project stops paying
-     * for 1024 of everything.
+     * The cost, counted properly: a program needing 4096 output words gets 4096
+     * elements in all fourteen tables. On a 64-bit target the three BOOL tables
+     * are `IEC_BOOL *[8]`, so 64 bytes per element rather than 8 -- 786 KB --
+     * the other eleven add 360 KB, and the `temp_*` backing buffers are sized
+     * at `elements` too and add about 272 KB. Roughly **1.36 MiB**.
+     *
+     * (An earlier version of this comment said ~460 KB. It counted eight bytes
+     * per BOOL element instead of sixty-four and left the backing buffers out
+     * entirely, which understated the figure about threefold. The number is
+     * what carries the square-image decision over per-table sizing, so it is
+     * worth having right: 1.36 MiB on a Linux target is still small against
+     * breaking every pre-compiled plugin, but it is not 460 KB.)
+     *
+     * The gain the demand asked for is untouched -- 240 I/O points stop hitting
+     * a ceiling of 1024, and a small project stops paying for 1024 of
+     * everything.
      */
     uint32_t image_sizes_largest(const image_sizes_t *sizes);
+
+    /** The most any one table may hold: the ceiling of the uint16 `byte_index`
+     *  in the STruC++ ABI, so no located variable can address beyond it. The
+     *  webserver refuses a larger `image.conf` at install for the same reason
+     *  and reaches the number the same way. */
+#define IMAGE_MAX_ELEMENTS 65536u
 
     /**
      * Allocate the image at `elements` per table, replacing whatever is there.
      *
-     * Returns false and leaves NOTHING allocated if any allocation fails: a
-     * partial image is worse than none, since nothing downstream could tell
-     * which tables are real. The caller logs and stops.
+     * CALLER MUST HOLD THE IMAGE-TABLES MUTEX, as with bind / fill / clear
+     * below. Stated because the two call sites used to disagree: the load path
+     * locked and the boot path did not, and nothing said which was right.
+     *
+     * All or nothing, and that now covers the image already running: the new
+     * tables are built into locals and published only once every allocation
+     * has succeeded, so a failure leaves the previous image exactly as it was.
+     * Returns false, having changed nothing observable; the caller logs and
+     * stops. A partial image would be worse than none, because every table
+     * indexes the same way whether it is real or null.
      */
     bool image_tables_alloc(uint32_t elements);
 
-    /** Release the image. Safe to call when nothing is allocated. */
+    /** Release the image. Safe to call when nothing is allocated.
+     *  CALLER MUST HOLD THE IMAGE-TABLES MUTEX. */
     void image_tables_free(void);
 
     /** How many elements each table currently holds; 0 before any allocation. */

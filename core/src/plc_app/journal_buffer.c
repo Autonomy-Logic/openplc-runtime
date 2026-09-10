@@ -93,8 +93,16 @@ static int g_force_count     = 0;
 /* Allocate the forced-slot bitmap to match the image. All or nothing: a
  * partially allocated bitmap would leave some journal types unforceable with
  * no way to tell which, which is the silent failure this change removes. */
+static void force_map_free(void);
+
 static int force_map_alloc(uint32_t elements)
 {
+    /* Release first. Assigning over g_forced[t] unconditionally leaked all
+     * fourteen rows on any journal_init not preceded by a journal_cleanup,
+     * which is a shape the state machine does not currently produce but does
+     * not forbid either. */
+    force_map_free();
+
     for (int t = 0; t < JOURNAL_TYPE_COUNT; t++)
     {
         g_forced[t] = (uint8_t *)calloc(elements ? elements : 1, sizeof(uint8_t));
@@ -333,6 +341,14 @@ void journal_force_set(journal_buffer_type_t type, uint16_t index, uint8_t bit, 
 {
     if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size)
     {
+        /* Said out loud. A silent drop here is the exact defect this change
+         * set out to remove: someone forcing a high address from the debugger
+         * would watch nothing happen and have nothing to read. When the map
+         * was never allocated g_force_size is 0 and EVERY force lands here.
+         * Both force paths run under image_lock rather than on the lock-free
+         * producer path, so a log line is affordable. */
+        log_warn("Journal: force ignored, type %u index %u outside the image (%u slots)",
+                 (unsigned)type, (unsigned)index, (unsigned)g_force_size);
         return;
     }
     if (type_is_bool((uint8_t)type) && bit >= 8)
@@ -360,6 +376,14 @@ void journal_force_clear(journal_buffer_type_t type, uint16_t index, uint8_t bit
 {
     if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size)
     {
+        /* Said out loud. A silent drop here is the exact defect this change
+         * set out to remove: someone forcing a high address from the debugger
+         * would watch nothing happen and have nothing to read. When the map
+         * was never allocated g_force_size is 0 and EVERY force lands here.
+         * Both force paths run under image_lock rather than on the lock-free
+         * producer path, so a log line is affordable. */
+        log_warn("Journal: unforce ignored, type %u index %u outside the image (%u slots)",
+                 (unsigned)type, (unsigned)index, (unsigned)g_force_size);
         return;
     }
     if (type_is_bool((uint8_t)type) && bit >= 8)

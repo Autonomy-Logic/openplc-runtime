@@ -55,8 +55,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from webserver.logger import get_logger
+
 # The runtime's working directory (systemd `WorkingDirectory=$OPENPLC_DIR`), so
 # image.conf lands beside retain.conf where the core looks for it.
+logger, _ = get_logger("runtime", use_buffer=True)
+
 RUNTIME_ROOT = Path(os.path.abspath(os.path.dirname(__file__))).parent
 IMAGE_CONF_PATH = RUNTIME_ROOT / "image.conf"
 
@@ -137,6 +141,16 @@ def read_image_conf_file(path: str | os.PathLike) -> dict[str, int]:
                     sizes[key] = -1
     except FileNotFoundError:
         pass
+    except (UnicodeDecodeError, IsADirectoryError, PermissionError, OSError) as exc:
+        # The file arrives from an upload, so its bytes are attacker-shaped in
+        # the ordinary sense: a non-UTF-8 image.conf raises UnicodeDecodeError
+        # and a directory entry of that name raises IsADirectoryError. Both used
+        # to escape to app.py, which answers `Unexpected error: {e}` to the
+        # client. Unreadable means "no sizes delivered", which the caller
+        # already knows how to handle -- it refuses the stanza and falls back to
+        # the floor derived from the program.
+        logger.warning("Image: could not read %s (%s); treating as no sizes", path, exc)
+        return {key: -1 for key in IMAGE_TABLE_KEYS}
     return sizes
 
 

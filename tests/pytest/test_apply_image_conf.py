@@ -108,6 +108,21 @@ class TestRefusal:
         plcapp_management.apply_image_conf(str(upload))
         assert not isolated_conf.exists()
 
+    def test_a_non_utf8_file_is_refused_rather_than_raising(self, upload, isolated_conf):
+        # The file comes from an upload, so its bytes are whatever was sent.
+        # UnicodeDecodeError used to escape to app.py, which answers
+        # "Unexpected error: ..." to the client.
+        (upload / "image.conf").write_bytes(b"int_output=\xff\xfe\n")
+        plcapp_management.apply_image_conf(str(upload))
+        assert not isolated_conf.exists()
+
+    def test_a_directory_named_image_conf_is_refused_rather_than_raising(
+        self, upload, isolated_conf
+    ):
+        (upload / "image.conf").mkdir()
+        plcapp_management.apply_image_conf(str(upload))
+        assert not isolated_conf.exists()
+
     def test_a_garbled_value_is_refused_rather_than_raising(self, upload, isolated_conf):
         (upload / "image.conf").write_text("int_output=lots\n", encoding="utf-8")
         plcapp_management.apply_image_conf(str(upload))

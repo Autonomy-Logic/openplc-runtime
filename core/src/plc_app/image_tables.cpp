@@ -5,6 +5,7 @@
 // bind image-table buffer pointers. Plugins read/write through the
 // buffer pointers directly under the image-tables mutex.
 
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -183,6 +184,28 @@ namespace {
 
 extern "C" pthread_mutex_t *image_tables_mutex(void)
 {
+    /* Initialised on first use rather than only in symbols_init.
+     *
+     * symbols_init runs on the cycle thread, so on the first program load the
+     * image-tables mutex was still a zero-filled pthread_mutex_t when the load
+     * path locked it around the allocation, and when the boot path did not
+     * lock it at all. Zero-filled happens to behave on glibc, but it is
+     * neither recursive nor priority-inheriting there -- the two properties
+     * this mutex is created for -- and it is undefined elsewhere.
+     *
+     * pthread_once, so the two callers cannot race to create it, and so it is
+     * created exactly once for the life of the process rather than per load.
+     * symbols_init's own guarded init is now redundant and harmless. */
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once,
+                 []
+                 {
+                     if (!g_locks_initialized)
+                     {
+                         init_recursive_pi_mutex(&g_image_tables_mutex);
+                         g_locks_initialized = true;
+                     }
+                 });
     return &g_image_tables_mutex;
 }
 
@@ -464,14 +487,30 @@ extern "C" void image_sizes_read_conf(const char *config_path, image_sizes_t *ou
         for (int i = 0; i < IMAGE_TABLE_COUNT; ++i)
         {
             if (key != kImageTableKeys[i]) continue;
-            const long v = strtol(val.c_str(), nullptr, 10);
-            // Clamped rather than refused: the webserver already validated this
-            // file at install and refused anything out of range, so a bad value
-            // here means a hand-edited device. Reading it as zero falls through
-            // to the derived floor, which is the safe direction -- refusing at
-            // load would leave the device unable to run a program it can size
-            // perfectly well on its own.
-            out->elements[i] = (v > 0) ? (uint32_t)v : 0u;
+            errno        = 0;
+            char *endp   = nullptr;
+            const long v = strtol(val.c_str(), &endp, 10);
+
+            /* Anything the runtime cannot honour reads as ZERO, which falls
+             * through to the floor derived from the program. That is the safe
+             * direction, and it is what the comment here always promised --
+             * but the promise was only kept for negatives. An oversized value
+             * used to survive as a truncated uint32_t, win image_sizes_take_max
+             * and fail the allocation, taking the runtime to ERROR over a
+             * program it could size perfectly well by itself. Out of range, out
+             * of the uint16 the ABI addresses through, unparsed, or trailing
+             * junk: all of them mean the same thing here, which is "ignore me".
+             *
+             * The webserver refuses these at install, so reaching this branch
+             * means a hand-edited device. */
+            const bool usable = errno == 0 && endp != val.c_str() && *endp == '\0' && v > 0 &&
+                                v <= (long)IMAGE_MAX_ELEMENTS;
+            if (!usable && !val.empty() && v != 0)
+            {
+                log_warn("[image_tables] image.conf: ignoring %s=%s, outside 1..%u",
+                         kImageTableKeys[i], val.c_str(), IMAGE_MAX_ELEMENTS);
+            }
+            out->elements[i] = usable ? (uint32_t)v : 0u;
             break;
         }
     }
@@ -963,67 +1002,132 @@ extern "C" bool image_tables_alloc(uint32_t elements)
 {
     if (elements < IMAGE_MIN_ELEMENTS) elements = IMAGE_MIN_ELEMENTS;
 
-    // Replace wholesale rather than resize. The tables are rebound from
-    // scratch on every program load anyway, and a realloc would leave the
-    // question of what the surviving slots point at -- storage belonging to the
-    // program that just went away.
-    image_tables_free();
+    /* BUILT INTO LOCALS AND PUBLISHED ONLY ON SUCCESS.
+     *
+     * This used to call image_tables_free() first and allocate into g_image
+     * directly, which made the all-or-nothing promise in the header only half
+     * true: it covered the new image, not the one it had just destroyed. A
+     * re-allocation that failed left capacity 0 and fourteen null tables while
+     * every plugin still held the base pointers it cached by value at init(),
+     * so the failure surfaced inside a plugin rather than here.
+     *
+     * Now nothing observable changes until all twenty-eight allocations have
+     * succeeded. A failure frees the locals and leaves the running image
+     * exactly as it was, which is what lets the caller log and stop with the
+     * device still in a describable state. */
+    image_tables_t next;
+    std::memset(&next, 0, sizeof(next));
 
-    g_image.bool_input  = (IEC_BOOL *(*)[8])calloc(elements, sizeof(IEC_BOOL *[8]));
-    g_image.bool_output = (IEC_BOOL *(*)[8])calloc(elements, sizeof(IEC_BOOL *[8]));
-    g_image.bool_memory = (IEC_BOOL *(*)[8])calloc(elements, sizeof(IEC_BOOL *[8]));
-    g_image.byte_input  = (IEC_BYTE **)calloc(elements, sizeof(IEC_BYTE *));
-    g_image.byte_output = (IEC_BYTE **)calloc(elements, sizeof(IEC_BYTE *));
-    g_image.int_input   = (IEC_UINT **)calloc(elements, sizeof(IEC_UINT *));
-    g_image.int_output  = (IEC_UINT **)calloc(elements, sizeof(IEC_UINT *));
-    g_image.dint_input  = (IEC_UDINT **)calloc(elements, sizeof(IEC_UDINT *));
-    g_image.dint_output = (IEC_UDINT **)calloc(elements, sizeof(IEC_UDINT *));
-    g_image.lint_input  = (IEC_ULINT **)calloc(elements, sizeof(IEC_ULINT *));
-    g_image.lint_output = (IEC_ULINT **)calloc(elements, sizeof(IEC_ULINT *));
-    g_image.int_memory  = (IEC_UINT **)calloc(elements, sizeof(IEC_UINT *));
-    g_image.dint_memory = (IEC_UDINT **)calloc(elements, sizeof(IEC_UDINT *));
-    g_image.lint_memory = (IEC_ULINT **)calloc(elements, sizeof(IEC_ULINT *));
+    IEC_BOOL(*t_bool_input)[8]  = nullptr;
+    IEC_BOOL(*t_bool_output)[8] = nullptr;
+    IEC_BOOL(*t_bool_memory)[8] = nullptr;
+    IEC_BYTE *t_byte_input      = nullptr;
+    IEC_BYTE *t_byte_output     = nullptr;
+    IEC_UINT *t_int_input       = nullptr;
+    IEC_UINT *t_int_output      = nullptr;
+    IEC_UDINT *t_dint_input     = nullptr;
+    IEC_UDINT *t_dint_output    = nullptr;
+    IEC_ULINT *t_lint_input     = nullptr;
+    IEC_ULINT *t_lint_output    = nullptr;
+    IEC_UINT *t_int_memory      = nullptr;
+    IEC_UDINT *t_dint_memory    = nullptr;
+    IEC_ULINT *t_lint_memory    = nullptr;
 
-    temp_bool_input  = (IEC_BOOL(*)[8])calloc(elements, sizeof(IEC_BOOL[8]));
-    temp_bool_output = (IEC_BOOL(*)[8])calloc(elements, sizeof(IEC_BOOL[8]));
-    temp_bool_memory = (IEC_BOOL(*)[8])calloc(elements, sizeof(IEC_BOOL[8]));
-    temp_byte_input  = (IEC_BYTE *)calloc(elements, sizeof(IEC_BYTE));
-    temp_byte_output = (IEC_BYTE *)calloc(elements, sizeof(IEC_BYTE));
-    temp_int_input   = (IEC_UINT *)calloc(elements, sizeof(IEC_UINT));
-    temp_int_output  = (IEC_UINT *)calloc(elements, sizeof(IEC_UINT));
-    temp_dint_input  = (IEC_UDINT *)calloc(elements, sizeof(IEC_UDINT));
-    temp_dint_output = (IEC_UDINT *)calloc(elements, sizeof(IEC_UDINT));
-    temp_lint_input  = (IEC_ULINT *)calloc(elements, sizeof(IEC_ULINT));
-    temp_lint_output = (IEC_ULINT *)calloc(elements, sizeof(IEC_ULINT));
-    temp_int_memory  = (IEC_UINT *)calloc(elements, sizeof(IEC_UINT));
-    temp_dint_memory = (IEC_UDINT *)calloc(elements, sizeof(IEC_UDINT));
-    temp_lint_memory = (IEC_ULINT *)calloc(elements, sizeof(IEC_ULINT));
+    next.bool_input  = (IEC_BOOL * (*)[8]) calloc(elements, sizeof(IEC_BOOL *[8]));
+    next.bool_output = (IEC_BOOL * (*)[8]) calloc(elements, sizeof(IEC_BOOL *[8]));
+    next.bool_memory = (IEC_BOOL * (*)[8]) calloc(elements, sizeof(IEC_BOOL *[8]));
+    next.byte_input  = (IEC_BYTE **)calloc(elements, sizeof(IEC_BYTE *));
+    next.byte_output = (IEC_BYTE **)calloc(elements, sizeof(IEC_BYTE *));
+    next.int_input   = (IEC_UINT **)calloc(elements, sizeof(IEC_UINT *));
+    next.int_output  = (IEC_UINT **)calloc(elements, sizeof(IEC_UINT *));
+    next.dint_input  = (IEC_UDINT **)calloc(elements, sizeof(IEC_UDINT *));
+    next.dint_output = (IEC_UDINT **)calloc(elements, sizeof(IEC_UDINT *));
+    next.lint_input  = (IEC_ULINT **)calloc(elements, sizeof(IEC_ULINT *));
+    next.lint_output = (IEC_ULINT **)calloc(elements, sizeof(IEC_ULINT *));
+    next.int_memory  = (IEC_UINT **)calloc(elements, sizeof(IEC_UINT *));
+    next.dint_memory = (IEC_UDINT **)calloc(elements, sizeof(IEC_UDINT *));
+    next.lint_memory = (IEC_ULINT **)calloc(elements, sizeof(IEC_ULINT *));
 
-    const bool complete =
-        g_image.bool_input && g_image.bool_output && g_image.bool_memory &&
-        g_image.byte_input && g_image.byte_output && g_image.int_input &&
-        g_image.int_output && g_image.dint_input && g_image.dint_output &&
-        g_image.lint_input && g_image.lint_output && g_image.int_memory &&
-        g_image.dint_memory && g_image.lint_memory && temp_bool_input &&
-        temp_bool_output && temp_bool_memory && temp_byte_input &&
-        temp_byte_output && temp_int_input && temp_int_output &&
-        temp_dint_input && temp_dint_output && temp_lint_input &&
-        temp_lint_output && temp_int_memory && temp_dint_memory &&
-        temp_lint_memory;
+    t_bool_input  = (IEC_BOOL(*)[8])calloc(elements, sizeof(IEC_BOOL[8]));
+    t_bool_output = (IEC_BOOL(*)[8])calloc(elements, sizeof(IEC_BOOL[8]));
+    t_bool_memory = (IEC_BOOL(*)[8])calloc(elements, sizeof(IEC_BOOL[8]));
+    t_byte_input  = (IEC_BYTE *)calloc(elements, sizeof(IEC_BYTE));
+    t_byte_output = (IEC_BYTE *)calloc(elements, sizeof(IEC_BYTE));
+    t_int_input   = (IEC_UINT *)calloc(elements, sizeof(IEC_UINT));
+    t_int_output  = (IEC_UINT *)calloc(elements, sizeof(IEC_UINT));
+    t_dint_input  = (IEC_UDINT *)calloc(elements, sizeof(IEC_UDINT));
+    t_dint_output = (IEC_UDINT *)calloc(elements, sizeof(IEC_UDINT));
+    t_lint_input  = (IEC_ULINT *)calloc(elements, sizeof(IEC_ULINT));
+    t_lint_output = (IEC_ULINT *)calloc(elements, sizeof(IEC_ULINT));
+    t_int_memory  = (IEC_UINT *)calloc(elements, sizeof(IEC_UINT));
+    t_dint_memory = (IEC_UDINT *)calloc(elements, sizeof(IEC_UDINT));
+    t_lint_memory = (IEC_ULINT *)calloc(elements, sizeof(IEC_ULINT));
+
+    const bool complete = next.bool_input && next.bool_output && next.bool_memory &&
+                          next.byte_input && next.byte_output && next.int_input &&
+                          next.int_output && next.dint_input && next.dint_output &&
+                          next.lint_input && next.lint_output && next.int_memory &&
+                          next.dint_memory && next.lint_memory && t_bool_input && t_bool_output &&
+                          t_bool_memory && t_byte_input && t_byte_output && t_int_input &&
+                          t_int_output && t_dint_input && t_dint_output && t_lint_input &&
+                          t_lint_output && t_int_memory && t_dint_memory && t_lint_memory;
 
     if (!complete)
     {
-        // All or nothing. A partial image is worse than none: every table
-        // indexes the same way whether it is real or null, so nothing
-        // downstream could tell which half it got, and the failure would
-        // surface as a segfault in a plugin rather than here.
-        image_tables_free();
-        log_error("[image_tables] could not allocate an image of %u elements per table",
+        free(next.bool_input);
+        free(next.bool_output);
+        free(next.bool_memory);
+        free(next.byte_input);
+        free(next.byte_output);
+        free(next.int_input);
+        free(next.int_output);
+        free(next.dint_input);
+        free(next.dint_output);
+        free(next.lint_input);
+        free(next.lint_output);
+        free(next.int_memory);
+        free(next.dint_memory);
+        free(next.lint_memory);
+        free(t_bool_input);
+        free(t_bool_output);
+        free(t_bool_memory);
+        free(t_byte_input);
+        free(t_byte_output);
+        free(t_int_input);
+        free(t_int_output);
+        free(t_dint_input);
+        free(t_dint_output);
+        free(t_lint_input);
+        free(t_lint_output);
+        free(t_int_memory);
+        free(t_dint_memory);
+        free(t_lint_memory);
+        log_error("[image_tables] could not allocate an image of %u elements per table; "
+                  "the previous image is untouched",
                   elements);
         return false;
     }
 
-    g_capacity = elements;
+    // Everything succeeded: retire the old image and publish the new one.
+    image_tables_free();
+
+    g_image          = next;
+    temp_bool_input  = t_bool_input;
+    temp_bool_output = t_bool_output;
+    temp_bool_memory = t_bool_memory;
+    temp_byte_input  = t_byte_input;
+    temp_byte_output = t_byte_output;
+    temp_int_input   = t_int_input;
+    temp_int_output  = t_int_output;
+    temp_dint_input  = t_dint_input;
+    temp_dint_output = t_dint_output;
+    temp_lint_input  = t_lint_input;
+    temp_lint_output = t_lint_output;
+    temp_int_memory  = t_int_memory;
+    temp_dint_memory = t_dint_memory;
+    temp_lint_memory = t_lint_memory;
+    g_capacity       = elements;
+
     log_info("[image_tables] image allocated: %u elements per table", elements);
     return true;
 }

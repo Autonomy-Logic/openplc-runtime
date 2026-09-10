@@ -26,6 +26,12 @@ from pymodbus.server.server import ModbusTcpServer
 
 MAX_BITS = 8
 
+# A Modbus PDU carries a 16-bit address, so no data block can usefully be wider
+# than this. The per-segment fit to the image is not enough by itself: the
+# register block composes four segments end to end, so four segments each at
+# the image ceiling would build a list far past anything a client can address.
+MODBUS_MAX_ADDRESSES = 65536
+
 # BUFFER_SIZE used to live here as `1024  # Must match BUFFER_SIZE in
 # image_tables.h`, and that comment was the whole problem: a copy of a number
 # owned by the runtime, kept in step by hand. It is gone, and the runtime's
@@ -879,8 +885,124 @@ class OpenPLCSegmentedHoldingRegistersDataBlock(ModbusSparseDataBlock):
             self.safe_buffer_access.release_mutex()
 
 
-def _log_clamped_segments(config_map, buffer_config, buffer_size):
-    """Say what the image could not hold, once, at startup.
+SEGMENT_SECTIONS = {
+    "qw_count": "holding_registers",
+    "mw_count": "holding_registers",
+    "md_count": "holding_registers",
+    "ml_count": "holding_registers",
+    "qx_bits": "coils",
+    "mx_bits": "coils",
+    "ix_bits": "discrete_inputs",
+    "iw_count": "input_registers",
+}
+
+
+def _as_int(value, default):
+    """A count from an uploaded JSON file, or the default if it is not one."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value if value >= 0 else default
+
+
+def _section(buffer_mapping, name):
+    section = buffer_mapping.get(name)
+    return section if isinstance(section, dict) else {}
+
+
+def _requested_counts(config_map):
+    """What the config asks each segment to expose, before any clamping.
+
+    ONE PLACE UNDERSTANDS THE THREE SHAPES an uploaded config can take --
+    segmented, legacy (max_coils and friends), and no buffer_mapping at all --
+    so the clamp below and the warning above cannot disagree about what was
+    asked for. They did disagree: the warning read only the segmented shape, so
+    a legacy config was clamped without a word, and a config with no
+    buffer_mapping reported nothing while the defaults it falls back to were
+    clamped in silence. Those two are exactly the old-editor upload that the
+    clamp exists for -- the case where the image sizes never reached the
+    device is the only case where anything shrinks at all.
+    """
+    buffer_mapping = config_map.get("buffer_mapping")
+    if not isinstance(buffer_mapping, dict):
+        buffer_mapping = {}
+
+    if isinstance(buffer_mapping.get("holding_registers"), dict):
+        hr = _section(buffer_mapping, "holding_registers")
+        coils = _section(buffer_mapping, "coils")
+        di = _section(buffer_mapping, "discrete_inputs")
+        ir = _section(buffer_mapping, "input_registers")
+        return "segmented", {
+            "qw_count": _as_int(hr.get("qw_count"), DEFAULT_HOLDING_REG_CONFIG["qw_count"]),
+            "mw_count": _as_int(hr.get("mw_count"), DEFAULT_HOLDING_REG_CONFIG["mw_count"]),
+            "md_count": _as_int(hr.get("md_count"), DEFAULT_HOLDING_REG_CONFIG["md_count"]),
+            "ml_count": _as_int(hr.get("ml_count"), DEFAULT_HOLDING_REG_CONFIG["ml_count"]),
+            "qx_bits": _as_int(coils.get("qx_bits"), DEFAULT_COILS_CONFIG["qx_bits"]),
+            "mx_bits": _as_int(coils.get("mx_bits"), DEFAULT_COILS_CONFIG["mx_bits"]),
+            "ix_bits": _as_int(di.get("ix_bits"), DEFAULT_DISCRETE_INPUTS_CONFIG["ix_bits"]),
+            "iw_count": _as_int(ir.get("iw_count"), DEFAULT_INPUT_REGISTERS_CONFIG["iw_count"]),
+        }
+
+    # Legacy shape, and with it the config that carries no buffer_mapping: the
+    # defaults are what ends up being clamped, so they are what was asked for.
+    return "legacy", {
+        "qw_count": _as_int(buffer_mapping.get("max_holding_registers"), 1024),
+        "mw_count": 0,  # No memory support in legacy mode
+        "md_count": 0,
+        "ml_count": 0,
+        "qx_bits": _as_int(buffer_mapping.get("max_coils"), 8192),
+        "mx_bits": 0,  # No memory support in legacy mode
+        "ix_bits": _as_int(buffer_mapping.get("max_discrete_inputs"), 8192),
+        "iw_count": _as_int(buffer_mapping.get("max_input_registers"), 1024),
+    }
+
+
+def _trim_to_one_table(counts, layout):
+    """Shrink tail segments until the composed block fits one Modbus table.
+
+    `layout` is the block's segments in address order, each with the number of
+    addresses one element occupies (%MD is two registers, %ML is four). The
+    blocks lay their segments out head to tail, so trimming from the tail
+    leaves every earlier segment at the address a client already knows.
+    """
+    total = sum(counts[key] * width for key, width in layout)
+    for key, width in reversed(layout):
+        if total <= MODBUS_MAX_ADDRESSES:
+            return
+        over = total - MODBUS_MAX_ADDRESSES
+        drop = min(counts[key], -(-over // width))
+        counts[key] -= drop
+        total -= drop * width
+
+
+def _fit_counts(asked, buffer_size):
+    """Fit the requested exposure to the image, then to the address space."""
+    reg_limit = buffer_size
+    bit_limit = buffer_size * MAX_BITS
+
+    fitted = {
+        "qw_count": min(asked["qw_count"], reg_limit),
+        "mw_count": min(asked["mw_count"], reg_limit),
+        "md_count": min(asked["md_count"], reg_limit),
+        "ml_count": min(asked["ml_count"], reg_limit),
+        "qx_bits": min(asked["qx_bits"], bit_limit),
+        "mx_bits": min(asked["mx_bits"], bit_limit),
+        "ix_bits": min(asked["ix_bits"], bit_limit),
+        "iw_count": min(asked["iw_count"], reg_limit),
+    }
+
+    # THE IMAGE CEILING IS NOT THE PROTOCOL'S CEILING. Fitting each segment to
+    # the image allows 65536 apiece, and the register block composes four of
+    # them as qw + mw + 2*md + 4*ml -- 524288 entries for addresses no PDU can
+    # reach, allocated as a Python list at startup. Fit the composed block too.
+    _trim_to_one_table(fitted, [("qw_count", 1), ("mw_count", 1), ("md_count", 2), ("ml_count", 4)])
+    _trim_to_one_table(fitted, [("qx_bits", 1), ("mx_bits", 1)])
+    _trim_to_one_table(fitted, [("ix_bits", 1)])
+    _trim_to_one_table(fitted, [("iw_count", 1)])
+    return fitted
+
+
+def _log_clamped_segments(config_map, buffer_config):
+    """Say what the exposure could not hold, once, at startup.
 
     The clamp itself is already honest to a Modbus client -- anything past the
     declared block gets exception 02 from pymodbus. But the person who
@@ -888,31 +1010,19 @@ def _log_clamped_segments(config_map, buffer_config, buffer_size):
     editor and would otherwise have to notice, from the other end of a network,
     that only some of them answer. This is the line they can find on the device.
 
-    Only reports segments that actually shrank. On the normal path nothing did,
-    because the editor sizes the image from the exposure it was asked for, and
-    the interesting case is precisely the one where that did not happen: an
-    upload without image.conf, or a device provisioned by some other route.
+    Only reports segments that actually shrank, comparing what was asked for
+    against what was built, so it covers both reasons a segment can shrink: the
+    image is smaller than the exposure, or the composed block would not fit one
+    Modbus table. On the normal path nothing shrinks, because the editor sizes
+    the image from the exposure it was asked for.
     """
-    requested = config_map.get("buffer_mapping", {})
-    if not requested:
-        return
-
-    pairs = [
-        ("holding_registers", "qw_count", buffer_size),
-        ("holding_registers", "mw_count", buffer_size),
-        ("holding_registers", "md_count", buffer_size),
-        ("holding_registers", "ml_count", buffer_size),
-        ("coils", "qx_bits", buffer_size * MAX_BITS),
-        ("coils", "mx_bits", buffer_size * MAX_BITS),
-        ("discrete_inputs", "ix_bits", buffer_size * MAX_BITS),
-        ("input_registers", "iw_count", buffer_size),
-    ]
+    _, asked = _requested_counts(config_map)
 
     shrunk = []
-    for section, key, limit in pairs:
-        asked = requested.get(section, {}).get(key)
-        if isinstance(asked, int) and asked > limit:
-            shrunk.append(f"{key} {asked} -> {limit}")
+    for key, section in SEGMENT_SECTIONS.items():
+        built = buffer_config.get(section, {}).get(key, 0)
+        if asked[key] > built:
+            shrunk.append(f"{key} {asked[key]} -> {built}")
 
     if shrunk:
         logger.warn(
@@ -952,85 +1062,32 @@ def parse_buffer_mapping_config(config_map, buffer_size):
 
     Returns a dict with parsed configuration for each data block type.
     """
-    buffer_mapping = config_map.get("buffer_mapping", {})
-
-    # Check for new segmented format
-    if "holding_registers" in buffer_mapping and isinstance(
-        buffer_mapping["holding_registers"], dict
-    ):
-        # New segmented format
-        hr_config = buffer_mapping.get("holding_registers", {})
-        coils_config = buffer_mapping.get("coils", {})
-        di_config = buffer_mapping.get("discrete_inputs", {})
-        ir_config = buffer_mapping.get("input_registers", {})
-
-        return {
-            "format": "segmented",
-            "holding_registers": {
-                "qw_count": min(
-                    hr_config.get("qw_count", DEFAULT_HOLDING_REG_CONFIG["qw_count"]), buffer_size
-                ),
-                "mw_count": min(
-                    hr_config.get("mw_count", DEFAULT_HOLDING_REG_CONFIG["mw_count"]), buffer_size
-                ),
-                "md_count": min(
-                    hr_config.get("md_count", DEFAULT_HOLDING_REG_CONFIG["md_count"]), buffer_size
-                ),
-                "ml_count": min(
-                    hr_config.get("ml_count", DEFAULT_HOLDING_REG_CONFIG["ml_count"]), buffer_size
-                ),
-            },
-            "coils": {
-                "qx_bits": min(
-                    coils_config.get("qx_bits", DEFAULT_COILS_CONFIG["qx_bits"]),
-                    buffer_size * MAX_BITS,
-                ),
-                "mx_bits": min(
-                    coils_config.get("mx_bits", DEFAULT_COILS_CONFIG["mx_bits"]),
-                    buffer_size * MAX_BITS,
-                ),
-            },
-            "discrete_inputs": {
-                "ix_bits": min(
-                    di_config.get("ix_bits", DEFAULT_DISCRETE_INPUTS_CONFIG["ix_bits"]),
-                    buffer_size * MAX_BITS,
-                ),
-            },
-            "input_registers": {
-                "iw_count": min(
-                    ir_config.get("iw_count", DEFAULT_INPUT_REGISTERS_CONFIG["iw_count"]),
-                    buffer_size,
-                ),
-            },
-            "word_order": config_map.get("word_order", "high_word_first"),
-        }
-
-    # Legacy format (max_coils, max_discrete_inputs, etc.)
-    # Convert to segmented format with no memory location support
-    max_coils = buffer_mapping.get("max_coils", 8192)
-    max_discrete_inputs = buffer_mapping.get("max_discrete_inputs", 8192)
-    max_holding_registers = buffer_mapping.get("max_holding_registers", 1024)
-    max_input_registers = buffer_mapping.get("max_input_registers", 1024)
+    fmt, asked = _requested_counts(config_map)
+    fitted = _fit_counts(asked, buffer_size)
 
     return {
-        "format": "legacy",
+        "format": fmt,
         "holding_registers": {
-            "qw_count": min(max_holding_registers, buffer_size),
-            "mw_count": 0,  # No memory support in legacy mode
-            "md_count": 0,
-            "ml_count": 0,
+            "qw_count": fitted["qw_count"],
+            "mw_count": fitted["mw_count"],
+            "md_count": fitted["md_count"],
+            "ml_count": fitted["ml_count"],
         },
         "coils": {
-            "qx_bits": min(max_coils, buffer_size * MAX_BITS),
-            "mx_bits": 0,  # No memory support in legacy mode
+            "qx_bits": fitted["qx_bits"],
+            "mx_bits": fitted["mx_bits"],
         },
         "discrete_inputs": {
-            "ix_bits": min(max_discrete_inputs, buffer_size * MAX_BITS),
+            "ix_bits": fitted["ix_bits"],
         },
         "input_registers": {
-            "iw_count": min(max_input_registers, buffer_size),
+            "iw_count": fitted["iw_count"],
         },
-        "word_order": "high_word_first",
+        "word_order": (
+            config_map.get("word_order", "high_word_first")
+            if fmt == "segmented"
+            else "high_word_first"
+        ),
     }
 
 
@@ -1131,7 +1188,6 @@ def start_loop():
                 # Parse buffer mapping configuration
                 buffer_config = parse_buffer_mapping_config(config_map, buffer_size)
                 logger.info(f"Buffer mapping format: {buffer_config['format']}")
-                _log_clamped_segments(config_map, buffer_config, buffer_size)
             else:
                 logger.warn(f"Failed to load configuration file: {status} - using defaults")
         except Exception as config_error:
@@ -1142,8 +1198,14 @@ def start_loop():
 
         # Use default configuration if not loaded from file
         if buffer_config is None:
-            buffer_config = parse_buffer_mapping_config({}, buffer_size)
+            config_map = {}
+            buffer_config = parse_buffer_mapping_config(config_map, buffer_size)
             logger.info("Using default buffer mapping configuration")
+
+        # After both routes, because the defaults are clamped just like a
+        # config file is: a device with no modbus_slave.json at all still ends
+        # up exposing 1024 registers over whatever image the program needs.
+        _log_clamped_segments(config_map, buffer_config)
 
         # Create OpenPLC-connected data blocks based on configuration
         hr_config = buffer_config["holding_registers"]

@@ -1111,6 +1111,16 @@ extern "C" int load_plc_program(PluginManager *pm)
                  * masters or OPC-UA sockets. */
                 log_error("[PLUGIN]: Plugin init failed — rolling back");
                 plugin_driver_cleanup_init(plugin_driver);
+                /* The image this load allocated goes back too. cleanup_init has
+                 * just undone every plugin's init(), so nothing holds the base
+                 * pointers any more, and leaving it would keep a whole image
+                 * reserved for a program that never started. */
+                {
+                    pthread_mutex_t *rollback_itm = image_tables_mutex();
+                    pthread_mutex_lock(rollback_itm);
+                    image_tables_free();
+                    pthread_mutex_unlock(rollback_itm);
+                }
                 pthread_mutex_lock(&state_mutex);
                 plc_state = PLC_STATE_ERROR;
                 pthread_mutex_unlock(&state_mutex);
@@ -1130,6 +1140,15 @@ extern "C" int load_plc_program(PluginManager *pm)
              * before bailing — otherwise the next start retries init()
              * on a half-initialised driver. */
             if (plugin_driver) plugin_driver_cleanup_init(plugin_driver);
+            /* Same reasoning as the init-failure rollback above: the plugins
+             * have been de-initialised, so the image they were pointing at is
+             * free to go and must, or this load leaks it. */
+            {
+                pthread_mutex_t *rollback_itm = image_tables_mutex();
+                pthread_mutex_lock(rollback_itm);
+                image_tables_free();
+                pthread_mutex_unlock(rollback_itm);
+            }
             pthread_mutex_lock(&state_mutex);
             plc_state = PLC_STATE_ERROR;
             pthread_mutex_unlock(&state_mutex);
@@ -1203,12 +1222,23 @@ extern "C" int unload_plc_program(PluginManager *pm)
 
         plugin_driver_stop(plugin_driver);
 
+        /* STOP IS NOT ENOUGH TO MAKE THE IMAGE FREEABLE, which is easy to miss.
+         *
+         * plugin_driver_stop skips any plugin whose `running` is 0, and a
+         * plugin can be initialised and never started -- ethercat is
+         * deliberately init'd even when disabled. Such a plugin still holds
+         * the by-value copy of the base pointers it took in init(), so
+         * stopping the running ones and freeing would leave it pointing at
+         * released memory. cleanup_init undoes init() for every plugin,
+         * started or not, which is what actually ends the last reference. */
+        plugin_driver_cleanup_init(plugin_driver);
+
         pthread_mutex_t *itm = image_tables_mutex();
         pthread_mutex_lock(itm);
         image_tables_clear_null_pointers();
-        /* Released only AFTER plugin_driver_stop above. Both native plugins
-         * cached these pointers by value at init(); freeing while they are
-         * still running would hand them memory that belongs to nobody. */
+        /* Released only after every plugin has been stopped AND de-initialised
+         * above. Both native plugins cache these pointers by value at init(),
+         * so freeing any earlier hands them memory that belongs to nobody. */
         image_tables_free();
         pthread_mutex_unlock(itm);
 
