@@ -180,6 +180,34 @@ The extraction process includes additional safety measures:
 3. **Directory Creation**: Creates necessary subdirectories safely
 4. **Atomic Operations**: Extraction is all-or-nothing
 
+## Stored Source Project
+
+A device keeps a copy of the source project it is running so it can be retrieved
+later (see [RETRIEVE_PROJECT.md](RETRIEVE_PROJECT.md)). Its security properties
+are deliberately narrow, and worth stating plainly.
+
+**It is not encrypted.** The project is a plain ZIP file under the persistent
+data directory. Anyone who can read the device's filesystem can read the
+project -- over SSH, with physical access, from a backup image, or from a
+mounted volume in a container deployment.
+
+**The access control is one role check.** `GET /api/project-snapshot` refuses
+the archive to anyone who is not an administrator. That protects the network
+path and nothing else; it is not a second layer behind encryption, because there
+is no encryption behind it.
+
+**There is no integrity guarantee.** Nothing signs or checksums the stored
+project. A project replaced on disk is retrieved as if it were the original, and
+neither the device nor the client can tell.
+
+**The project name is advertised unauthenticated.** The UDP discovery reply on
+port 33333 carries the stored project's name and timestamp so clients can
+populate a device picker before anyone signs in. Anything on the same network
+can read them. The archive itself is never served over discovery.
+
+If a deployment needs the project protected at rest, use full-disk or
+filesystem-level encryption on the device. This feature is not a substitute.
+
 ## Process Security
 
 ### Privilege Requirements

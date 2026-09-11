@@ -31,6 +31,7 @@ import tempfile
 import zlib
 from typing import Optional
 
+from webserver import config
 from webserver.logger import get_logger
 from webserver.plugin_config_model import PluginsConfiguration
 
@@ -206,15 +207,30 @@ def is_inside_root(path: str, runtime_root: Optional[str] = None) -> bool:
 
 def resolve_license_path(config_path: str, runtime_root: Optional[str] = None) -> Optional[str]:
     """``derive_license_path()`` plus the anti-traversal guard: never resolve
-    to a path outside the runtime root, even if a forged ``vpp_plugins.conf``
+    to a path outside a KNOWN root, even if a forged ``vpp_plugins.conf``
     carries an escaping ``config_path``. Returns None when it escapes.
+
+    TWO roots are accepted, on purpose:
+
+    * the runtime root (the legacy ``build/vpp`` location), and
+    * ``config.VPP_DATA_DIR`` under PERSISTENT_DATA_DIR, where
+      ``apply_vpp_plugin_conf`` now relocates VPP configs+licenses so a runtime
+      version update (which wipes ``$OPENPLC_DIR/build``) can no longer delete a
+      purchased license. After that relocation the ``config_path`` in
+      vpp_plugins.conf is an absolute path under VPP_DATA_DIR, and a guard that
+      only knew the runtime root would refuse the device its own license.
+
+    This widens the guard to a SECOND known root, NOT to "anywhere": ``..`` and
+    arbitrary absolute paths still resolve outside both roots and are refused.
     """
     path = derive_license_path(config_path)
     # An empty derivation (empty config_path) would resolve to the cwd, which
     # IS inside the root -- refuse it rather than let it through as a target.
-    if not path or not is_inside_root(path, runtime_root):
+    if not path:
         return None
-    return path
+    if is_inside_root(path, runtime_root) or is_inside_root(path, str(config.VPP_DATA_DIR)):
+        return path
+    return None
 
 
 def _license_path() -> Optional[str]:

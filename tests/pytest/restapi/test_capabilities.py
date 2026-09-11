@@ -14,9 +14,9 @@ talk to this runtime at all (DOPE-448). The contract these tests pin down:
 
 import re
 
-from webserver.version import MIN_EDITOR_VERSION, RUNTIME_VERSION
+from conftest import auth, create_user
 
-from conftest import create_user
+from webserver.version import MIN_EDITOR_VERSION, RUNTIME_VERSION
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
@@ -48,6 +48,7 @@ def test_capabilities_reports_runtime_version_and_editor_floor(client):
     assert body == {
         "runtimeVersion": RUNTIME_VERSION,
         "minEditorVersion": MIN_EDITOR_VERSION,
+        "projectSnapshot": True,
     }
 
 

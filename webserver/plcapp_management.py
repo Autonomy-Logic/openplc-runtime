@@ -1,17 +1,27 @@
-from dataclasses import dataclass, field
-from enum import Enum, auto
+import glob
 import os
 import shutil
-import time
-import zipfile
 import subprocess
 import threading
-import glob
+import time
+import zipfile
+from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import Final
 
+from webserver import project_snapshot
+from webserver.config import VPP_DATA_DIR
+from webserver.logger import LogParser, get_logger
+from webserver.plugin_config_model import PluginConfig, PluginsConfiguration, PluginType
+from webserver.retain_config import (
+    RETAIN_CONF_PATH,
+    RetainConfigError,
+    read_retain_conf_file,
+    validate_flush_seconds,
+    validate_retain_path,
+    write_retain_conf_file,
+)
 from webserver.runtimemanager import RuntimeManager
-from webserver.logger import get_logger, LogParser
-from webserver.plugin_config_model import PluginsConfiguration, PluginConfig, PluginType
 from webserver.vpp_license_debug import derive_license_path, is_inside_root
 
 logger, _ = get_logger("runtime", use_buffer=True)
@@ -344,15 +354,21 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
 
     * **Upload includes vpp_plugins.conf** → copy it to the runtime root
       so the C-side plugin loader picks it up at the next PLC start.
-      Also copy each plugin's JSON config from ``conf/`` into the VPP
-      build output directory (``build/vpp/``) so the .so can read it
-      from the stable location listed in vpp_plugins.conf.
+      Also copy each plugin's JSON config (and its license sibling) from
+      ``conf/`` into ``config.VPP_DATA_DIR`` (under PERSISTENT_DATA_DIR),
+      and REWRITE each ``config_path`` in vpp_plugins.conf to that
+      persistent absolute path. build/ is wiped by install.sh on a runtime
+      version update, which would otherwise delete a purchased license; the
+      persistent dir survives. Only the ``.so`` binary stays under build/vpp
+      (it is code, rebuilt each upload) — the C loader passes config_path to
+      the plugin verbatim, so the .so still finds its config and license.
 
     * **Upload does not include vpp_plugins.conf** → delete any existing
       ``vpp_plugins.conf`` from the runtime root.  This ensures a
       vanilla upload never inadvertently loads a VPP driver left over
       from a previous project, regardless of what .so files exist in
-      ``build/vpp/``.
+      ``build/vpp/``. The persistent config/license are left in place, so a
+      device keeps its license if the VPP is re-added later.
     """
     VPP_CONF_DEST = "vpp_plugins.conf"
     VPP_BUILD_DIR = "build/vpp"
@@ -376,13 +392,14 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
         shutil.copy2(uploaded_conf, VPP_CONF_DEST)
         build_state.log(f"[INFO] VPP: installed vpp_plugins.conf from upload\n")
 
-        # Copy each VPP plugin's config file to the path declared in
-        # vpp_plugins.conf (the config_path field). That field is the
-        # single source of truth for where the .so will look for its
-        # config at runtime — use it directly rather than constructing
-        # a separate destination.
+        # Copy each VPP plugin's config file into the persistent dir and rewrite
+        # its config_path to point there (see the loop below). config_path is the
+        # single source of truth for where the .so looks for its config at
+        # runtime, so relocating it there is what carries config+license out of
+        # the wipe-on-update build/ tree.
         conf_dir = os.path.join(generated_dir, "conf")
         vpp_conf_plugins = PluginsConfiguration.from_file(VPP_CONF_DEST)
+        rewrote_paths = False
         for p in vpp_conf_plugins.plugins:
             if not p.config_path:
                 continue
@@ -390,38 +407,179 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
             if not os.path.exists(src_config):
                 build_state.log(f"[WARNING] VPP: conf/{p.name}.json not found in upload, skipping\n")
                 continue
-            dest_config = os.path.normpath(p.config_path)
-            # Guard against path traversal in editor-generated vpp_plugins.conf.
-            # Shares one containment definition with the 0x49 write path (see
-            # is_inside_root): rejects a sibling that merely shares runtime_root
-            # as a string prefix, AND resolves symlinks, which a lexical
-            # abspath check does not -- a link out of the tree would otherwise
-            # let an innocent-looking relative path write outside the root.
-            if not is_inside_root(dest_config, runtime_root):
-                build_state.log(f"[WARNING] VPP: config_path '{p.config_path}' escapes runtime root, skipping\n")
+
+            # Relocate the config (and its license sibling) OUT of build/vpp and
+            # into PERSISTENT_DATA_DIR/vpp: install.sh does `rm -rf $OPENPLC_DIR/
+            # build` on a runtime version update, which used to delete the
+            # purchased license with it. The .so still finds them because we
+            # rewrite config_path in vpp_plugins.conf below to this persistent
+            # absolute path -- the C loader passes config_path to the plugin
+            # verbatim (plugin_config.c only contains `path`, the .so itself,
+            # which stays under build/vpp).
+            #
+            # The destination is built from the plugin NAME (a basename), NEVER
+            # from the editor-supplied config_path, so a forged conf cannot steer
+            # the write outside the persistent dir. A name that is not a plain
+            # filename is refused rather than trusted.
+            if not p.name or os.path.basename(p.name) != p.name:
+                build_state.log(f"[WARNING] VPP: suspicious plugin name '{p.name}', skipping\n")
                 continue
+            dest_config = os.path.join(str(VPP_DATA_DIR), f"{p.name}.json")
+            if not is_inside_root(dest_config, str(VPP_DATA_DIR)):
+                build_state.log(f"[WARNING] VPP: config dest '{dest_config}' escapes the persistent dir, skipping\n")
+                continue
+            # The old build/vpp sibling of THIS plugin, so a device licensed
+            # before this change can be migrated below. Derived from the FIXED
+            # build/vpp location plus the (already basename-checked) plugin name
+            # -- NOT from config_path. config_path is only confined to the runtime
+            # root by validate_vpp_plugins_conf (not to build/vpp), so deriving
+            # the migration source from it would let a forged conf point the read
+            # at any .license under the root and have it copied where 0x4A reads
+            # it back. The old code always wrote the license next to a build/vpp
+            # config, so this is exactly where a pre-change license lives, and it
+            # cannot be steered anywhere else.
+            old_license = os.path.join(runtime_root, VPP_BUILD_DIR, f"{p.name}.license")
+
             os.makedirs(os.path.dirname(dest_config), exist_ok=True)
             shutil.copy2(src_config, dest_config)
             build_state.log(f"[INFO] VPP: copied {p.name}.json to {dest_config}\n")
 
-            # Deliver the optional device license blob alongside the config, at
-            # the sibling path the licensed plugin derives from its config path
-            # (derive_license_path, shared with vpp_license_debug.py's 0x49
+            # Point the .so at the persistent config (absolute). This one line is
+            # what moves the license out of harm's way: the license sibling the
+            # .so derives from config_path now lives in the persistent dir too.
+            p.config_path = dest_config
+            rewrote_paths = True
+            dest_license = derive_license_path(dest_config)
+
+            # Deliver the optional device license blob to the sibling of the
+            # persistent config (derive_license_path, shared with the 0x49
             # handler so both write the SAME file the .so reads). Present only
             # for a licensed VPP whose device was activated; absent for free
-            # VPPs or demo devices. dest_config already passed the traversal
-            # guard above, so no need to re-check its .license sibling.
+            # VPPs or demo devices.
             src_license = os.path.join(conf_dir, f"{p.name}.license")
             if os.path.exists(src_license):
-                dest_license = derive_license_path(dest_config)
                 shutil.copy2(src_license, dest_license)
                 build_state.log(f"[INFO] VPP: copied {p.name}.license to {dest_license}\n")
+            elif old_license and os.path.exists(old_license) and not os.path.exists(dest_license):
+                # One-time migration: a device licensed before this change has
+                # its blob next to the OLD build/vpp config. Move it to the
+                # persistent sibling when the upload did not carry one, so the
+                # license is not orphaned in a directory install.sh wipes.
+                # Best-effort: a failure here just means the device re-activates
+                # from its existing entitlement on the next connect, as it does
+                # today when 0x4A reads EMPTY.
+                try:
+                    shutil.copy2(old_license, dest_license)
+                    build_state.log(f"[INFO] VPP: migrated {p.name}.license {old_license} -> {dest_license}\n")
+                except OSError as exc:
+                    build_state.log(f"[WARNING] VPP: could not migrate {p.name}.license: {exc}\n")
+
+        # Persist the rewritten config_path values so the C loader AND the
+        # 0x49/0x4A handlers (via _license_path) read the persistent location,
+        # not the build/vpp one the editor emitted.
+        if rewrote_paths:
+            vpp_conf_plugins.to_file(VPP_CONF_DEST)
+            build_state.log("[INFO] VPP: rewrote vpp_plugins.conf config_path to the persistent dir\n")
     else:
         # No VPP in this upload — remove any stale vpp_plugins.conf so
         # the plugin loader does not attempt to load old VPP drivers.
         if os.path.exists(VPP_CONF_DEST):
             os.remove(VPP_CONF_DEST)
             build_state.log("[INFO] VPP: removed stale vpp_plugins.conf (no VPP in upload)\n")
+
+
+def apply_retain_conf(generated_dir: str = "core/generated") -> None:
+    """Apply or remove the persistent-storage settings for this upload.
+
+    Retain settings are owned by the PROJECT, not by the device: the editor
+    emits ``retain.conf`` from the project's Persistent Storage screen and the
+    upload carries it here, exactly as it carries ``vpp_plugins.conf``. This
+    function is the single authoritative gate, with the same two cases:
+
+    * **Upload includes retain.conf** → validate it and copy it to the runtime
+      root, where the PLC application reads it at the next program load.
+
+    * **Upload does not include retain.conf** → delete any existing copy from
+      the runtime root, so the built-in file store goes back to being switched
+      off. This is not tidiness: it is how a target whose VPP owns retention
+      turns the built-in store off. Such a VPP declares
+      ``hidesNativeScreens: ['persistent-storage']``, the editor emits no
+      retain.conf, and the built-in store then declines the role — leaving the
+      vendor's driver as the only store on the device.
+
+    Validation happens HERE rather than at first use. A path whose directory
+    does not exist, or a flush period outside the bounds the core accepts, would
+    otherwise fail on every flush for the life of the program with nothing but a
+    log line to show for it. Refusing it once, with a line in the build log the
+    user is already watching, is the difference between a mistake they can see
+    and one they cannot.
+
+    Note what this function does NOT do: it does not touch retained VALUES. The
+    store itself decides at program start whether what it holds belongs to the
+    program now running, by comparing the program MD5 it stored alongside the
+    bytes. Keeping that decision in the store is what makes baremetal and
+    runtime v4 behave identically — baremetal has no webserver to notice an
+    upload at all.
+    """
+    RETAIN_CONF_NAME = "retain.conf"
+    uploaded_conf = os.path.join(generated_dir, RETAIN_CONF_NAME)
+    dest = str(RETAIN_CONF_PATH)
+
+    if not os.path.exists(uploaded_conf):
+        if os.path.exists(dest):
+            os.remove(dest)
+            build_state.log(
+                "[INFO] Retain: removed stale retain.conf (persistent storage not "
+                "configured in this project)\n"
+            )
+        return
+
+    # Parse with the same reader the core's settings go through, so what is
+    # validated here is exactly what the core will read back.
+    cfg = read_retain_conf_file(uploaded_conf)
+
+    try:
+        if cfg["enabled"]:
+            # Both only meaningful when the store is on. A disabled stanza
+            # carrying a path that does not exist, or a flush period outside the
+            # bounds, is not worth refusing an upload over -- neither is read
+            # while enabled=0, and refusing would delete the device's existing
+            # config over a field nothing consults. That bites for real when a
+            # later release tightens MAX_FLUSH_SECONDS: every project still
+            # carrying the old value would have its whole retain.conf refused,
+            # including the ones that had storage switched off anyway.
+            validate_retain_path(cfg["path"])
+            validate_flush_seconds(cfg["flushSeconds"])
+    except RetainConfigError as e:
+        build_state.log(f"[ERROR] Retain: refusing retain.conf from upload: {e}\n")
+        # Leave no half-applied state: a refused stanza must not leave the
+        # PREVIOUS project's settings in force, because the user would then be
+        # looking at a device configured by a project they are no longer
+        # running.
+        if os.path.exists(dest):
+            os.remove(dest)
+            build_state.log("[INFO] Retain: removed previous retain.conf\n")
+        return
+
+    # WRITTEN, not copied — and that is load-bearing, not stylistic.
+    #
+    # The editor emits `path=` to mean "use this device's default": it does not
+    # know the device's filesystem layout and should not guess at one.
+    # `read_retain_conf_file` substitutes this device's default for that empty
+    # value, so writing the PARSED stanza is what materialises it. Copying the
+    # upload byte-for-byte would ship the empty value to the core, which treats
+    # enabled-with-no-path as a misconfiguration and leaves the store off — so
+    # "use the default" would silently become "no retention at all".
+    #
+    # It also means anyone reading retain.conf on the device sees the real
+    # location rather than a blank.
+    write_retain_conf_file(
+        dest, enabled=cfg["enabled"], path_value=cfg["path"], flush_seconds=cfg["flushSeconds"]
+    )
+    state = "on" if cfg["enabled"] else "off"
+    build_state.log(
+        f"[INFO] Retain: installed retain.conf from upload (persistent storage {state})\n"
+    )
 
 
 def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", clean: bool = False):
@@ -619,3 +777,21 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
         build_state.log(f"[ERROR] Compile orchestrator crashed: {e}\n")
         build_state.status = BuildStatus.FAILED
         build_state.exit_code = -1
+    finally:
+        # The stored project snapshot follows the program exactly. A snapshot
+        # staged by the upload becomes the stored one only once the build has
+        # actually produced a program; any other outcome discards it, and the
+        # upload already cleared whatever was stored before.
+        #
+        # In a `finally` so the outer crash guard above cannot leave a staged
+        # snapshot behind to be promoted by the NEXT build. Discarding is the
+        # honest end state either way: a failed build leaves the device with no
+        # program at all, because compile-clean.sh removes libplc_*.so before it
+        # has a replacement to move into place.
+        try:
+            if build_state.status == BuildStatus.SUCCESS:
+                project_snapshot.promote()
+            else:
+                project_snapshot.discard_staged()
+        except Exception as e:  # never let snapshot bookkeeping mask a build result
+            build_state.log(f"[WARNING] Project snapshot bookkeeping failed: {e}\n")

@@ -1,7 +1,9 @@
+import base64
+import json
 import os
 from typing import Callable, Optional
 
-from flask import Blueprint, Flask, jsonify, request
+from flask import Blueprint, Flask, current_app, jsonify, request
 from flask_jwt_extended import (
     JWTManager,
     create_access_token,
@@ -16,10 +18,16 @@ from sqlalchemy import text as sa_text
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import webserver.config
+from webserver import project_snapshot
 from webserver.logger import get_logger
 from webserver.version import MIN_EDITOR_VERSION, RUNTIME_VERSION
 
 logger, buffer = get_logger("logger", use_buffer=True)
+
+# Read size for streaming the stored project out. A multiple of 3 so every chunk
+# encodes to whole base64 quads; 3 MB of source becomes 4 MB of base64, which is
+# the actual peak this bounds.
+_BASE64_CHUNK_BYTES: int = 3 * 1024 * 1024
 
 env = os.getenv("FLASK_ENV", "development")
 
@@ -109,6 +117,10 @@ def restapi_capabilities():
             {
                 "runtimeVersion": RUNTIME_VERSION,
                 "minEditorVersion": MIN_EDITOR_VERSION,
+                # Tells a client it may send a source-project snapshot with an
+                # upload and retrieve it later. Unauthenticated like the rest of
+                # this endpoint, so a client can decide before logging in.
+                "projectSnapshot": True,
             }
         ),
         200,
@@ -195,6 +207,73 @@ def apply_user_schema_migrations():
         conn.execute(
             sa_text(f"ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT '{ADMIN_ROLE}'")
         )
+
+
+def repair_missing_admin() -> bool:
+    """Rescue a device whose accounts contain no admin at all.
+
+    That state is a dead end. Once any user exists, ``create-user`` refuses a
+    caller who is not an admin and ``update-user`` refuses a role change from
+    one, so there is no sequence of API calls that produces an admin. Every
+    admin-gated operation is permanently unreachable, and nothing surfaces it
+    until someone tries one.
+
+    Devices reach it by upgrading through an early build of the roles feature,
+    whose ``role`` column was nullable with no default and whose rows landed on
+    ``user``. ``apply_user_schema_migrations`` does not help: it only runs when
+    the column is ABSENT, so a database that already has one is left alone
+    whatever is in it.
+
+    Exactly one account is promoted, because a single-user device has no
+    ambiguity about who the administrator is. With several accounts the runtime
+    has no basis for picking a winner, so it refuses to guess and says so
+    loudly instead -- that combination should barely exist in the field, since
+    multiple accounts only became possible when roles did.
+
+    Returns True when an account was promoted. Safe on every boot: a no-op the
+    moment any admin exists.
+    """
+    if admin_count() > 0:
+        return False
+
+    users = User.query.order_by(User.id).all()
+    if not users:
+        # Fresh device. The bootstrap path already makes the first account an
+        # admin, so there is nothing to repair.
+        return False
+
+    if len(users) > 1:
+        logger.error(
+            "No administrator account exists and there are %d accounts (%s). "
+            "The runtime will not choose one. Admin-only operations stay "
+            "unavailable until an administrator is restored directly in the "
+            "user database.",
+            len(users),
+            ", ".join(user.username for user in users),
+        )
+        return False
+
+    user = users[0]
+    user.role = ADMIN_ROLE
+    try:
+        db.session.commit()
+    except Exception as exc:
+        # The caller runs inside a broad `except Exception: pass` that exists
+        # for the schema setup around it. Reporting here means a failed repair
+        # is not swallowed by that: it only ever gets one chance per boot, and
+        # a device that silently stayed unrepairable is the hardest version of
+        # this problem to diagnose.
+        db.session.rollback()
+        logger.error("Could not promote '%s' to administrator: %s", user.username, exc)
+        return False
+
+    logger.warning(
+        "Account '%s' was the only account on this device and held no "
+        "administrator role, which leaves admin-only operations permanently "
+        "unreachable. Promoted it to administrator.",
+        user.username,
+    )
+    return True
 
 
 @jwt.user_identity_loader
@@ -542,82 +621,6 @@ def update_user(user_id):
     return jsonify({"msg": "User updated successfully", "user": target.to_dict()}), 200
 
 
-# password change for specific user by any authenticated user
-@restapi_bp.route("/password-change/<int:user_id>", methods=["PUT"])
-@jwt_required()
-def change_password(user_id):
-    """
-    Change password for a specific user.
-    ---
-    tags:
-      - Users
-    security:
-      - BearerAuth: []
-    parameters:
-      - name: user_id
-        in: path
-        required: true
-        type: integer
-        description: The user ID
-      - name: body
-        in: body
-        required: true
-        schema:
-          type: object
-          required:
-            - old_password
-            - new_password
-          properties:
-            old_password:
-              type: string
-            new_password:
-              type: string
-    responses:
-      200:
-        description: Password updated successfully
-        schema:
-          type: object
-          properties:
-            msg:
-              type: string
-              example: Password for user admin updated successfully
-      400:
-        description: Missing old or new password
-      403:
-        description: Old password is incorrect
-      404:
-        description: User not found
-      500:
-        description: User retrieval error
-    """
-    data = request.get_json()
-    old_password = data.get("old_password")
-    new_password = data.get("new_password")
-
-    if not old_password or not new_password:
-        return jsonify({"msg": "Both old and new passwords are required"}), 400
-
-    try:
-        user = User.query.get(user_id)
-    except Exception as e:
-        logger.error("Error retrieving user: %s", e)
-        return jsonify({"msg": "User retrieval error"}), 500
-
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-
-    if not user.check_password(old_password):
-        return jsonify({"msg": "Old password is incorrect"}), 403
-
-    user.set_password(new_password)
-    db.session.commit()
-
-    return (
-        jsonify({"msg": f"Password for user {user.username} updated successfully"}),
-        200,
-    )
-
-
 # delete a user by ID
 @restapi_bp.route("/delete-user/<int:user_id>", methods=["DELETE"])
 @jwt_required()
@@ -676,6 +679,87 @@ def delete_user(user_id):
 
 
 # login endpoint
+@restapi_bp.route("/project-snapshot", methods=["GET"])
+@jwt_required()
+def get_project_snapshot():
+    """Retrieve the stored source project as a base64 ZIP.
+
+    Admin only. The stored project is NOT encrypted on the device -- anyone
+    with filesystem access can read it -- so this role check is the whole of
+    the access control, not a second layer behind one.
+
+    Base64 inside JSON rather than a binary body on purpose: openplc-web
+    reaches devices through the orchestrator agent's HTTP proxy, which decodes
+    responses as JSON or falls back to text. A binary body does not survive
+    that trip.
+    ---
+    tags:
+      - Programs
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: The stored project archive
+        schema:
+          type: object
+          properties:
+            projectName:
+              type: string
+            filename:
+              type: string
+            contentBase64:
+              type: string
+              description: The project ZIP, base64-encoded
+      401:
+        description: Authentication required
+      403:
+        description: Admin privileges required
+      404:
+        description: No project is stored on this device
+    """
+    if not (current_user and current_user.is_admin()):
+        return jsonify({"msg": "Admin privileges required"}), 403
+
+    record = project_snapshot.read_metadata()
+    if record is None or not project_snapshot.blob_path().exists():
+        return jsonify({"msg": "No project is stored on this device"}), 404
+
+    # Streamed, not assembled.
+    #
+    # The base64-in-JSON wire format is not negotiable (the agent's proxy
+    # decodes JSON or falls back to text; a binary body does not survive that
+    # trip), but building the response in memory meant holding the archive, its
+    # base64 expansion, and Flask's serialisation of the whole document at once
+    # -- roughly 3.5x the archive, which at the 100 MB cap is far more than the
+    # Pi-class hardware this targets has to spare.
+    #
+    # Encoding straight into the response bounds peak memory by the chunk size
+    # instead of the file size, and the bytes on the wire are identical. The
+    # chunk is a multiple of 3 so each one encodes to complete base64 quads with
+    # no padding until the end.
+    def stream():
+        head = {
+            "projectName": record.get("projectName", ""),
+            "formatVersion": record.get("formatVersion"),
+            "filename": "project.zip",
+        }
+        # Everything except the archive, opened for the value to be appended.
+        prefix = json.dumps(head)[:-1]
+        yield f'{prefix}, "contentBase64": "'.encode("ascii")
+        try:
+            for chunk in project_snapshot.iter_blob(_BASE64_CHUNK_BYTES):
+                yield base64.b64encode(chunk)
+        except OSError as exc:
+            # The response has already begun, so there is no status code left to
+            # change. Truncating mid-value gives the client invalid JSON, which
+            # is the honest outcome: it must not read a partial archive as whole.
+            logger.error("Streaming the stored project failed: %s", exc)
+            return
+        yield b'"}'
+
+    return current_app.response_class(stream(), mimetype="application/json")
+
+
 @restapi_bp.route("/login", methods=["POST"])
 def login():
     """

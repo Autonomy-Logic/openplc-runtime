@@ -34,6 +34,7 @@ extern "C" {
 #include "debug_write_journal.h"
 #include "image_tables.h"
 #include "journal_buffer.h"
+#include "plc_retain.h"
 #include "plc_state_manager.h"
 #include "plcapp_manager.h"
 #include "scan_cycle_manager.h"
@@ -438,6 +439,18 @@ void *plc_cycle_thread(void *arg)
     image_tables_bind_located_vars();
     image_tables_fill_null_pointers();
     pthread_mutex_unlock(itm);
+
+    /* Retained variables. init() decides once whether retain can run here —
+     * does the .so export the entry points, does the program retain anything,
+     * which driver will hold the bytes — and read() asks that driver for what it
+     * has for THIS program, which is also where a driver discards a previous
+     * program's values. Both must follow the located-variable binding above: a
+     * retained variable may also be located, and its image slot has to exist
+     * before anything writes through it. Both are no-ops when retain is not in
+     * play, and read() lands before the first task is released, so a new
+     * program never runs a scan on the old one's state. */
+    plc_retain_init();
+    plc_retain_read();
 
     journal_buffer_ptrs_t journal_ptrs = {
         .bool_input   = bool_input,
@@ -965,6 +978,12 @@ void *plc_cycle_thread(void *arg)
                  * g_tasks_running == 0 so no worker is mid-scan, and we hold
                  * image_lock. Cheap no-op when nothing is queued. */
                 debug_write_journal_drain();
+                /* Retained values, once per scan. This window is the only place
+                 * they can be read safely: g_tasks_running == 0, so no worker is
+                 * inside a body mutating them — the same guarantee
+                 * copy_config_globals_out relies on. The plugin decides whether
+                 * these bytes are actually committed now; no-op with no store. */
+                plc_retain_save();
                 image_unlock();
                 if (plugin_driver) plugin_driver_cycle_end(plugin_driver);
                 cycle_end_pending = false;
@@ -1121,6 +1140,15 @@ extern "C" int unload_plc_program(PluginManager *pm)
         pthread_mutex_unlock(&state_mutex);
 
         pthread_join(plc_thread, NULL);
+
+        /* Retained values: ask the store to commit whatever it is still
+         * holding. Placed exactly here on purpose — AFTER the join, so no scan
+         * is mid-save and the bytes are a consistent snapshot, and BEFORE
+         * plugin_driver_stop(), because a plugin-backed store has to still be
+         * alive to answer. A driver that already commits inside save() has
+         * nothing to do; what this buys is that a clean stop loses nothing on
+         * one that buffers. */
+        plc_retain_flush();
 
         journal_cleanup();
         debug_write_journal_reset();

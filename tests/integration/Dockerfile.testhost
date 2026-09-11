@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1
+
+# A Debian host that runs its own Docker daemon, so the bootloader can be
+# exercised end to end without a physical device (RTOP-283).
+#
+# Debian bookworm rather than the official docker:dind image on purpose: this
+# stands in for a real target, and install.sh's package-manager detection,
+# engine install and container wiring are part of what needs testing. An
+# Alpine dind image would test none of that.
+#
+# What this CANNOT test, and what the SLM-RP4 round is still for: real
+# hardware access. There is no /dev/spidev6.0 or /dev/gpiochip0 in here, so
+# VPP plugin behaviour and genuine SCHED_FIFO latency have to be validated on
+# the device. Everything about the update mechanism itself -- pull, swap,
+# health-gate, recovery, discovery, auth -- is testable here.
+FROM debian:bookworm-slim
+
+# ca-certificates + gnupg for the Docker apt repository; iproute2 and procps
+# for the diagnostics the tests assert on; python3 for the assertion script.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+        iproute2 \
+        iptables \
+        procps \
+        python3 \
+        uidmap \
+        xz-utils \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        docker-ce \
+        docker-ce-cli \
+        containerd.io \
+    && rm -rf /var/lib/apt/lists/*
+
+# vfs rather than overlay2: an overlay-on-overlay mount is refused by the
+# kernel when the outer container's filesystem is already overlayfs, which it
+# is under Docker Desktop. vfs is slower and uses more disk, which for a test
+# harness is a fair trade against not working at all.
+RUN mkdir -p /etc/docker \
+    && printf '{\n  "storage-driver": "vfs",\n  "iptables": false,\n  "ip6tables": false\n}\n' \
+        > /etc/docker/daemon.json
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["sleep", "infinity"]

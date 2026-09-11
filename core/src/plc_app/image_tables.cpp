@@ -85,6 +85,12 @@ uint16_t (*ext_strucpp_debug_size)       (uint8_t, uint16_t)             = nullp
 uint8_t  (*ext_strucpp_debug_set)        (uint8_t, uint16_t, bool,
                                           const uint8_t *, uint16_t)     = nullptr;
 uint16_t (*ext_strucpp_debug_read)       (uint8_t, uint16_t, uint8_t *)  = nullptr;
+size_t   (*ext_strucpp_retain_blob_size)  (void)                       = nullptr;
+uint32_t (*ext_strucpp_retain_layout_hash)(void)                       = nullptr;
+size_t   (*ext_strucpp_retain_pack)       (uint8_t *, size_t)          = nullptr;
+uint8_t  (*ext_strucpp_retain_unpack)     (const uint8_t *, size_t,
+                                           uint8_t (*)(uint8_t, uint16_t,
+                                                       const uint8_t *, uint16_t)) = nullptr;
 uint8_t  (*ext_strucpp_debug_write)      (uint8_t, uint16_t,
                                           const uint8_t *, uint16_t)     = nullptr;
 int      (*ext_strucpp_debug_locate)     (uint8_t, uint16_t, uint8_t *,
@@ -142,10 +148,21 @@ namespace {
         return rc;
     }
 
+    /* Optional lookups go through the QUIET variant. plugin_manager_get_symbol
+     * reports every miss as "dlsym error", which is right for a symbol the
+     * runtime cannot work without and wrong for one it can: a program built by
+     * an editor older than a feature is correct, runs correctly, and used to
+     * announce itself with a burst of errors describing a healthy device as a
+     * broken one. Where absence is worth mentioning, the owning subsystem says
+     * so in its own words (see the located-globals warning below). */
     void *resolve(PluginManager *pm, const char *name, bool required)
     {
+        if (!required)
+        {
+            return plugin_manager_try_get_symbol(pm, name);
+        }
         void *sym = plugin_manager_get_symbol(pm, name);
-        if (!sym && required)
+        if (!sym)
         {
             log_error("[strucpp] required symbol '%s' missing from .so", name);
         }
@@ -251,6 +268,14 @@ extern "C" int symbols_init(PluginManager *pm)
     *(void **)&ext_strucpp_debug_set         = resolve(pm, "strucpp_debug_set",         true);
     *(void **)&ext_strucpp_debug_read        = resolve(pm, "strucpp_debug_read",        true);
     *(void **)&ext_strucpp_debug_write       = resolve(pm, "strucpp_debug_write",       true);
+
+    /* Optional: a program built by an older STruC++ has no retain exports, and
+     * the retain path then simply never runs. `required = false` so that is a
+     * quiet degradation rather than a failed load. */
+    *(void **)&ext_strucpp_retain_blob_size   = resolve(pm, "strucpp_retain_blob_size",   false);
+    *(void **)&ext_strucpp_retain_layout_hash = resolve(pm, "strucpp_retain_layout_hash", false);
+    *(void **)&ext_strucpp_retain_pack        = resolve(pm, "strucpp_retain_pack",        false);
+    *(void **)&ext_strucpp_retain_unpack      = resolve(pm, "strucpp_retain_unpack",      false);
     /* Optional: present only on .so's built with strucpp_capabilities bit 2.
      * When NULL the debug-write drain routes every leaf as a global write. */
     *(void **)&ext_strucpp_debug_locate      = resolve(pm, "strucpp_debug_locate",      false);

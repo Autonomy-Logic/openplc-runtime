@@ -111,3 +111,21 @@ void *plugin_manager_get_symbol(PluginManager *pm, const char *symbol_name)
     }
     return sym;
 }
+
+void *plugin_manager_try_get_symbol(PluginManager *pm, const char *symbol_name)
+{
+    if (!pm || !pm->handle)
+    {
+        return NULL;
+    }
+    dlerror(); // clear old error
+    void *sym = dlsym(pm->handle, symbol_name);
+    /* Consume this lookup's error without reporting it: the caller asked for a
+     * symbol it can do without. Leaving it pending would hand it to whichever
+     * required lookup ran next. */
+    if (dlerror())
+    {
+        return NULL;
+    }
+    return sym;
+}

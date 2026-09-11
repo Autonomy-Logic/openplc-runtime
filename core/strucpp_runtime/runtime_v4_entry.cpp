@@ -30,6 +30,14 @@
 #include "iec_std_lib.hpp"   // ConfigurationInstance + __CURRENT_TIME_NS
 #include "generated.hpp"
 
+// Retain marshalling is conditional on the STruC++ that built this upload —
+// see the block at the bottom of this file, and retain_probe.cpp for how the
+// build decides. The include lives behind the same gate so a header set that
+// predates the retain API is never even asked for it.
+#ifdef STRUCPP_SHIM_HAS_RETAIN
+#include "iec_retain.hpp"    // retain blob format + pack/unpack
+#endif
+
 #include <cstddef>
 #include <cstdint>
 #include <pthread.h>
@@ -140,3 +148,88 @@ extern "C" void strucpp_set_current_time(int64_t ns) {
 // NOTE: the runtime no longer probes a "threaded ABI" capability symbol. It
 // compiles every .so itself with -DSTRUCPP_THREADED, so the threaded
 // process-image model is the only one; there is nothing to detect.
+
+// ---------------------------------------------------------------------------
+// Retain marshalling.
+//
+// GATED ON THE UPLOAD'S STruC++ VERSION. `strucpp::retain` and
+// `strucpp::debug::retain_layout_hash` arrived in STruC++ v0.6.5, and this file
+// is compiled against the runtime headers the EDITOR shipped inside
+// program.zip — which on every OpenPLC Editor released to date are older than
+// that. Compiling this block unconditionally made an older editor's upload fail
+// to build (runtime v4.2.0), so scripts/Makefile.strucpp probes the header set
+// per upload and defines STRUCPP_SHIM_HAS_RETAIN only when the API is there.
+//
+// When it is not, these four exports are simply absent from the .so. That is a
+// state the runtime already handles rather than a degraded one to apologise
+// for: image_tables.cpp resolves all four as OPTIONAL symbols, and
+// plc_retain_init() stands the store down and says so in the log. Retained
+// variables then behave as NON_RETAIN, exactly as they did before these exports
+// existed.
+//
+// Anything added here that touches strucpp::retain or retain_layout_hash MUST
+// stay inside this #ifdef and be mirrored into retain_probe.cpp — a probe that
+// checks less than the shim uses would pass for a header set that cannot
+// actually build. Tests pin both halves
+// (tests/pytest/compile/test_retain_capability_probe.py).
+// ---------------------------------------------------------------------------
+#ifdef STRUCPP_SHIM_HAS_RETAIN
+
+// ---------------------------------------------------------------------------
+// The WALK lives here, inside the .so, because that is where the debug tables
+// and `handle_read` / `handle_write` are. The runtime is built once and loads
+// many .so files, so it cannot reach `strucpp::retain` by mangled name — and
+// re-implementing the blob format on its side would put two copies of a wire
+// format in two repos, which is exactly the drift `iec_retain.hpp` exists to
+// prevent.
+//
+// What the runtime DOES own is the write path, which is why unpack takes a
+// callback instead of using `handle_write` directly: a retained variable may
+// also be LOCATED (`VAR RETAIN x AT %MW10`), and poking such a leaf's IECVar
+// is undone by the next copy-in from the process image. The runtime passes a
+// thunk that routes through `runtime_external_write`, which knows to send a
+// located leaf through the image journal. Reads need no such care — a read
+// sees whatever the last copy-in left — so pack uses `handle_read` here.
+// ---------------------------------------------------------------------------
+
+static uint16_t retain_read_leaf(uint8_t arr, uint16_t elem, uint8_t* dest) {
+    return strucpp::debug::handle_read(arr, elem, dest);
+}
+
+static uint16_t retain_size_leaf(uint8_t arr, uint16_t elem) {
+    return strucpp::debug::handle_size(arr, elem);
+}
+
+/** Bytes a full blob occupies for this program; 0 when nothing is retained. */
+extern "C" size_t strucpp_retain_blob_size(void) {
+    return strucpp::retain::blob_size(retain_size_leaf);
+}
+
+/** Identity of the retain LAYOUT — reported so the runtime can log it. */
+extern "C" uint32_t strucpp_retain_layout_hash(void) {
+    return strucpp::debug::retain_layout_hash;
+}
+
+/** Serialise every retained leaf. Returns bytes written, 0 on failure. */
+extern "C" size_t strucpp_retain_pack(uint8_t* out, size_t cap) {
+    return strucpp::retain::pack(out, cap, retain_read_leaf, retain_size_leaf);
+}
+
+/**
+ * Restore every retained leaf, writing through the runtime's own callback.
+ *
+ * Returns `strucpp::retain::LoadResult` as a byte. Anything but 0 (Ok) means
+ * nothing was written and every variable keeps its declared initial value —
+ * the correct outcome for a corrupt or stale store, since a machine starting
+ * from its defaults is recoverable and one starting from plausible-looking
+ * garbage is not.
+ */
+extern "C" uint8_t strucpp_retain_unpack(
+    const uint8_t* blob,
+    size_t len,
+    uint8_t (*write_leaf)(uint8_t arr, uint16_t elem, const uint8_t* bytes, uint16_t n)) {
+    return static_cast<uint8_t>(
+        strucpp::retain::unpack(blob, len, write_leaf, retain_size_leaf));
+}
+
+#endif // STRUCPP_SHIM_HAS_RETAIN
