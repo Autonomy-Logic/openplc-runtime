@@ -215,6 +215,18 @@ extern "C"
      *  and reaches the number the same way. */
 #define IMAGE_MAX_ELEMENTS 65536u
 
+    /** The `image.conf` wire format this runtime reads.
+     *
+     * Version 2 carries a unit word on every value and leaves the three BOOL
+     * tables in bits, which is the unit their ADDRESSES use; this file
+     * converts to the [N][8] shape the storage has. A file declaring any other
+     * version, or none, is ignored whole rather than read by today's rules --
+     * guessing is how a unit change becomes a silent factor of eight.
+     *
+     * There is no version 1 to be compatible with. It was written but never
+     * merged, so no device has ever read this file in that form. */
+#define IMAGE_CONF_FORMAT_VERSION 2
+
     /**
      * Allocate the image at `elements` per table, replacing whatever is there.
      *

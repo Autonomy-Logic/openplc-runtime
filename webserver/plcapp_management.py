@@ -676,10 +676,10 @@ def apply_image_conf(generated_dir: str = "core/generated") -> None:
 
     # Parse with the same reader the core's sizes go through, so what is
     # validated here is exactly what the core will read back.
-    sizes = read_image_conf_file(uploaded_conf)
+    version, sizes, units = read_image_conf_file(uploaded_conf)
 
     try:
-        sizes = validate_image_conf(sizes)
+        sizes = validate_image_conf(version, sizes, units)
     except ImageConfigError as e:
         build_state.log(f"[ERROR] Image: refusing image.conf from upload: {e}\n")
         # Leave no half-applied state, and in particular do not leave the

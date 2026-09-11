@@ -70,22 +70,30 @@ IMAGE_CONF_PATH = RUNTIME_ROOT / "image.conf"
 #
 # Note the gap this list makes visible: there is byte_input and byte_output but
 # no byte_memory, so `%MB` has no storage on this runtime at all.
-IMAGE_TABLE_KEYS = (
-    "bool_input",
-    "bool_output",
-    "byte_input",
-    "byte_output",
-    "int_input",
-    "int_output",
-    "dint_input",
-    "dint_output",
-    "lint_input",
-    "lint_output",
-    "int_memory",
-    "dint_memory",
-    "lint_memory",
-    "bool_memory",
-)
+IMAGE_TABLE_UNITS = {
+    "bool_input": "bits",
+    "bool_output": "bits",
+    "byte_input": "bytes",
+    "byte_output": "bytes",
+    "int_input": "words",
+    "int_output": "words",
+    "dint_input": "dwords",
+    "dint_output": "dwords",
+    "lint_input": "lwords",
+    "lint_output": "lwords",
+    "int_memory": "words",
+    "dint_memory": "dwords",
+    "lint_memory": "lwords",
+    "bool_memory": "bits",
+}
+IMAGE_TABLE_KEYS = tuple(IMAGE_TABLE_UNITS)
+
+# The wire format this runtime reads. A file declaring any other version, or
+# none, is refused whole rather than read by today's rules: guessing is how a
+# unit change becomes a silent factor of eight. There is no version 1 to be
+# compatible with -- it was written but never merged, so no device has ever
+# read this file in that form.
+IMAGE_CONF_FORMAT_VERSION = 2
 
 # A located variable's table index is carried as a uint16_t in the STruC++ ABI
 # (`LocatedVar.byte_index`, core/src/lib/strucpp_abi.hpp), so no table can be
@@ -98,11 +106,24 @@ IMAGE_TABLE_KEYS = (
 MAX_TABLE_ELEMENTS = 65536
 
 
+def max_in_file_unit(key: str) -> int:
+    """The ceiling for one table, expressed in the unit its file value uses.
+
+    THE CEILING IS IN ELEMENTS AND THE FILE IS NOT, which is exactly the kind
+    of mismatch the unit word exists to prevent -- so it must not be
+    reintroduced here. A BOOL table's value is in bits and its storage is
+    ``IEC_BOOL *[N][8]``, so 65536 elements is 524288 bits. Comparing the raw
+    bit count against the element ceiling would refuse every legal image above
+    8192 bytes, eight times early.
+    """
+    return MAX_TABLE_ELEMENTS * 8 if IMAGE_TABLE_UNITS[key] == "bits" else MAX_TABLE_ELEMENTS
+
+
 class ImageConfigError(ValueError):
     """Raised for a size the runtime would not be able to honour."""
 
 
-def read_image_conf_file(path: str | os.PathLike) -> dict[str, int]:
+def read_image_conf_file(path: str | os.PathLike) -> tuple[int, dict[str, int], dict[str, str]]:
     """Parse an ``image.conf``, with every unset table read as zero.
 
     Takes a path rather than assuming the runtime root, because the file worth
@@ -121,6 +142,8 @@ def read_image_conf_file(path: str | os.PathLike) -> dict[str, int]:
     would ignore it anyway.
     """
     sizes = {key: 0 for key in IMAGE_TABLE_KEYS}
+    units = {key: IMAGE_TABLE_UNITS[key] for key in IMAGE_TABLE_KEYS}
+    version = 0
     try:
         with open(path, "r", encoding="utf-8") as handle:
             for raw in handle:
@@ -129,15 +152,26 @@ def read_image_conf_file(path: str | os.PathLike) -> dict[str, int]:
                     continue
                 key, _, value = line.partition("=")
                 key, value = key.strip(), value.strip()
+                if key == "format_version":
+                    try:
+                        version = int(value)
+                    except ValueError:
+                        version = -1
+                    continue
                 if key not in sizes:
                     continue
+                # "<count> <unit>": the unit is checked in validation, where a
+                # wrong one produces the same clear refusal as an out-of-range
+                # count. A missing unit reads as an empty string and fails
+                # there rather than being guessed at here.
+                count, _, unit = value.partition(" ")
+                units[key] = unit.strip()
                 try:
-                    sizes[key] = int(value)
+                    sizes[key] = int(count)
                 except ValueError:
-                    # Left as a parse failure rather than an exception: the
-                    # value is validated separately, and a garbled line should
-                    # produce the same clear refusal as an out-of-range one
-                    # rather than a traceback from the parser.
+                    # Left as a parse failure rather than an exception: a
+                    # garbled line should produce the same clear refusal as an
+                    # out-of-range one rather than a traceback from the parser.
                     sizes[key] = -1
     except FileNotFoundError:
         pass
@@ -150,40 +184,67 @@ def read_image_conf_file(path: str | os.PathLike) -> dict[str, int]:
         # already knows how to handle -- it refuses the stanza and falls back to
         # the floor derived from the program.
         logger.warning("Image: could not read %s (%s); treating as no sizes", path, exc)
-        return {key: -1 for key in IMAGE_TABLE_KEYS}
-    return sizes
+        return -1, {key: -1 for key in IMAGE_TABLE_KEYS}, units
+    return version, sizes, units
 
 
-def validate_table_elements(key: str, value: object) -> int:
-    """Check one table's element count.
+def validate_table_count(key: str, value: object, unit: object) -> int:
+    """Check one table's count, in the unit its own addresses use.
 
     Refused at INSTALL, with a line in the build log the user is already
     watching, for the same reason the retain settings are: a size the core
     cannot honour would otherwise be discovered at bind time, per located
     variable, with nothing but a log line on a device nobody is looking at.
+
+    The unit is checked too, and that is not pedantry. A ``bool_output`` value
+    written in bytes rather than bits is a perfectly plausible number that
+    allocates an image eight times too small, with no diagnostic on either
+    side. Refusing it here is the only place a person sees it.
     """
+    expected = IMAGE_TABLE_UNITS[key]
+    if unit != expected:
+        got = unit if unit else "no unit"
+        raise ImageConfigError(f"{key} must be given in {expected} (got {got}).")
     try:
-        elements = int(value)
+        count = int(value)
     except (TypeError, ValueError) as exc:
-        raise ImageConfigError(f"{key} must be a whole number of elements.") from exc
-    if elements < 0:
-        raise ImageConfigError(f"{key} cannot be negative (got {elements}).")
-    if elements > MAX_TABLE_ELEMENTS:
+        raise ImageConfigError(f"{key} must be a whole number of {expected}.") from exc
+    if count < 0:
+        raise ImageConfigError(f"{key} cannot be negative (got {count}).")
+    ceiling = max_in_file_unit(key)
+    if count > ceiling:
         raise ImageConfigError(
-            f"{key} asks for {elements} elements; the located-variable ABI "
-            f"addresses at most {MAX_TABLE_ELEMENTS}."
+            f"{key} asks for {count} {expected}; the located-variable ABI "
+            f"addresses at most {MAX_TABLE_ELEMENTS} elements, which is "
+            f"{ceiling} {expected}."
         )
-    return elements
+    return count
 
 
-def validate_image_conf(sizes: dict[str, int]) -> dict[str, int]:
-    """Validate every table, returning the normalised sizes.
+def validate_image_conf(
+    version: int, sizes: dict[str, int], units: dict[str, str]
+) -> dict[str, int]:
+    """Validate the version and every table, returning the normalised counts.
 
-    All fourteen or none: the tables size interlocking storage that one
+    The version is checked FIRST and refuses the whole file, because every
+    check below reads the values by this version's rules. A file from a format
+    we do not know is not a file with fourteen suspicious numbers in it -- it
+    is a file we cannot claim to have understood.
+
+    Then all fourteen or none: the tables size interlocking storage that one
     allocation hands out together, and a half-applied image is worse than a
     refused one.
     """
-    return {key: validate_table_elements(key, sizes.get(key, 0)) for key in IMAGE_TABLE_KEYS}
+    if version != IMAGE_CONF_FORMAT_VERSION:
+        raise ImageConfigError(
+            f"image.conf declares format_version {version}; this runtime reads "
+            f"format_version {IMAGE_CONF_FORMAT_VERSION}. Re-upload the project "
+            f"from a current editor."
+        )
+    return {
+        key: validate_table_count(key, sizes.get(key, 0), units.get(key))
+        for key in IMAGE_TABLE_KEYS
+    }
 
 
 def write_image_conf_file(path: str | os.PathLike, sizes: dict[str, int]) -> None:
@@ -204,13 +265,14 @@ def write_image_conf_file(path: str | os.PathLike, sizes: dict[str, int]) -> Non
         "# Read by the PLC application at program load.",
         "# Edits here are overwritten on the next upload.",
         "#",
-        "# One key per table in core/src/plc_app/image_tables.h. Each value is a",
-        "# count of ELEMENTS in that table, so the three BOOL tables are in bytes",
-        "# (they are declared [N][8]) while every other table is in its own width.",
-        "# Zero means the program addresses nothing there and the runtime should",
-        "# allocate nothing for it.",
+        "# One key per table in core/src/plc_app/image_tables.h. Every value",
+        "# carries the unit of the ADDRESS it stores: the three BOOL tables are",
+        "# in bits, because %QX addresses bits, and the core converts to the",
+        "# [N][8] shape its storage actually has. Zero means the program",
+        "# addresses nothing there and the runtime allocates nothing for it.",
+        f"format_version={IMAGE_CONF_FORMAT_VERSION}",
     ]
-    lines += [f"{key}={sizes[key]}" for key in IMAGE_TABLE_KEYS]
+    lines += [f"{key}={sizes[key]} {IMAGE_TABLE_UNITS[key]}" for key in IMAGE_TABLE_KEYS]
 
     target = Path(path)
     tmp = target.with_suffix(".conf.tmp")
@@ -228,5 +290,7 @@ def describe_image_conf(sizes: dict[str, int]) -> str:
     reads as noise, and the point of the line is to let someone watching the
     build see that the image followed their project.
     """
-    used = [f"{key}={sizes[key]}" for key in IMAGE_TABLE_KEYS if sizes[key] > 0]
+    used = [
+        f"{key}={sizes[key]} {IMAGE_TABLE_UNITS[key]}" for key in IMAGE_TABLE_KEYS if sizes[key] > 0
+    ]
     return ", ".join(used) if used else "every table zero"

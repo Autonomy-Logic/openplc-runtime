@@ -41,13 +41,27 @@ def upload(tmp_path):
     return d
 
 
-def write_conf(directory, **sizes):
-    body = "\n".join(f"{k}={v}" for k, v in sizes.items()) + "\n"
+def write_conf(directory, version=image_config.IMAGE_CONF_FORMAT_VERSION, **sizes):
+    """An upload's image.conf, in the format the current editor emits.
+
+    Every value carries the unit of the ADDRESS its table stores, so the number
+    and its unit cannot disagree. `version=None` omits the declaration, which a
+    reader must refuse rather than guess at.
+    """
+    lines = [] if version is None else [f"format_version={version}"]
+    lines += [f"{k}={v} {image_config.IMAGE_TABLE_UNITS[k]}" for k, v in sizes.items()]
+    (directory / "image.conf").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_raw_conf(directory, body):
+    """An image.conf written byte for byte, for the malformed cases."""
     (directory / "image.conf").write_text(body, encoding="utf-8")
 
 
 def installed(dest):
-    return image_config.read_image_conf_file(dest)
+    """Just the counts of the installed file."""
+    _version, sizes, _units = image_config.read_image_conf_file(dest)
+    return sizes
 
 
 class TestPresentAbsentContract:
@@ -151,18 +165,18 @@ class TestRefusal:
 
 class TestParser:
     def test_a_missing_file_reads_as_every_table_zero(self, tmp_path):
-        sizes = image_config.read_image_conf_file(tmp_path / "nope.conf")
+        _v, sizes, _u = image_config.read_image_conf_file(tmp_path / "nope.conf")
         assert sizes == {key: 0 for key in image_config.IMAGE_TABLE_KEYS}
 
     def test_comments_and_blank_lines_are_ignored(self, tmp_path):
         p = tmp_path / "image.conf"
         p.write_text("# a comment\n\nint_output=12\n   \n", encoding="utf-8")
-        assert image_config.read_image_conf_file(p)["int_output"] == 12
+        assert image_config.read_image_conf_file(p)[1]["int_output"] == 12
 
     def test_an_unknown_table_is_ignored_rather_than_refused(self, tmp_path, upload, isolated_conf):
         # A newer editor emitting a table this runtime does not have must not
         # fail the upload; the core would ignore it anyway.
-        (upload / "image.conf").write_text("int_output=8\nbyte_memory=64\n", encoding="utf-8")
+        write_raw_conf(upload, "format_version=2\nint_output=8 words\nbyte_memory=64 bytes\n")
         plcapp_management.apply_image_conf(str(upload))
         assert installed(isolated_conf)["int_output"] == 8
         assert "byte_memory" not in isolated_conf.read_text(encoding="utf-8")
@@ -186,15 +200,112 @@ class TestParser:
         assert len(image_config.IMAGE_TABLE_KEYS) == 14
 
 
+class TestFormatVersion:
+    """The version is checked before anything else, and refuses the whole file.
+
+    Every check below it reads the values by this version's rules, so a file
+    from a format we do not know is not a file with fourteen suspicious numbers
+    in it -- it is a file we cannot claim to have understood.
+    """
+
+    def test_a_file_with_no_version_is_refused(self, upload, isolated_conf):
+        write_conf(upload, version=None, int_output=8)
+        plcapp_management.apply_image_conf(str(upload))
+        assert not isolated_conf.exists()
+
+    def test_a_future_version_is_refused_rather_than_guessed_at(self, upload, isolated_conf):
+        write_conf(upload, version=3, int_output=8)
+        plcapp_management.apply_image_conf(str(upload))
+        assert not isolated_conf.exists()
+
+    def test_a_refused_version_does_not_leave_the_previous_sizes_in_force(
+        self, upload, isolated_conf
+    ):
+        # The device would otherwise keep running sized by a project that is no
+        # longer on it, which is the whole reason a stale file is worse than none.
+        isolated_conf.write_text("format_version=2\nint_output=4096 words\n", encoding="utf-8")
+        write_conf(upload, version=None, int_output=8)
+        plcapp_management.apply_image_conf(str(upload))
+        assert not isolated_conf.exists()
+
+    def test_the_installed_file_declares_the_version(self, upload, isolated_conf):
+        write_conf(upload, int_output=8)
+        plcapp_management.apply_image_conf(str(upload))
+        assert "format_version=2" in isolated_conf.read_text(encoding="utf-8")
+
+
 class TestUnits:
     def test_nothing_here_converts_bits_to_bytes(self, upload, isolated_conf):
-        # The editor does that conversion once, on its side, and what arrives is
-        # already in table elements. A second conversion is how the two sides
-        # end up disagreeing by a factor of eight with no diagnostic anywhere,
-        # so 64 in must be 64 out.
+        # The BOOL tables travel in BITS, because %QX addresses bits, and the
+        # core converts to the [N][8] shape its storage has. Converting here
+        # too is how the two sides end up disagreeing by a factor of eight with
+        # no diagnostic anywhere, so 64 bits in must be 64 bits out.
         write_conf(upload, bool_output=64)
         plcapp_management.apply_image_conf(str(upload))
         assert installed(isolated_conf)["bool_output"] == 64
+
+    def test_every_table_is_written_with_its_own_unit(self, upload, isolated_conf):
+        write_conf(upload, int_output=8)
+        plcapp_management.apply_image_conf(str(upload))
+        body = isolated_conf.read_text(encoding="utf-8")
+        for key, unit in image_config.IMAGE_TABLE_UNITS.items():
+            assert f"{key}=" in body
+            assert body.split(f"{key}=")[1].split("\n")[0].endswith(unit)
+
+    def test_a_value_in_the_wrong_unit_is_refused(self, upload, isolated_conf):
+        # The case the unit word exists for. Bytes is a perfectly plausible
+        # unit for bool_output -- its STORAGE is in bytes -- and reading 64 as
+        # bytes rather than bits allocates eight times what was asked for.
+        write_raw_conf(upload, "format_version=2\nbool_output=64 bytes\n")
+        plcapp_management.apply_image_conf(str(upload))
+        assert not isolated_conf.exists()
+
+    def test_a_value_with_no_unit_is_refused(self, upload, isolated_conf):
+        # Which is exactly what a version-1 file looks like.
+        write_raw_conf(upload, "format_version=2\nint_output=8\n")
+        plcapp_management.apply_image_conf(str(upload))
+        assert not isolated_conf.exists()
+
+
+class TestCeiling:
+    """The ABI ceiling is in ELEMENTS, and the file is not.
+
+    Comparing a bit count against an element ceiling would refuse every legal
+    image above 8192 bytes -- eight times early, and by exactly the unit
+    confusion the format was changed to remove.
+    """
+
+    def test_a_word_table_is_capped_at_the_abi_limit(self, upload, isolated_conf):
+        write_conf(upload, int_output=image_config.MAX_TABLE_ELEMENTS)
+        plcapp_management.apply_image_conf(str(upload))
+        assert isolated_conf.exists()
+
+    def test_a_word_table_one_past_the_limit_is_refused(self, upload, isolated_conf):
+        write_conf(upload, int_output=image_config.MAX_TABLE_ELEMENTS + 1)
+        plcapp_management.apply_image_conf(str(upload))
+        assert not isolated_conf.exists()
+
+    def test_a_bit_table_may_reach_eight_bits_per_element(self, upload, isolated_conf):
+        # 65536 elements of bool_output is 524288 bits, and every one of them
+        # is addressable. This is the case a ceiling in the wrong unit breaks.
+        write_conf(upload, bool_output=image_config.MAX_TABLE_ELEMENTS * 8)
+        plcapp_management.apply_image_conf(str(upload))
+        assert isolated_conf.exists()
+        assert installed(isolated_conf)["bool_output"] == image_config.MAX_TABLE_ELEMENTS * 8
+
+    def test_a_bit_table_one_bit_past_the_limit_is_refused(self, upload, isolated_conf):
+        write_conf(upload, bool_output=image_config.MAX_TABLE_ELEMENTS * 8 + 1)
+        plcapp_management.apply_image_conf(str(upload))
+        assert not isolated_conf.exists()
+
+    def test_the_ceiling_is_reported_in_the_unit_that_was_asked_for(self):
+        with pytest.raises(image_config.ImageConfigError) as excinfo:
+            image_config.validate_table_count(
+                "bool_output", image_config.MAX_TABLE_ELEMENTS * 8 + 1, "bits"
+            )
+        # A message quoting an element ceiling against a bit count is the same
+        # ambiguity in prose.
+        assert "bits" in str(excinfo.value)
 
 
 class TestLogging:
@@ -202,7 +313,9 @@ class TestLogging:
         sizes = {key: 0 for key in image_config.IMAGE_TABLE_KEYS}
         sizes["int_output"] = 4096
         line = image_config.describe_image_conf(sizes)
-        assert line == "int_output=4096"
+        # The unit travels with the number here too: a log line saying "4096"
+        # for a bit table would be the same ambiguity the format removed.
+        assert line == "int_output=4096 words"
 
     def test_an_empty_image_says_so_rather_than_listing_nothing(self):
         sizes = {key: 0 for key in image_config.IMAGE_TABLE_KEYS}

@@ -401,6 +401,31 @@ static const char *const kImageTableKeys[IMAGE_TABLE_COUNT] = {
     "lint_memory", "bool_memory",
 };
 
+/* The unit each table's ADDRESSES use, which is what image.conf carries.
+ *
+ * It is NOT always the unit the table is STORED in, and that gap is the whole
+ * reason the unit is written down. bool_output is declared IEC_BOOL *[N][8],
+ * so N counts bytes -- but %QX addresses bits, so the file says bits and the
+ * conversion happens here, once, where the storage shape is known. The editor
+ * emits the address's unit for every table and converts nothing.
+ *
+ * Parallel to kImageTableKeys, index for index. The contract test checks the
+ * pairing against the editor and the webserver, so a table whose unit
+ * disagrees across the four implementations fails CI. */
+static const char *const kImageTableUnits[IMAGE_TABLE_COUNT] = {
+    "bits",   "bits",   "bytes",  "bytes", "words",  "words",  "dwords",
+    "dwords", "lwords", "lwords", "words", "dwords", "lwords", "bits",
+};
+
+static_assert(sizeof(kImageTableUnits) / sizeof(kImageTableUnits[0]) == IMAGE_TABLE_COUNT,
+              "kImageTableUnits and image_table_id_t disagree on how many tables there are.");
+
+/* The three BOOL tables, and only those, arrive in bits. */
+static bool table_is_in_bits(int i)
+{
+    return std::strcmp(kImageTableUnits[i], "bits") == 0;
+}
+
 // A key missing here would make image_table_key() read past the array, and a
 // spare one would go unnoticed. The count is the cheap half of keeping the enum
 // and the strings in step; the ORDER is checked from the Python side, in
@@ -474,6 +499,13 @@ extern "C" void image_sizes_read_conf(const char *config_path, image_sizes_t *ou
     FILE *f = fopen(config_path, "r");
     if (!f) return;
 
+    /* Built into a local and published only once the version checks out, so a
+     * file this runtime cannot read leaves ZEROS rather than a half-applied
+     * mixture of tables it understood and tables it did not. */
+    image_sizes_t parsed;
+    std::memset(&parsed, 0, sizeof(parsed));
+    long version = 0;
+
     char line[256];
     while (fgets(line, sizeof(line), f))
     {
@@ -484,37 +516,88 @@ extern "C" void image_sizes_read_conf(const char *config_path, image_sizes_t *ou
         const std::string key = trimmed(s.substr(0, eq));
         const std::string val = trimmed(s.substr(eq + 1));
 
+        if (key == "format_version")
+        {
+            char *vend = nullptr;
+            version    = strtol(val.c_str(), &vend, 10);
+            if (vend == val.c_str() || *vend != '\0')
+                version = 0;
+            continue;
+        }
+
         for (int i = 0; i < IMAGE_TABLE_COUNT; ++i)
         {
             if (key != kImageTableKeys[i]) continue;
+
             errno        = 0;
             char *endp   = nullptr;
             const long v = strtol(val.c_str(), &endp, 10);
 
+            /* The unit is not decoration: it is what stops a bit count being
+             * allocated as an element count, which is a factor of eight with
+             * no diagnostic on either side. A value whose unit is not the one
+             * this table carries is refused rather than guessed at. */
+            const std::string unit = (endp && endp != val.c_str()) ? trimmed(endp) : std::string();
+            const bool unit_ok     = unit == kImageTableUnits[i];
+
+            /* THE CEILING IS IN ELEMENTS, SO IT IS COMPARED AFTER CONVERTING.
+             * IMAGE_MAX_ELEMENTS is the uint16 index the ABI addresses through
+             * (CON03), a count of TABLE ELEMENTS. A BOOL table's file value is
+             * in bits, and 65536 elements is 524288 bits -- comparing the raw
+             * bit count against the element ceiling would refuse every legal
+             * image above 8192 bytes. */
+            const long max_in_file_unit =
+                table_is_in_bits(i) ? (long)IMAGE_MAX_ELEMENTS * 8 : (long)IMAGE_MAX_ELEMENTS;
+
             /* Anything the runtime cannot honour reads as ZERO, which falls
              * through to the floor derived from the program. That is the safe
-             * direction, and it is what the comment here always promised --
-             * but the promise was only kept for negatives. An oversized value
-             * used to survive as a truncated uint32_t, win image_sizes_take_max
-             * and fail the allocation, taking the runtime to ERROR over a
-             * program it could size perfectly well by itself. Out of range, out
-             * of the uint16 the ABI addresses through, unparsed, or trailing
-             * junk: all of them mean the same thing here, which is "ignore me".
+             * direction. Out of range, out of the uint16 the ABI addresses
+             * through, unparsed, trailing junk, or carrying the wrong unit:
+             * all of them mean the same thing here, which is "ignore me".
              *
              * The webserver refuses these at install, so reaching this branch
              * means a hand-edited device. */
-            const bool usable = errno == 0 && endp != val.c_str() && *endp == '\0' && v > 0 &&
-                                v <= (long)IMAGE_MAX_ELEMENTS;
-            if (!usable && !val.empty() && v != 0)
+            const bool numeric_ok =
+                errno == 0 && endp != val.c_str() && v > 0 && v <= max_in_file_unit;
+            const bool usable = numeric_ok && unit_ok;
+
+            if (!usable && !val.empty() && !(v == 0 && unit_ok))
             {
-                log_warn("[image_tables] image.conf: ignoring %s=%s, outside 1..%u",
-                         kImageTableKeys[i], val.c_str(), IMAGE_MAX_ELEMENTS);
+                log_warn("[image_tables] image.conf: ignoring %s=%s, expected 1..%ld %s",
+                         kImageTableKeys[i], val.c_str(), max_in_file_unit, kImageTableUnits[i]);
             }
-            out->elements[i] = usable ? (uint32_t)v : 0u;
+
+            /* Bits to elements, once, here. Round UP: the slots of a partial
+             * byte have to be addressable, and erring upward costs one byte
+             * where erring downward loses up to seven addresses. */
+            uint32_t elements = 0;
+            if (usable)
+            {
+                elements = table_is_in_bits(i) ? (uint32_t)((v + 7) / 8) : (uint32_t)v;
+            }
+            parsed.elements[i] = elements;
             break;
         }
     }
     fclose(f);
+
+    /* No version, or one this runtime does not know, refuses the WHOLE file.
+     * Guessing would mean reading a future format by today's rules, which is
+     * how a unit change becomes a silent factor of eight. Zeros here are not a
+     * failure: the floor derived from the loaded program takes over, which is
+     * the same path a device with no image.conf at all follows.
+     *
+     * There is no branch for version 1. It was written but never merged, so no
+     * device has ever read this file in that form. */
+    if (version != IMAGE_CONF_FORMAT_VERSION)
+    {
+        log_warn("[image_tables] image.conf: format_version %ld is not %d; ignoring the file "
+                 "and sizing from the loaded program instead",
+                 version, IMAGE_CONF_FORMAT_VERSION);
+        return;
+    }
+
+    *out = parsed;
 }
 
 extern "C" void image_sizes_derive_floor(PluginManager *pm, image_sizes_t *out)

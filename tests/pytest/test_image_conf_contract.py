@@ -78,6 +78,17 @@ def _struct_fields() -> list[str]:
     return [re.search(r"\*(\w+)\)?(?:\[\d+\])?;", line).group(1) for line in lines]
 
 
+def _c_units() -> list[str]:
+    """The units `kImageTableUnits` pairs with those keys, in order."""
+    body = re.search(
+        r"kImageTableUnits\[IMAGE_TABLE_COUNT\] = \{(.*?)\};",
+        IMAGE_TABLES_CPP.read_text(),
+        re.DOTALL,
+    )
+    assert body, "kImageTableUnits not found — has the parser been restructured?"
+    return re.findall(r'"([a-z]+)"', body.group(1))
+
+
 @pytest.mark.parametrize(
     "name,reader",
     [("enum", _enum_ids), ("key array", _c_keys), ("struct", _struct_fields)],
@@ -86,9 +97,9 @@ def test_the_c_side_lists_agree_with_python_exactly(name, reader):
     # Order matters as much as membership: the key array is indexed BY the enum,
     # so a reordering of either one silently maps a table to another table's
     # name. Nothing would fail; the sizes would just land in the wrong places.
-    assert reader() == list(image_config.IMAGE_TABLE_KEYS), (
-        f"the C {name} and webserver/image_config.IMAGE_TABLE_KEYS have drifted"
-    )
+    assert reader() == list(
+        image_config.IMAGE_TABLE_KEYS
+    ), f"the C {name} and webserver/image_config.IMAGE_TABLE_KEYS have drifted"
 
 
 def test_there_are_fourteen_tables():
@@ -106,6 +117,42 @@ def test_memory_has_no_byte_table():
     keys = image_config.IMAGE_TABLE_KEYS
     assert "byte_input" in keys and "byte_output" in keys
     assert "byte_memory" not in keys
+
+
+def test_the_c_and_python_units_agree_table_for_table():
+    # THE UNIT IS THE HALF THAT COSTS A FACTOR OF EIGHT. A table whose unit
+    # disagrees across the implementations is not a parse error anywhere: the
+    # editor writes bits, a reader takes them for elements, and the image comes
+    # out eight times too small with every located address above the first
+    # eighth silently refused at bind time.
+    assert _c_units() == [image_config.IMAGE_TABLE_UNITS[k] for k in image_config.IMAGE_TABLE_KEYS]
+
+
+def test_only_the_bool_tables_are_in_bits():
+    # The three that are declared IEC_BOOL *[N][8]: their storage is in bytes
+    # while their addresses are in bits, which is the whole reason the file
+    # carries a unit at all. Every other table stores what it addresses.
+    in_bits = [k for k, u in image_config.IMAGE_TABLE_UNITS.items() if u == "bits"]
+    assert in_bits == ["bool_input", "bool_output", "bool_memory"]
+
+
+def test_the_units_are_ones_both_sides_know():
+    assert set(image_config.IMAGE_TABLE_UNITS.values()) == {
+        "bits",
+        "bytes",
+        "words",
+        "dwords",
+        "lwords",
+    }
+
+
+def test_the_format_version_agrees_across_the_implementations():
+    # The core refuses a file whose version it does not know, so a bump on one
+    # side and not the other stops every upload rather than mis-reading one.
+    header = (REPO_ROOT / "core" / "src" / "plc_app" / "image_tables.h").read_text()
+    match = re.search(r"#define IMAGE_CONF_FORMAT_VERSION (\d+)", header)
+    assert match, "IMAGE_CONF_FORMAT_VERSION not found in image_tables.h"
+    assert int(match.group(1)) == image_config.IMAGE_CONF_FORMAT_VERSION
 
 
 def test_the_abi_limit_matches_the_index_width():
