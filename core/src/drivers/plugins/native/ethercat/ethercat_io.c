@@ -19,6 +19,8 @@
  */
 
 #include "ethercat_io.h"
+
+#include "../plugin_image_sizes.h"
 #include "ethercat_master.h"
 
 #include <stdlib.h>
@@ -234,6 +236,31 @@ static int ecat_data_type_expected_iec_size(ecat_data_type_t dt)
 /**
  * @brief Return a human-readable name for an iec_size_t value
  */
+/* (direction, size) -> the image table that stores it.
+ *
+ * EtherCAT only ever emits %I and %Q, so there is no memory case to answer.
+ * The mapping is spelled out rather than arithmetic on the enums: the two
+ * orders are unrelated and a cast between them would land writes in another
+ * table's bounds. */
+static image_table_id_t ecat_table_for(iec_dir_t dir, iec_size_t size)
+{
+    const int in = (dir == IEC_DIR_INPUT);
+    switch (size)
+    {
+    case IEC_SIZE_BIT:
+        return in ? IMAGE_TABLE_BOOL_INPUT : IMAGE_TABLE_BOOL_OUTPUT;
+    case IEC_SIZE_BYTE:
+        return in ? IMAGE_TABLE_BYTE_INPUT : IMAGE_TABLE_BYTE_OUTPUT;
+    case IEC_SIZE_WORD:
+        return in ? IMAGE_TABLE_INT_INPUT : IMAGE_TABLE_INT_OUTPUT;
+    case IEC_SIZE_DWORD:
+        return in ? IMAGE_TABLE_DINT_INPUT : IMAGE_TABLE_DINT_OUTPUT;
+    case IEC_SIZE_LWORD:
+        return in ? IMAGE_TABLE_LINT_INPUT : IMAGE_TABLE_LINT_OUTPUT;
+    }
+    return IMAGE_TABLE_COUNT;
+}
+
 static const char *iec_size_name(iec_size_t sz)
 {
     switch (sz) {
@@ -301,13 +328,31 @@ int ecat_io_build_channel_map(const ecat_config_t *config,
                 continue;
             }
 
-            /* Bounds check against PLC buffer size */
-            if (iec_loc.byte_index >= args->buffer_size) {
+            /* Bounds check against THIS LOCATION'S OWN TABLE.
+             *
+             * args->buffer_size is now the SMALLEST of the fourteen, so using
+             * it here would refuse every channel above the shortest table's
+             * length -- an EtherCAT slave silently losing most of its I/O on a
+             * project that sizes one area small. The table the location
+             * actually lands in is the only honest bound (RTOP-284). */
+            const image_table_id_t table = ecat_table_for(iec_loc.direction, iec_loc.size);
+            /* Falls back to args->buffer_size when the sizes were never
+             * delivered. That is not belt and braces: without it a runtime
+             * that does not call set_image_sizes -- an older one loading this
+             * plugin -- leaves every table at zero here and EVERY channel is
+             * refused, taking the whole bus down silently. On a square run
+             * buffer_size IS the length every table has, so it is the right
+             * answer rather than a guess. */
+            const uint32_t reach = plugin_image_sizes_known()
+                                       ? plugin_image_table_capacity(table)
+                                       : (uint32_t)(args->buffer_size > 0 ? args->buffer_size : 0);
+            if (iec_loc.byte_index < 0 || (uint32_t)iec_loc.byte_index >= reach)
+            {
                 plugin_logger_warn(logger,
-                    "Slave '%s' channel '%s': IEC location '%s' byte index %d "
-                    "exceeds buffer size %d, skipping",
-                    cfg_slave->name, ch->name, ch->iec_location,
-                    iec_loc.byte_index, args->buffer_size);
+                                   "Slave '%s' channel '%s': IEC location '%s' byte index %d "
+                                   "is outside the %u element(s) that area has, skipping",
+                                   cfg_slave->name, ch->name, ch->iec_location, iec_loc.byte_index,
+                                   reach);
                 errors++;
                 continue;
             }

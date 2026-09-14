@@ -1080,9 +1080,30 @@ extern "C" int load_plc_program(PluginManager *pm)
                 image_sizes_derive_floor(pm, &floor);
                 image_sizes_take_max(&configured, &floor);
 
+                /* PER TABLE, OR SQUARE, DECIDED PER RUN.
+                 *
+                 * Per-table is what the project asked for and what the image
+                 * exists to deliver. It is only safe when every loaded plugin
+                 * understands it: a plugin bounding a byte index into
+                 * bool_output and a word index into int_output with one
+                 * `buffer_size` is correct exactly while the tables are equal.
+                 * One that does not export set_image_sizes has not been told
+                 * they can differ, so for that run they do not.
+                 *
+                 * Logged with the plugin that forced it, because the two modes
+                 * are otherwise indistinguishable from outside. */
+                const char *forced_by = NULL;
+                if (!plugin_driver_all_understand_per_table_sizes(plugin_driver, &forced_by))
+                {
+                    image_sizes_flatten(&configured);
+                    log_info("[PLUGIN]: image kept square: plugin '%s' does not declare "
+                             "set_image_sizes",
+                             forced_by ? forced_by : "(unknown)");
+                }
+
                 pthread_mutex_t *itm = image_tables_mutex();
                 pthread_mutex_lock(itm);
-                const bool ok = image_tables_alloc(image_sizes_largest(&configured));
+                const bool ok = image_tables_alloc(&configured);
                 pthread_mutex_unlock(itm);
 
                 if (!ok)

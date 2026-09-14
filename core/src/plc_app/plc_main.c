@@ -155,11 +155,14 @@ int main(int argc, char *argv[])
              * buffer_size into every plugin's args, and a plugin is entitled to
              * a valid image from the moment it initialises -- never a NULL base
              * pointer and never a zero size. The minimum is what
-             * image_tables_alloc() clamps to: the smallest count that is not no
-             * image at all. A program load reallocates it properly. */
+             * image_tables_alloc() clamps to, per table: the smallest count
+             * that is not no image at all. NULL asks for exactly that, which
+             * says "no program has told me anything yet" rather than passing a
+             * zeroed struct that reads like a real answer. A program load
+             * reallocates it properly. */
             pthread_mutex_t *itm = image_tables_mutex();
             pthread_mutex_lock(itm);
-            const bool image_ok = image_tables_alloc(0);
+            const bool image_ok = image_tables_alloc(NULL);
             pthread_mutex_unlock(itm);
 
             if (!image_ok)

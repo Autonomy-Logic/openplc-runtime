@@ -232,3 +232,60 @@ def test_the_legacy_shape_has_no_memory_segments(sm):
     assert parsed["holding_registers"]["mw_count"] == 0
     assert parsed["coils"]["mx_bits"] == 0
     assert parsed["word_order"] == "high_word_first"
+
+
+# --- per-table clamping (RTOP-284, C1.3/C1.4) ----------------------------
+
+
+@pytest.fixture
+def per_table(sm):
+    """Deliver per-table sizes the way the runtime does, then clear them."""
+    from shared import image_sizes
+
+    def deliver(**by_name):
+        sizes = [by_name.get(name, 0) for name in image_sizes.IMAGE_TABLE_ORDER]
+        assert image_sizes.set_image_sizes(sizes) == 0
+
+    yield deliver
+    image_sizes.set_image_sizes([])
+
+
+def test_each_segment_is_clamped_against_its_own_table(sm, per_table):
+    # %QW comes out of int_output and %MW out of int_memory. One figure for
+    # both would have to be the smaller, losing the larger table's range.
+    per_table(int_output=100, int_memory=4)
+    parsed = sm.parse_buffer_mapping_config(segmented(qw=100, mw=100), 8)
+    assert parsed["holding_registers"]["qw_count"] == 100
+    assert parsed["holding_registers"]["mw_count"] == 4
+
+
+def test_a_bit_segment_reads_its_table_in_bits(sm, per_table):
+    # bool_output is in elements of eight; %QX addresses the bits.
+    per_table(bool_output=2)
+    parsed = sm.parse_buffer_mapping_config(segmented(qx=8192), 8)
+    assert parsed["coils"]["qx_bits"] == 16
+
+
+def test_an_empty_table_exposes_nothing(sm, per_table):
+    per_table(int_output=0, int_memory=50)
+    parsed = sm.parse_buffer_mapping_config(segmented(qw=10, mw=10), 8)
+    assert parsed["holding_registers"]["qw_count"] == 0
+    assert parsed["holding_registers"]["mw_count"] == 10
+
+
+def test_a_square_run_falls_back_to_the_single_figure(sm):
+    # No sizes delivered: buffer_size IS the length every table has, so it is
+    # the right answer rather than a guess.
+    from shared import image_sizes
+
+    image_sizes.set_image_sizes([])
+    parsed = sm.parse_buffer_mapping_config(segmented(qw=100, mw=100), 8)
+    assert parsed["holding_registers"]["qw_count"] == 8
+    assert parsed["holding_registers"]["mw_count"] == 8
+
+
+def test_the_module_exports_the_symbol_the_runtime_looks_for(sm):
+    # PyObject_GetAttrString(pModule, "set_image_sizes") has to find it HERE,
+    # in this module's namespace -- importing it is what declares the
+    # capability, and without it every run this plugin is in stays square.
+    assert callable(getattr(sm, "set_image_sizes", None))

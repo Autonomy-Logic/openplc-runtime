@@ -115,7 +115,16 @@ typedef struct {
     IEC_ULINT **lint_output;
     IEC_ULINT **lint_memory;
 
-    /* Buffer size (number of elements in each array) */
+    /* THE SMALLEST ARRAY, NOT THE LENGTH OF ALL OF THEM (RTOP-284).
+     *
+     * The arrays above no longer share a length. This field was a second copy
+     * of the one-number assumption, internal to the runtime, and it is kept
+     * only for the few places that still want a conservative single figure:
+     * it is the minimum, so using it as a bound refuses an index rather than
+     * letting one run off the end of a shorter array.
+     *
+     * Anything bounding a WRITE asks image_table_capacity() for the table that
+     * write is going to, which is what apply_write_raw does. */
     int buffer_size;
 
     /* Image table mutex (for emergency flush and apply operations) */

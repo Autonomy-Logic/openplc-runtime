@@ -229,7 +229,27 @@ typedef struct
     /* Plugin configuration */
     char plugin_specific_config_file_path[256];
 
-    /* Buffer size information */
+    /* THE SMALLEST TABLE, NOT THE ONLY ONE (RTOP-284).
+     *
+     * The fourteen image tables no longer share a length. This field cannot
+     * say that -- CON06 guarantees pre-compiled plugins keep their field
+     * offsets, so it does not move -- and it is now the MINIMUM of the
+     * fourteen rather than the length they all happened to have.
+     *
+     * The minimum is the only safe answer for a consumer that still reads one
+     * number: bounding by it refuses an index that would have run off the end
+     * of the shortest table, where bounding by the largest would have read
+     * past every table below it. Under-permissive, never over.
+     *
+     * A plugin that wants the truth exports `set_image_sizes` (plugin_driver.h)
+     * and receives all fourteen before its init() runs. When every loaded
+     * plugin does, the image is allocated per table; when any does not, it is
+     * kept square for that run and this field is again the length they all
+     * have.
+     *
+     * Not marked deprecated yet, deliberately: the build carries -Werror, so
+     * the attribute would fail the build for every consumer still reading it
+     * rather than naming them. It goes in once they are migrated. */
     int buffer_size;
     int bits_per_buffer;
 

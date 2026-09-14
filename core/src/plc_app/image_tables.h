@@ -1,6 +1,7 @@
 #ifndef IMAGE_TABLES_H
 #define IMAGE_TABLES_H
 
+#include "image_table_id.h"
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -114,27 +115,8 @@ extern "C"
      * or whose editor predates the file, still comes up correct.
      * --------------------------------------------------------------------- */
 
-    /* One id per table, in the order image_tables_t declares them. Note the gap
-     * the list makes visible: byte_input and byte_output exist, byte_memory
-     * does not, so `%MB` has no storage on this runtime at all. */
-    typedef enum
-    {
-        IMAGE_TABLE_BOOL_INPUT = 0,
-        IMAGE_TABLE_BOOL_OUTPUT,
-        IMAGE_TABLE_BYTE_INPUT,
-        IMAGE_TABLE_BYTE_OUTPUT,
-        IMAGE_TABLE_INT_INPUT,
-        IMAGE_TABLE_INT_OUTPUT,
-        IMAGE_TABLE_DINT_INPUT,
-        IMAGE_TABLE_DINT_OUTPUT,
-        IMAGE_TABLE_LINT_INPUT,
-        IMAGE_TABLE_LINT_OUTPUT,
-        IMAGE_TABLE_INT_MEMORY,
-        IMAGE_TABLE_DINT_MEMORY,
-        IMAGE_TABLE_LINT_MEMORY,
-        IMAGE_TABLE_BOOL_MEMORY,
-        IMAGE_TABLE_COUNT
-    } image_table_id_t;
+    /* The table identities live in their own header so plugin_types.h can
+     * reach them without pulling the runtime internals in. */
 
     /* Elements per table, in that table's own unit -- which for the three BOOL
      * tables is BYTES, because they are declared [N][8], and for every other
@@ -167,47 +149,19 @@ extern "C"
     void image_sizes_take_max(image_sizes_t *dst, const image_sizes_t *other);
 
     /**
-     * The single element count the whole image is allocated at.
+     * Make every table the same length: the largest any of them needs.
      *
-     * ONE NUMBER FOR FOURTEEN TABLES, and the reason is the plugin ABI rather
-     * than convenience. `plugin_runtime_args_t` carries a single `buffer_size`
-     * (plugin_types.h), and plugins bounds-check against it -- ethercat_io.c
-     * refuses a byte_index at or above it, s7comm derives every clamp from it.
-     * That works today only because the fourteen tables happen to be the same
-     * size, so one number describes them all.
+     * The square fallback, for a run where some plugin does not understand
+     * per-table sizes. It takes and returns an `image_sizes_t` rather than
+     * collapsing to one number on purpose (RTOP-284): a single figure for
+     * fourteen tables is the assumption this work exists to remove, and a
+     * helper that produces one is an invitation to reintroduce it.
      *
-     * Give each table its own size and no value of that field is correct: the
-     * minimum makes every plugin refuse everything the moment one table is
-     * empty (a project with `%QW4096` and no `%IX` would have a floor of zero),
-     * and the maximum lets a plugin write past the end of the smaller tables --
-     * the exact overflow this work exists to prevent. Per-table sizes would
-     * need a field per table, which breaks the ABI compatibility the approved
-     * requirements guarantee (CON06) and invalidates pre-compiled plugins.
-     *
-     * So the image is square: every table allocated at the largest count any of
-     * them needs. The `image.conf` still carries all fourteen numbers, because
-     * bare metal DOES size each area independently -- it has no plugin ABI to
-     * satisfy, and each `MAX_*` there dimensions its own array. Only Runtime v4
-     * collapses them, and the file is ready if that ever stops being true.
-     *
-     * The cost, counted properly: a program needing 4096 output words gets 4096
-     * elements in all fourteen tables. On a 64-bit target the three BOOL tables
-     * are `IEC_BOOL *[8]`, so 64 bytes per element rather than 8 -- 786 KB --
-     * the other eleven add 360 KB, and the `temp_*` backing buffers are sized
-     * at `elements` too and add about 272 KB. Roughly **1.36 MiB**.
-     *
-     * (An earlier version of this comment said ~460 KB. It counted eight bytes
-     * per BOOL element instead of sixty-four and left the backing buffers out
-     * entirely, which understated the figure about threefold. The number is
-     * what carries the square-image decision over per-table sizing, so it is
-     * worth having right: 1.36 MiB on a Linux target is still small against
-     * breaking every pre-compiled plugin, but it is not 460 KB.)
-     *
-     * The gain the demand asked for is untouched -- 240 I/O points stop hitting
-     * a ceiling of 1024, and a small project stops paying for 1024 of
-     * everything.
+     * The LARGEST, not the smallest, because square has to cover every
+     * area the program actually uses. It costs memory the project does not
+     * need, which is the price of a plugin that cannot be told the truth.
      */
-    uint32_t image_sizes_largest(const image_sizes_t *sizes);
+    void image_sizes_flatten(image_sizes_t *sizes);
 
     /** The most any one table may hold: the ceiling of the uint16 `byte_index`
      *  in the STruC++ ABI, so no located variable can address beyond it. The
@@ -241,7 +195,7 @@ extern "C"
      * stops. A partial image would be worse than none, because every table
      * indexes the same way whether it is real or null.
      */
-    bool image_tables_alloc(uint32_t elements);
+    bool image_tables_alloc(const image_sizes_t *sizes);
 
     /** Release the image. Safe to call when nothing is allocated.
      *  CALLER MUST HOLD THE IMAGE-TABLES MUTEX. */
@@ -249,6 +203,19 @@ extern "C"
 
     /** How many elements each table currently holds; 0 before any allocation. */
     uint32_t image_tables_capacity(void);
+
+    /** How long one table actually is, in its own elements.
+     *
+     * The tables no longer share a length, so this is the only honest answer
+     * to "how far does this area reach". `image_tables_capacity()` remains for
+     * consumers that read a single number and returns the SMALLEST of the
+     * fourteen, which refuses an index rather than letting one run off the end
+     * of a shorter table.
+     *
+     * Zero for an id outside the enum, which is the safe reading: a caller
+     * that asks about a table this runtime does not have gets an area it
+     * cannot index into. */
+    uint32_t image_table_capacity(image_table_id_t id);
 
     /* -------------------------------------------------------------------------
      * Resolved .so symbols (populated by symbols_init).

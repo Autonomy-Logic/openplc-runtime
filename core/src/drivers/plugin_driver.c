@@ -591,6 +591,107 @@ int plugin_driver_load_config(plugin_driver_t *driver, const char *config_file)
 }
 
 // Send to plugin init function all args
+/**
+ * The fourteen table lengths, for a plugin that asked to be told.
+ *
+ * Read once per plugin_driver_init() rather than cached: the image is
+ * reallocated on every program load, and a cached copy is exactly the stale
+ * state this symbol exists to prevent.
+ */
+static uint32_t image_sizes_snapshot(uint32_t *out, uint32_t cap)
+{
+    uint32_t n = 0;
+    for (int id = 0; id < IMAGE_TABLE_COUNT && n < cap; ++id)
+    {
+        out[n++] = image_table_capacity((image_table_id_t)id);
+    }
+    return n;
+}
+
+/**
+ * Hand one plugin the fourteen lengths, before its init() runs.
+ *
+ * Returns 0 when the plugin has nothing to be told or accepted them, and
+ * non-zero when it refused -- which fails the plugin exactly as a failed
+ * init() does, because a plugin that cannot make sense of the image it is
+ * about to be handed should not be handed it.
+ */
+static int deliver_image_sizes(plugin_instance_t *plugin)
+{
+    uint32_t sizes[IMAGE_TABLE_COUNT];
+    const uint32_t count = image_sizes_snapshot(sizes, IMAGE_TABLE_COUNT);
+
+    if (plugin->config.type == PLUGIN_TYPE_NATIVE && plugin->native_plugin &&
+        plugin->native_plugin->set_image_sizes)
+    {
+        const int rc = plugin->native_plugin->set_image_sizes(sizes, count);
+        if (rc != 0)
+        {
+            log_error("Plugin '%s' refused the image sizes (returned %d)", plugin->config.name, rc);
+            return rc;
+        }
+    }
+
+    if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin &&
+        plugin->python_plugin->pFuncSetImageSizes)
+    {
+        PyObject *list = PyList_New((Py_ssize_t)count);
+        if (!list)
+        {
+            PyErr_Clear();
+            log_error("Plugin '%s': could not build the image size list", plugin->config.name);
+            return -1;
+        }
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            /* PyList_SetItem steals the reference, so a failed PyLong_FromLong
+             * is the only leak to worry about and it cannot happen for a
+             * uint32_t that already exists. */
+            PyList_SetItem(list, (Py_ssize_t)i, PyLong_FromUnsignedLong(sizes[i]));
+        }
+        PyObject *result =
+            PyObject_CallFunctionObjArgs(plugin->python_plugin->pFuncSetImageSizes, list, NULL);
+        Py_DECREF(list);
+        if (!result)
+        {
+            PyErr_Print();
+            log_error("Plugin '%s' raised in set_image_sizes", plugin->config.name);
+            return -1;
+        }
+        Py_DECREF(result);
+    }
+
+    return 0;
+}
+
+bool plugin_driver_all_understand_per_table_sizes(plugin_driver_t *driver,
+                                                  const char **first_without)
+{
+    if (first_without)
+        *first_without = NULL;
+    if (!driver)
+        return false;
+
+    for (int i = 0; i < driver->plugin_count; i++)
+    {
+        plugin_instance_t *plugin = &driver->plugins[i];
+        bool understands          = false;
+
+        if (plugin->config.type == PLUGIN_TYPE_NATIVE)
+            understands = plugin->native_plugin && plugin->native_plugin->set_image_sizes;
+        else if (plugin->config.type == PLUGIN_TYPE_PYTHON)
+            understands = plugin->python_plugin && plugin->python_plugin->pFuncSetImageSizes;
+
+        if (!understands)
+        {
+            if (first_without)
+                *first_without = plugin->config.name;
+            return false;
+        }
+    }
+    return true;
+}
+
 int plugin_driver_init(plugin_driver_t *driver)
 {
     if (!driver)
@@ -632,6 +733,18 @@ int plugin_driver_init(plugin_driver_t *driver)
                 }
                 return -1;
             }
+            /* BEFORE init(), because init() is where a plugin copies the
+             * base pointers by value and decides how big everything is.
+             * Delivering afterwards leaves a window, once per load, in which
+             * the plugin holds new pointers and previous sizes. */
+            if (deliver_image_sizes(plugin) != 0)
+            {
+                Py_DECREF(args);
+                if (have_gil)
+                    PyGILState_Release(local_gstate);
+                return -1;
+            }
+
             // Call the Python init function with proper capsule
             PyObject *result =
                 PyObject_CallFunctionObjArgs(plugin->python_plugin->pFuncInit, args, NULL);
@@ -668,6 +781,15 @@ int plugin_driver_init(plugin_driver_t *driver)
                 {
                     PyGILState_Release(local_gstate);
                 }
+                return -1;
+            }
+
+            /* BEFORE init(), for the same reason as the Python path above. */
+            if (deliver_image_sizes(plugin) != 0)
+            {
+                free_structured_args(args);
+                if (have_gil)
+                    PyGILState_Release(local_gstate);
                 return -1;
             }
 
@@ -1112,7 +1234,7 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
      * against this field -- ethercat_io.c refuses a byte_index at or above it,
      * s7comm derives every clamp from it -- so it has to describe the image
      * that actually exists. It describes all fourteen tables because they are
-     * all allocated at the same count; see image_sizes_largest() for why the
+     * all allocated at the same count; see image_sizes_flatten() for why the
      * ABI leaves no room for anything else. */
     args->buffer_size     = (int)image_tables_capacity();
     args->bits_per_buffer = 8;
@@ -1333,6 +1455,19 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
         py_binds->pFuncStop = NULL;
     }
 
+    py_binds->pFuncSetImageSizes = PyObject_GetAttrString(py_binds->pModule, "set_image_sizes");
+    if (!py_binds->pFuncSetImageSizes || !PyCallable_Check(py_binds->pFuncSetImageSizes))
+    {
+        /* Optional. PyErr_Clear() is not decoration: a failed
+         * PyObject_GetAttrString leaves an AttributeError SET, and the next
+         * CPython call that checks would report this absence as its own
+         * failure. The four required lookups above never hit it because they
+         * return on failure. */
+        Py_XDECREF(py_binds->pFuncSetImageSizes);
+        py_binds->pFuncSetImageSizes = NULL;
+        PyErr_Clear();
+    }
+
     py_binds->pFuncCleanup = PyObject_GetAttrString(py_binds->pModule, "cleanup");
     if (!py_binds->pFuncCleanup || !PyCallable_Check(py_binds->pFuncCleanup))
     {
@@ -1474,6 +1609,11 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     native_bundle->retain_save  = (plugin_retain_save_func_t)dlsym(handle, "retain_save");
     native_bundle->retain_load  = (plugin_retain_load_func_t)dlsym(handle, "retain_load");
     native_bundle->retain_flush = (plugin_retain_flush_func_t)dlsym(handle, "retain_flush");
+
+    /* Optional, like the five above: NULL simply means this plugin does not
+     * understand per-table image sizes, and the run stays square for it. */
+    native_bundle->set_image_sizes =
+        (plugin_set_image_sizes_func_t)dlsym(handle, "set_image_sizes");
 
     // Store the native bundle and handle in the plugin instance
     plugin->native_plugin = native_bundle;

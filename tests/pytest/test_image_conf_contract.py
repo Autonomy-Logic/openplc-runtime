@@ -40,15 +40,23 @@ from webserver import image_config
 # this test was written to be.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 IMAGE_TABLES_H = REPO_ROOT / "core" / "src" / "plc_app" / "image_tables.h"
+# The enum moved out of image_tables.h so plugin_types.h could reach it without
+# pulling the runtime internals in (RTOP-284, B2). Publishing a type costs no
+# ABI, and a plugin receiving an array indexed by it has to be able to name the
+# entries -- the alternative being a second copy of the enum, which is the
+# drift this whole file exists to catch.
+IMAGE_TABLE_ID_H = REPO_ROOT / "core" / "src" / "plc_app" / "image_table_id.h"
 IMAGE_TABLES_CPP = REPO_ROOT / "core" / "src" / "plc_app" / "image_tables.cpp"
+JOURNAL_H = REPO_ROOT / "core" / "src" / "plc_app" / "journal_buffer.h"
+JOURNAL_C = REPO_ROOT / "core" / "src" / "plc_app" / "journal_buffer.c"
 
 
 def _enum_ids() -> list[str]:
     """`image_table_id_t` members, in declaration order, lowercased."""
     body = re.search(
-        r"typedef enum\s*\{(.*?)\}\s*image_table_id_t", IMAGE_TABLES_H.read_text(), re.S
+        r"typedef enum\s*\{(.*?)\}\s*image_table_id_t", IMAGE_TABLE_ID_H.read_text(), re.S
     )
-    assert body, "image_table_id_t not found — has the header been restructured?"
+    assert body, "image_table_id_t not found — has image_table_id.h been restructured?"
     return [m.lower() for m in re.findall(r"IMAGE_TABLE_([A-Z_]+)", body.group(1)) if m != "COUNT"]
 
 
@@ -160,3 +168,63 @@ def test_the_abi_limit_matches_the_index_width():
     # is where this number comes from. It is a fact of the ABI, not a policy
     # ceiling, so it moves only if that field does.
     assert image_config.MAX_TABLE_ELEMENTS == 1 << 16
+
+
+class TestJournalMapping:
+    """The journal's type enum and the image table enum are NOT the same order.
+
+    Both have fourteen members and journal_buffer.h says this enum "matches the
+    OpenPLC image table types" -- it matches the concepts, not the indices.
+    The journal groups each width's memory table beside its input and output;
+    image_tables.h puts every memory table at the end. JOURNAL_INT_MEMORY is 7
+    and IMAGE_TABLE_INT_MEMORY is 10.
+
+    A cast between them therefore corrupts silently: a write lands under
+    another table's bounds, and an area is refused or admitted wrongly. The
+    runtime maps them explicitly (kJournalToImageTable); this checks that the
+    map is complete and that it is still needed.
+    """
+
+    @staticmethod
+    def _journal_ids() -> list[str]:
+        body = re.search(
+            r"typedef enum\s*\{(.*?)\}\s*journal_buffer_type_t", JOURNAL_H.read_text(), re.DOTALL
+        )
+        assert body, "journal_buffer_type_t not found"
+        return [
+            m.lower() for m in re.findall(r"JOURNAL_([A-Z_]+)", body.group(1)) if m != "TYPE_COUNT"
+        ]
+
+    @staticmethod
+    def _mapping() -> dict[str, str]:
+        body = re.search(
+            r"kJournalToImageTable\[JOURNAL_TYPE_COUNT\] = \{(.*?)\};",
+            JOURNAL_C.read_text(),
+            re.DOTALL,
+        )
+        assert body, "kJournalToImageTable not found — has the journal been restructured?"
+        return {
+            journal.lower(): image.lower()
+            for journal, image in re.findall(
+                r"\[JOURNAL_([A-Z_]+)\]\s*=\s*IMAGE_TABLE_([A-Z_]+)", body.group(1)
+            )
+        }
+
+    def test_every_journal_type_maps_to_a_table(self):
+        assert sorted(self._mapping()) == sorted(self._journal_ids())
+
+    def test_each_one_maps_to_the_table_of_the_same_name(self):
+        # The map is about ORDER, not renaming: JOURNAL_INT_MEMORY must reach
+        # IMAGE_TABLE_INT_MEMORY, whatever index either one sits at.
+        for journal, image in self._mapping().items():
+            assert journal == image, f"JOURNAL_{journal.upper()} maps to the wrong table"
+
+    def test_the_two_enums_really_do_disagree_on_order(self):
+        # If they were ever made identical the map could go -- but silently
+        # assuming they are identical is the bug. This fails if someone
+        # reorders one to match, which is the moment to revisit the map on
+        # purpose rather than discover it by corruption.
+        assert self._journal_ids() != list(image_config.IMAGE_TABLE_KEYS)
+
+    def test_the_journal_covers_every_table_the_image_has(self):
+        assert sorted(self._journal_ids()) == sorted(image_config.IMAGE_TABLE_KEYS)
