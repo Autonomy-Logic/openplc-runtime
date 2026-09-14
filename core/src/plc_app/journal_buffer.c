@@ -161,12 +161,30 @@ static uint32_t journal_longest_table(void)
     return longest;
 }
 
-/** How far this journal type's table actually reaches. */
+/**
+ * How far this journal type's table actually reaches.
+ *
+ * FROM THE SNAPSHOT, not from the live image sizes, and the two are not the
+ * same question. `g_buffer_ptrs.table_sizes[]` was filled at journal_init from
+ * the SAME moment as the table pointers beside it; `image_table_capacity()`
+ * reads `g_sizes`, which `image_tables_alloc` rewrites under the image-tables
+ * mutex that this path does not hold. Every caller here uses the result to
+ * index one of those pointers, so taking the length from a later moment than
+ * the allocation it bounds is how a dropped write becomes an out-of-bounds
+ * index instead.
+ *
+ * The two cannot diverge today -- the image is allocated before the cycle
+ * thread that calls journal_init exists, and a re-load stops that thread
+ * first -- so this is not a bug being fixed. It is the implicit coupling made
+ * explicit, which is what the rest of this task has been doing, and it also
+ * turns a non-inlinable cross-TU call per journal entry on the drain path back
+ * into the struct field read it used to be.
+ */
 static uint32_t journal_type_capacity(uint8_t type)
 {
     if (type >= JOURNAL_TYPE_COUNT)
         return 0;
-    return image_table_capacity(kJournalToImageTable[type]);
+    return g_buffer_ptrs.table_sizes[type];
 }
 
 static uint8_t *g_forced[JOURNAL_TYPE_COUNT];
