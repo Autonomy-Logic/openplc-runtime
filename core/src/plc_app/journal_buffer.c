@@ -447,7 +447,21 @@ static void apply_entry(const journal_entry_t *entry)
  * under image_lock — the same serialization domain as apply_entry. */
 void journal_force_set(journal_buffer_type_t type, uint16_t index, uint8_t bit, uint64_t value)
 {
-    if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size)
+    /* BOTH BOUNDS: the row AND the table.
+     *
+     * g_force_size is how long every row was allocated -- the LONGEST table,
+     * so each type has somewhere to record. It is not how far this type's
+     * table reaches. While every table had the same length the two were one
+     * number and could not disagree; they can now.
+     *
+     * With bool_output at 1 element and int_output at 100, g_force_size is
+     * 100, so forcing bool_output index 5 passed this check, flipped the bit
+     * and incremented g_force_count -- permanently disabling the fast path in
+     * is_slot_forced -- while apply_write_raw and is_slot_forced both refused
+     * it on the per-table bound. A force that did nothing at all, and said
+     * nothing, which is the failure this guard exists to report. */
+    if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size ||
+        (uint32_t)index >= journal_type_capacity((uint8_t)type))
     {
         /* Counted, not logged: see g_force_oob_drops. When the map was never
          * allocated g_force_size is 0 and EVERY force lands here. */
@@ -477,7 +491,21 @@ void journal_force_set(journal_buffer_type_t type, uint16_t index, uint8_t bit, 
  * plugin) is no longer dropped, so the slot tracks the live value again. */
 void journal_force_clear(journal_buffer_type_t type, uint16_t index, uint8_t bit)
 {
-    if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size)
+    /* BOTH BOUNDS: the row AND the table.
+     *
+     * g_force_size is how long every row was allocated -- the LONGEST table,
+     * so each type has somewhere to record. It is not how far this type's
+     * table reaches. While every table had the same length the two were one
+     * number and could not disagree; they can now.
+     *
+     * With bool_output at 1 element and int_output at 100, g_force_size is
+     * 100, so forcing bool_output index 5 passed this check, flipped the bit
+     * and incremented g_force_count -- permanently disabling the fast path in
+     * is_slot_forced -- while apply_write_raw and is_slot_forced both refused
+     * it on the per-table bound. A force that did nothing at all, and said
+     * nothing, which is the failure this guard exists to report. */
+    if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size ||
+        (uint32_t)index >= journal_type_capacity((uint8_t)type))
     {
         /* Counted, not logged: see g_force_oob_drops. When the map was never
          * allocated g_force_size is 0 and EVERY force lands here. */

@@ -677,6 +677,21 @@ bool plugin_driver_all_understand_per_table_sizes(plugin_driver_t *driver,
         plugin_instance_t *plugin = &driver->plugins[i];
         bool understands          = false;
 
+        /* A DEGRADED PLUGIN DOES NOT GET A VOTE.
+         *
+         * It failed to load, so plugin_driver_init skips it in every branch:
+         * it never receives runtime args and never touches the image. Letting
+         * it answer "no" would mean one box missing Npcap, where the EtherCAT
+         * plugin degrades, silently costs every OTHER plugin its per-table
+         * image -- a downgrade with no relation to anything that will actually
+         * read the tables.
+         *
+         * DISABLED plugins still vote, deliberately: plugin_driver_init
+         * initialises them regardless of the enabled flag, so a disabled
+         * plugin does hold the base pointers and does read the image. */
+        if (plugin->degraded)
+            continue;
+
         if (plugin->config.type == PLUGIN_TYPE_NATIVE)
             understands = plugin->native_plugin && plugin->native_plugin->set_image_sizes;
         else if (plugin->config.type == PLUGIN_TYPE_PYTHON)
