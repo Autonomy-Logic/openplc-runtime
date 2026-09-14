@@ -16,6 +16,16 @@
 #define PLUGIN_TYPES_H
 
 #include "../lib/iec_types.h"
+/* The image table identities, so a plugin receiving the sizes array can name
+ * the entries it indexes rather than counting positions (RTOP-284, B2).
+ * Publishing a type costs no ABI: no struct gains a field and no offset
+ * moves, which is what CON06 guarantees pre-compiled plugins.
+ *
+ * A plugin built against an OLDER runtime will not find this header, so
+ * anything that must work on both — a VPP package, which ships and is built
+ * independently of the runtime on the device — carries its own constants and
+ * keeps them in the order documented there. */
+#include "../plc_app/image_table_id.h"
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
