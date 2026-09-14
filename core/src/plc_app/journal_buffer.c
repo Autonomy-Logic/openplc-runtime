@@ -1,3 +1,30 @@
+/* Out-of-range forces, COUNTED rather than logged.
+ *
+ * Saying it out loud is right -- a silent drop is the defect this change set
+ * out to remove -- but not from here. Both force paths run under image_lock,
+ * on plc_cycle_thread, which has called set_realtime_priority(). log_warn
+ * takes log_mutex, a plain mutex with no priority inheritance (unlike the
+ * image mutex, which is built through init_recursive_pi_mutex precisely
+ * because it needs it) and then does a blocking socket write. So a SCHED_FIFO
+ * dispatcher could block behind a low-priority logging thread WHILE HOLDING
+ * the image lock, stalling every plugin thread waiting on it.
+ *
+ * It is unrate-limited too: one line per offending entry, up to
+ * DBGW_MAX_ENTRIES per drain, and an OPC-UA client repeatedly writing one bad
+ * address reproduces it every tick.
+ *
+ * So the count is incremented here and reported from off the real-time path
+ * by journal_take_force_drops(), which the dispatcher can read between
+ * cycles. The information survives; the stall does not. */
+static unsigned g_force_oob_drops = 0;
+
+unsigned journal_take_force_drops(void)
+{
+    const unsigned n  = g_force_oob_drops;
+    g_force_oob_drops = 0;
+    return n;
+}
+
 /**
  * @file journal_buffer.c
  * @brief Journal Buffer Implementation for Race-Condition-Free Plugin Writes
@@ -124,13 +151,30 @@ static int force_map_alloc(uint32_t elements)
 
 static void force_map_free(void)
 {
+    /* THE GUARDS GO DOWN FIRST, and the order is the whole point.
+     *
+     * is_slot_forced() checks g_force_count and g_force_size and only then
+     * indexes g_forced[type][idx]. Freeing the rows before clearing those two
+     * leaves a window in which a reader passes both checks and dereferences a
+     * row that is already NULL.
+     *
+     * The window is reachable rather than theoretical: image_lock is handed to
+     * every plugin as args->image_lock and calls journal_apply_and_clear(), so
+     * is_slot_forced runs on plugin-owned threads -- EtherCAT's bus thread and
+     * the s7comm server callback among them -- and this function takes no
+     * lock. Clearing first means a reader that sees either guard down never
+     * indexes a row at all.
+     *
+     * g_force_count first of all, because it is the fast-path check and the
+     * only one a reader with nothing forced ever reaches. */
+    g_force_count = 0;
+    g_force_size  = 0;
+
     for (int t = 0; t < JOURNAL_TYPE_COUNT; t++)
     {
         free(g_forced[t]);
         g_forced[t] = NULL;
     }
-    g_force_size  = 0;
-    g_force_count = 0;
 }
 
 static inline int type_is_bool(uint8_t t)
@@ -341,14 +385,9 @@ void journal_force_set(journal_buffer_type_t type, uint16_t index, uint8_t bit, 
 {
     if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size)
     {
-        /* Said out loud. A silent drop here is the exact defect this change
-         * set out to remove: someone forcing a high address from the debugger
-         * would watch nothing happen and have nothing to read. When the map
-         * was never allocated g_force_size is 0 and EVERY force lands here.
-         * Both force paths run under image_lock rather than on the lock-free
-         * producer path, so a log line is affordable. */
-        log_warn("Journal: force ignored, type %u index %u outside the image (%u slots)",
-                 (unsigned)type, (unsigned)index, (unsigned)g_force_size);
+        /* Counted, not logged: see g_force_oob_drops. When the map was never
+         * allocated g_force_size is 0 and EVERY force lands here. */
+        g_force_oob_drops++;
         return;
     }
     if (type_is_bool((uint8_t)type) && bit >= 8)
@@ -376,14 +415,9 @@ void journal_force_clear(journal_buffer_type_t type, uint16_t index, uint8_t bit
 {
     if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size)
     {
-        /* Said out loud. A silent drop here is the exact defect this change
-         * set out to remove: someone forcing a high address from the debugger
-         * would watch nothing happen and have nothing to read. When the map
-         * was never allocated g_force_size is 0 and EVERY force lands here.
-         * Both force paths run under image_lock rather than on the lock-free
-         * producer path, so a log line is affordable. */
-        log_warn("Journal: unforce ignored, type %u index %u outside the image (%u slots)",
-                 (unsigned)type, (unsigned)index, (unsigned)g_force_size);
+        /* Counted, not logged: see g_force_oob_drops. When the map was never
+         * allocated g_force_size is 0 and EVERY force lands here. */
+        g_force_oob_drops++;
         return;
     }
     if (type_is_bool((uint8_t)type) && bit >= 8)

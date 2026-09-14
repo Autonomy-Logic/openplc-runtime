@@ -123,6 +123,22 @@ typedef struct {
 } journal_buffer_ptrs_t;
 
 /**
+ * @brief How many forces were dropped for being outside the image, and reset.
+ *
+ * Forces that name an address the image does not have are counted rather than
+ * logged, because both force paths run under `image_lock()` on the real-time
+ * thread and `log_warn` takes a mutex with no priority inheritance before a
+ * blocking socket write.
+ *
+ * Call this from OFF the real-time path -- between cycles, or when answering a
+ * status request -- and report what it returns. Reading clears the counter, so
+ * each drop is reported once.
+ *
+ * @return Drops since the last call.
+ */
+unsigned journal_take_force_drops(void);
+
+/**
  * @brief Initialize the journal buffer system
  *
  * Must be called during runtime initialization, after image tables are set up.
