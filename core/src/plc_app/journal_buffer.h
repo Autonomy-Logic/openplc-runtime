@@ -231,12 +231,21 @@ int journal_write_lint(journal_buffer_type_t type, uint16_t index,
  * @param index Buffer array index
  * @param bit   Bit index (0-7) for BOOL types; ignored otherwise
  * @param value Forced value (sized for the largest type)
+ * @return 0 when the slot is now forced, -1 when the request was refused
+ *         because the address is outside the image (or the bit index outside
+ *         a BOOL byte).
+ *
+ * RETURNS RATHER THAN ONLY COUNTING, because the caller can act on it and the
+ * counter cannot. `apply_located` pins the program's IECVar too, and a force
+ * that this function refuses but the IECVar accepts shows in the debugger as
+ * forced while the image slot is untouched — the one state that is worse than
+ * a refusal, since it is a refusal the user is told is a success.
  *
  * @note MUST be called only from the dispatcher's debug-write drain, under the
  *       image lock — the same serialization domain as journal_apply_and_clear.
  */
-void journal_force_set(journal_buffer_type_t type, uint16_t index,
-                       uint8_t bit, uint64_t value);
+int journal_force_set(journal_buffer_type_t type, uint16_t index,
+                      uint8_t bit, uint64_t value);
 
 /**
  * @brief Release a forced image slot (writes flow through again)
@@ -244,11 +253,13 @@ void journal_force_set(journal_buffer_type_t type, uint16_t index,
  * @param type  Buffer type
  * @param index Buffer array index
  * @param bit   Bit index (0-7) for BOOL types; ignored otherwise
+ * @return 0 when the slot is no longer forced, -1 when the request was
+ *         refused because the address is outside the image.
  *
  * @note Same calling constraint as journal_force_set.
  */
-void journal_force_clear(journal_buffer_type_t type, uint16_t index,
-                         uint8_t bit);
+int journal_force_clear(journal_buffer_type_t type, uint16_t index,
+                        uint8_t bit);
 
 /**
  * @brief Apply all pending journal entries to image tables and clear the journal

@@ -381,18 +381,18 @@ static void apply_entry(const journal_entry_t *entry)
  * (bypassing the drop), then every later journal write to it is dropped until
  * journal_force_clear. Called only from the dispatcher's debug-write drain,
  * under image_lock — the same serialization domain as apply_entry. */
-void journal_force_set(journal_buffer_type_t type, uint16_t index, uint8_t bit, uint64_t value)
+int journal_force_set(journal_buffer_type_t type, uint16_t index, uint8_t bit, uint64_t value)
 {
     if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size)
     {
         /* Counted, not logged: see g_force_oob_drops. When the map was never
          * allocated g_force_size is 0 and EVERY force lands here. */
         g_force_oob_drops++;
-        return;
+        return -1;
     }
     if (type_is_bool((uint8_t)type) && bit >= 8)
     {
-        return;
+        return -1;
     }
     uint8_t mask = type_is_bool((uint8_t)type) ? (uint8_t)(1u << bit) : (uint8_t)0x01;
     if (!(g_forced[type][index] & mask))
@@ -407,22 +407,23 @@ void journal_force_set(journal_buffer_type_t type, uint16_t index, uint8_t bit, 
     e.index       = index;
     e.value       = value;
     apply_write_raw(&e); /* seed — must land, so it bypasses the drop check */
+    return 0;
 }
 
 /* Release a forced image slot. The next journal write (program copy_out or a
  * plugin) is no longer dropped, so the slot tracks the live value again. */
-void journal_force_clear(journal_buffer_type_t type, uint16_t index, uint8_t bit)
+int journal_force_clear(journal_buffer_type_t type, uint16_t index, uint8_t bit)
 {
     if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size)
     {
         /* Counted, not logged: see g_force_oob_drops. When the map was never
          * allocated g_force_size is 0 and EVERY force lands here. */
         g_force_oob_drops++;
-        return;
+        return -1;
     }
     if (type_is_bool((uint8_t)type) && bit >= 8)
     {
-        return;
+        return -1;
     }
     uint8_t mask = type_is_bool((uint8_t)type) ? (uint8_t)(1u << bit) : (uint8_t)0x01;
     if (g_forced[type][index] & mask)
@@ -433,6 +434,7 @@ void journal_force_clear(journal_buffer_type_t type, uint16_t index, uint8_t bit
             g_force_count--;
         }
     }
+    return 0;
 }
 
 #if JOURNAL_LOCKFREE
