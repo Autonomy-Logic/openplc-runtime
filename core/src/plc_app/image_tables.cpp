@@ -1189,6 +1189,10 @@ extern "C" bool image_tables_alloc(const image_sizes_t *sizes)
     t_int_memory  = (IEC_UINT *)calloc(N(IMAGE_TABLE_INT_MEMORY), sizeof(IEC_UINT));
     t_dint_memory = (IEC_UDINT *)calloc(N(IMAGE_TABLE_DINT_MEMORY), sizeof(IEC_UDINT));
     t_lint_memory = (IEC_ULINT *)calloc(N(IMAGE_TABLE_LINT_MEMORY), sizeof(IEC_ULINT));
+/* Undefined right after the last use, not inside a runtime branch: the
+ * preprocessor does not care which branch it sits in, so putting it in the
+ * failure path only worked because every use happened to be above it. */
+#undef N
 
     const bool complete = next.bool_input && next.bool_output && next.bool_memory &&
                           next.byte_input && next.byte_output && next.int_input &&
@@ -1230,7 +1234,6 @@ extern "C" bool image_tables_alloc(const image_sizes_t *sizes)
         free(t_dint_memory);
         free(t_lint_memory);
         log_error("[image_tables] could not allocate the image; the previous one is untouched");
-#undef N
         return false;
     }
 

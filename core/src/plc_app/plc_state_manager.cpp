@@ -453,26 +453,40 @@ void *plc_cycle_thread(void *arg)
     plc_retain_read();
 
     journal_buffer_ptrs_t journal_ptrs = {
-        .bool_input   = g_image.bool_input,
-        .bool_output  = g_image.bool_output,
-        .bool_memory  = g_image.bool_memory,
-        .byte_input   = g_image.byte_input,
-        .byte_output  = g_image.byte_output,
-        .int_input    = g_image.int_input,
-        .int_output   = g_image.int_output,
-        .int_memory   = g_image.int_memory,
-        .dint_input   = g_image.dint_input,
-        .dint_output  = g_image.dint_output,
-        .dint_memory  = g_image.dint_memory,
-        .lint_input   = g_image.lint_input,
-        .lint_output  = g_image.lint_output,
-        .lint_memory  = g_image.lint_memory,
+        .bool_input  = g_image.bool_input,
+        .bool_output = g_image.bool_output,
+        .bool_memory = g_image.bool_memory,
+        .byte_input  = g_image.byte_input,
+        .byte_output = g_image.byte_output,
+        .int_input   = g_image.int_input,
+        .int_output  = g_image.int_output,
+        .int_memory  = g_image.int_memory,
+        .dint_input  = g_image.dint_input,
+        .dint_output = g_image.dint_output,
+        .dint_memory = g_image.dint_memory,
+        .lint_input  = g_image.lint_input,
+        .lint_output = g_image.lint_output,
+        .lint_memory = g_image.lint_memory,
         /* Follows the image: journal_buffer.c bounds every forced write
          * against this, so a stale constant here would silently drop writes to
          * the part of the image beyond it. */
-        .buffer_size  = (int)image_tables_capacity(),
-        .image_mutex  = itm,
+        .table_sizes = {},
+        .buffer_size = (int)image_tables_capacity(),
+        .image_mutex = itm,
     };
+
+    /* The fourteen lengths, captured HERE, at the same moment as the pointers
+     * above. journal_buffer.c bounds each write by the table it addresses, and
+     * reading that from the live image while holding pointers taken earlier
+     * would apply a new length to an old allocation if the two ever diverged.
+     *
+     * The journal's own order, not the image's -- they are the same fourteen
+     * tables in different orders, which is the trap kJournalToImageTable
+     * exists for. */
+    for (int t = 0; t < JOURNAL_TYPE_COUNT; ++t)
+    {
+        journal_ptrs.table_sizes[t] = image_table_capacity(journal_type_to_image_table(t));
+    }
     if (journal_init(&journal_ptrs) != 0)
     {
         /* FATAL, not a log line, and this is newly true.

@@ -289,3 +289,23 @@ def test_the_module_exports_the_symbol_the_runtime_looks_for(sm):
     # in this module's namespace -- importing it is what declares the
     # capability, and without it every run this plugin is in stays square.
     assert callable(getattr(sm, "set_image_sizes", None))
+
+
+def test_a_failed_delivery_leaves_no_half_filled_map(sm):
+    """A mid-list failure must not answer for the tables before it.
+
+    `_sizes` is process-global: the module is imported once per interpreter and
+    every Python plugin in that process shares it. A plugin being torn down on
+    a bad delivery could otherwise leave a partial map behind for plugins that
+    keep running -- answering for the tables it parsed and falling back to
+    buffer_size for the rest.
+    """
+    from shared import image_sizes
+
+    assert image_sizes.set_image_sizes([10] * 14) == 0
+    assert image_sizes.sizes_known()
+
+    # Fails on the third entry, after two were parsed.
+    assert image_sizes.set_image_sizes([1, 2, "nao-e-numero", 4]) == -1
+    assert not image_sizes.sizes_known()
+    assert image_sizes.table_capacity("bool_input", 99) == 99

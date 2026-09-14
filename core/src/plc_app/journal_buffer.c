@@ -138,6 +138,13 @@ static const image_table_id_t kJournalToImageTable[JOURNAL_TYPE_COUNT] = {
     [JOURNAL_LINT_MEMORY] = IMAGE_TABLE_LINT_MEMORY,
 };
 
+image_table_id_t journal_type_to_image_table(uint8_t type)
+{
+    if (type >= JOURNAL_TYPE_COUNT)
+        return IMAGE_TABLE_COUNT;
+    return kJournalToImageTable[type];
+}
+
 /** The longest table, which is how long a forced-slot row has to be: rows are
  *  one length for all fourteen types, so the longest is the only one that can
  *  record a forced slot anywhere any table reaches. Under-allocating here is
@@ -147,7 +154,7 @@ static uint32_t journal_longest_table(void)
     uint32_t longest = 0;
     for (int t = 0; t < JOURNAL_TYPE_COUNT; ++t)
     {
-        const uint32_t n = image_table_capacity(kJournalToImageTable[t]);
+        const uint32_t n = g_buffer_ptrs.table_sizes[t];
         if (n > longest)
             longest = n;
     }

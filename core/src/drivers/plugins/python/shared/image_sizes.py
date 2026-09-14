@@ -58,17 +58,28 @@ def set_image_sizes(sizes) -> int:
     Returns 0 on success, which is what the runtime requires; non-zero fails
     the plugin exactly as a failed ``init`` does.
     """
-    _sizes.clear()
+    # Built into a local and published only on success. _sizes is
+    # PROCESS-GLOBAL -- this module is imported once per interpreter and every
+    # Python plugin in that process shares it -- so a half-filled map left
+    # behind by a plugin being torn down would answer for the tables before
+    # the failure and fall back to buffer_size for the rest, in plugins that
+    # are still running.
+    parsed: dict[str, int] = {}
     try:
         values = list(sizes)
     except TypeError:
+        _sizes.clear()
         return -1
 
     for name, count in zip(IMAGE_TABLE_ORDER, values):
         try:
-            _sizes[name] = int(count)
+            parsed[name] = int(count)
         except (TypeError, ValueError):
+            _sizes.clear()
             return -1
+
+    _sizes.clear()
+    _sizes.update(parsed)
     return 0
 
 

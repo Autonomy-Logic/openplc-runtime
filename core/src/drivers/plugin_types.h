@@ -257,9 +257,18 @@ typedef struct
      * kept square for that run and this field is again the length they all
      * have.
      *
-     * Not marked deprecated yet, deliberately: the build carries -Werror, so
-     * the attribute would fail the build for every consumer still reading it
-     * rather than naming them. It goes in once they are migrated. */
+     * Not marked deprecated yet, and the reason is not what an earlier draft
+     * of this comment claimed. The runtime core does build with -Werror
+     * (core/src/CMakeLists.txt), but the plugins do not: they are configured
+     * by their own cmake invocation and the VPP packages by a plain Makefile,
+     * so the attribute would produce warnings there, not a build failure.
+     *
+     * It is deferred because the field is still the RIGHT thing to read: on a
+     * square run it is the length every table has, and it is the only bound a
+     * plugin that has not adopted set_image_sizes can use. Deprecating it now
+     * would warn at correct code, including in packages that ship
+     * independently and must keep working against older runtimes. The
+     * attribute goes in once the symbol is universal. */
     int buffer_size;
     int bits_per_buffer;
 

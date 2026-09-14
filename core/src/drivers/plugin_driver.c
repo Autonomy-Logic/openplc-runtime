@@ -1257,12 +1257,19 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
            sizeof(driver->plugins[plugin_index].config.plugin_related_config_path));
 
     // Initialize buffer size info
-    /* The allocated size, not a compile-time constant. Plugins bounds-check
-     * against this field -- ethercat_io.c refuses a byte_index at or above it,
-     * s7comm derives every clamp from it -- so it has to describe the image
-     * that actually exists. It describes all fourteen tables because they are
-     * all allocated at the same count; see image_sizes_flatten() for why the
-     * ABI leaves no room for anything else. */
+    /* THE SMALLEST OF THE FOURTEEN, not the length they all share.
+     *
+     * The tables no longer have one length, and this field cannot say so --
+     * CON06 keeps the struct's offsets fixed. The minimum is the only safe
+     * single number for a consumer that has not been told they can differ:
+     * bounding by it refuses an index, where bounding by the largest reads
+     * past every shorter table.
+     *
+     * ethercat_io.c and s7comm no longer derive their clamps from this field;
+     * they export set_image_sizes and bound by the table each access actually
+     * addresses, falling back here only when the sizes were never delivered.
+     * plugin_types.h carries the same statement for plugin authors, and
+     * journal_buffer.h for the runtime's own copy. */
     args->buffer_size     = (int)image_tables_capacity();
     args->bits_per_buffer = 8;
 
@@ -1472,6 +1479,10 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
         // start_loop is optional
         Py_XDECREF(py_binds->pFuncStart);
         py_binds->pFuncStart = NULL;
+        /* A failed PyObject_GetAttrString leaves an AttributeError SET, and an
+         * optional lookup does not return, so it has to be cleared here or the
+         * next CPython call reports this absence as its own failure. */
+        PyErr_Clear();
     }
 
     py_binds->pFuncStop = PyObject_GetAttrString(py_binds->pModule, "stop_loop");
@@ -1480,6 +1491,10 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
         // stop_loop is optional
         Py_XDECREF(py_binds->pFuncStop);
         py_binds->pFuncStop = NULL;
+        /* A failed PyObject_GetAttrString leaves an AttributeError SET, and an
+         * optional lookup does not return, so it has to be cleared here or the
+         * next CPython call reports this absence as its own failure. */
+        PyErr_Clear();
     }
 
     py_binds->pFuncSetImageSizes = PyObject_GetAttrString(py_binds->pModule, "set_image_sizes");
@@ -1501,6 +1516,10 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
         // cleanup is optional
         Py_XDECREF(py_binds->pFuncCleanup);
         py_binds->pFuncCleanup = NULL;
+        /* A failed PyObject_GetAttrString leaves an AttributeError SET, and an
+         * optional lookup does not return, so it has to be cleared here or the
+         * next CPython call reports this absence as its own failure. */
+        PyErr_Clear();
     }
 
     // Store the python binds in the plugin instance

@@ -756,9 +756,12 @@ static int get_type_size(s7comm_buffer_type_t type)
  *
  * A THIRD order for the same fourteen tables. This enum groups each width's
  * memory beside its input and output, matching journal_buffer_type_t;
- * image_table_id_t puts every memory table at the end. BUFFER_TYPE_INT_MEMORY
- * is 7 and IMAGE_TABLE_INT_MEMORY is 10, so a cast between them reads and
- * writes under another table's bounds. Written out rather than computed. */
+ * image_table_id_t puts every memory table at the end -- and this enum starts
+ * at BUFFER_TYPE_NONE, so it is offset again. For one table, int_memory:
+ * BUFFER_TYPE_INT_MEMORY is 8, JOURNAL_INT_MEMORY is 7, IMAGE_TABLE_INT_MEMORY
+ * is 10. Three different numbers for one table is the whole argument, and a
+ * cast between any two reads and writes under another table's bounds. Written
+ * out rather than computed. */
 static image_table_id_t s7_image_table(s7comm_buffer_type_t type)
 {
     switch (type)
