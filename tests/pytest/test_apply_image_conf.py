@@ -267,6 +267,38 @@ class TestUnits:
         assert not isolated_conf.exists()
 
 
+class TestRefusalMessages:
+    """The message is the point of validating here rather than in the core.
+
+    This module's own docstring says so: refusing it here, with a line in the
+    build log the user is already watching, is the only place a person sees it.
+    A message that names the wrong mistake sends them looking for something
+    that is not there.
+    """
+
+    def test_a_non_integer_count_says_so(self):
+        # Used to read "cannot be negative (got -1)", because the parse failure
+        # was stored as -1 and fell into the negative branch.
+        with pytest.raises(image_config.ImageConfigError) as excinfo:
+            image_config.validate_table_count("int_output", None, "words")
+        assert "whole number" in str(excinfo.value)
+        assert "negative" not in str(excinfo.value)
+
+    def test_an_actually_negative_count_still_says_negative(self):
+        with pytest.raises(image_config.ImageConfigError) as excinfo:
+            image_config.validate_table_count("int_output", -3, "words")
+        assert "negative" in str(excinfo.value)
+        assert "-3" in str(excinfo.value)
+
+    def test_a_garbled_value_in_a_real_file_reaches_the_right_message(self, upload, isolated_conf):
+        # End to end, because the sentinel is what connects the two.
+        write_raw_conf(upload, "format_version=2\nint_output=4.5 words\n")
+        _v, sizes, units = image_config.read_image_conf_file(upload / "image.conf")
+        with pytest.raises(image_config.ImageConfigError) as excinfo:
+            image_config.validate_image_conf(2, sizes, units)
+        assert "whole number" in str(excinfo.value)
+
+
 class TestCeiling:
     """The ABI ceiling is in ELEMENTS, and the file is not.
 

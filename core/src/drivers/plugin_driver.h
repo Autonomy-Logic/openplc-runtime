@@ -175,6 +175,22 @@ int plugin_driver_init(plugin_driver_t *driver);
  * state and duplicates threads/sockets. Safe to call when no plugins are
  * initialised. Returns the count of plugins it cleaned up. */
 int plugin_driver_cleanup_init(plugin_driver_t *driver);
+
+/**
+ * Is any plugin still initialised?
+ *
+ * Asked before releasing the image, which is the half of the ordering
+ * requirement that had no check. The allocate-before-init half is guarded by a
+ * real runtime refusal in generate_structured_args_with_driver; this is its
+ * counterpart, so a refactor that frees the image while a plugin still holds
+ * the base pointers it copied by value at init() gets a diagnostic instead of
+ * a use-after-free.
+ *
+ * Not the same as "still running": cleanup_init skips a plugin whose
+ * `initialized` is 0, and a native plugin with no `cleanup` symbol keeps its
+ * by-value args copy either way.
+ */
+int plugin_driver_any_initialized(plugin_driver_t *driver);
 int plugin_driver_start(plugin_driver_t *driver);
 int plugin_driver_stop(plugin_driver_t *driver);
 void plugin_driver_destroy(plugin_driver_t *driver);

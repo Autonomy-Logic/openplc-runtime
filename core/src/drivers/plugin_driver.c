@@ -821,6 +821,18 @@ int plugin_driver_init(plugin_driver_t *driver)
     return 0;
 }
 
+int plugin_driver_any_initialized(plugin_driver_t *driver)
+{
+    if (!driver)
+        return 0;
+    for (int i = 0; i < driver->plugin_count; i++)
+    {
+        if (driver->plugins[i].initialized)
+            return 1;
+    }
+    return 0;
+}
+
 int plugin_driver_cleanup_init(plugin_driver_t *driver)
 {
     if (!driver)

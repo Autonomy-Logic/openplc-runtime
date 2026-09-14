@@ -123,7 +123,9 @@ class ImageConfigError(ValueError):
     """Raised for a size the runtime would not be able to honour."""
 
 
-def read_image_conf_file(path: str | os.PathLike) -> tuple[int, dict[str, int], dict[str, str]]:
+def read_image_conf_file(
+    path: str | os.PathLike,
+) -> tuple[int, dict[str, int | None], dict[str, str]]:
     """Parse an ``image.conf``, with every unset table read as zero.
 
     Takes a path rather than assuming the runtime root, because the file worth
@@ -169,10 +171,15 @@ def read_image_conf_file(path: str | os.PathLike) -> tuple[int, dict[str, int], 
                 try:
                     sizes[key] = int(count)
                 except ValueError:
-                    # Left as a parse failure rather than an exception: a
-                    # garbled line should produce the same clear refusal as an
-                    # out-of-range one rather than a traceback from the parser.
-                    sizes[key] = -1
+                    # None, not -1, and the difference is the message. A -1 fell
+                    # into the "cannot be negative" branch below, so `4.5 words`
+                    # was refused with "int_output cannot be negative (got -1)"
+                    # and the reader went looking for a minus sign that is not
+                    # there. int(None) raises TypeError, which reaches the
+                    # handler that says what actually happened -- and refusing
+                    # it here, where someone is watching the build log, is this
+                    # module's whole reason for existing.
+                    sizes[key] = None
     except FileNotFoundError:
         pass
     except (UnicodeDecodeError, IsADirectoryError, PermissionError, OSError) as exc:
@@ -184,7 +191,7 @@ def read_image_conf_file(path: str | os.PathLike) -> tuple[int, dict[str, int], 
         # already knows how to handle -- it refuses the stanza and falls back to
         # the floor derived from the program.
         logger.warning("Image: could not read %s (%s); treating as no sizes", path, exc)
-        return -1, {key: -1 for key in IMAGE_TABLE_KEYS}, units
+        return -1, {key: None for key in IMAGE_TABLE_KEYS}, units
     return version, sizes, units
 
 
@@ -222,7 +229,7 @@ def validate_table_count(key: str, value: object, unit: object) -> int:
 
 
 def validate_image_conf(
-    version: int, sizes: dict[str, int], units: dict[str, str]
+    version: int, sizes: dict[str, int | None], units: dict[str, str]
 ) -> dict[str, int]:
     """Validate the version and every table, returning the normalised counts.
 
