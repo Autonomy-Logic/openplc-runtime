@@ -45,13 +45,20 @@ static IEC_UDINT *stub_dint_memory[STUB_IMAGE_ELEMENTS];
 static IEC_ULINT *stub_lint_memory[STUB_IMAGE_ELEMENTS];
 
 // Stub: image_tables_alloc (image_tables.cpp). Points the tables at the fixed
-// storage above and ignores the requested count -- there is no allocator here
+// storage above and ignores the requested sizes -- there is no allocator here
 // to exercise. plugin_driver.c refuses to build runtime args while the
 // capacity is zero, which is the ordering invariant it now enforces, so a test
 // that wants args has to call this first exactly as the real load path does.
-bool image_tables_alloc(uint32_t elements)
+//
+// TAKES THE SIZES STRUCT, not a single count (RTOP-284). The signature moved
+// when the fourteen tables stopped sharing a length, and this stub kept the
+// old one -- so the C unit tests did not compile at all on this branch.
+// Nothing caught it because the Ceedling suite does not run in CI, and it
+// would not even configure until the SOEM submodule and its generated
+// ec_options.h were in place. Running it by hand is what surfaced this.
+bool image_tables_alloc(const image_sizes_t *sizes)
 {
-    (void)elements;
+    (void)sizes;
     g_image.bool_input  = stub_bool_input;
     g_image.bool_output = stub_bool_output;
     g_image.bool_memory = stub_bool_memory;
@@ -76,6 +83,17 @@ void image_tables_free(void)
 
 uint32_t image_tables_capacity(void)
 {
+    return g_image.byte_input ? STUB_IMAGE_ELEMENTS : 0u;
+}
+
+// Stub: image_table_capacity (image_tables.cpp). Every stub table is the same
+// fixed length, so the per-table answer is the same as the single-number one.
+// That is a property of the stub and not of the runtime, where the whole point
+// is that the fourteen differ -- a test about per-table lengths belongs against
+// the real allocator, not here.
+uint32_t image_table_capacity(image_table_id_t id)
+{
+    (void)id;
     return g_image.byte_input ? STUB_IMAGE_ELEMENTS : 0u;
 }
 

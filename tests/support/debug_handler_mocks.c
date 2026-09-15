@@ -45,9 +45,31 @@ uint16_t (*ext_strucpp_debug_read)       (uint8_t, uint16_t, uint8_t *)  = NULL;
 uint8_t  (*ext_strucpp_debug_write)      (uint8_t, uint16_t,
                                           const uint8_t *, uint16_t)     = NULL;
 
-/* ext_strucpp_program_md5 lives in utils.c; just bring the declaration
- * in via the public header. */
-extern char *ext_strucpp_program_md5;
+/* ext_strucpp_program_md5, scan_counter and runtime_external_write are DEFINED
+ * here, not just declared.
+ *
+ * The first two live in utils.c and the third in debug_write_journal.cpp, and
+ * no test target compiles any of those files -- so every link of a target that
+ * pulls in debug_handler.c failed on undefined references. The whole Ceedling
+ * suite has been unbuildable on development for that reason; the suite does
+ * not run in CI, so nothing said so.
+ *
+ * Defining them in the mock is the right side to fix: this file exists to
+ * stand in for the runtime's globals, and no target links both it and utils.c.
+ * The write stub accepts and drops -- nothing here asserts on the
+ * external-write queue. */
+char         *ext_strucpp_program_md5 = NULL;
+unsigned long scan_counter            = 0;
+
+int runtime_external_write(uint8_t arr, uint16_t elem, uint8_t op, const uint8_t *bytes, uint16_t len)
+{
+    (void)arr;
+    (void)elem;
+    (void)op;
+    (void)bytes;
+    (void)len;
+    return 0;
+}
 
 /* -----------------------------------------------------------------------
  * State backing the fakes. Reset between tests.
