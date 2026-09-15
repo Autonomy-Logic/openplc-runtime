@@ -21,6 +21,7 @@ from pymodbus.datastore import (
     ModbusServerContext,
     ModbusSparseDataBlock,
 )
+from pymodbus.datastore.store import ExcCodes
 from pymodbus.server import ServerStop
 from pymodbus.server.server import ModbusTcpServer
 
@@ -41,15 +42,19 @@ MODBUS_MAX_ADDRESSES = 65536
 # sized from what the project needs, so a copy here could not be right for more
 # than one program at a time -- and being wrong is invisible: the exposed
 # register block would be declared wider than the image, every address in the
-# gap would pass pymodbus's validate(), fail the buffer read, and answer zero.
+# gap would fail the buffer read and answer zero.
 # A SCADA reading %QW2000 would get a plausible, wrong value indistinguishable
 # from a real zero.
 #
 # Clamping to the runtime's size instead makes the declared block match the
-# image exactly, and pymodbus then answers anything beyond it with exception 02
-# (Illegal Data Address) out of its own validate(). That is the client being
-# told, by the protocol, in the standard way, rather than being handed a
-# fabricated value.
+# image exactly, and getValues answers anything beyond it with exception 02
+# (Illegal Data Address). That is the client being told, by the protocol, in
+# the standard way, rather than being handed a fabricated value.
+#
+# The refusal is OURS to issue. An earlier draft of this comment said pymodbus
+# did it "out of its own validate()" -- it does not: 3.11 dropped validate from
+# the datastore API and ModbusDeviceContext.getValues calls the block directly.
+# Measured before the fix: every address up to 65000 answered zero.
 
 # Default segmentation configuration (matches v3 behavior)
 DEFAULT_HOLDING_REG_CONFIG = {
@@ -552,7 +557,20 @@ class OpenPLCSegmentedCoilsDataBlock(ModbusSparseDataBlock):
                             logger.error(f"Error reading coil %MX{mx_addr}: {error_msg}")
                         values.append(0)
                 else:
-                    values.append(0)
+                    # FORA DE TODO SEGMENTO: excecao 02, nunca zero.
+                    #
+                    # O clamp acima faz o bloco declarado bater com a imagem,
+                    # e o plano era que o validate() do pymodbus recusasse o
+                    # resto. Esse validate nao existe mais: em 3.11 a API do
+                    # datastore perdeu o metodo e ModbusDeviceContext.getValues
+                    # chama o bloco direto. Sem isto, todo endereco acima da
+                    # faixa respondia 0 -- medido ate 65000 -- que e o valor
+                    # plausivel e errado que o cliente nao distingue de um zero
+                    # real, exatamente o que o clamp existe para evitar.
+                    #
+                    # getValues pode devolver um ExcCodes no lugar da lista; e
+                    # o caminho que a propria assinatura do contexto declara.
+                    return ExcCodes.ILLEGAL_ADDRESS
 
             return values
         finally:
@@ -794,7 +812,20 @@ class OpenPLCSegmentedHoldingRegistersDataBlock(ModbusSparseDataBlock):
                         values.append(0)
 
                 else:
-                    values.append(0)
+                    # FORA DE TODO SEGMENTO: excecao 02, nunca zero.
+                    #
+                    # O clamp acima faz o bloco declarado bater com a imagem,
+                    # e o plano era que o validate() do pymodbus recusasse o
+                    # resto. Esse validate nao existe mais: em 3.11 a API do
+                    # datastore perdeu o metodo e ModbusDeviceContext.getValues
+                    # chama o bloco direto. Sem isto, todo endereco acima da
+                    # faixa respondia 0 -- medido ate 65000 -- que e o valor
+                    # plausivel e errado que o cliente nao distingue de um zero
+                    # real, exatamente o que o clamp existe para evitar.
+                    #
+                    # getValues pode devolver um ExcCodes no lugar da lista; e
+                    # o caminho que a propria assinatura do contexto declara.
+                    return ExcCodes.ILLEGAL_ADDRESS
 
             return values
         finally:
@@ -1094,13 +1125,12 @@ def parse_buffer_mapping_config(config_map, buffer_size):
     one program at a time.
 
     THE CLAMP IS WHAT MAKES OUT-OF-RANGE HONEST, not just tidy. Each data block
-    declares itself as wide as the counts returned here, and pymodbus's own
-    validate() answers exception 02 (Illegal Data Address) for anything past
-    that. Declare a block wider than the image and the addresses in the gap
-    pass validate, fail the buffer read, and answer ZERO -- a plausible, wrong
-    value that a client cannot tell from a real zero, logged once per read at
-    scan rate. Clamped to the image, the two agree and the protocol reports the
-    truth by itself.
+    declares itself as wide as the counts returned here, and getValues answers
+    exception 02 (Illegal Data Address) for anything past that. Declare a block
+    wider than the image and the addresses in the gap fail the buffer read and
+    answer ZERO -- a plausible, wrong value that a client cannot tell from a
+    real zero, logged once per read at scan rate. Clamped to the image, the two
+    agree and the refusal is issued where the range is known.
 
     Note this also settles the case where the user configured nothing: the
     editor materialises its defaults (1024 registers, 8192 coils) into
