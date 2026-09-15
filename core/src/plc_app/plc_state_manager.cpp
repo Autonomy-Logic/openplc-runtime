@@ -1087,6 +1087,57 @@ extern "C" int load_plc_program(PluginManager *pm)
          * located read returned zero. The PLC scanned and drove nothing,
          * silently -- which is the failure plc_main.c refuses to ship a few
          * lines above its own boot allocation. */
+        if (plugin_driver)
+        {
+            if (plugin_driver_update_config(plugin_driver, "./plugins.conf") != 0)
+            {
+                log_error("[PLUGIN]: Failed to load plugin configuration");
+                pthread_mutex_lock(&state_mutex);
+                plc_state = PLC_STATE_ERROR;
+                pthread_mutex_unlock(&state_mutex);
+                log_info("PLC State: ERROR");
+                if (pm == plc_program) plc_program = NULL;
+                plugin_manager_destroy(pm);
+                return -1;
+            }
+            /* Load VPP plugins from the editor-generated vpp_plugins.conf.
+             * The file is absent when the upload had no VPP target, so an
+             * absent file is silently ignored (not an error). */
+            if (plugin_driver_append_config(plugin_driver, "./vpp_plugins.conf") != 0)
+            {
+                log_error("[PLUGIN]: VPP plugin failed to load — check vpp_plugins.conf and build/vpp/");
+                pthread_mutex_lock(&state_mutex);
+                plc_state = PLC_STATE_ERROR;
+                pthread_mutex_unlock(&state_mutex);
+                log_info("PLC State: ERROR");
+                if (pm == plc_program) plc_program = NULL;
+                plugin_manager_destroy(pm);
+                return -1;
+            }
+        }
+
+        /* PLUGIN CONFIG IS LOADED BEFORE THE IMAGE IS SIZED, and the order is
+         * load-bearing rather than tidy.
+         *
+         * The per-table decision below asks each plugin whether it exports
+         * set_image_sizes, and for a Python plugin that answer IS the resolved
+         * symbol -- which `plugin_driver_update_config` is what resolves. On
+         * the first load after boot the symbols happened to be resolved
+         * already, from the boot-time load, so the decision saw them. On every
+         * RELOAD the preceding stop had released them, the decision read NULL,
+         * and the image silently fell back to square for the rest of the
+         * process. Per-table sizing therefore worked once per boot and never
+         * again -- and a stop/start is the ordinary way to change program.
+         *
+         * Loading the config first costs nothing: it reads plugins.conf and
+         * resolves symbols, and touches no image state.
+         *
+         * The image block stays OUTSIDE `if (plugin_driver)`. The image is the
+         * program's storage, not the plugins', and gating it on a plugin
+         * concern is what left g_capacity at zero when plugin_driver was NULL.
+         * A NULL driver makes the capability check answer false, which sizes
+         * the image square -- the conservative side, and correct. */
+
         /* SIZE AND ALLOCATE THE IMAGE, and do it HERE.
          *
          * After plugin_manager_load, because the floor is derived by
@@ -1154,32 +1205,6 @@ extern "C" int load_plc_program(PluginManager *pm)
 
         if (plugin_driver)
         {
-            if (plugin_driver_update_config(plugin_driver, "./plugins.conf") != 0)
-            {
-                log_error("[PLUGIN]: Failed to load plugin configuration");
-                pthread_mutex_lock(&state_mutex);
-                plc_state = PLC_STATE_ERROR;
-                pthread_mutex_unlock(&state_mutex);
-                log_info("PLC State: ERROR");
-                if (pm == plc_program) plc_program = NULL;
-                plugin_manager_destroy(pm);
-                return -1;
-            }
-            /* Load VPP plugins from the editor-generated vpp_plugins.conf.
-             * The file is absent when the upload had no VPP target, so an
-             * absent file is silently ignored (not an error). */
-            if (plugin_driver_append_config(plugin_driver, "./vpp_plugins.conf") != 0)
-            {
-                log_error("[PLUGIN]: VPP plugin failed to load — check vpp_plugins.conf and build/vpp/");
-                pthread_mutex_lock(&state_mutex);
-                plc_state = PLC_STATE_ERROR;
-                pthread_mutex_unlock(&state_mutex);
-                log_info("PLC State: ERROR");
-                if (pm == plc_program) plc_program = NULL;
-                plugin_manager_destroy(pm);
-                return -1;
-            }
-
             if (plugin_driver_init(plugin_driver) != 0)
             {
                 /* Roll back any plugins that did initialise before the
