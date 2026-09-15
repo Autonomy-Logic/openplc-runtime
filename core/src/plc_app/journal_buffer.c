@@ -50,6 +50,7 @@ unsigned journal_take_force_drops(void)
  */
 
 #include "journal_buffer.h"
+#include "image_tables.h"
 #include "utils/log.h"
 #include "utils/utils.h"
 #include <sched.h>
@@ -109,6 +110,83 @@ static int journal_add(uint8_t type, uint16_t index, uint8_t bit, uint64_t value
  * never been made. The image can be any size now, so this follows it: one row
  * per journal type, each as long as the image.
  * --------------------------------------------------------------------------- */
+/* JOURNAL TYPES AND IMAGE TABLE IDS ARE NOT THE SAME ORDER, despite both
+ * having fourteen members and journal_buffer.h saying this enum "matches the
+ * OpenPLC image table types". It matches the CONCEPTS, not the indices:
+ * journal puts each width's memory table beside its input and output
+ * (..._INPUT, ..._OUTPUT, ..._MEMORY) while image_tables.h groups all the
+ * memory tables at the end. JOURNAL_INT_MEMORY is 7; IMAGE_TABLE_INT_MEMORY
+ * is 10.
+ *
+ * So a cast between them is silent corruption: writes land in another table's
+ * bounds and the wrong area is refused or admitted. The mapping is written
+ * out, once, here. */
+static const image_table_id_t kJournalToImageTable[JOURNAL_TYPE_COUNT] = {
+    [JOURNAL_BOOL_INPUT]  = IMAGE_TABLE_BOOL_INPUT,
+    [JOURNAL_BOOL_OUTPUT] = IMAGE_TABLE_BOOL_OUTPUT,
+    [JOURNAL_BOOL_MEMORY] = IMAGE_TABLE_BOOL_MEMORY,
+    [JOURNAL_BYTE_INPUT]  = IMAGE_TABLE_BYTE_INPUT,
+    [JOURNAL_BYTE_OUTPUT] = IMAGE_TABLE_BYTE_OUTPUT,
+    [JOURNAL_INT_INPUT]   = IMAGE_TABLE_INT_INPUT,
+    [JOURNAL_INT_OUTPUT]  = IMAGE_TABLE_INT_OUTPUT,
+    [JOURNAL_INT_MEMORY]  = IMAGE_TABLE_INT_MEMORY,
+    [JOURNAL_DINT_INPUT]  = IMAGE_TABLE_DINT_INPUT,
+    [JOURNAL_DINT_OUTPUT] = IMAGE_TABLE_DINT_OUTPUT,
+    [JOURNAL_DINT_MEMORY] = IMAGE_TABLE_DINT_MEMORY,
+    [JOURNAL_LINT_INPUT]  = IMAGE_TABLE_LINT_INPUT,
+    [JOURNAL_LINT_OUTPUT] = IMAGE_TABLE_LINT_OUTPUT,
+    [JOURNAL_LINT_MEMORY] = IMAGE_TABLE_LINT_MEMORY,
+};
+
+image_table_id_t journal_type_to_image_table(uint8_t type)
+{
+    if (type >= JOURNAL_TYPE_COUNT)
+        return IMAGE_TABLE_COUNT;
+    return kJournalToImageTable[type];
+}
+
+/** The longest table, which is how long a forced-slot row has to be: rows are
+ *  one length for all fourteen types, so the longest is the only one that can
+ *  record a forced slot anywhere any table reaches. Under-allocating here is
+ *  what silently stopped a high address being forced at all. */
+static uint32_t journal_longest_table(void)
+{
+    uint32_t longest = 0;
+    for (int t = 0; t < JOURNAL_TYPE_COUNT; ++t)
+    {
+        const uint32_t n = g_buffer_ptrs.table_sizes[t];
+        if (n > longest)
+            longest = n;
+    }
+    return longest;
+}
+
+/**
+ * How far this journal type's table actually reaches.
+ *
+ * FROM THE SNAPSHOT, not from the live image sizes, and the two are not the
+ * same question. `g_buffer_ptrs.table_sizes[]` was filled at journal_init from
+ * the SAME moment as the table pointers beside it; `image_table_capacity()`
+ * reads `g_sizes`, which `image_tables_alloc` rewrites under the image-tables
+ * mutex that this path does not hold. Every caller here uses the result to
+ * index one of those pointers, so taking the length from a later moment than
+ * the allocation it bounds is how a dropped write becomes an out-of-bounds
+ * index instead.
+ *
+ * The two cannot diverge today -- the image is allocated before the cycle
+ * thread that calls journal_init exists, and a re-load stops that thread
+ * first -- so this is not a bug being fixed. It is the implicit coupling made
+ * explicit, which is what the rest of this task has been doing, and it also
+ * turns a non-inlinable cross-TU call per journal entry on the drain path back
+ * into the struct field read it used to be.
+ */
+static uint32_t journal_type_capacity(uint8_t type)
+{
+    if (type >= JOURNAL_TYPE_COUNT)
+        return 0;
+    return g_buffer_ptrs.table_sizes[type];
+}
+
 static uint8_t *g_forced[JOURNAL_TYPE_COUNT];
 /* uint32_t, not uint16_t: the image is allowed up to 65536 elements, which does
  * not fit a uint16_t and would wrap to zero -- turning "the largest legal
@@ -186,7 +264,14 @@ static inline int is_slot_forced(uint8_t type, uint16_t idx, uint8_t bit)
 {
     if (g_force_count == 0)
         return 0; /* fast path: nothing forced */
-    if (type >= JOURNAL_TYPE_COUNT || idx >= g_force_size)
+    /* Two bounds, and both matter: the row has to exist (g_force_size is how
+     * long every row was allocated) and the slot has to be one this table
+     * actually has. With the tables at different lengths the second is the
+     * real one -- a row is as long as the LARGEST table so every type has
+     * somewhere to record, and the per-table check is what stops a forced slot
+     * being honoured in an area that does not reach that far. */
+    if (type >= JOURNAL_TYPE_COUNT || idx >= g_force_size ||
+        (uint32_t)idx >= journal_type_capacity(type))
         return 0;
     if (type_is_bool(type))
     {
@@ -203,13 +288,17 @@ static void apply_write_raw(const journal_entry_t *entry)
 {
     uint16_t idx = entry->index;
 
-    /* Bounds check. Compared as a signed int rather than through a
-     * (uint16_t) cast: buffer_size is an int and the image may reach 65536,
-     * which that cast turns into 0 -- dropping EVERY journal write with no
-     * diagnostic, at exactly the largest legal image. It is the same wrap the
-     * comment above g_force_size describes, and this was the one site the
-     * widening there missed. `idx` is uint16_t and promotes cleanly. */
-    if ((int)idx >= g_buffer_ptrs.buffer_size)
+    /* Bounds check against THIS ENTRY'S OWN TABLE.
+     *
+     * It used to compare against g_buffer_ptrs.buffer_size, one figure for
+     * fourteen tables. That number is now the SMALLEST of them, so a write to
+     * any longer table above the smallest table's length would be dropped --
+     * silently, which is the failure mode this whole area keeps producing.
+     *
+     * Still compared as uint32_t rather than through a (uint16_t) cast: the
+     * image may reach 65536, which that cast turns into 0 and drops every
+     * write at exactly the largest legal image. */
+    if ((uint32_t)idx >= journal_type_capacity(entry->buffer_type))
     {
         return;
     }
@@ -383,7 +472,21 @@ static void apply_entry(const journal_entry_t *entry)
  * under image_lock — the same serialization domain as apply_entry. */
 int journal_force_set(journal_buffer_type_t type, uint16_t index, uint8_t bit, uint64_t value)
 {
-    if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size)
+    /* BOTH BOUNDS: the row AND the table.
+     *
+     * g_force_size is how long every row was allocated -- the LONGEST table,
+     * so each type has somewhere to record. It is not how far this type's
+     * table reaches. While every table had the same length the two were one
+     * number and could not disagree; they can now.
+     *
+     * With bool_output at 1 element and int_output at 100, g_force_size is
+     * 100, so forcing bool_output index 5 passed this check, flipped the bit
+     * and incremented g_force_count -- permanently disabling the fast path in
+     * is_slot_forced -- while apply_write_raw and is_slot_forced both refused
+     * it on the per-table bound. A force that did nothing at all, and said
+     * nothing, which is the failure this guard exists to report. */
+    if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size ||
+        (uint32_t)index >= journal_type_capacity((uint8_t)type))
     {
         /* Counted, not logged: see g_force_oob_drops. When the map was never
          * allocated g_force_size is 0 and EVERY force lands here. */
@@ -414,7 +517,21 @@ int journal_force_set(journal_buffer_type_t type, uint16_t index, uint8_t bit, u
  * plugin) is no longer dropped, so the slot tracks the live value again. */
 int journal_force_clear(journal_buffer_type_t type, uint16_t index, uint8_t bit)
 {
-    if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size)
+    /* BOTH BOUNDS: the row AND the table.
+     *
+     * g_force_size is how long every row was allocated -- the LONGEST table,
+     * so each type has somewhere to record. It is not how far this type's
+     * table reaches. While every table had the same length the two were one
+     * number and could not disagree; they can now.
+     *
+     * With bool_output at 1 element and int_output at 100, g_force_size is
+     * 100, so forcing bool_output index 5 passed this check, flipped the bit
+     * and incremented g_force_count -- permanently disabling the fast path in
+     * is_slot_forced -- while apply_write_raw and is_slot_forced both refused
+     * it on the per-table bound. A force that did nothing at all, and said
+     * nothing, which is the failure this guard exists to report. */
+    if ((uint8_t)type >= JOURNAL_TYPE_COUNT || index >= g_force_size ||
+        (uint32_t)index >= journal_type_capacity((uint8_t)type))
     {
         /* Counted, not logged: see g_force_oob_drops. When the map was never
          * allocated g_force_size is 0 and EVERY force lands here. */
@@ -494,13 +611,13 @@ int journal_init(const journal_buffer_ptrs_t *buffer_ptrs)
     memcpy(&g_buffer_ptrs, buffer_ptrs, sizeof(journal_buffer_ptrs_t));
 
     /* The forced-slot bitmap follows the image, so forcing works across the
-     * whole of it rather than the first 1024 slots. buffer_size comes from
-     * image_tables_capacity(), set when the image was allocated for this
-     * program. */
-    if (force_map_alloc((uint32_t)g_buffer_ptrs.buffer_size) != 0)
+     * whole of it rather than the first 1024 slots. Rows are as long as the
+     * LONGEST table, because they are one length for all fourteen types and
+     * anything shorter cannot record a forced slot in the tables above it. */
+    if (force_map_alloc(journal_longest_table()) != 0)
     {
-        log_error("Journal: could not allocate the forced-slot map for %d slots",
-                  g_buffer_ptrs.buffer_size);
+        log_error("Journal: could not allocate the forced-slot map for %u slots",
+                  journal_longest_table());
         return -1;
     }
 
@@ -685,10 +802,10 @@ int journal_init(const journal_buffer_ptrs_t *buffer_ptrs)
      * journal_apply_and_clear and journal_is_initialized would block, taking
      * the scan thread with them, and journal_cleanup could not recover it. The
      * map depends on nothing this lock protects. */
-    if (force_map_alloc((uint32_t)buffer_ptrs->buffer_size) != 0)
+    if (force_map_alloc(journal_longest_table()) != 0)
     {
-        log_error("Journal: could not allocate the forced-slot map for %d slots",
-                  buffer_ptrs->buffer_size);
+        log_error("Journal: could not allocate the forced-slot map for %u slots",
+                  journal_longest_table());
         return -1;
     }
 

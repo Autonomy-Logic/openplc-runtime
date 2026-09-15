@@ -9,12 +9,14 @@ from typing import Any, Optional, Tuple
 
 try:
     # Try relative imports first (when used as package)
-    from .component_interfaces import IBufferValidator
     from .buffer_types import get_buffer_types
+    from .component_interfaces import IBufferValidator
+    from .image_sizes import table_capacity
 except ImportError:
     # Fall back to absolute imports (when testing standalone)
-    from component_interfaces import IBufferValidator
     from buffer_types import get_buffer_types
+    from component_interfaces import IBufferValidator
+    from image_sizes import table_capacity
 
 
 class BufferValidator(IBufferValidator):
@@ -56,8 +58,17 @@ class BufferValidator(IBufferValidator):
             if buffer_idx < 0:
                 return False, f"Buffer index cannot be negative: {buffer_idx}"
 
-            if buffer_idx >= self.args.buffer_size:
-                return False, f"Buffer index out of range: {buffer_idx} >= {self.args.buffer_size}"
+            # Against THIS BUFFER'S OWN TABLE. args.buffer_size is now the
+            # smallest of the fourteen (RTOP-284), so validating against it
+            # would refuse every index above the shortest table's length in
+            # every longer one. When the sizes were not delivered -- a square
+            # run -- buffer_size IS the length they all have, so it is the
+            # right fallback rather than a guess.
+            reach = table_capacity(buffer_type, self.args.buffer_size)
+            if buffer_idx >= reach:
+                return False, (
+                    f"Buffer index out of range for {buffer_type}: {buffer_idx} >= {reach}"
+                )
 
             return True, "Success"
 
@@ -103,7 +114,7 @@ class BufferValidator(IBufferValidator):
             min_val, max_val = buffer_type_obj.value_range
 
             # Handle boolean values
-            if buffer_type_obj.name == 'bool':
+            if buffer_type_obj.name == "bool":
                 if isinstance(value, bool):
                     return True, "Success"
                 elif isinstance(value, (int, float)):
@@ -132,8 +143,9 @@ class BufferValidator(IBufferValidator):
         except (AttributeError, TypeError, ValueError) as e:
             return False, f"Value validation error: {e}"
 
-    def validate_operation_params(self, buffer_type: str, buffer_idx: int,
-                                bit_idx: Optional[int] = None, value: Any = None) -> Tuple[bool, str]:
+    def validate_operation_params(
+        self, buffer_type: str, buffer_idx: int, bit_idx: Optional[int] = None, value: Any = None
+    ) -> Tuple[bool, str]:
         """
         Comprehensive validation of all operation parameters.
 
@@ -214,10 +226,10 @@ class BufferValidator(IBufferValidator):
         """
         try:
             return {
-                'buffer_size': self.args.buffer_size,
-                'bits_per_buffer': self.args.bits_per_buffer,
-                'supported_buffer_types': list(self.buffer_types.get_all_buffers().keys()),
-                'supported_base_types': list(self.buffer_types.get_all_types().keys())
+                "buffer_size": self.args.buffer_size,
+                "bits_per_buffer": self.args.bits_per_buffer,
+                "supported_buffer_types": list(self.buffer_types.get_all_buffers().keys()),
+                "supported_base_types": list(self.buffer_types.get_all_types().keys()),
             }
         except (AttributeError, TypeError) as e:
-            return {'error': str(e)}
+            return {"error": str(e)}

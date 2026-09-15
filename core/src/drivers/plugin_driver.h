@@ -82,6 +82,29 @@ typedef int (*plugin_retain_load_func_t)(const char *program_md5, uint16_t md5_l
  * assumed to commit inside save(), which is where durability belongs anyway. */
 typedef int (*plugin_retain_flush_func_t)(void);
 
+/* Optional, and its PRESENCE is the capability declaration (RTOP-284).
+ *
+ * The fourteen image tables no longer share one length, and
+ * `plugin_runtime_args_t` carries a single `buffer_size` that cannot say so.
+ * Rather than move that struct -- CON06 guarantees pre-compiled plugins keep
+ * their field offsets -- the sizes travel through a symbol the loader resolves
+ * with dlsym, exactly as it already does for execute_command, get_stats and
+ * the three retain_* hooks.
+ *
+ * Exporting it means "I understand per-table sizes". A plugin without it is
+ * not broken and is not refused; the runtime keeps the image SQUARE for that
+ * run instead, because a plugin bounding a byte index and a word index with
+ * the same number is only safe while the tables are equal.
+ *
+ * Called BEFORE init(), once per plugin_driver_init(). Self-contained on
+ * purpose -- no args -- which is what lets it run that early. A non-zero
+ * return fails the plugin exactly as a failed init() does.
+ *
+ * `sizes` is indexed by `image_table_id_t` and `count` is how many entries it
+ * carries, so a plugin built against an older enum reads the prefix it knows
+ * and ignores the rest. */
+typedef int (*plugin_set_image_sizes_func_t)(const uint32_t *sizes, uint32_t count);
+
 typedef struct
 {
     void *handle; // Handle to the loaded shared library
@@ -97,6 +120,9 @@ typedef struct
     plugin_retain_save_func_t  retain_save;
     plugin_retain_load_func_t  retain_load;
     plugin_retain_flush_func_t retain_flush;
+    /* Optional; NULL means this plugin does not understand per-table sizes and
+     * the image stays square for the run. */
+    plugin_set_image_sizes_func_t set_image_sizes;
 } plugin_funct_bundle_t;
 
 // Plugin instance structure
@@ -202,6 +228,26 @@ int plugin_driver_retain_save(plugin_instance_t *store, const uint8_t *blob, uin
 int plugin_driver_retain_load(plugin_instance_t *store, const char *program_md5, uint16_t md5_len,
                               uint8_t *out, uint16_t cap, uint16_t *out_len);
 int plugin_driver_retain_flush(plugin_instance_t *store);
+
+/**
+ * Does every loaded plugin understand per-table image sizes?
+ *
+ * Asked once per program load, BEFORE the image is allocated, because the
+ * answer decides how it is allocated. If any plugin says no, the image stays
+ * SQUARE for that run -- every table the same length.
+ *
+ * That is not a preference. The shipped VPP plugins bound a byte index into
+ * bool_output and a word index into int_output with the same `buffer_size`:
+ * the largest table would be an out-of-bounds read on the smaller ones, and
+ * the smallest would silently drop configured I/O. Only equal lengths keep one
+ * bound honest.
+ *
+ * `first_without` receives the name of the first plugin that does not, so the
+ * decision can be logged with a reason. It is the only way an operator can
+ * tell the two modes apart.
+ */
+bool plugin_driver_all_understand_per_table_sizes(plugin_driver_t *driver,
+                                                  const char **first_without);
 
 // Route a command to a specific plugin by name (for async commands like scan)
 int plugin_driver_execute_command(plugin_driver_t *driver, const char *plugin_name,

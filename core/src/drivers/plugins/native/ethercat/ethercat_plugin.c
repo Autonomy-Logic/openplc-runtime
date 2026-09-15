@@ -53,11 +53,13 @@
 #include "plugin_logger.h"
 #include "plugin_types.h"
 #include "ethercat_plugin.h"
+
+#include "../plugin_image_sizes.h"
+#include "cJSON.h" /* JSON parsing for execute_command */
 #include "ethercat_config.h"
-#include "ethercat_master.h"
 #include "ethercat_io.h"
-#include "soem/soem.h"   /* osal_get_monotonic_time, ec_timet */
-#include "cJSON.h"  /* JSON parsing for execute_command */
+#include "ethercat_master.h"
+#include "soem/soem.h" /* osal_get_monotonic_time, ec_timet */
 
 /* Forward declaration: ecat_bus_thread is defined alongside the bus
  * loop further down in the file but referenced first by
@@ -1198,7 +1200,17 @@ int init(void *args)
      * land in the runtime journal instead of stderr. */
     ecat_config_set_logger(&g_logger);
 
-    plugin_logger_info(&g_logger, "Buffer size: %d", g_runtime_args.buffer_size);
+    /* What this plugin was told, not the deprecated single figure: on a
+     * per-table run buffer_size is the SMALLEST of the fourteen and says
+     * nothing about the areas this bus actually reaches. */
+    if (!plugin_image_sizes_known())
+        plugin_logger_info(&g_logger, "Image sizes: not delivered (square run)");
+    else
+        plugin_logger_info(&g_logger, "Image sizes: bits in %u/%u, words in %u/%u",
+                           plugin_image_table_capacity(IMAGE_TABLE_BOOL_INPUT),
+                           plugin_image_table_capacity(IMAGE_TABLE_BOOL_OUTPUT),
+                           plugin_image_table_capacity(IMAGE_TABLE_INT_INPUT),
+                           plugin_image_table_capacity(IMAGE_TABLE_INT_OUTPUT));
 
     /* Parse ALL master configurations from the JSON file */
     const char *config_path = g_runtime_args.plugin_specific_config_file_path;

@@ -453,26 +453,40 @@ void *plc_cycle_thread(void *arg)
     plc_retain_read();
 
     journal_buffer_ptrs_t journal_ptrs = {
-        .bool_input   = g_image.bool_input,
-        .bool_output  = g_image.bool_output,
-        .bool_memory  = g_image.bool_memory,
-        .byte_input   = g_image.byte_input,
-        .byte_output  = g_image.byte_output,
-        .int_input    = g_image.int_input,
-        .int_output   = g_image.int_output,
-        .int_memory   = g_image.int_memory,
-        .dint_input   = g_image.dint_input,
-        .dint_output  = g_image.dint_output,
-        .dint_memory  = g_image.dint_memory,
-        .lint_input   = g_image.lint_input,
-        .lint_output  = g_image.lint_output,
-        .lint_memory  = g_image.lint_memory,
+        .bool_input  = g_image.bool_input,
+        .bool_output = g_image.bool_output,
+        .bool_memory = g_image.bool_memory,
+        .byte_input  = g_image.byte_input,
+        .byte_output = g_image.byte_output,
+        .int_input   = g_image.int_input,
+        .int_output  = g_image.int_output,
+        .int_memory  = g_image.int_memory,
+        .dint_input  = g_image.dint_input,
+        .dint_output = g_image.dint_output,
+        .dint_memory = g_image.dint_memory,
+        .lint_input  = g_image.lint_input,
+        .lint_output = g_image.lint_output,
+        .lint_memory = g_image.lint_memory,
         /* Follows the image: journal_buffer.c bounds every forced write
          * against this, so a stale constant here would silently drop writes to
          * the part of the image beyond it. */
-        .buffer_size  = (int)image_tables_capacity(),
-        .image_mutex  = itm,
+        .table_sizes = {},
+        .buffer_size = (int)image_tables_capacity(),
+        .image_mutex = itm,
     };
+
+    /* The fourteen lengths, captured HERE, at the same moment as the pointers
+     * above. journal_buffer.c bounds each write by the table it addresses, and
+     * reading that from the live image while holding pointers taken earlier
+     * would apply a new length to an old allocation if the two ever diverged.
+     *
+     * The journal's own order, not the image's -- they are the same fourteen
+     * tables in different orders, which is the trap kJournalToImageTable
+     * exists for. */
+    for (int t = 0; t < JOURNAL_TYPE_COUNT; ++t)
+    {
+        journal_ptrs.table_sizes[t] = image_table_capacity(journal_type_to_image_table(t));
+    }
     if (journal_init(&journal_ptrs) != 0)
     {
         /* FATAL, not a log line, and this is newly true.
@@ -1095,9 +1109,30 @@ extern "C" int load_plc_program(PluginManager *pm)
             image_sizes_derive_floor(pm, &floor);
             image_sizes_take_max(&configured, &floor);
 
+            /* PER TABLE, OR SQUARE, DECIDED PER RUN.
+             *
+             * Per-table is what the project asked for and what the image
+             * exists to deliver. It is only safe when every loaded plugin
+             * understands it: a plugin bounding a byte index into
+             * bool_output and a word index into int_output with one
+             * `buffer_size` is correct exactly while the tables are equal.
+             * One that does not export set_image_sizes has not been told
+             * they can differ, so for that run they do not.
+             *
+             * Logged with the plugin that forced it, because the two modes
+             * are otherwise indistinguishable from outside. */
+            const char *forced_by = NULL;
+            if (!plugin_driver_all_understand_per_table_sizes(plugin_driver, &forced_by))
+            {
+                image_sizes_flatten(&configured);
+                log_info("[PLUGIN]: image kept square: plugin '%s' does not declare "
+                         "set_image_sizes",
+                         forced_by ? forced_by : "(unknown)");
+            }
+
             pthread_mutex_t *itm = image_tables_mutex();
             pthread_mutex_lock(itm);
-            const bool ok = image_tables_alloc(image_sizes_largest(&configured));
+            const bool ok = image_tables_alloc(&configured);
             pthread_mutex_unlock(itm);
 
             if (!ok)
@@ -1111,8 +1146,7 @@ extern "C" int load_plc_program(PluginManager *pm)
                 plc_state = PLC_STATE_ERROR;
                 pthread_mutex_unlock(&state_mutex);
                 log_info("PLC State: ERROR");
-                if (pm == plc_program)
-                    plc_program = NULL;
+                if (pm == plc_program) plc_program = NULL;
                 plugin_manager_destroy(pm);
                 return -1;
             }

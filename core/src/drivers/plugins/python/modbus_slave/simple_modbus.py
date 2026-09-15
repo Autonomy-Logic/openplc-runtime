@@ -82,6 +82,13 @@ from shared import (  # noqa: E402
     safe_extract_runtime_args_from_capsule,
 )
 
+# Importing set_image_sizes is not a formality: the name has to exist in THIS
+# module for the runtime to find it, and its presence is how this plugin
+# declares it understands per-table image sizes (RTOP-284). Without it the
+# runtime keeps the image square for every run this plugin is loaded in --
+# which, since it is loaded on most devices, would be every run.
+from shared.image_sizes import set_image_sizes, table_capacity  # noqa: E402,F401
+
 
 class OpenPLCDeviceContext(ModbusDeviceContext):
     """
@@ -974,21 +981,62 @@ def _trim_to_one_table(counts, layout):
         total -= drop * width
 
 
+# THE COMPOSED BLOCK, DECIDED (RTOP-284, C1.4)
+#
+# The holding-register block lays four segments end to end -- qw | mw | 2*md |
+# 4*ml -- so it spans four tables in one contiguous Modbus range. The question
+# was what "clamp against its own table" means once those four differ in
+# length, with three answers on the table: the lowest common extent, truncate
+# at the first segment that runs out, or a non-contiguous layout.
+#
+# It is none of them, because the premise is wrong. The block already dispatches
+# each ADDRESS to exactly one segment (OpenPLCSegmentedHoldingRegistersDataBlock
+# keeps qw_end, mw_start/end, md_start/end, ml_start/end), and therefore to
+# exactly one table. So each segment is clamped against its own table and the
+# block is the concatenation of what is left. The other three answers all throw
+# away storage the project asked for: the lowest common extent shrinks segments
+# that have room, and truncating at the first exhausted one drops segments that
+# have their own.
+#
+# THE CONSEQUENCE FOR THE CLIENT, which is the part worth stating: a segment's
+# START ADDRESS moves when a table before it shrinks. That is not new -- the
+# layout has always been a function of the counts, so it already moved whenever
+# the user changed one -- and the address map screen in the editor is what
+# tells them where each segment begins. What IS new is that the counts can now
+# change because the project changed, without anyone editing the Modbus screen.
+#
+# Which image table each Modbus segment actually lives in. The clamp follows
+# this rather than one figure, because the tables no longer share a length
+# (RTOP-284): %QW comes out of int_output and %ML out of lint_memory, and a
+# project may size those very differently.
+SEGMENT_TABLES = {
+    "qw_count": "int_output",
+    "mw_count": "int_memory",
+    "md_count": "dint_memory",
+    "ml_count": "lint_memory",
+    "qx_bits": "bool_output",
+    "mx_bits": "bool_memory",
+    "ix_bits": "bool_input",
+    "iw_count": "int_input",
+}
+
+
+def _segment_limit(key, buffer_size):
+    """How much of its own table this segment may expose.
+
+    Falls back to `buffer_size` when the runtime did not deliver per-table
+    sizes, because on a square run that IS the length every table has.
+
+    Bit segments are in bits and their table is in elements of eight, which is
+    the same conversion the image.conf format makes explicit.
+    """
+    reach = table_capacity(SEGMENT_TABLES[key], buffer_size)
+    return reach * MAX_BITS if key.endswith("_bits") else reach
+
+
 def _fit_counts(asked, buffer_size):
     """Fit the requested exposure to the image, then to the address space."""
-    reg_limit = buffer_size
-    bit_limit = buffer_size * MAX_BITS
-
-    fitted = {
-        "qw_count": min(asked["qw_count"], reg_limit),
-        "mw_count": min(asked["mw_count"], reg_limit),
-        "md_count": min(asked["md_count"], reg_limit),
-        "ml_count": min(asked["ml_count"], reg_limit),
-        "qx_bits": min(asked["qx_bits"], bit_limit),
-        "mx_bits": min(asked["mx_bits"], bit_limit),
-        "ix_bits": min(asked["ix_bits"], bit_limit),
-        "iw_count": min(asked["iw_count"], reg_limit),
-    }
+    fitted = {key: min(asked[key], _segment_limit(key, buffer_size)) for key in SEGMENT_TABLES}
 
     # THE IMAGE CEILING IS NOT THE PROTOCOL'S CEILING. Fitting each segment to
     # the image allows 65536 apiece, and the register block composes four of

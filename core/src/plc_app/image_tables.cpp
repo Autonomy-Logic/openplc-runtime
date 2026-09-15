@@ -44,6 +44,14 @@ image_tables_t g_image;
 // allocator that sets it.
 static uint32_t g_capacity = 0;
 
+/* The fourteen counts the image was actually allocated at.
+ *
+ * g_capacity survives as the SMALLEST of them, which is what a consumer that
+ * still reads one number must be given: bounding by the smallest table refuses
+ * an index that would have run off the end of it, where bounding by the
+ * largest would have read past four of them. See image_tables_capacity(). */
+static image_sizes_t g_sizes;
+
 // The tables are heap pointers now, and these assertions are what got us here
 // safely. In their previous form they pinned the inline-array shape, so the
 // moment the types changed the build stopped and named the function to follow.
@@ -845,7 +853,12 @@ uint64_t threaded_image_read(const strucpp::LocatedVar &v)
 {
     uint16_t bi = v.byte_index;
     uint8_t  b  = v.bit_index;
-    if (bi >= g_capacity) return 0;
+    /* The bound is THIS VAR'S TABLE, not one figure for fourteen. With the
+     * tables at different lengths, g_capacity (the smallest) would refuse
+     * valid indices in every longer table, and the largest would have let an
+     * index run off the end of every shorter one. */
+    if (bi >= image_table_capacity(table_for(v.area, v.size)))
+        return 0;
     switch (v.area)
     {
     case strucpp::LocatedArea::Input:
@@ -1016,15 +1029,24 @@ static const uint32_t IMAGE_MIN_ELEMENTS = 1;
 
 extern "C" uint32_t image_tables_capacity(void) { return g_capacity; }
 
-extern "C" uint32_t image_sizes_largest(const image_sizes_t *sizes)
+extern "C" uint32_t image_table_capacity(image_table_id_t id)
 {
-    if (!sizes) return 0;
+    if (id < 0 || id >= IMAGE_TABLE_COUNT)
+        return 0;
+    return g_sizes.elements[id];
+}
+
+extern "C" void image_sizes_flatten(image_sizes_t *sizes)
+{
+    if (!sizes)
+        return;
     uint32_t largest = 0;
     for (int i = 0; i < IMAGE_TABLE_COUNT; ++i)
     {
         if (sizes->elements[i] > largest) largest = sizes->elements[i];
     }
-    return largest;
+    for (int i = 0; i < IMAGE_TABLE_COUNT; ++i)
+        sizes->elements[i] = largest;
 }
 
 extern "C" void image_tables_free(void)
@@ -1079,11 +1101,31 @@ extern "C" void image_tables_free(void)
     temp_lint_memory = nullptr;
 
     g_capacity = 0;
+    std::memset(&g_sizes, 0, sizeof(g_sizes));
 }
 
-extern "C" bool image_tables_alloc(uint32_t elements)
+extern "C" bool image_tables_alloc(const image_sizes_t *sizes)
 {
-    if (elements < IMAGE_MIN_ELEMENTS) elements = IMAGE_MIN_ELEMENTS;
+    /* A FLOOR OF ONE PER TABLE, not zero, and it is worth being explicit about
+     * why: an area the program never touches could allocate nothing at all and
+     * save eight bytes, but then its base pointer is NULL and every plugin
+     * that does not check the count first dereferences it. FR15 says no plugin
+     * ever receives an invalid image, including before a program is loaded.
+     * One element per table costs a pointer and removes that whole class of
+     * bug; "an area with no producers consumes nothing" (NFR04) is still true
+     * of the storage that matters, which is the temp buffers and the slots. */
+    image_sizes_t want;
+    if (sizes)
+        want = *sizes;
+    else
+        std::memset(&want, 0, sizeof(want));
+    for (int i = 0; i < IMAGE_TABLE_COUNT; ++i)
+    {
+        if (want.elements[i] < IMAGE_MIN_ELEMENTS)
+            want.elements[i] = IMAGE_MIN_ELEMENTS;
+    }
+
+#define N(id) (want.elements[id])
 
     /* BUILT INTO LOCALS AND PUBLISHED ONLY ON SUCCESS.
      *
@@ -1116,35 +1158,41 @@ extern "C" bool image_tables_alloc(uint32_t elements)
     IEC_UDINT *t_dint_memory    = nullptr;
     IEC_ULINT *t_lint_memory    = nullptr;
 
-    next.bool_input  = (IEC_BOOL * (*)[8]) calloc(elements, sizeof(IEC_BOOL *[8]));
-    next.bool_output = (IEC_BOOL * (*)[8]) calloc(elements, sizeof(IEC_BOOL *[8]));
-    next.bool_memory = (IEC_BOOL * (*)[8]) calloc(elements, sizeof(IEC_BOOL *[8]));
-    next.byte_input  = (IEC_BYTE **)calloc(elements, sizeof(IEC_BYTE *));
-    next.byte_output = (IEC_BYTE **)calloc(elements, sizeof(IEC_BYTE *));
-    next.int_input   = (IEC_UINT **)calloc(elements, sizeof(IEC_UINT *));
-    next.int_output  = (IEC_UINT **)calloc(elements, sizeof(IEC_UINT *));
-    next.dint_input  = (IEC_UDINT **)calloc(elements, sizeof(IEC_UDINT *));
-    next.dint_output = (IEC_UDINT **)calloc(elements, sizeof(IEC_UDINT *));
-    next.lint_input  = (IEC_ULINT **)calloc(elements, sizeof(IEC_ULINT *));
-    next.lint_output = (IEC_ULINT **)calloc(elements, sizeof(IEC_ULINT *));
-    next.int_memory  = (IEC_UINT **)calloc(elements, sizeof(IEC_UINT *));
-    next.dint_memory = (IEC_UDINT **)calloc(elements, sizeof(IEC_UDINT *));
-    next.lint_memory = (IEC_ULINT **)calloc(elements, sizeof(IEC_ULINT *));
+    next.bool_input = (IEC_BOOL * (*)[8]) calloc(N(IMAGE_TABLE_BOOL_INPUT), sizeof(IEC_BOOL *[8]));
+    next.bool_output =
+        (IEC_BOOL * (*)[8]) calloc(N(IMAGE_TABLE_BOOL_OUTPUT), sizeof(IEC_BOOL *[8]));
+    next.bool_memory =
+        (IEC_BOOL * (*)[8]) calloc(N(IMAGE_TABLE_BOOL_MEMORY), sizeof(IEC_BOOL *[8]));
+    next.byte_input  = (IEC_BYTE **)calloc(N(IMAGE_TABLE_BYTE_INPUT), sizeof(IEC_BYTE *));
+    next.byte_output = (IEC_BYTE **)calloc(N(IMAGE_TABLE_BYTE_OUTPUT), sizeof(IEC_BYTE *));
+    next.int_input   = (IEC_UINT **)calloc(N(IMAGE_TABLE_INT_INPUT), sizeof(IEC_UINT *));
+    next.int_output  = (IEC_UINT **)calloc(N(IMAGE_TABLE_INT_OUTPUT), sizeof(IEC_UINT *));
+    next.dint_input  = (IEC_UDINT **)calloc(N(IMAGE_TABLE_DINT_INPUT), sizeof(IEC_UDINT *));
+    next.dint_output = (IEC_UDINT **)calloc(N(IMAGE_TABLE_DINT_OUTPUT), sizeof(IEC_UDINT *));
+    next.lint_input  = (IEC_ULINT **)calloc(N(IMAGE_TABLE_LINT_INPUT), sizeof(IEC_ULINT *));
+    next.lint_output = (IEC_ULINT **)calloc(N(IMAGE_TABLE_LINT_OUTPUT), sizeof(IEC_ULINT *));
+    next.int_memory  = (IEC_UINT **)calloc(N(IMAGE_TABLE_INT_MEMORY), sizeof(IEC_UINT *));
+    next.dint_memory = (IEC_UDINT **)calloc(N(IMAGE_TABLE_DINT_MEMORY), sizeof(IEC_UDINT *));
+    next.lint_memory = (IEC_ULINT **)calloc(N(IMAGE_TABLE_LINT_MEMORY), sizeof(IEC_ULINT *));
 
-    t_bool_input  = (IEC_BOOL(*)[8])calloc(elements, sizeof(IEC_BOOL[8]));
-    t_bool_output = (IEC_BOOL(*)[8])calloc(elements, sizeof(IEC_BOOL[8]));
-    t_bool_memory = (IEC_BOOL(*)[8])calloc(elements, sizeof(IEC_BOOL[8]));
-    t_byte_input  = (IEC_BYTE *)calloc(elements, sizeof(IEC_BYTE));
-    t_byte_output = (IEC_BYTE *)calloc(elements, sizeof(IEC_BYTE));
-    t_int_input   = (IEC_UINT *)calloc(elements, sizeof(IEC_UINT));
-    t_int_output  = (IEC_UINT *)calloc(elements, sizeof(IEC_UINT));
-    t_dint_input  = (IEC_UDINT *)calloc(elements, sizeof(IEC_UDINT));
-    t_dint_output = (IEC_UDINT *)calloc(elements, sizeof(IEC_UDINT));
-    t_lint_input  = (IEC_ULINT *)calloc(elements, sizeof(IEC_ULINT));
-    t_lint_output = (IEC_ULINT *)calloc(elements, sizeof(IEC_ULINT));
-    t_int_memory  = (IEC_UINT *)calloc(elements, sizeof(IEC_UINT));
-    t_dint_memory = (IEC_UDINT *)calloc(elements, sizeof(IEC_UDINT));
-    t_lint_memory = (IEC_ULINT *)calloc(elements, sizeof(IEC_ULINT));
+    t_bool_input  = (IEC_BOOL(*)[8])calloc(N(IMAGE_TABLE_BOOL_INPUT), sizeof(IEC_BOOL[8]));
+    t_bool_output = (IEC_BOOL(*)[8])calloc(N(IMAGE_TABLE_BOOL_OUTPUT), sizeof(IEC_BOOL[8]));
+    t_bool_memory = (IEC_BOOL(*)[8])calloc(N(IMAGE_TABLE_BOOL_MEMORY), sizeof(IEC_BOOL[8]));
+    t_byte_input  = (IEC_BYTE *)calloc(N(IMAGE_TABLE_BYTE_INPUT), sizeof(IEC_BYTE));
+    t_byte_output = (IEC_BYTE *)calloc(N(IMAGE_TABLE_BYTE_OUTPUT), sizeof(IEC_BYTE));
+    t_int_input   = (IEC_UINT *)calloc(N(IMAGE_TABLE_INT_INPUT), sizeof(IEC_UINT));
+    t_int_output  = (IEC_UINT *)calloc(N(IMAGE_TABLE_INT_OUTPUT), sizeof(IEC_UINT));
+    t_dint_input  = (IEC_UDINT *)calloc(N(IMAGE_TABLE_DINT_INPUT), sizeof(IEC_UDINT));
+    t_dint_output = (IEC_UDINT *)calloc(N(IMAGE_TABLE_DINT_OUTPUT), sizeof(IEC_UDINT));
+    t_lint_input  = (IEC_ULINT *)calloc(N(IMAGE_TABLE_LINT_INPUT), sizeof(IEC_ULINT));
+    t_lint_output = (IEC_ULINT *)calloc(N(IMAGE_TABLE_LINT_OUTPUT), sizeof(IEC_ULINT));
+    t_int_memory  = (IEC_UINT *)calloc(N(IMAGE_TABLE_INT_MEMORY), sizeof(IEC_UINT));
+    t_dint_memory = (IEC_UDINT *)calloc(N(IMAGE_TABLE_DINT_MEMORY), sizeof(IEC_UDINT));
+    t_lint_memory = (IEC_ULINT *)calloc(N(IMAGE_TABLE_LINT_MEMORY), sizeof(IEC_ULINT));
+/* Undefined right after the last use, not inside a runtime branch: the
+ * preprocessor does not care which branch it sits in, so putting it in the
+ * failure path only worked because every use happened to be above it. */
+#undef N
 
     const bool complete = next.bool_input && next.bool_output && next.bool_memory &&
                           next.byte_input && next.byte_output && next.int_input &&
@@ -1185,9 +1233,7 @@ extern "C" bool image_tables_alloc(uint32_t elements)
         free(t_int_memory);
         free(t_dint_memory);
         free(t_lint_memory);
-        log_error("[image_tables] could not allocate an image of %u elements per table; "
-                  "the previous image is untouched",
-                  elements);
+        log_error("[image_tables] could not allocate the image; the previous one is untouched");
         return false;
     }
 
@@ -1209,36 +1255,95 @@ extern "C" bool image_tables_alloc(uint32_t elements)
     temp_int_memory  = t_int_memory;
     temp_dint_memory = t_dint_memory;
     temp_lint_memory = t_lint_memory;
-    g_capacity       = elements;
+    g_sizes          = want;
 
-    log_info("[image_tables] image allocated: %u elements per table", elements);
+    /* The SMALLEST table, not the largest, for anything still reading one
+     * number. Bounding by the smallest refuses an index that would have run
+     * off the end of it; bounding by the largest reads past every table below
+     * it. Under-permissive is the only safe direction for a consumer that has
+     * not been told the tables differ. */
+    g_capacity = want.elements[0];
+    for (int i = 1; i < IMAGE_TABLE_COUNT; ++i)
+    {
+        if (want.elements[i] < g_capacity)
+            g_capacity = want.elements[i];
+    }
+
+    /* Names only the tables the program actually uses. Fourteen figures of
+     * which eleven are usually one reads as noise, and the point of the line
+     * is to let someone watching a load see that the image followed their
+     * project. */
+    {
+        char summary[256];
+        int at = 0;
+        for (int i = 0; i < IMAGE_TABLE_COUNT && at < (int)sizeof(summary) - 1; ++i)
+        {
+            if (want.elements[i] <= IMAGE_MIN_ELEMENTS)
+                continue;
+            const int wrote = snprintf(summary + at, sizeof(summary) - (size_t)at, "%s%s=%u",
+                                       at ? ", " : "", kImageTableKeys[i], want.elements[i]);
+            if (wrote < 0 || wrote >= (int)sizeof(summary) - at)
+                break;
+            at += wrote;
+        }
+        if (at == 0)
+            snprintf(summary, sizeof(summary), "every table at the minimum");
+        log_info("[image_tables] image allocated per table (%s)", summary);
+    }
+#undef N
     return true;
 }
 
 void image_tables_fill_null_pointers(void)
 {
+    /* EACH TABLE WALKED TO ITS OWN LENGTH.
+     *
+     * One loop bound for fourteen tables was correct only while they were all
+     * equal. With per-table sizing the smallest bound would leave the longer
+     * tables holding null slots -- which is the state a plugin dereferences --
+     * and the largest would index past the end of every shorter one, writing
+     * through a pointer read from beyond the allocation. */
     int filled = 0;
-    for (uint32_t i = 0; i < g_capacity; ++i)
-    {
-        for (int b = 0; b < 8; ++b)
-        {
-            if (!g_image.bool_input[i][b])  { temp_bool_input[i][b]  = 0; g_image.bool_input[i][b]  = &temp_bool_input[i][b];  ++filled; }
-            if (!g_image.bool_output[i][b]) { temp_bool_output[i][b] = 0; g_image.bool_output[i][b] = &temp_bool_output[i][b]; ++filled; }
-            if (!g_image.bool_memory[i][b]) { temp_bool_memory[i][b] = 0; g_image.bool_memory[i][b] = &temp_bool_memory[i][b]; ++filled; }
+
+#define FILL_BITS(field, temp, id)                                                                 \
+    for (uint32_t i = 0; i < g_sizes.elements[id]; ++i)                                            \
+        for (int b = 0; b < 8; ++b)                                                                \
+            if (!g_image.field[i][b])                                                              \
+            {                                                                                      \
+                temp[i][b]          = 0;                                                           \
+                g_image.field[i][b] = &temp[i][b];                                                 \
+                ++filled;                                                                          \
+            }
+
+#define FILL(field, temp, id)                                                                      \
+    for (uint32_t i = 0; i < g_sizes.elements[id]; ++i)                                            \
+        if (!g_image.field[i])                                                                     \
+        {                                                                                          \
+            temp[i]          = 0;                                                                  \
+            g_image.field[i] = &temp[i];                                                           \
+            ++filled;                                                                              \
         }
-        if (!g_image.byte_input[i])  { temp_byte_input[i]  = 0; g_image.byte_input[i]  = &temp_byte_input[i];  ++filled; }
-        if (!g_image.byte_output[i]) { temp_byte_output[i] = 0; g_image.byte_output[i] = &temp_byte_output[i]; ++filled; }
-        if (!g_image.int_input[i])   { temp_int_input[i]   = 0; g_image.int_input[i]   = &temp_int_input[i];   ++filled; }
-        if (!g_image.int_output[i])  { temp_int_output[i]  = 0; g_image.int_output[i]  = &temp_int_output[i];  ++filled; }
-        if (!g_image.dint_input[i])  { temp_dint_input[i]  = 0; g_image.dint_input[i]  = &temp_dint_input[i];  ++filled; }
-        if (!g_image.dint_output[i]) { temp_dint_output[i] = 0; g_image.dint_output[i] = &temp_dint_output[i]; ++filled; }
-        if (!g_image.lint_input[i])  { temp_lint_input[i]  = 0; g_image.lint_input[i]  = &temp_lint_input[i];  ++filled; }
-        if (!g_image.lint_output[i]) { temp_lint_output[i] = 0; g_image.lint_output[i] = &temp_lint_output[i]; ++filled; }
-        if (!g_image.int_memory[i])  { temp_int_memory[i]  = 0; g_image.int_memory[i]  = &temp_int_memory[i];  ++filled; }
-        if (!g_image.dint_memory[i]) { temp_dint_memory[i] = 0; g_image.dint_memory[i] = &temp_dint_memory[i]; ++filled; }
-        if (!g_image.lint_memory[i]) { temp_lint_memory[i] = 0; g_image.lint_memory[i] = &temp_lint_memory[i]; ++filled; }
-    }
-    log_info("[image_tables] filled %d NULL slots with backing buffers", filled);
+
+    FILL_BITS(bool_input, temp_bool_input, IMAGE_TABLE_BOOL_INPUT)
+    FILL_BITS(bool_output, temp_bool_output, IMAGE_TABLE_BOOL_OUTPUT)
+    FILL_BITS(bool_memory, temp_bool_memory, IMAGE_TABLE_BOOL_MEMORY)
+    FILL(byte_input, temp_byte_input, IMAGE_TABLE_BYTE_INPUT)
+    FILL(byte_output, temp_byte_output, IMAGE_TABLE_BYTE_OUTPUT)
+    FILL(int_input, temp_int_input, IMAGE_TABLE_INT_INPUT)
+    FILL(int_output, temp_int_output, IMAGE_TABLE_INT_OUTPUT)
+    FILL(dint_input, temp_dint_input, IMAGE_TABLE_DINT_INPUT)
+    FILL(dint_output, temp_dint_output, IMAGE_TABLE_DINT_OUTPUT)
+    FILL(lint_input, temp_lint_input, IMAGE_TABLE_LINT_INPUT)
+    FILL(lint_output, temp_lint_output, IMAGE_TABLE_LINT_OUTPUT)
+    FILL(int_memory, temp_int_memory, IMAGE_TABLE_INT_MEMORY)
+    FILL(dint_memory, temp_dint_memory, IMAGE_TABLE_DINT_MEMORY)
+    FILL(lint_memory, temp_lint_memory, IMAGE_TABLE_LINT_MEMORY)
+
+#undef FILL_BITS
+#undef FILL
+
+    if (filled > 0)
+        log_info("[image_tables] filled %d null slots with temporaries", filled);
 }
 
 /**
@@ -1262,23 +1367,33 @@ static void image_tables_zero_slots(void)
     // fourteen pointers and leak every table. This is the one function the
     // static_asserts above point at, and this is the change they were asking
     // for -- the length comes from g_capacity, never from sizeof.
-    const uint32_t n = g_capacity;
-    if (n == 0) return;
+    /* EACH TABLE BY ITS OWN LENGTH. One figure for fourteen was safe only
+     * while they were all equal: the smallest would leave the longer tables
+     * half stale, and the largest would memset past the end of the shorter
+     * ones -- a heap overflow written by the very function that exists to stop
+     * this class of mistake. */
+    if (image_tables_capacity() == 0 && g_sizes.elements[0] == 0)
+        return;
 
-    std::memset(g_image.bool_input, 0, (size_t)n * sizeof(IEC_BOOL *[8]));
-    std::memset(g_image.bool_output, 0, (size_t)n * sizeof(IEC_BOOL *[8]));
-    std::memset(g_image.bool_memory, 0, (size_t)n * sizeof(IEC_BOOL *[8]));
-    std::memset(g_image.byte_input, 0, (size_t)n * sizeof(IEC_BYTE *));
-    std::memset(g_image.byte_output, 0, (size_t)n * sizeof(IEC_BYTE *));
-    std::memset(g_image.int_input, 0, (size_t)n * sizeof(IEC_UINT *));
-    std::memset(g_image.int_output, 0, (size_t)n * sizeof(IEC_UINT *));
-    std::memset(g_image.dint_input, 0, (size_t)n * sizeof(IEC_UDINT *));
-    std::memset(g_image.dint_output, 0, (size_t)n * sizeof(IEC_UDINT *));
-    std::memset(g_image.lint_input, 0, (size_t)n * sizeof(IEC_ULINT *));
-    std::memset(g_image.lint_output, 0, (size_t)n * sizeof(IEC_ULINT *));
-    std::memset(g_image.int_memory, 0, (size_t)n * sizeof(IEC_UINT *));
-    std::memset(g_image.dint_memory, 0, (size_t)n * sizeof(IEC_UDINT *));
-    std::memset(g_image.lint_memory, 0, (size_t)n * sizeof(IEC_ULINT *));
+#define Z(field, id, type)                                                                         \
+    if (g_image.field)                                                                             \
+    std::memset(g_image.field, 0, (size_t)g_sizes.elements[id] * sizeof(type))
+
+    Z(bool_input, IMAGE_TABLE_BOOL_INPUT, IEC_BOOL *[8]);
+    Z(bool_output, IMAGE_TABLE_BOOL_OUTPUT, IEC_BOOL *[8]);
+    Z(bool_memory, IMAGE_TABLE_BOOL_MEMORY, IEC_BOOL *[8]);
+    Z(byte_input, IMAGE_TABLE_BYTE_INPUT, IEC_BYTE *);
+    Z(byte_output, IMAGE_TABLE_BYTE_OUTPUT, IEC_BYTE *);
+    Z(int_input, IMAGE_TABLE_INT_INPUT, IEC_UINT *);
+    Z(int_output, IMAGE_TABLE_INT_OUTPUT, IEC_UINT *);
+    Z(dint_input, IMAGE_TABLE_DINT_INPUT, IEC_UDINT *);
+    Z(dint_output, IMAGE_TABLE_DINT_OUTPUT, IEC_UDINT *);
+    Z(lint_input, IMAGE_TABLE_LINT_INPUT, IEC_ULINT *);
+    Z(lint_output, IMAGE_TABLE_LINT_OUTPUT, IEC_ULINT *);
+    Z(int_memory, IMAGE_TABLE_INT_MEMORY, IEC_UINT *);
+    Z(dint_memory, IMAGE_TABLE_DINT_MEMORY, IEC_UDINT *);
+    Z(lint_memory, IMAGE_TABLE_LINT_MEMORY, IEC_ULINT *);
+#undef Z
 }
 
 void image_tables_clear_null_pointers(void)
