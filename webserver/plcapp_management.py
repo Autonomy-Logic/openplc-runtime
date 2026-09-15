@@ -11,8 +11,16 @@ from typing import Final
 
 from webserver import project_snapshot
 from webserver.config import VPP_DATA_DIR
-from webserver.logger import LogParser, get_logger
-from webserver.plugin_config_model import PluginConfig, PluginsConfiguration, PluginType
+from webserver.image_config import (
+    IMAGE_CONF_PATH,
+    ImageConfigError,
+    describe_image_conf,
+    read_image_conf_file,
+    validate_image_conf,
+    write_image_conf_file,
+)
+from webserver.logger import get_logger
+from webserver.plugin_config_model import PluginsConfiguration
 from webserver.retain_config import (
     RETAIN_CONF_PATH,
     RetainConfigError,
@@ -27,9 +35,10 @@ from webserver.vpp_license_debug import derive_license_path, is_inside_root
 logger, _ = get_logger("runtime", use_buffer=True)
 
 
-MAX_FILE_SIZE: Final[int] = 10 * 1024 * 1024   # 10 MB per file
+MAX_FILE_SIZE: Final[int] = 10 * 1024 * 1024  # 10 MB per file
 MAX_TOTAL_SIZE: Final[int] = 50 * 1024 * 1024  # 50 MB total
 DISALLOWED_EXT = (".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr")
+
 
 class BuildStatus(Enum):
     IDLE = auto()
@@ -37,6 +46,7 @@ class BuildStatus(Enum):
     COMPILING = auto()
     SUCCESS = auto()
     FAILED = auto()
+
 
 @dataclass
 class BuildProcess:
@@ -83,20 +93,18 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
 
             # Check uncompressed size
             if uncompressed_size > MAX_FILE_SIZE:
-                logger.warning("File too large: %s (%d bytes)",
-                                filename, uncompressed_size)
+                logger.warning("File too large: %s (%d bytes)", filename, uncompressed_size)
                 safe = False
 
             # Check compression ratio (ZIP bomb detection)
             if compressed_size > 0 and uncompressed_size / compressed_size > 1000:
                 # logger.warning("Suspicious compression ratio in %s",
-                            #    filename)
+                #    filename)
                 safe = False
 
             # Check disallowed extensions
             if ext in DISALLOWED_EXT:
-                logger.warning("Disallowed extension: %s",
-                                filename)
+                logger.warning("Disallowed extension: %s", filename)
                 safe = False
 
             total_size += uncompressed_size
@@ -104,7 +112,7 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
 
         # Check total size
         if total_size > MAX_TOTAL_SIZE:
-            # logger.warning("Total uncompressed size too large: %d bytes", 
+            # logger.warning("Total uncompressed size too large: %d bytes",
             #                total_size)
             safe = False
 
@@ -138,10 +146,14 @@ def safe_extract(zip_path, dest_dir, valid_files):
             filename = info.filename
 
             # Normalize path separators for cross-platform compatibility (Windows \ to Unix /)
-            filename = filename.replace('\\', '/')
+            filename = filename.replace("\\", "/")
 
             # Skip macOS junk and directories
-            if filename.startswith("__MACOSX/") or filename.endswith(".DS_Store") or filename.endswith("/"):
+            if (
+                filename.startswith("__MACOSX/")
+                or filename.endswith(".DS_Store")
+                or filename.endswith("/")
+            ):
                 continue
 
             # Optionally strip single root folder
@@ -177,27 +189,35 @@ def safe_extract(zip_path, dest_dir, valid_files):
 def update_plugin_configurations(generated_dir: str = "core/generated"):
     """
     Update plugin configurations based on available config files.
-    
+
     Scans generated/conf/ for config files, copies them to plugin directories,
     and updates plugins.conf to enable/disable plugins accordingly.
     """
     plugins_conf_path = "plugins.conf"
     conf_dir = os.path.join(generated_dir, "conf")
 
-    build_state.log(f"[DEBUG] update_plugin_configurations called with generated_dir='{generated_dir}'\n")
+    build_state.log(
+        f"[DEBUG] update_plugin_configurations called with generated_dir='{generated_dir}'\n"
+    )
     build_state.log(f"[DEBUG] Looking for config files in: {conf_dir}\n")
 
     # Load current plugin configuration using the dataclass
     plugins_config = PluginsConfiguration.from_file(plugins_conf_path)
-    build_state.log(f"[DEBUG] Loaded {len(plugins_config.plugins)} plugins from {plugins_conf_path}\n")
-    
+    build_state.log(
+        f"[DEBUG] Loaded {len(plugins_config.plugins)} plugins from {plugins_conf_path}\n"
+    )
+
     # Log initial state
     for plugin in plugins_config.plugins:
-        build_state.log(f"[DEBUG] Initial state - {plugin.name}: enabled={plugin.enabled}, config_path='{plugin.config_path}'\n")
+        build_state.log(
+            f"[DEBUG] Initial state - {plugin.name}: enabled={plugin.enabled}, config_path='{plugin.config_path}'\n"
+        )
 
     # Check if conf directory exists
     if not os.path.exists(conf_dir):
-        build_state.log(f"[INFO] No conf directory found in {generated_dir}, disabling all plugins\n")
+        build_state.log(
+            f"[INFO] No conf directory found in {generated_dir}, disabling all plugins\n"
+        )
         # When there's no conf directory, disable all currently enabled plugins
         plugins_updated = 0
         update_messages = []
@@ -206,23 +226,27 @@ def update_plugin_configurations(generated_dir: str = "core/generated"):
                 plugin.enabled = False
                 plugins_updated += 1
                 update_messages.append(f"Disabled plugin '{plugin.name}' (no conf directory found)")
-        
+
         # Log the updates
-        build_state.log(f"[INFO] Found 0 config files (no conf directory): []\n")
-        
+        build_state.log("[INFO] Found 0 config files (no conf directory): []\n")
+
         for message in update_messages:
             build_state.log(f"[INFO] {message}\n")
     else:
         # Process config files normally when conf directory exists
         # Use the utility method to update plugins based on available config files
         # Copy config files to plugin directories instead of referencing them directly
-        plugins_updated, update_messages = plugins_config.update_plugins_from_config_dir(conf_dir, copy_to_plugin_dirs=True)
-        
+        plugins_updated, update_messages = plugins_config.update_plugins_from_config_dir(
+            conf_dir, copy_to_plugin_dirs=True
+        )
+
         # Log the updates
         config_files = glob.glob(os.path.join(conf_dir, "*.json"))
         available_configs = {os.path.splitext(os.path.basename(f))[0]: f for f in config_files}
-        build_state.log(f"[INFO] Found {len(available_configs)} config files in {conf_dir}: {list(available_configs.keys())}\n")
-        
+        build_state.log(
+            f"[INFO] Found {len(available_configs)} config files in {conf_dir}: {list(available_configs.keys())}\n"
+        )
+
         for message in update_messages:
             if "Copied config file" in message:
                 build_state.log(f"[INFO] {message}\n")
@@ -236,17 +260,23 @@ def update_plugin_configurations(generated_dir: str = "core/generated"):
 
     # Save the updated configuration
     if plugins_config.to_file(plugins_conf_path):
-        build_state.log(f"[INFO] Plugin configuration update complete. {plugins_updated} plugins updated.\n")
-        
+        build_state.log(
+            f"[INFO] Plugin configuration update complete. {plugins_updated} plugins updated.\n"
+        )
+
         # Log final state
         for plugin in plugins_config.plugins:
-            build_state.log(f"[DEBUG] Final state - {plugin.name}: enabled={plugin.enabled}, config_path='{plugin.config_path}'\n")
-        
+            build_state.log(
+                f"[DEBUG] Final state - {plugin.name}: enabled={plugin.enabled}, config_path='{plugin.config_path}'\n"
+            )
+
         # Log configuration summary
         summary = plugins_config.get_config_summary()
-        build_state.log(f"[INFO] Plugin summary: {summary['enabled']}/{summary['total']} enabled "
-                       f"({summary['python']} Python, {summary['native']} Native)\n")
-        
+        build_state.log(
+            f"[INFO] Plugin summary: {summary['enabled']}/{summary['total']} enabled "
+            f"({summary['python']} Python, {summary['native']} Native)\n"
+        )
+
         # Validate configurations and log any issues
         issues = plugins_config.validate_plugins()
         if issues:
@@ -281,7 +311,9 @@ def _wait_for_plc_idle(runtime_manager: RuntimeManager, timeout_s: float) -> boo
     return False
 
 
-def validate_vpp_plugins_conf(conf_path: str, runtime_root: str, vpp_build_dir: str) -> tuple[bool, str]:
+def validate_vpp_plugins_conf(
+    conf_path: str, runtime_root: str, vpp_build_dir: str
+) -> tuple[bool, str]:
     """Containment check for an upload-supplied ``vpp_plugins.conf``.
 
     The ``path`` field of this file is what the C plugin loader passes straight
@@ -340,7 +372,10 @@ def validate_vpp_plugins_conf(conf_path: str, runtime_root: str, vpp_build_dir: 
                 "(VPP plugins may only load objects built by this upload)"
             )
         if p.config_path and not is_inside_root(against_root(p.config_path), runtime_root):
-            return False, f"plugin '{p.name}' config_path '{p.config_path}' escapes the runtime root"
+            return (
+                False,
+                f"plugin '{p.name}' config_path '{p.config_path}' escapes the runtime root",
+            )
     return True, ""
 
 
@@ -390,7 +425,7 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
 
         # Copy vpp_plugins.conf to runtime root
         shutil.copy2(uploaded_conf, VPP_CONF_DEST)
-        build_state.log(f"[INFO] VPP: installed vpp_plugins.conf from upload\n")
+        build_state.log("[INFO] VPP: installed vpp_plugins.conf from upload\n")
 
         # Copy each VPP plugin's config file into the persistent dir and rewrite
         # its config_path to point there (see the loop below). config_path is the
@@ -405,7 +440,9 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
                 continue
             src_config = os.path.join(conf_dir, f"{p.name}.json")
             if not os.path.exists(src_config):
-                build_state.log(f"[WARNING] VPP: conf/{p.name}.json not found in upload, skipping\n")
+                build_state.log(
+                    f"[WARNING] VPP: conf/{p.name}.json not found in upload, skipping\n"
+                )
                 continue
 
             # Relocate the config (and its license sibling) OUT of build/vpp and
@@ -426,7 +463,9 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
                 continue
             dest_config = os.path.join(str(VPP_DATA_DIR), f"{p.name}.json")
             if not is_inside_root(dest_config, str(VPP_DATA_DIR)):
-                build_state.log(f"[WARNING] VPP: config dest '{dest_config}' escapes the persistent dir, skipping\n")
+                build_state.log(
+                    f"[WARNING] VPP: config dest '{dest_config}' escapes the persistent dir, skipping\n"
+                )
                 continue
             # The old build/vpp sibling of THIS plugin, so a device licensed
             # before this change can be migrated below. Derived from the FIXED
@@ -470,7 +509,9 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
                 # today when 0x4A reads EMPTY.
                 try:
                     shutil.copy2(old_license, dest_license)
-                    build_state.log(f"[INFO] VPP: migrated {p.name}.license {old_license} -> {dest_license}\n")
+                    build_state.log(
+                        f"[INFO] VPP: migrated {p.name}.license {old_license} -> {dest_license}\n"
+                    )
                 except OSError as exc:
                     build_state.log(f"[WARNING] VPP: could not migrate {p.name}.license: {exc}\n")
 
@@ -479,7 +520,9 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
         # not the build/vpp one the editor emitted.
         if rewrote_paths:
             vpp_conf_plugins.to_file(VPP_CONF_DEST)
-            build_state.log("[INFO] VPP: rewrote vpp_plugins.conf config_path to the persistent dir\n")
+            build_state.log(
+                "[INFO] VPP: rewrote vpp_plugins.conf config_path to the persistent dir\n"
+            )
     else:
         # No VPP in this upload — remove any stale vpp_plugins.conf so
         # the plugin loader does not attempt to load old VPP drivers.
@@ -582,6 +625,77 @@ def apply_retain_conf(generated_dir: str = "core/generated") -> None:
     )
 
 
+def apply_image_conf(generated_dir: str = "core/generated") -> None:
+    """Apply or remove the I/O image sizes for this upload.
+
+    The sizes are owned by the PROJECT and derived rather than chosen: the
+    editor works them out from what the project contains and the upload carries
+    them here as ``image.conf``, exactly as it carries ``retain.conf``. This
+    function installs what arrives and refuses what the core could not honour.
+
+    * **Upload includes image.conf** -> validate it and write the normalised
+      stanza to the runtime root, where the PLC application reads it at the next
+      program load.
+
+    * **Upload does not include image.conf** -> delete any existing copy.
+
+    THAT ABSENT CASE IS NOT THE SAME AS RETAIN'S, though the action matches.
+    A missing ``retain.conf`` is an instruction -- switch the built-in store
+    off. A missing ``image.conf`` says nothing at all: the runtime can always
+    derive the sizes from the located variables of the program it just loaded.
+    The reason to delete anyway is that a STALE file is worse than none. Leave
+    the previous project's ``int_output=4096`` in place, upload a program that
+    needs eight, and ``max(configured, derived)`` keeps 4096 words reserved for
+    a program that is no longer on the device -- silently, and for as long as
+    nobody notices. Deleting hands the decision back to the program.
+
+    Validation happens HERE rather than at bind time, for the same reason it
+    does for retain: a table the core cannot address would otherwise be
+    discovered once per located variable, deep in a program load, with nothing
+    but a log line on a device nobody is watching. Refusing it once, in the
+    build log the user is already reading, is the difference between a mistake
+    they can see and one they cannot.
+
+    Note what this function does NOT do: it does not size anything itself, and
+    it does not consult the program. The floor derived from the ``.so`` is the
+    core's business at load time, which is what keeps a device that was
+    provisioned by some other route reaching the same answer.
+    """
+    IMAGE_CONF_NAME = "image.conf"
+    uploaded_conf = os.path.join(generated_dir, IMAGE_CONF_NAME)
+    dest = str(IMAGE_CONF_PATH)
+
+    if not os.path.exists(uploaded_conf):
+        if os.path.exists(dest):
+            os.remove(dest)
+            build_state.log(
+                "[INFO] Image: removed stale image.conf (this upload carries no "
+                "sizes; the runtime will size the image from the program)\n"
+            )
+        return
+
+    # Parse with the same reader the core's sizes go through, so what is
+    # validated here is exactly what the core will read back.
+    version, sizes, units = read_image_conf_file(uploaded_conf)
+
+    try:
+        sizes = validate_image_conf(version, sizes, units)
+    except ImageConfigError as e:
+        build_state.log(f"[ERROR] Image: refusing image.conf from upload: {e}\n")
+        # Leave no half-applied state, and in particular do not leave the
+        # PREVIOUS project's sizes in force: the user would be looking at a
+        # device sized by a project they are no longer running.
+        if os.path.exists(dest):
+            os.remove(dest)
+            build_state.log("[INFO] Image: removed previous image.conf\n")
+        return
+
+    write_image_conf_file(dest, sizes)
+    build_state.log(
+        f"[INFO] Image: installed image.conf from upload ({describe_image_conf(sizes)})\n"
+    )
+
+
 def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", clean: bool = False):
     """Run compile script synchronously (wait for completion) and update status/logs.
 
@@ -602,7 +716,7 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
         # the operator sees the drainer error, and the finally{} pipe
         # close lets the child see EOF instead of blocking.
         try:
-            for line in iter(pipe.readline, ''):
+            for line in iter(pipe.readline, ""):
                 msg = f"{prefix}{line}"
                 build_state.log(msg)
         except Exception as e:
@@ -639,7 +753,7 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
     # next poll.
     try:
         build_state.status = BuildStatus.COMPILING
-        build_state.log(f"[INFO] Starting compilation\n")
+        build_state.log("[INFO] Starting compilation\n")
 
         # --- Optional clean step ---
         if clean:
@@ -684,12 +798,14 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            errors='replace',
-            bufsize=1
+            errors="replace",
+            bufsize=1,
         )
 
         threading.Thread(target=stream_output, args=(compile_proc.stdout, ""), daemon=True).start()
-        threading.Thread(target=stream_output, args=(compile_proc.stderr, "[ERROR] "), daemon=True).start()
+        threading.Thread(
+            target=stream_output, args=(compile_proc.stderr, "[ERROR] "), daemon=True
+        ).start()
 
         # Block until compile finishes.
         compile_ok = wait_step(compile_proc, "Build")
@@ -716,12 +832,14 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            errors='replace',
-            bufsize=1
+            errors="replace",
+            bufsize=1,
         )
 
         threading.Thread(target=stream_output, args=(cleanup_proc.stdout, ""), daemon=True).start()
-        threading.Thread(target=stream_output, args=(cleanup_proc.stderr, "[ERROR] "), daemon=True).start()
+        threading.Thread(
+            target=stream_output, args=(cleanup_proc.stderr, "[ERROR] "), daemon=True
+        ).start()
 
         cleanup_ok = wait_step(cleanup_proc, "Cleanup")
 

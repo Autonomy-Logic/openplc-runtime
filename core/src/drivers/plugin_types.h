@@ -16,6 +16,16 @@
 #define PLUGIN_TYPES_H
 
 #include "../lib/iec_types.h"
+/* The image table identities, so a plugin receiving the sizes array can name
+ * the entries it indexes rather than counting positions (RTOP-284, B2).
+ * Publishing a type costs no ABI: no struct gains a field and no offset
+ * moves, which is what CON06 guarantees pre-compiled plugins.
+ *
+ * A plugin built against an OLDER runtime will not find this header, so
+ * anything that must work on both — a VPP package, which ships and is built
+ * independently of the runtime on the device — carries its own constants and
+ * keeps them in the order documented there. */
+#include "../plc_app/image_table_id.h"
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -229,7 +239,36 @@ typedef struct
     /* Plugin configuration */
     char plugin_specific_config_file_path[256];
 
-    /* Buffer size information */
+    /* THE SMALLEST TABLE, NOT THE ONLY ONE (RTOP-284).
+     *
+     * The fourteen image tables no longer share a length. This field cannot
+     * say that -- CON06 guarantees pre-compiled plugins keep their field
+     * offsets, so it does not move -- and it is now the MINIMUM of the
+     * fourteen rather than the length they all happened to have.
+     *
+     * The minimum is the only safe answer for a consumer that still reads one
+     * number: bounding by it refuses an index that would have run off the end
+     * of the shortest table, where bounding by the largest would have read
+     * past every table below it. Under-permissive, never over.
+     *
+     * A plugin that wants the truth exports `set_image_sizes` (plugin_driver.h)
+     * and receives all fourteen before its init() runs. When every loaded
+     * plugin does, the image is allocated per table; when any does not, it is
+     * kept square for that run and this field is again the length they all
+     * have.
+     *
+     * Not marked deprecated yet, and the reason is not what an earlier draft
+     * of this comment claimed. The runtime core does build with -Werror
+     * (core/src/CMakeLists.txt), but the plugins do not: they are configured
+     * by their own cmake invocation and the VPP packages by a plain Makefile,
+     * so the attribute would produce warnings there, not a build failure.
+     *
+     * It is deferred because the field is still the RIGHT thing to read: on a
+     * square run it is the length every table has, and it is the only bound a
+     * plugin that has not adopted set_image_sizes can use. Deprecating it now
+     * would warn at correct code, including in packages that ship
+     * independently and must keep working against older runtimes. The
+     * attribute goes in once the symbol is universal. */
     int buffer_size;
     int bits_per_buffer;
 

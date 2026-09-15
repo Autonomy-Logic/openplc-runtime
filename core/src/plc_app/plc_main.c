@@ -150,6 +150,31 @@ int main(int argc, char *argv[])
         log_info("[PLUGIN]: Plugin driver system created");
         if (plugin_driver_load_config(plugin_driver, "./plugins.conf") == 0)
         {
+            /* An image before the plugins see one, even though no program is
+             * loaded yet. plugin_driver_init() copies the base pointers and
+             * buffer_size into every plugin's args, and a plugin is entitled to
+             * a valid image from the moment it initialises -- never a NULL base
+             * pointer and never a zero size. The minimum is what
+             * image_tables_alloc() clamps to, per table: the smallest count
+             * that is not no image at all. NULL asks for exactly that, which
+             * says "no program has told me anything yet" rather than passing a
+             * zeroed struct that reads like a real answer. A program load
+             * reallocates it properly. */
+            pthread_mutex_t *itm = image_tables_mutex();
+            pthread_mutex_lock(itm);
+            const bool image_ok = image_tables_alloc(NULL);
+            pthread_mutex_unlock(itm);
+
+            if (!image_ok)
+            {
+                /* Log AND STOP, which is the criterion. Falling through was
+                 * worse than it looked: with capacity 0 the ordering guard in
+                 * plugin_driver refuses the runtime args for every plugin, so
+                 * the runtime came up with nothing initialised and one line to
+                 * say why -- a runtime that looks alive and drives nothing. */
+                log_error("[PLUGIN]: could not allocate the boot image — refusing to start");
+                return EXIT_FAILURE;
+            }
             plugin_driver_init(plugin_driver);
             log_info("[PLUGIN]: All plugins initialized (not started)");
         }

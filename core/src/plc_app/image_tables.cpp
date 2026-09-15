@@ -5,9 +5,12 @@
 // bind image-table buffer pointers. Plugins read/write through the
 // buffer pointers directly under the image-tables mutex.
 
+#include <cerrno>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include <pthread.h>
 
@@ -32,25 +35,42 @@ extern "C" {
 // ---------------------------------------------------------------------------
 // Image-table storage
 // ---------------------------------------------------------------------------
-IEC_BOOL *bool_input[BUFFER_SIZE][8];
-IEC_BOOL *bool_output[BUFFER_SIZE][8];
+image_tables_t g_image;
 
-IEC_BYTE *byte_input[BUFFER_SIZE];
-IEC_BYTE *byte_output[BUFFER_SIZE];
+// How many elements each table currently holds. Zero means nothing is
+// allocated and every table pointer is null, which is the state before the
+// first program load and after the last unload. Every index into the image is
+// bounded by this, so it lives beside the image rather than beside the
+// allocator that sets it.
+static uint32_t g_capacity = 0;
 
-IEC_UINT *int_input[BUFFER_SIZE];
-IEC_UINT *int_output[BUFFER_SIZE];
+/* The fourteen counts the image was actually allocated at.
+ *
+ * g_capacity survives as the SMALLEST of them, which is what a consumer that
+ * still reads one number must be given: bounding by the smallest table refuses
+ * an index that would have run off the end of it, where bounding by the
+ * largest would have read past four of them. See image_tables_capacity(). */
+static image_sizes_t g_sizes;
 
-IEC_UDINT *dint_input[BUFFER_SIZE];
-IEC_UDINT *dint_output[BUFFER_SIZE];
-
-IEC_ULINT *lint_input[BUFFER_SIZE];
-IEC_ULINT *lint_output[BUFFER_SIZE];
-
-IEC_UINT  *int_memory[BUFFER_SIZE];
-IEC_UDINT *dint_memory[BUFFER_SIZE];
-IEC_ULINT *lint_memory[BUFFER_SIZE];
-IEC_BOOL  *bool_memory[BUFFER_SIZE][8];
+// The tables are heap pointers now, and these assertions are what got us here
+// safely. In their previous form they pinned the inline-array shape, so the
+// moment the types changed the build stopped and named the function to follow.
+// They now pin the opposite invariant: nothing may quietly go back to inline
+// storage, and no table may drift to a shape whose element size differs from
+// the one image_tables_alloc() allocates it at.
+//
+// The hazard they exist for has not gone away. Indexing a pointer-to-array is
+// syntactically identical to indexing an array, and `sizeof` on the two differs
+// by four orders of magnitude, so the compiler cannot tell a correct use site
+// from a wrong one. `sizeof` on these tables appears in no other function.
+static_assert(sizeof(g_image.bool_input) == sizeof(IEC_BOOL *(*)[8]),
+              "bool_input went back to inline storage: image_tables_alloc() and "
+              "image_tables_zero_slots() both assume a heap pointer.");
+static_assert(sizeof(g_image.byte_input) == sizeof(IEC_BYTE **),
+              "byte_input went back to inline storage: see image_tables_alloc().");
+static_assert(sizeof(g_image) == 14 * sizeof(void *),
+              "the image struct gained, lost, or inlined a table -- "
+              "image_tables_alloc() allocates exactly fourteen.");
 
 // ---------------------------------------------------------------------------
 // strucpp shim: per-project located-variable descriptor accessors
@@ -172,6 +192,28 @@ namespace {
 
 extern "C" pthread_mutex_t *image_tables_mutex(void)
 {
+    /* Initialised on first use rather than only in symbols_init.
+     *
+     * symbols_init runs on the cycle thread, so on the first program load the
+     * image-tables mutex was still a zero-filled pthread_mutex_t when the load
+     * path locked it around the allocation, and when the boot path did not
+     * lock it at all. Zero-filled happens to behave on glibc, but it is
+     * neither recursive nor priority-inheriting there -- the two properties
+     * this mutex is created for -- and it is undefined elsewhere.
+     *
+     * pthread_once, so the two callers cannot race to create it, and so it is
+     * created exactly once for the life of the process rather than per load.
+     * symbols_init's own guarded init is now redundant and harmless. */
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once,
+                 []
+                 {
+                     if (!g_locks_initialized)
+                     {
+                         init_recursive_pi_mutex(&g_image_tables_mutex);
+                         g_locks_initialized = true;
+                     }
+                 });
     return &g_image_tables_mutex;
 }
 
@@ -343,6 +385,308 @@ static const void *located_pointer_at(const void *located_vars, uint32_t index)
     return lv[index].pointer;
 }
 
+// ---------------------------------------------------------------------------
+// How big the image has to be (RTOP-284)
+// ---------------------------------------------------------------------------
+
+/* Local copy rather than shared with plc_retain_file_store.cpp, where the same
+ * three lines live in an anonymous namespace: hoisting a four-line string trim
+ * into a header shared between two config readers would couple them for no
+ * gain, and the parsers are deliberately independent -- each mirrors the file
+ * IT reads, key for key. */
+static std::string trimmed(const std::string &s)
+{
+    const size_t b = s.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return "";
+    const size_t e = s.find_last_not_of(" \t\r\n");
+    return s.substr(b, e - b + 1);
+}
+
+static const char *const kImageTableKeys[IMAGE_TABLE_COUNT] = {
+    "bool_input",  "bool_output", "byte_input",  "byte_output",
+    "int_input",   "int_output",  "dint_input",  "dint_output",
+    "lint_input",  "lint_output", "int_memory",  "dint_memory",
+    "lint_memory", "bool_memory",
+};
+
+/* The unit each table's ADDRESSES use, which is what image.conf carries.
+ *
+ * It is NOT always the unit the table is STORED in, and that gap is the whole
+ * reason the unit is written down. bool_output is declared IEC_BOOL *[N][8],
+ * so N counts bytes -- but %QX addresses bits, so the file says bits and the
+ * conversion happens here, once, where the storage shape is known. The editor
+ * emits the address's unit for every table and converts nothing.
+ *
+ * Parallel to kImageTableKeys, index for index. The contract test checks the
+ * pairing against the editor and the webserver, so a table whose unit
+ * disagrees across the four implementations fails CI. */
+static const char *const kImageTableUnits[IMAGE_TABLE_COUNT] = {
+    "bits",   "bits",   "bytes",  "bytes", "words",  "words",  "dwords",
+    "dwords", "lwords", "lwords", "words", "dwords", "lwords", "bits",
+};
+
+static_assert(sizeof(kImageTableUnits) / sizeof(kImageTableUnits[0]) == IMAGE_TABLE_COUNT,
+              "kImageTableUnits and image_table_id_t disagree on how many tables there are.");
+
+/* The three BOOL tables, and only those, arrive in bits. */
+static bool table_is_in_bits(int i)
+{
+    return std::strcmp(kImageTableUnits[i], "bits") == 0;
+}
+
+// A key missing here would make image_table_key() read past the array, and a
+// spare one would go unnoticed. The count is the cheap half of keeping the enum
+// and the strings in step; the ORDER is checked from the Python side, in
+// tests/pytest/plugins/test_image_conf_contract.py, which is the only one of
+// the three implementations of this file format that CI actually runs.
+static_assert(sizeof(kImageTableKeys) / sizeof(kImageTableKeys[0]) == IMAGE_TABLE_COUNT,
+              "kImageTableKeys and image_table_id_t disagree on how many tables there are.");
+
+extern "C" const char *image_table_key(image_table_id_t id)
+{
+    return (id >= 0 && id < IMAGE_TABLE_COUNT) ? kImageTableKeys[id] : "";
+}
+
+/**
+ * (area, size) -> the table that stores it, or IMAGE_TABLE_COUNT for a
+ * combination this runtime has no storage for.
+ *
+ * There is exactly one such hole, and it is real rather than an oversight of
+ * this function: `%MB` (Memory + Byte). image_tables.h declares byte_input and
+ * byte_output but no byte_memory, so a program declaring `AT %MB4` names
+ * storage that does not exist. A current editor refuses that before the build
+ * (DOPE-615); an older one, or a hand-built .so, can still reach us, and the
+ * caller says so once rather than sizing a table that is not there.
+ */
+static image_table_id_t table_for(strucpp::LocatedArea area, strucpp::LocatedSize size)
+{
+    switch (area)
+    {
+    case strucpp::LocatedArea::Input:
+        switch (size)
+        {
+        case strucpp::LocatedSize::Bit:   return IMAGE_TABLE_BOOL_INPUT;
+        case strucpp::LocatedSize::Byte:  return IMAGE_TABLE_BYTE_INPUT;
+        case strucpp::LocatedSize::Word:  return IMAGE_TABLE_INT_INPUT;
+        case strucpp::LocatedSize::DWord: return IMAGE_TABLE_DINT_INPUT;
+        case strucpp::LocatedSize::LWord: return IMAGE_TABLE_LINT_INPUT;
+        }
+        break;
+    case strucpp::LocatedArea::Output:
+        switch (size)
+        {
+        case strucpp::LocatedSize::Bit:   return IMAGE_TABLE_BOOL_OUTPUT;
+        case strucpp::LocatedSize::Byte:  return IMAGE_TABLE_BYTE_OUTPUT;
+        case strucpp::LocatedSize::Word:  return IMAGE_TABLE_INT_OUTPUT;
+        case strucpp::LocatedSize::DWord: return IMAGE_TABLE_DINT_OUTPUT;
+        case strucpp::LocatedSize::LWord: return IMAGE_TABLE_LINT_OUTPUT;
+        }
+        break;
+    case strucpp::LocatedArea::Memory:
+        switch (size)
+        {
+        case strucpp::LocatedSize::Bit:   return IMAGE_TABLE_BOOL_MEMORY;
+        case strucpp::LocatedSize::Word:  return IMAGE_TABLE_INT_MEMORY;
+        case strucpp::LocatedSize::DWord: return IMAGE_TABLE_DINT_MEMORY;
+        case strucpp::LocatedSize::LWord: return IMAGE_TABLE_LINT_MEMORY;
+        case strucpp::LocatedSize::Byte:  break;  // %MB: no byte_memory table
+        }
+        break;
+    }
+    return IMAGE_TABLE_COUNT;
+}
+
+extern "C" void image_sizes_read_conf(const char *config_path, image_sizes_t *out)
+{
+    if (!out) return;
+    std::memset(out, 0, sizeof(*out));
+
+    // A missing file is not an error. It means nobody delivered sizes for this
+    // program, and the caller falls back to the floor derived below -- which is
+    // also what makes an older editor, or a device provisioned by hand, work.
+    FILE *f = fopen(config_path, "r");
+    if (!f) return;
+
+    /* Built into a local and published only once the version checks out, so a
+     * file this runtime cannot read leaves ZEROS rather than a half-applied
+     * mixture of tables it understood and tables it did not. */
+    image_sizes_t parsed;
+    std::memset(&parsed, 0, sizeof(parsed));
+    long version = 0;
+
+    char line[256];
+    while (fgets(line, sizeof(line), f))
+    {
+        std::string s = trimmed(line);
+        if (s.empty() || s[0] == '#') continue;
+        const size_t eq = s.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = trimmed(s.substr(0, eq));
+        const std::string val = trimmed(s.substr(eq + 1));
+
+        if (key == "format_version")
+        {
+            char *vend = nullptr;
+            version    = strtol(val.c_str(), &vend, 10);
+            if (vend == val.c_str() || *vend != '\0')
+                version = 0;
+            continue;
+        }
+
+        for (int i = 0; i < IMAGE_TABLE_COUNT; ++i)
+        {
+            if (key != kImageTableKeys[i]) continue;
+
+            errno        = 0;
+            char *endp   = nullptr;
+            const long v = strtol(val.c_str(), &endp, 10);
+
+            /* The unit is not decoration: it is what stops a bit count being
+             * allocated as an element count, which is a factor of eight with
+             * no diagnostic on either side. A value whose unit is not the one
+             * this table carries is refused rather than guessed at. */
+            const std::string unit = (endp && endp != val.c_str()) ? trimmed(endp) : std::string();
+            const bool unit_ok     = unit == kImageTableUnits[i];
+
+            /* THE CEILING IS IN ELEMENTS, SO IT IS COMPARED AFTER CONVERTING.
+             * IMAGE_MAX_ELEMENTS is the uint16 index the ABI addresses through
+             * (CON03), a count of TABLE ELEMENTS. A BOOL table's file value is
+             * in bits, and 65536 elements is 524288 bits -- comparing the raw
+             * bit count against the element ceiling would refuse every legal
+             * image above 8192 bytes. */
+            const long max_in_file_unit =
+                table_is_in_bits(i) ? (long)IMAGE_MAX_ELEMENTS * 8 : (long)IMAGE_MAX_ELEMENTS;
+
+            /* Anything the runtime cannot honour reads as ZERO, which falls
+             * through to the floor derived from the program. That is the safe
+             * direction. Out of range, out of the uint16 the ABI addresses
+             * through, unparsed, trailing junk, or carrying the wrong unit:
+             * all of them mean the same thing here, which is "ignore me".
+             *
+             * The webserver refuses these at install, so reaching this branch
+             * means a hand-edited device. */
+            const bool numeric_ok =
+                errno == 0 && endp != val.c_str() && v > 0 && v <= max_in_file_unit;
+            const bool usable = numeric_ok && unit_ok;
+
+            if (!usable && !val.empty() && !(v == 0 && unit_ok))
+            {
+                log_warn("[image_tables] image.conf: ignoring %s=%s, expected 1..%ld %s",
+                         kImageTableKeys[i], val.c_str(), max_in_file_unit, kImageTableUnits[i]);
+            }
+
+            /* Bits to elements, once, here. Round UP: the slots of a partial
+             * byte have to be addressable, and erring upward costs one byte
+             * where erring downward loses up to seven addresses. */
+            uint32_t elements = 0;
+            if (usable)
+            {
+                elements = table_is_in_bits(i) ? (uint32_t)((v + 7) / 8) : (uint32_t)v;
+            }
+            parsed.elements[i] = elements;
+            break;
+        }
+    }
+    fclose(f);
+
+    /* No version, or one this runtime does not know, refuses the WHOLE file.
+     * Guessing would mean reading a future format by today's rules, which is
+     * how a unit change becomes a silent factor of eight. Zeros here are not a
+     * failure: the floor derived from the loaded program takes over, which is
+     * the same path a device with no image.conf at all follows.
+     *
+     * There is no branch for version 1. It was written but never merged, so no
+     * device has ever read this file in that form. */
+    if (version != IMAGE_CONF_FORMAT_VERSION)
+    {
+        log_warn("[image_tables] image.conf: format_version %ld is not %d; ignoring the file "
+                 "and sizing from the loaded program instead",
+                 version, IMAGE_CONF_FORMAT_VERSION);
+        return;
+    }
+
+    *out = parsed;
+}
+
+extern "C" void image_sizes_derive_floor(PluginManager *pm, image_sizes_t *out)
+{
+    if (!out) return;
+    std::memset(out, 0, sizeof(*out));
+
+    /* RESOLVED HERE, NOT READ FROM THE GLOBALS, and that is the whole point of
+     * taking `pm`.
+     *
+     * The obvious version of this function read ext_strucpp_get_located_vars.
+     * Those globals are populated by symbols_init, which runs on the cycle
+     * thread (plc_state_manager.cpp) — created AFTER the load path sizes and
+     * allocates the image. So they were always null here, the floor was always
+     * a zero vector, and max(configured, derived) silently degraded to
+     * "whatever image.conf said". With no image.conf that meant capacity 1 for
+     * every program, every located address above index 0 rejected by the
+     * bounds check, and no log to show for it — precisely the safety net this
+     * function exists to be. Unload nulls them again, so the second load would
+     * not have escaped it either.
+     *
+     * Resolving from the PluginManager makes the answer depend on the program
+     * being dlopen'd, which the caller has just done, rather than on the order
+     * two threads happen to run in. */
+    GetLocatedVarsFn     get_vars  = nullptr;
+    GetLocatedCountFn    get_count = nullptr;
+    if (pm)
+    {
+        *(void **)&get_vars  = plugin_manager_get_symbol(pm, "strucpp_get_located_vars");
+        *(void **)&get_count = plugin_manager_get_symbol(pm, "strucpp_get_located_var_count");
+    }
+    if (!get_vars) get_vars = ext_strucpp_get_located_vars;
+    if (!get_count) get_count = ext_strucpp_get_located_var_count;
+
+    if (!get_vars || !get_count)
+    {
+        // No program loaded, or one whose accessors are absent. Zeros, so the
+        // caller sizes from the configuration alone -- and at boot, when there
+        // is no program at all, from nothing.
+        return;
+    }
+
+    const strucpp::LocatedVar *lv = get_vars();
+    const uint32_t             n  = get_count();
+    if (!lv) return;
+
+    uint32_t unstorable = 0;
+
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        const image_table_id_t id = table_for(lv[i].area, lv[i].size);
+        if (id == IMAGE_TABLE_COUNT)
+        {
+            ++unstorable;
+            continue;
+        }
+        // byte_index IS the table index for every table, including the BOOL
+        // ones -- those are indexed [byte][bit], and bit_index selects within
+        // the byte. So the floor is uniformly the highest index plus one, and
+        // no table needs a different unit here.
+        const uint32_t needed = (uint32_t)lv[i].byte_index + 1u;
+        if (needed > out->elements[id]) out->elements[id] = needed;
+    }
+
+    if (unstorable)
+    {
+        log_warn("[image_tables] %u located variable(s) address %%MB, which this "
+                 "runtime has no table for - they will not be serviced",
+                 unstorable);
+    }
+}
+
+extern "C" void image_sizes_take_max(image_sizes_t *dst, const image_sizes_t *other)
+{
+    if (!dst || !other) return;
+    for (int i = 0; i < IMAGE_TABLE_COUNT; ++i)
+    {
+        if (other->elements[i] > dst->elements[i]) dst->elements[i] = other->elements[i];
+    }
+}
+
 void image_tables_bind_located_vars(void)
 {
     if (!ext_strucpp_get_located_vars || !ext_strucpp_get_located_var_count)
@@ -509,36 +853,41 @@ uint64_t threaded_image_read(const strucpp::LocatedVar &v)
 {
     uint16_t bi = v.byte_index;
     uint8_t  b  = v.bit_index;
-    if (bi >= BUFFER_SIZE) return 0;
+    /* The bound is THIS VAR'S TABLE, not one figure for fourteen. With the
+     * tables at different lengths, g_capacity (the smallest) would refuse
+     * valid indices in every longer table, and the largest would have let an
+     * index run off the end of every shorter one. */
+    if (bi >= image_table_capacity(table_for(v.area, v.size)))
+        return 0;
     switch (v.area)
     {
     case strucpp::LocatedArea::Input:
         switch (v.size)
         {
-        case strucpp::LocatedSize::Bit:   return (b < 8 && bool_input[bi][b]) ? (*bool_input[bi][b] ? 1u : 0u) : 0u;
-        case strucpp::LocatedSize::Byte:  return byte_input[bi] ? *byte_input[bi] : 0u;
-        case strucpp::LocatedSize::Word:  return int_input[bi]  ? *int_input[bi]  : 0u;
-        case strucpp::LocatedSize::DWord: return dint_input[bi] ? *dint_input[bi] : 0u;
-        case strucpp::LocatedSize::LWord: return lint_input[bi] ? *lint_input[bi] : 0u;
+        case strucpp::LocatedSize::Bit:   return (b < 8 && g_image.bool_input[bi][b]) ? (*g_image.bool_input[bi][b] ? 1u : 0u) : 0u;
+        case strucpp::LocatedSize::Byte:  return g_image.byte_input[bi] ? *g_image.byte_input[bi] : 0u;
+        case strucpp::LocatedSize::Word:  return g_image.int_input[bi]  ? *g_image.int_input[bi]  : 0u;
+        case strucpp::LocatedSize::DWord: return g_image.dint_input[bi] ? *g_image.dint_input[bi] : 0u;
+        case strucpp::LocatedSize::LWord: return g_image.lint_input[bi] ? *g_image.lint_input[bi] : 0u;
         }
         break;
     case strucpp::LocatedArea::Output:
         switch (v.size)
         {
-        case strucpp::LocatedSize::Bit:   return (b < 8 && bool_output[bi][b]) ? (*bool_output[bi][b] ? 1u : 0u) : 0u;
-        case strucpp::LocatedSize::Byte:  return byte_output[bi] ? *byte_output[bi] : 0u;
-        case strucpp::LocatedSize::Word:  return int_output[bi]  ? *int_output[bi]  : 0u;
-        case strucpp::LocatedSize::DWord: return dint_output[bi] ? *dint_output[bi] : 0u;
-        case strucpp::LocatedSize::LWord: return lint_output[bi] ? *lint_output[bi] : 0u;
+        case strucpp::LocatedSize::Bit:   return (b < 8 && g_image.bool_output[bi][b]) ? (*g_image.bool_output[bi][b] ? 1u : 0u) : 0u;
+        case strucpp::LocatedSize::Byte:  return g_image.byte_output[bi] ? *g_image.byte_output[bi] : 0u;
+        case strucpp::LocatedSize::Word:  return g_image.int_output[bi]  ? *g_image.int_output[bi]  : 0u;
+        case strucpp::LocatedSize::DWord: return g_image.dint_output[bi] ? *g_image.dint_output[bi] : 0u;
+        case strucpp::LocatedSize::LWord: return g_image.lint_output[bi] ? *g_image.lint_output[bi] : 0u;
         }
         break;
     case strucpp::LocatedArea::Memory:
         switch (v.size)
         {
-        case strucpp::LocatedSize::Bit:   return (b < 8 && bool_memory[bi][b]) ? (*bool_memory[bi][b] ? 1u : 0u) : 0u;
-        case strucpp::LocatedSize::Word:  return int_memory[bi]  ? *int_memory[bi]  : 0u;
-        case strucpp::LocatedSize::DWord: return dint_memory[bi] ? *dint_memory[bi] : 0u;
-        case strucpp::LocatedSize::LWord: return lint_memory[bi] ? *lint_memory[bi] : 0u;
+        case strucpp::LocatedSize::Bit:   return (b < 8 && g_image.bool_memory[bi][b]) ? (*g_image.bool_memory[bi][b] ? 1u : 0u) : 0u;
+        case strucpp::LocatedSize::Word:  return g_image.int_memory[bi]  ? *g_image.int_memory[bi]  : 0u;
+        case strucpp::LocatedSize::DWord: return g_image.dint_memory[bi] ? *g_image.dint_memory[bi] : 0u;
+        case strucpp::LocatedSize::LWord: return g_image.lint_memory[bi] ? *g_image.lint_memory[bi] : 0u;
         default: break;
         }
         break;
@@ -650,45 +999,401 @@ extern "C" void image_tables_copy_config_globals_out(void)
 // ---------------------------------------------------------------------------
 // Backing storage for slots not covered by located variables.
 // ---------------------------------------------------------------------------
-static IEC_BOOL  temp_bool_input[BUFFER_SIZE][8];
-static IEC_BOOL  temp_bool_output[BUFFER_SIZE][8];
-static IEC_BYTE  temp_byte_input[BUFFER_SIZE];
-static IEC_BYTE  temp_byte_output[BUFFER_SIZE];
-static IEC_UINT  temp_int_input[BUFFER_SIZE];
-static IEC_UINT  temp_int_output[BUFFER_SIZE];
-static IEC_UDINT temp_dint_input[BUFFER_SIZE];
-static IEC_UDINT temp_dint_output[BUFFER_SIZE];
-static IEC_ULINT temp_lint_input[BUFFER_SIZE];
-static IEC_ULINT temp_lint_output[BUFFER_SIZE];
-static IEC_UINT  temp_int_memory[BUFFER_SIZE];
-static IEC_UDINT temp_dint_memory[BUFFER_SIZE];
-static IEC_ULINT temp_lint_memory[BUFFER_SIZE];
-static IEC_BOOL  temp_bool_memory[BUFFER_SIZE][8];
+// Backing storage for image slots no located variable claims. Heap, and the
+// same length as the tables that point into it -- these were fourteen more
+// [BUFFER_SIZE] statics, and leaving them fixed while the tables grew would put
+// fill_null_pointers() to work handing out addresses past their end.
+static IEC_BOOL (*temp_bool_input)[8]  = nullptr;
+static IEC_BOOL (*temp_bool_output)[8] = nullptr;
+static IEC_BOOL (*temp_bool_memory)[8] = nullptr;
+static IEC_BYTE  *temp_byte_input      = nullptr;
+static IEC_BYTE  *temp_byte_output     = nullptr;
+static IEC_UINT  *temp_int_input       = nullptr;
+static IEC_UINT  *temp_int_output      = nullptr;
+static IEC_UDINT *temp_dint_input      = nullptr;
+static IEC_UDINT *temp_dint_output     = nullptr;
+static IEC_ULINT *temp_lint_input      = nullptr;
+static IEC_ULINT *temp_lint_output     = nullptr;
+static IEC_UINT  *temp_int_memory      = nullptr;
+static IEC_UDINT *temp_dint_memory     = nullptr;
+static IEC_ULINT *temp_lint_memory     = nullptr;
+
+/* The smallest image that is not no image at all.
+ *
+ * Not a tuning knob and not a guess: it is the least count that leaves every
+ * base pointer non-null and buffer_size non-zero, which is what plugins are
+ * promised even at boot, before any program exists. A plugin bounds-checking
+ * against it accepts index 0 and nothing else, which is the correct answer for
+ * an image with nothing in it. */
+static const uint32_t IMAGE_MIN_ELEMENTS = 1;
+
+extern "C" uint32_t image_tables_capacity(void) { return g_capacity; }
+
+extern "C" uint32_t image_table_capacity(image_table_id_t id)
+{
+    if (id < 0 || id >= IMAGE_TABLE_COUNT)
+        return 0;
+    return g_sizes.elements[id];
+}
+
+extern "C" void image_sizes_flatten(image_sizes_t *sizes)
+{
+    if (!sizes)
+        return;
+    uint32_t largest = 0;
+    for (int i = 0; i < IMAGE_TABLE_COUNT; ++i)
+    {
+        if (sizes->elements[i] > largest) largest = sizes->elements[i];
+    }
+    for (int i = 0; i < IMAGE_TABLE_COUNT; ++i)
+        sizes->elements[i] = largest;
+}
+
+extern "C" void image_tables_free(void)
+{
+    free(g_image.bool_input);
+    free(g_image.bool_output);
+    free(g_image.bool_memory);
+    free(g_image.byte_input);
+    free(g_image.byte_output);
+    free(g_image.int_input);
+    free(g_image.int_output);
+    free(g_image.dint_input);
+    free(g_image.dint_output);
+    free(g_image.lint_input);
+    free(g_image.lint_output);
+    free(g_image.int_memory);
+    free(g_image.dint_memory);
+    free(g_image.lint_memory);
+
+    free(temp_bool_input);
+    free(temp_bool_output);
+    free(temp_bool_memory);
+    free(temp_byte_input);
+    free(temp_byte_output);
+    free(temp_int_input);
+    free(temp_int_output);
+    free(temp_dint_input);
+    free(temp_dint_output);
+    free(temp_lint_input);
+    free(temp_lint_output);
+    free(temp_int_memory);
+    free(temp_dint_memory);
+    free(temp_lint_memory);
+
+    // Null every pointer, not just free it. A dangling table would index
+    // exactly as a live one does, and the next fill_null_pointers() would read
+    // freed memory to decide whether a slot needs backing.
+    std::memset(&g_image, 0, sizeof(g_image));
+    temp_bool_input  = nullptr;
+    temp_bool_output = nullptr;
+    temp_bool_memory = nullptr;
+    temp_byte_input  = nullptr;
+    temp_byte_output = nullptr;
+    temp_int_input   = nullptr;
+    temp_int_output  = nullptr;
+    temp_dint_input  = nullptr;
+    temp_dint_output = nullptr;
+    temp_lint_input  = nullptr;
+    temp_lint_output = nullptr;
+    temp_int_memory  = nullptr;
+    temp_dint_memory = nullptr;
+    temp_lint_memory = nullptr;
+
+    g_capacity = 0;
+    std::memset(&g_sizes, 0, sizeof(g_sizes));
+}
+
+extern "C" bool image_tables_alloc(const image_sizes_t *sizes)
+{
+    /* A FLOOR OF ONE PER TABLE, not zero, and it is worth being explicit about
+     * why: an area the program never touches could allocate nothing at all and
+     * save eight bytes, but then its base pointer is NULL and every plugin
+     * that does not check the count first dereferences it. FR15 says no plugin
+     * ever receives an invalid image, including before a program is loaded.
+     * One element per table costs a pointer and removes that whole class of
+     * bug; "an area with no producers consumes nothing" (NFR04) is still true
+     * of the storage that matters, which is the temp buffers and the slots. */
+    image_sizes_t want;
+    if (sizes)
+        want = *sizes;
+    else
+        std::memset(&want, 0, sizeof(want));
+    for (int i = 0; i < IMAGE_TABLE_COUNT; ++i)
+    {
+        if (want.elements[i] < IMAGE_MIN_ELEMENTS)
+            want.elements[i] = IMAGE_MIN_ELEMENTS;
+    }
+
+#define N(id) (want.elements[id])
+
+    /* BUILT INTO LOCALS AND PUBLISHED ONLY ON SUCCESS.
+     *
+     * This used to call image_tables_free() first and allocate into g_image
+     * directly, which made the all-or-nothing promise in the header only half
+     * true: it covered the new image, not the one it had just destroyed. A
+     * re-allocation that failed left capacity 0 and fourteen null tables while
+     * every plugin still held the base pointers it cached by value at init(),
+     * so the failure surfaced inside a plugin rather than here.
+     *
+     * Now nothing observable changes until all twenty-eight allocations have
+     * succeeded. A failure frees the locals and leaves the running image
+     * exactly as it was, which is what lets the caller log and stop with the
+     * device still in a describable state. */
+    image_tables_t next;
+    std::memset(&next, 0, sizeof(next));
+
+    IEC_BOOL(*t_bool_input)[8]  = nullptr;
+    IEC_BOOL(*t_bool_output)[8] = nullptr;
+    IEC_BOOL(*t_bool_memory)[8] = nullptr;
+    IEC_BYTE *t_byte_input      = nullptr;
+    IEC_BYTE *t_byte_output     = nullptr;
+    IEC_UINT *t_int_input       = nullptr;
+    IEC_UINT *t_int_output      = nullptr;
+    IEC_UDINT *t_dint_input     = nullptr;
+    IEC_UDINT *t_dint_output    = nullptr;
+    IEC_ULINT *t_lint_input     = nullptr;
+    IEC_ULINT *t_lint_output    = nullptr;
+    IEC_UINT *t_int_memory      = nullptr;
+    IEC_UDINT *t_dint_memory    = nullptr;
+    IEC_ULINT *t_lint_memory    = nullptr;
+
+    next.bool_input = (IEC_BOOL * (*)[8]) calloc(N(IMAGE_TABLE_BOOL_INPUT), sizeof(IEC_BOOL *[8]));
+    next.bool_output =
+        (IEC_BOOL * (*)[8]) calloc(N(IMAGE_TABLE_BOOL_OUTPUT), sizeof(IEC_BOOL *[8]));
+    next.bool_memory =
+        (IEC_BOOL * (*)[8]) calloc(N(IMAGE_TABLE_BOOL_MEMORY), sizeof(IEC_BOOL *[8]));
+    next.byte_input  = (IEC_BYTE **)calloc(N(IMAGE_TABLE_BYTE_INPUT), sizeof(IEC_BYTE *));
+    next.byte_output = (IEC_BYTE **)calloc(N(IMAGE_TABLE_BYTE_OUTPUT), sizeof(IEC_BYTE *));
+    next.int_input   = (IEC_UINT **)calloc(N(IMAGE_TABLE_INT_INPUT), sizeof(IEC_UINT *));
+    next.int_output  = (IEC_UINT **)calloc(N(IMAGE_TABLE_INT_OUTPUT), sizeof(IEC_UINT *));
+    next.dint_input  = (IEC_UDINT **)calloc(N(IMAGE_TABLE_DINT_INPUT), sizeof(IEC_UDINT *));
+    next.dint_output = (IEC_UDINT **)calloc(N(IMAGE_TABLE_DINT_OUTPUT), sizeof(IEC_UDINT *));
+    next.lint_input  = (IEC_ULINT **)calloc(N(IMAGE_TABLE_LINT_INPUT), sizeof(IEC_ULINT *));
+    next.lint_output = (IEC_ULINT **)calloc(N(IMAGE_TABLE_LINT_OUTPUT), sizeof(IEC_ULINT *));
+    next.int_memory  = (IEC_UINT **)calloc(N(IMAGE_TABLE_INT_MEMORY), sizeof(IEC_UINT *));
+    next.dint_memory = (IEC_UDINT **)calloc(N(IMAGE_TABLE_DINT_MEMORY), sizeof(IEC_UDINT *));
+    next.lint_memory = (IEC_ULINT **)calloc(N(IMAGE_TABLE_LINT_MEMORY), sizeof(IEC_ULINT *));
+
+    t_bool_input  = (IEC_BOOL(*)[8])calloc(N(IMAGE_TABLE_BOOL_INPUT), sizeof(IEC_BOOL[8]));
+    t_bool_output = (IEC_BOOL(*)[8])calloc(N(IMAGE_TABLE_BOOL_OUTPUT), sizeof(IEC_BOOL[8]));
+    t_bool_memory = (IEC_BOOL(*)[8])calloc(N(IMAGE_TABLE_BOOL_MEMORY), sizeof(IEC_BOOL[8]));
+    t_byte_input  = (IEC_BYTE *)calloc(N(IMAGE_TABLE_BYTE_INPUT), sizeof(IEC_BYTE));
+    t_byte_output = (IEC_BYTE *)calloc(N(IMAGE_TABLE_BYTE_OUTPUT), sizeof(IEC_BYTE));
+    t_int_input   = (IEC_UINT *)calloc(N(IMAGE_TABLE_INT_INPUT), sizeof(IEC_UINT));
+    t_int_output  = (IEC_UINT *)calloc(N(IMAGE_TABLE_INT_OUTPUT), sizeof(IEC_UINT));
+    t_dint_input  = (IEC_UDINT *)calloc(N(IMAGE_TABLE_DINT_INPUT), sizeof(IEC_UDINT));
+    t_dint_output = (IEC_UDINT *)calloc(N(IMAGE_TABLE_DINT_OUTPUT), sizeof(IEC_UDINT));
+    t_lint_input  = (IEC_ULINT *)calloc(N(IMAGE_TABLE_LINT_INPUT), sizeof(IEC_ULINT));
+    t_lint_output = (IEC_ULINT *)calloc(N(IMAGE_TABLE_LINT_OUTPUT), sizeof(IEC_ULINT));
+    t_int_memory  = (IEC_UINT *)calloc(N(IMAGE_TABLE_INT_MEMORY), sizeof(IEC_UINT));
+    t_dint_memory = (IEC_UDINT *)calloc(N(IMAGE_TABLE_DINT_MEMORY), sizeof(IEC_UDINT));
+    t_lint_memory = (IEC_ULINT *)calloc(N(IMAGE_TABLE_LINT_MEMORY), sizeof(IEC_ULINT));
+/* Undefined right after the last use, not inside a runtime branch: the
+ * preprocessor does not care which branch it sits in, so putting it in the
+ * failure path only worked because every use happened to be above it. */
+#undef N
+
+    const bool complete = next.bool_input && next.bool_output && next.bool_memory &&
+                          next.byte_input && next.byte_output && next.int_input &&
+                          next.int_output && next.dint_input && next.dint_output &&
+                          next.lint_input && next.lint_output && next.int_memory &&
+                          next.dint_memory && next.lint_memory && t_bool_input && t_bool_output &&
+                          t_bool_memory && t_byte_input && t_byte_output && t_int_input &&
+                          t_int_output && t_dint_input && t_dint_output && t_lint_input &&
+                          t_lint_output && t_int_memory && t_dint_memory && t_lint_memory;
+
+    if (!complete)
+    {
+        free(next.bool_input);
+        free(next.bool_output);
+        free(next.bool_memory);
+        free(next.byte_input);
+        free(next.byte_output);
+        free(next.int_input);
+        free(next.int_output);
+        free(next.dint_input);
+        free(next.dint_output);
+        free(next.lint_input);
+        free(next.lint_output);
+        free(next.int_memory);
+        free(next.dint_memory);
+        free(next.lint_memory);
+        free(t_bool_input);
+        free(t_bool_output);
+        free(t_bool_memory);
+        free(t_byte_input);
+        free(t_byte_output);
+        free(t_int_input);
+        free(t_int_output);
+        free(t_dint_input);
+        free(t_dint_output);
+        free(t_lint_input);
+        free(t_lint_output);
+        free(t_int_memory);
+        free(t_dint_memory);
+        free(t_lint_memory);
+        log_error("[image_tables] could not allocate the image; the previous one is untouched");
+        return false;
+    }
+
+    // Everything succeeded: retire the old image and publish the new one.
+    image_tables_free();
+
+    g_image          = next;
+    temp_bool_input  = t_bool_input;
+    temp_bool_output = t_bool_output;
+    temp_bool_memory = t_bool_memory;
+    temp_byte_input  = t_byte_input;
+    temp_byte_output = t_byte_output;
+    temp_int_input   = t_int_input;
+    temp_int_output  = t_int_output;
+    temp_dint_input  = t_dint_input;
+    temp_dint_output = t_dint_output;
+    temp_lint_input  = t_lint_input;
+    temp_lint_output = t_lint_output;
+    temp_int_memory  = t_int_memory;
+    temp_dint_memory = t_dint_memory;
+    temp_lint_memory = t_lint_memory;
+    g_sizes          = want;
+
+    /* The SMALLEST table, not the largest, for anything still reading one
+     * number. Bounding by the smallest refuses an index that would have run
+     * off the end of it; bounding by the largest reads past every table below
+     * it. Under-permissive is the only safe direction for a consumer that has
+     * not been told the tables differ. */
+    g_capacity = want.elements[0];
+    for (int i = 1; i < IMAGE_TABLE_COUNT; ++i)
+    {
+        if (want.elements[i] < g_capacity)
+            g_capacity = want.elements[i];
+    }
+
+    /* Names only the tables the program actually uses. Fourteen figures of
+     * which eleven are usually one reads as noise, and the point of the line
+     * is to let someone watching a load see that the image followed their
+     * project. */
+    {
+        char summary[256];
+        int at = 0;
+        for (int i = 0; i < IMAGE_TABLE_COUNT && at < (int)sizeof(summary) - 1; ++i)
+        {
+            if (want.elements[i] <= IMAGE_MIN_ELEMENTS)
+                continue;
+            const int wrote = snprintf(summary + at, sizeof(summary) - (size_t)at, "%s%s=%u",
+                                       at ? ", " : "", kImageTableKeys[i], want.elements[i]);
+            if (wrote < 0 || wrote >= (int)sizeof(summary) - at)
+                break;
+            at += wrote;
+        }
+        if (at == 0)
+            snprintf(summary, sizeof(summary), "every table at the minimum");
+        log_info("[image_tables] image allocated per table (%s)", summary);
+    }
+#undef N
+    return true;
+}
 
 void image_tables_fill_null_pointers(void)
 {
+    /* EACH TABLE WALKED TO ITS OWN LENGTH.
+     *
+     * One loop bound for fourteen tables was correct only while they were all
+     * equal. With per-table sizing the smallest bound would leave the longer
+     * tables holding null slots -- which is the state a plugin dereferences --
+     * and the largest would index past the end of every shorter one, writing
+     * through a pointer read from beyond the allocation. */
     int filled = 0;
-    for (int i = 0; i < BUFFER_SIZE; ++i)
-    {
-        for (int b = 0; b < 8; ++b)
-        {
-            if (!bool_input[i][b])  { temp_bool_input[i][b]  = 0; bool_input[i][b]  = &temp_bool_input[i][b];  ++filled; }
-            if (!bool_output[i][b]) { temp_bool_output[i][b] = 0; bool_output[i][b] = &temp_bool_output[i][b]; ++filled; }
-            if (!bool_memory[i][b]) { temp_bool_memory[i][b] = 0; bool_memory[i][b] = &temp_bool_memory[i][b]; ++filled; }
+
+#define FILL_BITS(field, temp, id)                                                                 \
+    for (uint32_t i = 0; i < g_sizes.elements[id]; ++i)                                            \
+        for (int b = 0; b < 8; ++b)                                                                \
+            if (!g_image.field[i][b])                                                              \
+            {                                                                                      \
+                temp[i][b]          = 0;                                                           \
+                g_image.field[i][b] = &temp[i][b];                                                 \
+                ++filled;                                                                          \
+            }
+
+#define FILL(field, temp, id)                                                                      \
+    for (uint32_t i = 0; i < g_sizes.elements[id]; ++i)                                            \
+        if (!g_image.field[i])                                                                     \
+        {                                                                                          \
+            temp[i]          = 0;                                                                  \
+            g_image.field[i] = &temp[i];                                                           \
+            ++filled;                                                                              \
         }
-        if (!byte_input[i])  { temp_byte_input[i]  = 0; byte_input[i]  = &temp_byte_input[i];  ++filled; }
-        if (!byte_output[i]) { temp_byte_output[i] = 0; byte_output[i] = &temp_byte_output[i]; ++filled; }
-        if (!int_input[i])   { temp_int_input[i]   = 0; int_input[i]   = &temp_int_input[i];   ++filled; }
-        if (!int_output[i])  { temp_int_output[i]  = 0; int_output[i]  = &temp_int_output[i];  ++filled; }
-        if (!dint_input[i])  { temp_dint_input[i]  = 0; dint_input[i]  = &temp_dint_input[i];  ++filled; }
-        if (!dint_output[i]) { temp_dint_output[i] = 0; dint_output[i] = &temp_dint_output[i]; ++filled; }
-        if (!lint_input[i])  { temp_lint_input[i]  = 0; lint_input[i]  = &temp_lint_input[i];  ++filled; }
-        if (!lint_output[i]) { temp_lint_output[i] = 0; lint_output[i] = &temp_lint_output[i]; ++filled; }
-        if (!int_memory[i])  { temp_int_memory[i]  = 0; int_memory[i]  = &temp_int_memory[i];  ++filled; }
-        if (!dint_memory[i]) { temp_dint_memory[i] = 0; dint_memory[i] = &temp_dint_memory[i]; ++filled; }
-        if (!lint_memory[i]) { temp_lint_memory[i] = 0; lint_memory[i] = &temp_lint_memory[i]; ++filled; }
-    }
-    log_info("[image_tables] filled %d NULL slots with backing buffers", filled);
+
+    FILL_BITS(bool_input, temp_bool_input, IMAGE_TABLE_BOOL_INPUT)
+    FILL_BITS(bool_output, temp_bool_output, IMAGE_TABLE_BOOL_OUTPUT)
+    FILL_BITS(bool_memory, temp_bool_memory, IMAGE_TABLE_BOOL_MEMORY)
+    FILL(byte_input, temp_byte_input, IMAGE_TABLE_BYTE_INPUT)
+    FILL(byte_output, temp_byte_output, IMAGE_TABLE_BYTE_OUTPUT)
+    FILL(int_input, temp_int_input, IMAGE_TABLE_INT_INPUT)
+    FILL(int_output, temp_int_output, IMAGE_TABLE_INT_OUTPUT)
+    FILL(dint_input, temp_dint_input, IMAGE_TABLE_DINT_INPUT)
+    FILL(dint_output, temp_dint_output, IMAGE_TABLE_DINT_OUTPUT)
+    FILL(lint_input, temp_lint_input, IMAGE_TABLE_LINT_INPUT)
+    FILL(lint_output, temp_lint_output, IMAGE_TABLE_LINT_OUTPUT)
+    FILL(int_memory, temp_int_memory, IMAGE_TABLE_INT_MEMORY)
+    FILL(dint_memory, temp_dint_memory, IMAGE_TABLE_DINT_MEMORY)
+    FILL(lint_memory, temp_lint_memory, IMAGE_TABLE_LINT_MEMORY)
+
+#undef FILL_BITS
+#undef FILL
+
+    if (filled > 0)
+        log_info("[image_tables] filled %d null slots with temporaries", filled);
+}
+
+/**
+ * Null every slot of every table. THE ONLY PLACE `sizeof` IS TAKEN ON THEM.
+ *
+ * This used to be fourteen `memset(table, 0, sizeof(table))` calls at the top
+ * of image_tables_clear_null_pointers(). Fourteen call sites is fourteen
+ * places to miss when the tables become pointers plus counts (RTOP-284), and
+ * missing one is silent: `sizeof` drops from 65536 to 8, it compiles without a
+ * warning, and the damage only shows on the SECOND program load, when
+ * fill_null_pointers() finds the slots still populated and declines to rebind
+ * them -- so plugins keep writing into the previous program's memory.
+ *
+ * One function, so the heap version is one function body, and the
+ * static_asserts beside the definition of g_image say when to write it.
+ */
+static void image_tables_zero_slots(void)
+{
+    // Was `memset(&g_image, 0, sizeof(g_image))` while the tables were inline
+    // arrays. That line still compiles now and is now WRONG: it would null the
+    // fourteen pointers and leak every table. This is the one function the
+    // static_asserts above point at, and this is the change they were asking
+    // for -- the length comes from g_capacity, never from sizeof.
+    /* EACH TABLE BY ITS OWN LENGTH. One figure for fourteen was safe only
+     * while they were all equal: the smallest would leave the longer tables
+     * half stale, and the largest would memset past the end of the shorter
+     * ones -- a heap overflow written by the very function that exists to stop
+     * this class of mistake. */
+    if (image_tables_capacity() == 0 && g_sizes.elements[0] == 0)
+        return;
+
+#define Z(field, id, type)                                                                         \
+    if (g_image.field)                                                                             \
+    std::memset(g_image.field, 0, (size_t)g_sizes.elements[id] * sizeof(type))
+
+    Z(bool_input, IMAGE_TABLE_BOOL_INPUT, IEC_BOOL *[8]);
+    Z(bool_output, IMAGE_TABLE_BOOL_OUTPUT, IEC_BOOL *[8]);
+    Z(bool_memory, IMAGE_TABLE_BOOL_MEMORY, IEC_BOOL *[8]);
+    Z(byte_input, IMAGE_TABLE_BYTE_INPUT, IEC_BYTE *);
+    Z(byte_output, IMAGE_TABLE_BYTE_OUTPUT, IEC_BYTE *);
+    Z(int_input, IMAGE_TABLE_INT_INPUT, IEC_UINT *);
+    Z(int_output, IMAGE_TABLE_INT_OUTPUT, IEC_UINT *);
+    Z(dint_input, IMAGE_TABLE_DINT_INPUT, IEC_UDINT *);
+    Z(dint_output, IMAGE_TABLE_DINT_OUTPUT, IEC_UDINT *);
+    Z(lint_input, IMAGE_TABLE_LINT_INPUT, IEC_ULINT *);
+    Z(lint_output, IMAGE_TABLE_LINT_OUTPUT, IEC_ULINT *);
+    Z(int_memory, IMAGE_TABLE_INT_MEMORY, IEC_UINT *);
+    Z(dint_memory, IMAGE_TABLE_DINT_MEMORY, IEC_UDINT *);
+    Z(lint_memory, IMAGE_TABLE_LINT_MEMORY, IEC_ULINT *);
+#undef Z
 }
 
 void image_tables_clear_null_pointers(void)
@@ -702,20 +1407,7 @@ void image_tables_clear_null_pointers(void)
     g_located_globals_idx = nullptr;
     g_located_globals_n   = 0;
 
-    std::memset(bool_input,   0, sizeof(bool_input));
-    std::memset(bool_output,  0, sizeof(bool_output));
-    std::memset(byte_input,   0, sizeof(byte_input));
-    std::memset(byte_output,  0, sizeof(byte_output));
-    std::memset(int_input,    0, sizeof(int_input));
-    std::memset(int_output,   0, sizeof(int_output));
-    std::memset(dint_input,   0, sizeof(dint_input));
-    std::memset(dint_output,  0, sizeof(dint_output));
-    std::memset(lint_input,   0, sizeof(lint_input));
-    std::memset(lint_output,  0, sizeof(lint_output));
-    std::memset(int_memory,   0, sizeof(int_memory));
-    std::memset(dint_memory,  0, sizeof(dint_memory));
-    std::memset(lint_memory,  0, sizeof(lint_memory));
-    std::memset(bool_memory,  0, sizeof(bool_memory));
+    image_tables_zero_slots();
 
     ext_strucpp_advance_time     = nullptr;
     ext_strucpp_set_current_time = nullptr;

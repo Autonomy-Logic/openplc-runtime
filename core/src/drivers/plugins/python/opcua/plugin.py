@@ -32,6 +32,18 @@ from shared import (
     SafeLoggingAccess,
     safe_extract_runtime_args_from_capsule,
 )
+
+# Importing set_image_sizes is not a formality: the name has to exist in THIS
+# module for the runtime to find it, and its presence is how this plugin
+# declares it understands per-table image sizes (RTOP-284). The runtime keeps
+# the image SQUARE for any run in which even one loaded plugin lacks it -- and
+# this plugin ships in plugins_default.conf, so without this line per-table
+# sizing never activates on a stock device.
+#
+# Nothing else is needed here: this plugin bounds through SafeBufferAccess ->
+# BufferValidator, which already validates against the table each buffer lives
+# in rather than against the single figure.
+from shared.image_sizes import set_image_sizes  # noqa: F401
 from shared.plugin_config_decode.opcua_config_model import OpcuaConfig
 
 # Import local modules (use absolute imports for runtime compatibility)
