@@ -245,20 +245,40 @@ class SynchronizationManager:
 
         def callback(nodeid: Any, attr: Any) -> ua.DataValue:
             try:
+                # A read that did not reach the PLC is reported as BAD, not as
+                # a default stamped Good. Substituting a default and calling it
+                # Good gives the client no way to tell "the string is empty"
+                # from "this server cannot read strings" -- which is exactly
+                # how STRING reads went unnoticed: every one of them returned
+                # '' with a Good status while the PLC held a value.
+                failed = False
                 if length > 0:
                     values = []
                     for i in range(length):
                         v = debug_read_value(self.args, base_arr, base_elem + i, datatype)
                         if v is None:
+                            failed = True
                             v = self._get_default_value(datatype)
                         values.append(convert_value_for_opcua(datatype, v))
                     variant = ua.Variant(values, expected_type)
                 else:
                     v = debug_read_value(self.args, base_arr, base_elem, datatype)
                     if v is None:
+                        failed = True
                         v = self._get_default_value(datatype)
                     variant = ua.Variant(convert_value_for_opcua(datatype, v), expected_type)
                 now = datetime.now(timezone.utc)
+                if failed:
+                    # BadNoDataAvailable rather than BadInternalError: the
+                    # address space is sound, the runtime just has nothing to
+                    # give for this leaf right now (no program loaded, or the
+                    # coordinates are out of bounds for the running one).
+                    return ua.DataValue(
+                        Value=variant,
+                        StatusCode_=ua.StatusCode(ua.StatusCodes.BadNoDataAvailable),
+                        SourceTimestamp=now,
+                        ServerTimestamp=now,
+                    )
                 return ua.DataValue(
                     Value=variant,
                     StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
@@ -326,6 +346,21 @@ class SynchronizationManager:
             plc_value = int(tv_sec) * 1_000_000_000 + int(tv_nsec)
         ok = debug_write_value(self.args, addr[0], addr[1], datatype, plc_value)
         if not ok:
+            # KNOWN LIMITATION: the client is still told Good.
+            #
+            # asyncua's value_setter returns None -- there is no channel for a
+            # per-value StatusCode -- and `write_attribute_value` calls it
+            # unguarded before `return ua.StatusCode()`. Raising here would
+            # propagate out of the Write service, which has no try/except
+            # around its per-value loop, and fault the WHOLE request including
+            # the values that did write. A coarse fault is worse than a log for
+            # a multi-value write, so this stays a log until asyncua grows a
+            # way to report one value as bad.
+            #
+            # The case is now rare rather than routine: it was reached by every
+            # STRING write before this commit, and is now reached only by a
+            # genuinely refused write (out-of-bounds coordinates, a read-only
+            # leaf, or a value that would not encode).
             log_error(f"debug_write({addr[0]}, {addr[1]}) failed")
 
     # -----------------------------------------------------------------
@@ -456,6 +491,8 @@ class SynchronizationManager:
             return 0.0
         if dtype == "STRING":
             return ""
+        if dtype == "WSTRING":
+            return b""
         return 0
 
     @staticmethod

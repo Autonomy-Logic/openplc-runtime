@@ -49,6 +49,19 @@ def map_plc_to_opcua_type(plc_type: str) -> ua.VariantType:
         "LREAL": ua.VariantType.Double, # IEC 61131-3 LREAL = 64-bit float
         # String type
         "STRING": ua.VariantType.String,
+        # WSTRING is UTF-16LE code units, carried as an opaque ByteString
+        # rather than a UA String. Transcoding to UTF-8 would need a scratch
+        # buffer the size of the string and is lossy for lone surrogates, so
+        # the client is given the bytes and the encoding is documented on the
+        # node. Same choice the baremetal runtime makes, so a project behaves
+        # the same on both targets.
+        #
+        # Leaving this out did NOT merely lose the mapping: the `.get` default
+        # below is `VariantType.Variant`, so asyncua tried to serialise a
+        # nested Variant around an int and died encoding the RESPONSE
+        # ("'int' object has no attribute 'VariantType'"), which the client saw
+        # as BadInternalError and which took the whole response with it.
+        "WSTRING": ua.VariantType.ByteString,
         # TIME-related types
         "TIME": ua.VariantType.Int64,   # Duration in milliseconds
         "TOD": ua.VariantType.DateTime, # Time of day as DateTime (current date + time)
@@ -151,6 +164,13 @@ def convert_value_for_opcua(datatype: str, value: Any) -> Any:
         elif datatype.upper() == "STRING":
             return str(value)
 
+        elif datatype.upper() == "WSTRING":
+            # Already UTF-16LE bytes from _decode_string; a str here can only
+            # come from a caller that built one, so encode it the same way.
+            if isinstance(value, (bytes, bytearray)):
+                return bytes(value)
+            return str(value).encode("utf-16-le")
+
         elif datatype.upper() == "TIME":
             # TIME values are stored as IEC_TIMESPEC (tv_sec, tv_nsec)
             # Convert to milliseconds for OPC-UA Int64 representation
@@ -242,6 +262,8 @@ def convert_value_for_opcua(datatype: str, value: Any) -> Any:
             return 0.0
         elif datatype.upper() == "STRING":
             return ""
+        elif datatype.upper() == "WSTRING":
+            return b""
         elif datatype.upper() in TIME_DATATYPES:
             return 0
         else:
@@ -311,6 +333,13 @@ def convert_value_for_plc(datatype: str, value: Any) -> Any:
         elif datatype.upper() == "STRING":
             return str(value)
 
+        elif datatype.upper() == "WSTRING":
+            # A ByteString arrives as bytes; a client that sent a UA String
+            # gets encoded to the same UTF-16LE the PLC stores.
+            if isinstance(value, (bytes, bytearray)):
+                return bytes(value)
+            return str(value).encode("utf-16-le")
+
         elif datatype.upper() == "TIME":
             # Convert OPC-UA milliseconds (Int64) to IEC_TIMESPEC tuple
             ms = int(value)
@@ -374,6 +403,8 @@ def convert_value_for_plc(datatype: str, value: Any) -> Any:
             return 0.0
         elif datatype.upper() == "STRING":
             return ""
+        elif datatype.upper() == "WSTRING":
+            return b""
         elif datatype.upper() in TIME_DATATYPES:
             return (0, 0)
         else:
@@ -401,5 +432,8 @@ def infer_var_type(size: int) -> str:
     elif size == 127:
         # IEC_STRING: 1 byte len + 126 bytes body = 127 bytes
         return "STRING"
+    elif size == 253:
+        # IEC_WSTRING: 1 byte len + 126 * 2 bytes body = 253 bytes
+        return "WSTRING"
     else:
         return "UNKNOWN"
