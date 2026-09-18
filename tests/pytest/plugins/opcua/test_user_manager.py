@@ -679,3 +679,33 @@ class TestRateLimitIdentifier:
 
         identifier = manager._get_rate_limit_identifier(None, None)
         assert identifier is None
+
+
+class TestBlankPasswordUserRefused:
+    """A password user with no hash cannot authenticate, so it must not be
+    registered — registering it creates an account that looks configured and
+    silently never works. Refused at load (see UserManager.__init__)."""
+
+    def test_password_user_without_hash_is_dropped(self):
+        config = create_test_config(
+            users=[
+                MockUser(type="password", username="good", password_hash="pbkdf2:sha256:600000$s$h",
+                         certificate_id=None, role="engineer"),
+                MockUser(type="password", username="blank", password_hash=None,
+                         certificate_id=None, role="viewer"),
+            ]
+        )
+        manager = OpenPLCUserManager(config)
+        assert "good" in manager.users
+        assert "blank" not in manager.users
+
+    def test_empty_string_hash_is_also_dropped(self):
+        config = create_test_config(
+            users=[
+                MockUser(type="password", username="blank", password_hash="",
+                         certificate_id=None, role="viewer"),
+            ]
+        )
+        manager = OpenPLCUserManager(config)
+        assert "blank" not in manager.users
+        assert len(manager.users) == 0
