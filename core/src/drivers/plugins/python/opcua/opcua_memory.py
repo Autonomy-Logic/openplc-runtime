@@ -58,12 +58,33 @@ STATUS_OK = 0x7E
 #   STRING   [count][count bytes]            padded to 127 bytes
 #   WSTRING  [count][count * 2 bytes LE]     padded to 253 bytes
 #
-# `count` is in CHARACTERS for STRING and in UTF-16 CODE UNITS for WSTRING,
-# never in bytes, and is capped at DEBUG_STRING_CAP on both sides --
-# strucpp's `validate_payload` REFUSES a longer write outright rather than
-# truncating it, so the truncation has to happen here.
+# `count` is in BYTES for STRING and in UTF-16 CODE UNITS for WSTRING, and is
+# capped at DEBUG_STRING_CAP on both sides -- strucpp's `validate_payload`
+# REFUSES a longer write outright rather than truncating it, so the truncation
+# has to happen here.
+#
+# BYTES, not characters: `IECString` stores `char data_[MaxLen + 1]` with
+# `length_` counting bytes, and `_truncate_utf8` below spends its whole body on
+# that fact. The two comments used to contradict each other, and the difference
+# is user-visible -- 126 bytes is ~63 two-byte accented characters, or ~31
+# four-byte emoji, not 126 of either.
 STRING_DATATYPES = frozenset(["STRING", "WSTRING"])
 DEBUG_STRING_CAP = 126
+
+
+# Warnings raised from the READ path, which asyncua calls once per variable per
+# client Read. A leaf that is persistently malformed is not a new event every
+# poll -- at a one-second poll and a handful of clients it is a log that scrolls
+# its own cause off the screen. Say it once per distinct problem and stay quiet
+# after that; the condition is a property of the program, not of the poll.
+_warned: set = set()
+
+
+def _warn_once(key: str, message: str) -> None:
+    if key in _warned:
+        return
+    _warned.add(key)
+    log_warn(f"{message} (further identical warnings suppressed)")
 
 
 def _is_string(datatype: str) -> bool:
@@ -83,12 +104,18 @@ def _decode_string(datatype: str, buf: Any, n: int) -> Optional[Any]:
         return None
     count = int(buf[0])
     if count > DEBUG_STRING_CAP:
-        log_warn(f"string payload claims {count} units, cap is {DEBUG_STRING_CAP}; truncating")
+        _warn_once(
+            f"malformed-count:{datatype}",
+            f"string payload claims {count} units, cap is {DEBUG_STRING_CAP}; truncating",
+        )
         count = DEBUG_STRING_CAP
     wide = datatype.upper() == "WSTRING"
     payload_len = count * 2 if wide else count
     if 1 + payload_len > n:
-        log_warn(f"string payload of {payload_len} bytes exceeds the {n} bytes read")
+        _warn_once(
+            f"payload-overruns-read:{datatype}",
+            f"string payload of {payload_len} bytes exceeds the {n} bytes read",
+        )
         return None
     raw = bytes(bytearray(buf[1:1 + payload_len]))
     if wide:
@@ -116,6 +143,16 @@ def _encode_string(datatype: str, value: Any) -> Optional[bytes]:
             log_warn("WSTRING payload has an odd byte count; dropping the trailing byte")
             raw = raw[:-1]
         count = min(len(raw) // 2, DEBUG_STRING_CAP)
+        # Do not cut between the halves of a surrogate pair. The STRING path
+        # goes to real trouble not to split a UTF-8 sequence (_truncate_utf8);
+        # the same care is owed here, because a lone high surrogate is not a
+        # shorter string, it is an undecodable one -- `bytes.decode('utf-16-le')`
+        # raises on it. Astral characters (emoji, most CJK extensions) are the
+        # common case.
+        if count > 0:
+            last = int.from_bytes(raw[(count - 1) * 2 : count * 2], "little")
+            if 0xD800 <= last <= 0xDBFF:  # high surrogate with its pair cut off
+                count -= 1
         payload = raw[: count * 2]
     else:
         if isinstance(value, (bytes, bytearray)):
@@ -262,15 +299,26 @@ def debug_force_value(args: Any, arr: int, elem: int, datatype: str, value: Any)
     Exposed for any plugin feature that wants debugger-style pinning.
     """
     ctype = _ctype_for(datatype)
-    if ctype is None:
-        return False
-    try:
-        encoded = ctype(value)
-    except (TypeError, ValueError) as e:
-        log_warn(f"debug_force({arr}, {elem}, {datatype}): cannot encode {value!r}: {e}")
+    if ctype is None and not _is_string(datatype):
         return False
 
-    raw = bytes(encoded)
+    # Strings force through the same wire form as a write. Read and write each
+    # grew a string path and force did not, so forcing a STRING answered False
+    # with no reason given -- the same silence that hid the read bug, kept
+    # alive in the one operation nobody calls yet.
+    if _is_string(datatype):
+        encoded_str = _encode_string(datatype, value)
+        if encoded_str is None:
+            log_warn(f"debug_force({arr}, {elem}, {datatype}): cannot encode {value!r}")
+            return False
+        raw = encoded_str
+    else:
+        try:
+            encoded = ctype(value)
+        except (TypeError, ValueError) as e:
+            log_warn(f"debug_force({arr}, {elem}, {datatype}): cannot encode {value!r}: {e}")
+            return False
+        raw = bytes(encoded)
     buf = (ctypes.c_uint8 * len(raw))(*raw)
     try:
         status = args.debug_set(

@@ -22,6 +22,57 @@ except ImportError:
 TIME_DATATYPES = frozenset(["TIME", "DATE", "TOD", "DT"])
 
 
+# ---------------------------------------------------------------------------
+# Per-type defaults — TWO tables, deliberately, and only two.
+#
+# There were four, in four files, and they disagreed: `address_space` seeded a
+# WSTRING with `""` while everywhere else used `b""`, which is the wrong Python
+# type for a node this plugin maps to a ByteString. That is what duplication
+# costs — the copies drift, and the one that drifts is the one nobody reads.
+#
+# Two remain because there are genuinely two directions, not because nobody
+# merged them:
+#
+#   default_for_opcua()  what a CLIENT should see      (BOOL -> False)
+#   default_for_plc()    what the PLC side encodes     (BOOL -> 0)
+#
+# A default is a fallback, never an answer. A caller that substitutes one is
+# telling the client something it does not know, so it must also mark the value
+# Bad — see the read callback and `_push_array_node` in synchronization.py.
+# ---------------------------------------------------------------------------
+
+
+def default_for_opcua(datatype: str) -> Any:
+    """The OPC-UA-side representation of "nothing to report" for a type."""
+    t = (datatype or "").upper()
+    if t == "BOOL":
+        return False
+    if t in ("REAL", "LREAL", "FLOAT"):
+        return 0.0
+    if t == "STRING":
+        return ""
+    if t == "WSTRING":
+        return b""          # WSTRING is served as a ByteString, so bytes
+    return 0
+
+
+def default_for_plc(datatype: str) -> Any:
+    """The PLC-side representation, as the write path would encode it."""
+    t = (datatype or "").upper()
+    if t == "BOOL":
+        return 0
+    if t in ("REAL", "LREAL", "FLOAT"):
+        # Float, matching the c_float / c_double the write path encodes with.
+        return 0.0
+    if t == "STRING":
+        return ""
+    if t == "WSTRING":
+        return b""
+    if t in TIME_DATATYPES:
+        return (0, 0)
+    return 0
+
+
 def map_plc_to_opcua_type(plc_type: str) -> ua.VariantType:
     """Map plc datatype to OPC-UA VariantType."""
     type_mapping = {
@@ -256,18 +307,7 @@ def convert_value_for_opcua(datatype: str, value: Any) -> Any:
     except (ValueError, TypeError, OverflowError) as e:
         # If conversion fails, return a safe default
         log_warn(f"Failed to convert value {value} to OPC-UA format for {datatype}: {e}")
-        if datatype.upper() == "BOOL":
-            return False
-        elif datatype.upper() in ["FLOAT", "REAL"]:
-            return 0.0
-        elif datatype.upper() == "STRING":
-            return ""
-        elif datatype.upper() == "WSTRING":
-            return b""
-        elif datatype.upper() in TIME_DATATYPES:
-            return 0
-        else:
-            return 0
+        return default_for_opcua(datatype)
 
 
 def convert_value_for_plc(datatype: str, value: Any) -> Any:
@@ -394,21 +434,7 @@ def convert_value_for_plc(datatype: str, value: Any) -> Any:
     except (ValueError, TypeError, OverflowError) as e:
         # If conversion fails, log and return a safe default
         log_warn(f"Failed to convert value {value} to {datatype}, using default: {e}")
-        if datatype.upper() == "BOOL":
-            return 0
-        elif datatype.upper() in ["FLOAT", "REAL", "LREAL"]:
-            # Float default, matching the c_float / c_double the write path
-            # encodes with -- an int default would be a (harmless, but
-            # misleading) type mismatch.
-            return 0.0
-        elif datatype.upper() == "STRING":
-            return ""
-        elif datatype.upper() == "WSTRING":
-            return b""
-        elif datatype.upper() in TIME_DATATYPES:
-            return (0, 0)
-        else:
-            return 0
+        return default_for_plc(datatype)
 
 
 def infer_var_type(size: int) -> str:

@@ -52,6 +52,7 @@ try:
     from .opcua_utils import (
         convert_value_for_opcua,
         convert_value_for_plc,
+        default_for_plc,
         map_plc_to_opcua_type,
     )
 except ImportError:
@@ -66,6 +67,7 @@ except ImportError:
     from opcua_utils import (
         convert_value_for_opcua,
         convert_value_for_plc,
+        default_for_plc,
         map_plc_to_opcua_type,
     )
 
@@ -357,10 +359,22 @@ class SynchronizationManager:
             # a multi-value write, so this stays a log until asyncua grows a
             # way to report one value as bad.
             #
-            # The case is now rare rather than routine: it was reached by every
-            # STRING write before this commit, and is now reached only by a
-            # genuinely refused write (out-of-bounds coordinates, a read-only
-            # leaf, or a value that would not encode).
+            # What still reaches here is NARROWER than a refused write, and it
+            # is worth being exact because the gap is silent.
+            #
+            # `plugin_debug_write` (plugin_driver.c) answers 0x7E as soon as the
+            # write is QUEUED, and `apply_global` (debug_write_journal.cpp)
+            # discards whatever `strucpp_debug_write` returns when the journal
+            # is later applied. So an out-of-bounds leaf, a CONSTANT/read-only
+            # leaf and an over-cap payload are all reported Good to the client
+            # AND never logged: the write is simply dropped at apply time with
+            # nobody watching.
+            #
+            # Only three things still produce False: no program loaded (0x81),
+            # the journal queue being full (0x82), and a Python-side encode
+            # failure. Closing the rest needs the applied status carried back
+            # out of the journal, which is a change to the journal contract
+            # rather than to this plugin -- DOPE-647.
             log_error(f"debug_write({addr[0]}, {addr[1]}) failed")
 
     # -----------------------------------------------------------------
@@ -445,12 +459,17 @@ class SynchronizationManager:
         except Exception:
             return True
 
-    async def _push_value(self, node: VariableNode, variant: ua.Variant) -> None:
+    async def _push_value(
+        self,
+        node: VariableNode,
+        variant: ua.Variant,
+        status: Any = ua.StatusCodes.Good,
+    ) -> None:
         """Push one variant via write_attribute_value, tagging the DataValue
         so our own value_setter ignores it."""
         data_value = ua.DataValue(
             Value=variant,
-            StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
+            StatusCode_=ua.StatusCode(status),
             SourceTimestamp=self._cycle_timestamp,
             ServerTimestamp=datetime.now(timezone.utc),
         )
@@ -468,15 +487,33 @@ class SynchronizationManager:
     async def _push_array_node(
         self, node: VariableNode, base_arr: int, base_elem: int
     ) -> None:
+        # An element that did not read is reported BAD for the whole array,
+        # exactly as the read callback reports a failed scalar. Substituting a
+        # default and pushing it Good is the bug this plugin was fixed for --
+        # the subscriber cannot tell "the element is 0" from "this element
+        # could not be read", and an array kept its own copy of that mistake
+        # one function away from the callback that lost it.
+        #
+        # The status is per-DataValue, not per-element, so one bad element
+        # marks the push: OPC-UA has no way to say "element 3 is stale" on a
+        # plain array value. The scalar path above does not need this -- its
+        # caller skips the push entirely when the read fails, leaving the
+        # client's last good value in place.
         length = node.array_length or 0
         values = []
+        failed = False
         for i in range(length):
             v = debug_read_value(self.args, base_arr, base_elem + i, node.datatype)
             if v is None:
+                failed = True
                 v = self._get_default_value(node.datatype)
             values.append(convert_value_for_opcua(node.datatype, v))
         expected_type = map_plc_to_opcua_type(node.datatype)
-        await self._push_value(node, ua.Variant(values, expected_type))
+        await self._push_value(
+            node,
+            ua.Variant(values, expected_type),
+            status=ua.StatusCodes.BadNoDataAvailable if failed else ua.StatusCodes.Good,
+        )
 
     # -----------------------------------------------------------------
     # Helpers
@@ -484,16 +521,13 @@ class SynchronizationManager:
 
     @staticmethod
     def _get_default_value(datatype: str) -> Any:
-        dtype = (datatype or "").upper()
-        if dtype == "BOOL":
-            return False
-        if dtype in ("REAL", "LREAL"):
-            return 0.0
-        if dtype == "STRING":
-            return ""
-        if dtype == "WSTRING":
-            return b""
-        return 0
+        """Placeholder for a leaf that could not be read.
+
+        Always paired with a Bad status — see the read callback and
+        `_push_array_node`. Kept as a one-line shim rather than inlined so
+        every substitution still reads as "I am making this up".
+        """
+        return default_for_plc(datatype)
 
     @staticmethod
     def _extract_opcua_value(opcua_value: Any) -> Any:

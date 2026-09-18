@@ -18,17 +18,18 @@ Covered here:
 - the 126-unit cap, truncated on a CHARACTER boundary so a multi-byte UTF-8
   sequence is never split
 - WSTRING as UTF-16LE code units, counted in units and not bytes
-- a failed read reported Bad, not as a default stamped Good
-"""
 
-import sys
-from pathlib import Path
+Not covered here: the StatusCode behaviour in `synchronization.py` (a failed
+read reported Bad rather than a default stamped Good). It needs the asyncua
+callback plumbing rather than the wire codec, and lives in
+`test_read_status.py`.
+"""
 
 import pytest
 
-_plugin_dir = Path(__file__).parent.parent.parent.parent.parent / "core" / "src" / "drivers" / "plugins" / "python"
-sys.path.insert(0, str(_plugin_dir / "opcua"))
-sys.path.insert(0, str(_plugin_dir / "shared"))
+# sys.path is conftest.py's job (it inserts the plugin, opcua and shared
+# directories for every suite in this package); repeating it here meant two
+# places to fix when the layout moves.
 
 from asyncua import ua
 
@@ -120,10 +121,25 @@ class TestCap:
         assert enc[0] == DEBUG_STRING_CAP
         assert len(enc) == 1 + DEBUG_STRING_CAP * 2
 
-    def test_wstring_rejects_an_odd_byte_count(self):
-        # An odd length is not a short string, it is a malformed one.
+    def test_wstring_drops_a_trailing_odd_byte(self):
+        # An odd length is malformed, and the encoder answers by dropping the
+        # trailing byte rather than refusing the value. Named for what it does:
+        # it used to be called "rejects_an_odd_byte_count" while asserting a
+        # successful one-unit encode, so the name argued against the assertion.
         enc = _encode_string("WSTRING", b"abc")
         assert enc[0] == 1 and len(enc) == 3
+
+    def test_wstring_truncation_does_not_split_a_surrogate_pair(self):
+        # Cutting at the cap must not leave a lone high surrogate: that is not a
+        # shorter string, it is one that raises on decode. 125 plain characters
+        # plus an emoji is 127 code units, so the naive cut at 126 lands exactly
+        # between the halves of the pair.
+        value = ("a" * 125 + "\U0001F600").encode("utf-16-le")
+        enc = _encode_string("WSTRING", value)
+        units = enc[0]
+        payload = enc[1 : 1 + units * 2]
+        assert units == 125                      # the pair dropped whole
+        payload.decode("utf-16-le")              # raises if a surrogate is split
 
 
 class TestThroughTheDebugSurface:
