@@ -30,21 +30,12 @@
 #include <string.h>
 #include <unistd.h>
 
-// External buffer declarations from image_tables.c
-extern IEC_BOOL *bool_input[BUFFER_SIZE][8];
-extern IEC_BOOL *bool_output[BUFFER_SIZE][8];
-extern IEC_BYTE *byte_input[BUFFER_SIZE];
-extern IEC_BYTE *byte_output[BUFFER_SIZE];
-extern IEC_UINT *int_input[BUFFER_SIZE];
-extern IEC_UINT *int_output[BUFFER_SIZE];
-extern IEC_UDINT *dint_input[BUFFER_SIZE];
-extern IEC_UDINT *dint_output[BUFFER_SIZE];
-extern IEC_ULINT *lint_input[BUFFER_SIZE];
-extern IEC_ULINT *lint_output[BUFFER_SIZE];
-extern IEC_UINT *int_memory[BUFFER_SIZE];
-extern IEC_UDINT *dint_memory[BUFFER_SIZE];
-extern IEC_ULINT *lint_memory[BUFFER_SIZE];
-extern IEC_BOOL *bool_memory[BUFFER_SIZE][8];
+/* The image tables come from image_tables.h, included above. This file used to
+ * redeclare all fourteen of them by hand right here -- redundant while the
+ * shapes agreed, and two incompatible declarations in different translation
+ * units the moment they stopped, which C does not diagnose across TUs. Deleted
+ * for RTOP-284: there is one declaration now, `g_image`, and it lives in the
+ * header. */
 static PyThreadState *main_tstate = NULL;
 static PyGILState_STATE gstate;
 static int has_python_plugin = 0;
@@ -132,21 +123,20 @@ static uint16_t plugin_debug_read(uint8_t arr, uint16_t elem, uint8_t *dest)
 // bitmap. Return 0x7E (SUCCESS) once queued, 0x82 (OUT_OF_MEMORY) if the queue
 // is momentarily full, 0x81 (OUT_OF_BOUNDS) when no program is loaded.
 
-static uint8_t plugin_debug_set(uint8_t arr, uint16_t elem, bool forcing,
-                                const uint8_t *bytes, uint16_t len)
+static uint8_t plugin_debug_set(uint8_t arr, uint16_t elem, bool forcing, const uint8_t *bytes,
+                                uint16_t len)
 {
-    if (!ext_strucpp_debug_set) return 0x81; // no program loaded
+    if (!ext_strucpp_debug_set)
+        return 0x81; // no program loaded
     uint8_t op = forcing ? (uint8_t)DBGW_OP_FORCE : (uint8_t)DBGW_OP_UNFORCE;
-    int rc = runtime_external_write(arr, elem, op,
-                                    forcing ? bytes : NULL,
-                                    forcing ? len : 0);
+    int rc     = runtime_external_write(arr, elem, op, forcing ? bytes : NULL, forcing ? len : 0);
     return (rc == 0) ? 0x7E : 0x82;
 }
 
-static uint8_t plugin_debug_write(uint8_t arr, uint16_t elem,
-                                  const uint8_t *bytes, uint16_t len)
+static uint8_t plugin_debug_write(uint8_t arr, uint16_t elem, const uint8_t *bytes, uint16_t len)
 {
-    if (!ext_strucpp_debug_write) return 0x81; // no program loaded
+    if (!ext_strucpp_debug_write)
+        return 0x81; // no program loaded
     int rc = runtime_external_write(arr, elem, (uint8_t)DBGW_OP_WRITE, bytes, len);
     return (rc == 0) ? 0x7E : 0x82;
 }
@@ -225,7 +215,6 @@ static int plugin_get_plc_state(void)
     }
 }
 
-
 // Python capsule destructor for runtime args
 // Breakpoint here to debug capsule issues
 static void plugin_runtime_args_capsule_destructor(PyObject *capsule)
@@ -274,7 +263,8 @@ static PyObject *create_python_runtime_args_capsule(plugin_runtime_args_t *args)
  * its function pointers segfaults. */
 static void teardown_plugin_instance(plugin_instance_t *plugin)
 {
-    if (!plugin) return;
+    if (!plugin)
+        return;
 
     if (plugin->running)
     {
@@ -392,7 +382,7 @@ int plugin_driver_update_config(plugin_driver_t *driver, const char *config_file
      * GIL-holding after that), so for that loop we just need to make
      * sure we don't release the GIL we acquired here. */
     PyGILState_STATE plugin_gstate = PyGILState_LOCKED;
-    int plugin_have_gil = Py_IsInitialized();
+    int plugin_have_gil            = Py_IsInitialized();
     if (plugin_have_gil)
     {
         plugin_gstate = PyGILState_Ensure();
@@ -410,7 +400,7 @@ int plugin_driver_update_config(plugin_driver_t *driver, const char *config_file
      * and cause unnecessary GIL acquires throughout the driver. */
     has_python_plugin = 0;
 
-    int degraded_count = 0;
+    int degraded_count   = 0;
     driver->plugin_count = config_count;
 
     for (int w = 0; w < config_count; w++)
@@ -601,6 +591,122 @@ int plugin_driver_load_config(plugin_driver_t *driver, const char *config_file)
 }
 
 // Send to plugin init function all args
+/**
+ * The fourteen table lengths, for a plugin that asked to be told.
+ *
+ * Read once per plugin_driver_init() rather than cached: the image is
+ * reallocated on every program load, and a cached copy is exactly the stale
+ * state this symbol exists to prevent.
+ */
+static uint32_t image_sizes_snapshot(uint32_t *out, uint32_t cap)
+{
+    uint32_t n = 0;
+    for (int id = 0; id < IMAGE_TABLE_COUNT && n < cap; ++id)
+    {
+        out[n++] = image_table_capacity((image_table_id_t)id);
+    }
+    return n;
+}
+
+/**
+ * Hand one plugin the fourteen lengths, before its init() runs.
+ *
+ * Returns 0 when the plugin has nothing to be told or accepted them, and
+ * non-zero when it refused -- which fails the plugin exactly as a failed
+ * init() does, because a plugin that cannot make sense of the image it is
+ * about to be handed should not be handed it.
+ */
+static int deliver_image_sizes(plugin_instance_t *plugin)
+{
+    uint32_t sizes[IMAGE_TABLE_COUNT];
+    const uint32_t count = image_sizes_snapshot(sizes, IMAGE_TABLE_COUNT);
+
+    if (plugin->config.type == PLUGIN_TYPE_NATIVE && plugin->native_plugin &&
+        plugin->native_plugin->set_image_sizes)
+    {
+        const int rc = plugin->native_plugin->set_image_sizes(sizes, count);
+        if (rc != 0)
+        {
+            log_error("Plugin '%s' refused the image sizes (returned %d)", plugin->config.name, rc);
+            return rc;
+        }
+    }
+
+    if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin &&
+        plugin->python_plugin->pFuncSetImageSizes)
+    {
+        PyObject *list = PyList_New((Py_ssize_t)count);
+        if (!list)
+        {
+            PyErr_Clear();
+            log_error("Plugin '%s': could not build the image size list", plugin->config.name);
+            return -1;
+        }
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            /* PyList_SetItem steals the reference, so a failed PyLong_FromLong
+             * is the only leak to worry about and it cannot happen for a
+             * uint32_t that already exists. */
+            PyList_SetItem(list, (Py_ssize_t)i, PyLong_FromUnsignedLong(sizes[i]));
+        }
+        PyObject *result =
+            PyObject_CallFunctionObjArgs(plugin->python_plugin->pFuncSetImageSizes, list, NULL);
+        Py_DECREF(list);
+        if (!result)
+        {
+            PyErr_Print();
+            log_error("Plugin '%s' raised in set_image_sizes", plugin->config.name);
+            return -1;
+        }
+        Py_DECREF(result);
+    }
+
+    return 0;
+}
+
+bool plugin_driver_all_understand_per_table_sizes(plugin_driver_t *driver,
+                                                  const char **first_without)
+{
+    if (first_without)
+        *first_without = NULL;
+    if (!driver)
+        return false;
+
+    for (int i = 0; i < driver->plugin_count; i++)
+    {
+        plugin_instance_t *plugin = &driver->plugins[i];
+        bool understands          = false;
+
+        /* A DEGRADED PLUGIN DOES NOT GET A VOTE.
+         *
+         * It failed to load, so plugin_driver_init skips it in every branch:
+         * it never receives runtime args and never touches the image. Letting
+         * it answer "no" would mean one box missing Npcap, where the EtherCAT
+         * plugin degrades, silently costs every OTHER plugin its per-table
+         * image -- a downgrade with no relation to anything that will actually
+         * read the tables.
+         *
+         * DISABLED plugins still vote, deliberately: plugin_driver_init
+         * initialises them regardless of the enabled flag, so a disabled
+         * plugin does hold the base pointers and does read the image. */
+        if (plugin->degraded)
+            continue;
+
+        if (plugin->config.type == PLUGIN_TYPE_NATIVE)
+            understands = plugin->native_plugin && plugin->native_plugin->set_image_sizes;
+        else if (plugin->config.type == PLUGIN_TYPE_PYTHON)
+            understands = plugin->python_plugin && plugin->python_plugin->pFuncSetImageSizes;
+
+        if (!understands)
+        {
+            if (first_without)
+                *first_without = plugin->config.name;
+            return false;
+        }
+    }
+    return true;
+}
+
 int plugin_driver_init(plugin_driver_t *driver)
 {
     if (!driver)
@@ -642,6 +748,18 @@ int plugin_driver_init(plugin_driver_t *driver)
                 }
                 return -1;
             }
+            /* BEFORE init(), because init() is where a plugin copies the
+             * base pointers by value and decides how big everything is.
+             * Delivering afterwards leaves a window, once per load, in which
+             * the plugin holds new pointers and previous sizes. */
+            if (deliver_image_sizes(plugin) != 0)
+            {
+                Py_DECREF(args);
+                if (have_gil)
+                    PyGILState_Release(local_gstate);
+                return -1;
+            }
+
             // Call the Python init function with proper capsule
             PyObject *result =
                 PyObject_CallFunctionObjArgs(plugin->python_plugin->pFuncInit, args, NULL);
@@ -681,6 +799,15 @@ int plugin_driver_init(plugin_driver_t *driver)
                 return -1;
             }
 
+            /* BEFORE init(), for the same reason as the Python path above. */
+            if (deliver_image_sizes(plugin) != 0)
+            {
+                free_structured_args(args);
+                if (have_gil)
+                    PyGILState_Release(local_gstate);
+                return -1;
+            }
+
             // Call the native init function
             int result = plugin->native_plugin->init(args);
             if (result != 0)
@@ -709,13 +836,27 @@ int plugin_driver_init(plugin_driver_t *driver)
     return 0;
 }
 
+int plugin_driver_any_initialized(plugin_driver_t *driver)
+{
+    if (!driver)
+        return 0;
+    for (int i = 0; i < driver->plugin_count; i++)
+    {
+        if (driver->plugins[i].initialized)
+            return 1;
+    }
+    return 0;
+}
+
 int plugin_driver_cleanup_init(plugin_driver_t *driver)
 {
-    if (!driver) return 0;
+    if (!driver)
+        return 0;
 
     PyGILState_STATE local_gstate = PyGILState_LOCKED;
-    int have_gil = has_python_plugin && Py_IsInitialized();
-    if (have_gil) local_gstate = PyGILState_Ensure();
+    int have_gil                  = has_python_plugin && Py_IsInitialized();
+    if (have_gil)
+        local_gstate = PyGILState_Ensure();
 
     int cleaned = 0;
     /* Reverse order so dependent plugins (declared later, depend on
@@ -723,7 +864,8 @@ int plugin_driver_cleanup_init(plugin_driver_t *driver)
     for (int i = driver->plugin_count - 1; i >= 0; --i)
     {
         plugin_instance_t *plugin = &driver->plugins[i];
-        if (!plugin->initialized) continue;
+        if (!plugin->initialized)
+            continue;
 
         if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin)
         {
@@ -738,7 +880,8 @@ int plugin_driver_cleanup_init(plugin_driver_t *driver)
         ++cleaned;
     }
 
-    if (have_gil) PyGILState_Release(local_gstate);
+    if (have_gil)
+        PyGILState_Release(local_gstate);
     return cleaned;
 }
 
@@ -1052,21 +1195,43 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
 
     log_debug("Allocated runtime args structure (size: %zu bytes)", sizeof(plugin_runtime_args_t));
 
+    /* THE ORDERING INVARIANT, checked rather than assumed, and checked BEFORE
+     * the pointers are copied because copying null ones is the whole problem.
+     *
+     * The image has to be allocated by now: what is copied below is what both
+     * native plugins cache BY VALUE inside their init(), and they hold it for
+     * the rest of the run. Nothing in the code enforces the order -- it is a
+     * property of where plc_state_manager.cpp happens to call things, and it is
+     * exactly the invariant a later refactor moves without noticing. The
+     * symptom would not be a crash: plugins would hold null tables and a
+     * buffer_size of zero, which every bounds check reads as "refuse every
+     * index", so it would present as I/O that silently does nothing.
+     *
+     * Deliberately not assert(), which vanishes under NDEBUG. This has to hold
+     * in the field, not only in a debug build. */
+    if (image_tables_capacity() == 0)
+    {
+        log_error("[PLUGIN]: runtime args requested before the image was allocated — "
+                  "plugins would cache null tables; refusing");
+        free(args);
+        return NULL;
+    }
+
     // Initialize all buffer pointers
-    args->bool_input  = bool_input;
-    args->bool_output = bool_output;
-    args->byte_input  = byte_input;
-    args->byte_output = byte_output;
-    args->int_input   = int_input;
-    args->int_output  = int_output;
-    args->dint_input  = dint_input;
-    args->dint_output = dint_output;
-    args->lint_input  = lint_input;
-    args->lint_output = lint_output;
-    args->int_memory  = int_memory;
-    args->dint_memory = dint_memory;
-    args->lint_memory = lint_memory;
-    args->bool_memory = bool_memory;
+    args->bool_input  = g_image.bool_input;
+    args->bool_output = g_image.bool_output;
+    args->byte_input  = g_image.byte_input;
+    args->byte_output = g_image.byte_output;
+    args->int_input   = g_image.int_input;
+    args->int_output  = g_image.int_output;
+    args->dint_input  = g_image.dint_input;
+    args->dint_output = g_image.dint_output;
+    args->lint_input  = g_image.lint_input;
+    args->lint_output = g_image.lint_output;
+    args->int_memory  = g_image.int_memory;
+    args->dint_memory = g_image.dint_memory;
+    args->lint_memory = g_image.lint_memory;
+    args->bool_memory = g_image.bool_memory;
 
     // Flush-on-lock image read API (image mutex + journal drain). Points
     // directly at the runtime's image_tables entries; writes use the journal.
@@ -1092,7 +1257,20 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
            sizeof(driver->plugins[plugin_index].config.plugin_related_config_path));
 
     // Initialize buffer size info
-    args->buffer_size     = BUFFER_SIZE;
+    /* THE SMALLEST OF THE FOURTEEN, not the length they all share.
+     *
+     * The tables no longer have one length, and this field cannot say so --
+     * CON06 keeps the struct's offsets fixed. The minimum is the only safe
+     * single number for a consumer that has not been told they can differ:
+     * bounding by it refuses an index, where bounding by the largest reads
+     * past every shorter table.
+     *
+     * ethercat_io.c and s7comm no longer derive their clamps from this field;
+     * they export set_image_sizes and bound by the table each access actually
+     * addresses, falling back here only when the sizes were never delivered.
+     * plugin_types.h carries the same statement for plugin authors, and
+     * journal_buffer.h for the runtime's own copy. */
+    args->buffer_size     = (int)image_tables_capacity();
     args->bits_per_buffer = 8;
 
     // Initialize logging functions
@@ -1301,6 +1479,10 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
         // start_loop is optional
         Py_XDECREF(py_binds->pFuncStart);
         py_binds->pFuncStart = NULL;
+        /* A failed PyObject_GetAttrString leaves an AttributeError SET, and an
+         * optional lookup does not return, so it has to be cleared here or the
+         * next CPython call reports this absence as its own failure. */
+        PyErr_Clear();
     }
 
     py_binds->pFuncStop = PyObject_GetAttrString(py_binds->pModule, "stop_loop");
@@ -1309,6 +1491,23 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
         // stop_loop is optional
         Py_XDECREF(py_binds->pFuncStop);
         py_binds->pFuncStop = NULL;
+        /* A failed PyObject_GetAttrString leaves an AttributeError SET, and an
+         * optional lookup does not return, so it has to be cleared here or the
+         * next CPython call reports this absence as its own failure. */
+        PyErr_Clear();
+    }
+
+    py_binds->pFuncSetImageSizes = PyObject_GetAttrString(py_binds->pModule, "set_image_sizes");
+    if (!py_binds->pFuncSetImageSizes || !PyCallable_Check(py_binds->pFuncSetImageSizes))
+    {
+        /* Optional. PyErr_Clear() is not decoration: a failed
+         * PyObject_GetAttrString leaves an AttributeError SET, and the next
+         * CPython call that checks would report this absence as its own
+         * failure. The four required lookups above never hit it because they
+         * return on failure. */
+        Py_XDECREF(py_binds->pFuncSetImageSizes);
+        py_binds->pFuncSetImageSizes = NULL;
+        PyErr_Clear();
     }
 
     py_binds->pFuncCleanup = PyObject_GetAttrString(py_binds->pModule, "cleanup");
@@ -1317,6 +1516,10 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
         // cleanup is optional
         Py_XDECREF(py_binds->pFuncCleanup);
         py_binds->pFuncCleanup = NULL;
+        /* A failed PyObject_GetAttrString leaves an AttributeError SET, and an
+         * optional lookup does not return, so it has to be cleared here or the
+         * next CPython call reports this absence as its own failure. */
+        PyErr_Clear();
     }
 
     // Store the python binds in the plugin instance
@@ -1453,6 +1656,11 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     native_bundle->retain_load  = (plugin_retain_load_func_t)dlsym(handle, "retain_load");
     native_bundle->retain_flush = (plugin_retain_flush_func_t)dlsym(handle, "retain_flush");
 
+    /* Optional, like the five above: NULL simply means this plugin does not
+     * understand per-table image sizes, and the run stays square for it. */
+    native_bundle->set_image_sizes =
+        (plugin_set_image_sizes_func_t)dlsym(handle, "set_image_sizes");
+
     // Store the native bundle and handle in the plugin instance
     plugin->native_plugin = native_bundle;
 
@@ -1486,7 +1694,8 @@ void python_plugin_cycle(plugin_instance_t *plugin)
 
 static bool plugin_provides_retain_store(const plugin_instance_t *p)
 {
-    if (!p) return false;
+    if (!p)
+        return false;
 
     // A DISABLED plugin is not a store, even though its symbols resolved.
     //
@@ -1497,7 +1706,8 @@ static bool plugin_provides_retain_store(const plugin_instance_t *p)
     // simply gone, with a log line at start saying retain is configured and
     // working. Found on hardware: an upload rewrote plugins.conf, disabled the
     // storage plugin, and retain went on claiming to work.
-    if (!p->config.enabled) return false;
+    if (!p->config.enabled)
+        return false;
 
     // BOTH halves required. A store that can save and not load is worse than
     // none: it would accept values every scan and silently never give them
@@ -1508,13 +1718,15 @@ static bool plugin_provides_retain_store(const plugin_instance_t *p)
 
 plugin_instance_t *plugin_driver_find_retain_store(plugin_driver_t *driver)
 {
-    if (!driver) return NULL;
+    if (!driver)
+        return NULL;
 
     plugin_instance_t *chosen = NULL;
     for (int i = 0; i < driver->plugin_count; i++)
     {
         plugin_instance_t *p = &driver->plugins[i];
-        if (p->degraded || !plugin_provides_retain_store(p)) continue;
+        if (p->degraded || !plugin_provides_retain_store(p))
+            continue;
 
         if (!chosen)
         {
@@ -1533,15 +1745,18 @@ plugin_instance_t *plugin_driver_find_retain_store(plugin_driver_t *driver)
 
 int plugin_driver_retain_save(plugin_instance_t *store, const uint8_t *blob, uint16_t len)
 {
-    if (!plugin_provides_retain_store(store)) return -1;
+    if (!plugin_provides_retain_store(store))
+        return -1;
     return store->native_plugin->retain_save(blob, len);
 }
 
 int plugin_driver_retain_load(plugin_instance_t *store, const char *program_md5, uint16_t md5_len,
                               uint8_t *out, uint16_t cap, uint16_t *out_len)
 {
-    if (out_len) *out_len = 0;
-    if (!plugin_provides_retain_store(store)) return -1;
+    if (out_len)
+        *out_len = 0;
+    if (!plugin_provides_retain_store(store))
+        return -1;
     return store->native_plugin->retain_load(program_md5, md5_len, out, cap, out_len);
 }
 
@@ -1550,7 +1765,8 @@ int plugin_driver_retain_flush(plugin_instance_t *store)
     // Optional third hook. A plugin without it is assumed to commit inside
     // save(), which is where durability belongs anyway — so "nothing to do" is
     // success, not a failure to report on every stop.
-    if (!store || !store->native_plugin || !store->native_plugin->retain_flush) return 0;
+    if (!store || !store->native_plugin || !store->native_plugin->retain_flush)
+        return 0;
     return store->native_plugin->retain_flush();
 }
 
@@ -1666,11 +1882,10 @@ int plugin_driver_execute_command(plugin_driver_t *driver, const char *plugin_na
 // Output is best-effort: malformed plugin output (doesn't start with
 // '{' and end with '}') is silently dropped, overflow truncates, and
 // the core STATS response is always preserved.
-#define PLUGIN_STATS_SLOT_BUDGET   1024
-#define PLUGIN_STATS_TOTAL_BUDGET  8192
+#define PLUGIN_STATS_SLOT_BUDGET 1024
+#define PLUGIN_STATS_TOTAL_BUDGET 8192
 
-size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
-                                       size_t buffer_size)
+size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer, size_t buffer_size)
 {
     if (!buffer || buffer_size == 0)
         return 0;
@@ -1681,7 +1896,7 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
     int had_newline = 0;
     if (len > 0 && buffer[len - 1] == '\n')
     {
-        had_newline = 1;
+        had_newline   = 1;
         buffer[--len] = '\0';
     }
 
@@ -1691,7 +1906,7 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
     {
         if (had_newline && len + 1 < buffer_size)
         {
-            buffer[len] = '\n';
+            buffer[len]     = '\n';
             buffer[len + 1] = '\0';
             len++;
         }
@@ -1702,7 +1917,7 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
     {
         if (had_newline && len + 1 < buffer_size)
         {
-            buffer[len] = '\n';
+            buffer[len]     = '\n';
             buffer[len + 1] = '\0';
             len++;
         }
@@ -1732,8 +1947,8 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
         if (slen < 2 || slot[0] != '{' || slot[slen - 1] != '}')
             continue; // malformed — drop silently
 
-        int n = snprintf(scratch + spos, sizeof(scratch) - spos, "%s\"%s\":%s",
-                         emitted ? "," : "", p->config.name, slot);
+        int n = snprintf(scratch + spos, sizeof(scratch) - spos, "%s\"%s\":%s", emitted ? "," : "",
+                         p->config.name, slot);
         if (n < 0 || (size_t)n >= sizeof(scratch) - spos)
             break; // scratch full; commit what we have
 
@@ -1745,7 +1960,7 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
     {
         if (had_newline && len + 1 < buffer_size)
         {
-            buffer[len] = '\n';
+            buffer[len]     = '\n';
             buffer[len + 1] = '\0';
             len++;
         }
@@ -1755,14 +1970,14 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
     // Splice: overwrite the closing '}' with ,"plugin_stats":{...}} and
     // re-append the newline if present.
     size_t insert_pos = len - 1;
-    int n = snprintf(buffer + insert_pos, buffer_size - insert_pos,
-                     ",\"plugin_stats\":{%s}}%s", scratch, had_newline ? "\n" : "");
+    int n = snprintf(buffer + insert_pos, buffer_size - insert_pos, ",\"plugin_stats\":{%s}}%s",
+                     scratch, had_newline ? "\n" : "");
     if (n < 0)
     {
         // snprintf failure — restore newline and bail.
         if (had_newline && len + 1 < buffer_size)
         {
-            buffer[len] = '\n';
+            buffer[len]     = '\n';
             buffer[len + 1] = '\0';
             len++;
         }
@@ -1772,12 +1987,12 @@ size_t plugin_driver_append_stats_json(plugin_driver_t *driver, char *buffer,
     {
         // Would overflow the response buffer; roll back by restoring the '}'
         // and the newline.
-        buffer[insert_pos] = '}';
+        buffer[insert_pos]     = '}';
         buffer[insert_pos + 1] = '\0';
-        len = insert_pos + 1;
+        len                    = insert_pos + 1;
         if (had_newline && len + 1 < buffer_size)
         {
-            buffer[len] = '\n';
+            buffer[len]     = '\n';
             buffer[len + 1] = '\0';
             len++;
         }

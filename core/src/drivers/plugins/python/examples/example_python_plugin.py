@@ -11,8 +11,9 @@ from ctypes import *
 import threading
 import sys
 import os
+
 # Add the parent directory to Python path to find shared module
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # Import the correct type definitions
 from shared import (
@@ -20,7 +21,7 @@ from shared import (
     safe_extract_runtime_args_from_capsule,
     SafeBufferAccess,
     SafeLoggingAccess,
-    PluginStructureValidator
+    PluginStructureValidator,
 )
 
 # Global variable to track initialization
@@ -30,6 +31,7 @@ _safe_buffer_access = None
 _safe_logging_access = None
 _mainthread = None
 _stop = threading.Event()
+
 
 def init(runtime_args_capsule):
     """
@@ -63,8 +65,11 @@ def init(runtime_args_capsule):
         if _safe_logging_access.is_valid:
             success, msg = _safe_logging_access.log_info("Python plugin initialization started")
             if success:
-                _safe_logging_access.log_debug("Plugin received buffer_size={}, bits_per_buffer={}".format(
-                                             runtime_args.buffer_size, runtime_args.bits_per_buffer))
+                _safe_logging_access.log_debug(
+                    "Plugin received buffer_size={}, bits_per_buffer={}".format(
+                        runtime_args.buffer_size, runtime_args.bits_per_buffer
+                    )
+                )
             else:
                 print(f"(WARN) Logging failed: {msg}")
         else:
@@ -75,19 +80,23 @@ def init(runtime_args_capsule):
         if buffer_size == -1:
             print(f"(FAIL) Failed to access buffer size: {size_error}")
             if _safe_logging_access.is_valid:
-                _safe_logging_access.log_error("Failed to access buffer size: %s", size_error)
+                _safe_logging_access.log_error(f"Failed to access buffer size: {size_error}")
             return False
 
-        print(f"  Buffer size: {buffer_size}")
-        print(f"  Bits per buffer: {runtime_args.bits_per_buffer}")
-        print(f"  Structure details: {runtime_args}")
+        # Through the logger, not print(). This file is what vendors copy, and
+        # a print() from a plugin goes to whatever stdout the runtime happens
+        # to have rather than the central log the operator is reading.
+        _safe_logging_access.log_info(f"Buffer size (smallest table): {buffer_size}")
+        _safe_logging_access.log_info(f"Bits per buffer: {runtime_args.bits_per_buffer}")
 
         # Create safe buffer access wrapper
         _safe_buffer_access = SafeBufferAccess(runtime_args)
         if not _safe_buffer_access.is_valid:
             print(f"(FAIL) Failed to create safe buffer access: {_safe_buffer_access.error_msg}")
             if _safe_logging_access.is_valid:
-                _safe_logging_access.log_error("Failed to create safe buffer access: %s", _safe_buffer_access.error_msg)
+                _safe_logging_access.log_error(
+                    f"Failed to create safe buffer access: {_safe_buffer_access.error_msg}"
+                )
             return False
 
         # Store runtime args for later use
@@ -96,7 +105,9 @@ def init(runtime_args_capsule):
         print("(PASS) Plugin initialized successfully")
 
         if _safe_logging_access.is_valid:
-            success, msg = _safe_logging_access.log_info("Python plugin initialization completed successfully")
+            success, msg = _safe_logging_access.log_info(
+                "Python plugin initialization completed successfully"
+            )
             if not success:
                 print(f"(WARN) Final logging failed: {msg}")
 
@@ -105,26 +116,29 @@ def init(runtime_args_capsule):
     except Exception as e:
         print(f"(FAIL) Plugin initialization failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
+
 
 def start_loop():
     """
     Called when the plugin loop should start
     Optional function - not all plugins need this
     """
+
     def loop():
         global _runtime_args, _stop
         print("Plugin start_loop called")
         while not _stop.is_set():
             time.sleep(1)
             continue
-            
 
     global _mainthread
     _mainthread = threading.Thread(target=loop, daemon=True)
     _mainthread.start()
     return 0
+
 
 def stop_loop():
     """
@@ -140,6 +154,7 @@ def stop_loop():
         _mainthread.join()
         _mainthread = None
         print("(PASS) Main thread stopped")
+
 
 def cleanup():
     """
@@ -158,11 +173,12 @@ def cleanup():
 
     print("(PASS) Plugin cleaned up successfully")
 
+
 if __name__ == "__main__":
     print("This is an example Python plugin for OpenPLC Runtime")
     print("Expected functions:")
     print("  - init(runtime_args_capsule) -> bool")
-    print("  - start_loop() -> None (optional)")  
+    print("  - start_loop() -> None (optional)")
     print("  - stop_loop() -> None (optional)")
     print("  - run_cycle() -> None (optional)")
     print("  - cleanup() -> None (optional)")

@@ -21,11 +21,40 @@ from pymodbus.datastore import (
     ModbusServerContext,
     ModbusSparseDataBlock,
 )
+from pymodbus.datastore.store import ExcCodes
 from pymodbus.server import ServerStop
 from pymodbus.server.server import ModbusTcpServer
 
 MAX_BITS = 8
-BUFFER_SIZE = 1024  # Must match BUFFER_SIZE in image_tables.h
+
+# A Modbus PDU carries a 16-bit address, so no data block can usefully be wider
+# than this. The per-segment fit to the image is not enough by itself: the
+# register block composes four segments end to end, so four segments each at
+# the image ceiling would build a list far past anything a client can address.
+MODBUS_MAX_ADDRESSES = 65536
+
+# BUFFER_SIZE used to live here as `1024  # Must match BUFFER_SIZE in
+# image_tables.h`, and that comment was the whole problem: a copy of a number
+# owned by the runtime, kept in step by hand. It is gone, and the runtime's
+# actual `buffer_size` is used instead (RTOP-284).
+#
+# The runtime no longer HAS a fixed image. It allocates one per program load,
+# sized from what the project needs, so a copy here could not be right for more
+# than one program at a time -- and being wrong is invisible: the exposed
+# register block would be declared wider than the image, every address in the
+# gap would fail the buffer read and answer zero.
+# A SCADA reading %QW2000 would get a plausible, wrong value indistinguishable
+# from a real zero.
+#
+# Clamping to the runtime's size instead makes the declared block match the
+# image exactly, and getValues answers anything beyond it with exception 02
+# (Illegal Data Address). That is the client being told, by the protocol, in
+# the standard way, rather than being handed a fabricated value.
+#
+# The refusal is OURS to issue. An earlier draft of this comment said pymodbus
+# did it "out of its own validate()" -- it does not: 3.11 dropped validate from
+# the datastore API and ModbusDeviceContext.getValues calls the block directly.
+# Measured before the fix: every address up to 65000 answered zero.
 
 # Default segmentation configuration (matches v3 behavior)
 DEFAULT_HOLDING_REG_CONFIG = {
@@ -57,6 +86,13 @@ from shared import (  # noqa: E402
     SafeBufferAccess,
     safe_extract_runtime_args_from_capsule,
 )
+
+# Importing set_image_sizes is not a formality: the name has to exist in THIS
+# module for the runtime to find it, and its presence is how this plugin
+# declares it understands per-table image sizes (RTOP-284). Without it the
+# runtime keeps the image square for every run this plugin is loaded in --
+# which, since it is loaded on most devices, would be every run.
+from shared.image_sizes import set_image_sizes, table_capacity  # noqa: E402,F401
 
 
 class OpenPLCDeviceContext(ModbusDeviceContext):
@@ -171,9 +207,7 @@ class OpenPLCCoilsDataBlock(ModbusSparseDataBlock):
 
         if not self.safe_buffer_access.is_valid:
             if logger:
-                logger.error(
-                    f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}"
-                )
+                logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
             return [0] * count
 
         # Ensure thread-safe access
@@ -215,9 +249,7 @@ class OpenPLCCoilsDataBlock(ModbusSparseDataBlock):
 
         if not self.safe_buffer_access.is_valid:
             if logger:
-                logger.error(
-                    f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}"
-                )
+                logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
             return
 
         # Journal writes are thread-safe, no mutex needed
@@ -262,9 +294,7 @@ class OpenPLCDiscreteInputsDataBlock(ModbusSparseDataBlock):
 
         if not self.safe_buffer_access.is_valid:
             if logger:
-                logger.error(
-                    f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}"
-                )
+                logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
             return [0] * count
 
         # Ensure thread-safe access
@@ -326,9 +356,7 @@ class OpenPLCInputRegistersDataBlock(ModbusSparseDataBlock):
 
         if not self.safe_buffer_access.is_valid:
             if logger:
-                logger.error(
-                    f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}"
-                )
+                logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
             return [0] * count
 
         # Ensure buffer mutex
@@ -386,9 +414,7 @@ class OpenPLCHoldingRegistersDataBlock(ModbusSparseDataBlock):
 
         if not self.safe_buffer_access.is_valid:
             if logger:
-                logger.error(
-                    f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}"
-                )
+                logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
             return [0] * count
 
         # Ensure buffer mutex
@@ -425,9 +451,7 @@ class OpenPLCHoldingRegistersDataBlock(ModbusSparseDataBlock):
 
         if not self.safe_buffer_access.is_valid:
             if logger:
-                logger.error(
-                    f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}"
-                )
+                logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
             return
 
         # Journal writes are thread-safe, no mutex needed
@@ -501,9 +525,7 @@ class OpenPLCSegmentedCoilsDataBlock(ModbusSparseDataBlock):
 
         if not self.safe_buffer_access.is_valid:
             if logger:
-                logger.error(
-                    f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}"
-                )
+                logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
             return [0] * count
 
         self.safe_buffer_access.acquire_mutex()
@@ -535,7 +557,20 @@ class OpenPLCSegmentedCoilsDataBlock(ModbusSparseDataBlock):
                             logger.error(f"Error reading coil %MX{mx_addr}: {error_msg}")
                         values.append(0)
                 else:
-                    values.append(0)
+                    # FORA DE TODO SEGMENTO: excecao 02, nunca zero.
+                    #
+                    # O clamp acima faz o bloco declarado bater com a imagem,
+                    # e o plano era que o validate() do pymodbus recusasse o
+                    # resto. Esse validate nao existe mais: em 3.11 a API do
+                    # datastore perdeu o metodo e ModbusDeviceContext.getValues
+                    # chama o bloco direto. Sem isto, todo endereco acima da
+                    # faixa respondia 0 -- medido ate 65000 -- que e o valor
+                    # plausivel e errado que o cliente nao distingue de um zero
+                    # real, exatamente o que o clamp existe para evitar.
+                    #
+                    # getValues pode devolver um ExcCodes no lugar da lista; e
+                    # o caminho que a propria assinatura do contexto declara.
+                    return ExcCodes.ILLEGAL_ADDRESS
 
             return values
         finally:
@@ -551,9 +586,7 @@ class OpenPLCSegmentedCoilsDataBlock(ModbusSparseDataBlock):
 
         if not self.safe_buffer_access.is_valid:
             if logger:
-                logger.error(
-                    f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}"
-                )
+                logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
             return
 
         # Journal writes are thread-safe, no mutex needed
@@ -722,9 +755,7 @@ class OpenPLCSegmentedHoldingRegistersDataBlock(ModbusSparseDataBlock):
 
         if not self.safe_buffer_access.is_valid:
             if logger:
-                logger.error(
-                    f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}"
-                )
+                logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
             return [0] * count
 
         self.safe_buffer_access.acquire_mutex()
@@ -781,7 +812,20 @@ class OpenPLCSegmentedHoldingRegistersDataBlock(ModbusSparseDataBlock):
                         values.append(0)
 
                 else:
-                    values.append(0)
+                    # FORA DE TODO SEGMENTO: excecao 02, nunca zero.
+                    #
+                    # O clamp acima faz o bloco declarado bater com a imagem,
+                    # e o plano era que o validate() do pymodbus recusasse o
+                    # resto. Esse validate nao existe mais: em 3.11 a API do
+                    # datastore perdeu o metodo e ModbusDeviceContext.getValues
+                    # chama o bloco direto. Sem isto, todo endereco acima da
+                    # faixa respondia 0 -- medido ate 65000 -- que e o valor
+                    # plausivel e errado que o cliente nao distingue de um zero
+                    # real, exatamente o que o clamp existe para evitar.
+                    #
+                    # getValues pode devolver um ExcCodes no lugar da lista; e
+                    # o caminho que a propria assinatura do contexto declara.
+                    return ExcCodes.ILLEGAL_ADDRESS
 
             return values
         finally:
@@ -799,9 +843,7 @@ class OpenPLCSegmentedHoldingRegistersDataBlock(ModbusSparseDataBlock):
 
         if not self.safe_buffer_access.is_valid:
             if logger:
-                logger.error(
-                    f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}"
-                )
+                logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
             return
 
         # Mutex needed for read-modify-write consistency on partial DINT/LINT updates
@@ -881,92 +923,249 @@ class OpenPLCSegmentedHoldingRegistersDataBlock(ModbusSparseDataBlock):
             self.safe_buffer_access.release_mutex()
 
 
-def parse_buffer_mapping_config(config_map):
+SEGMENT_SECTIONS = {
+    "qw_count": "holding_registers",
+    "mw_count": "holding_registers",
+    "md_count": "holding_registers",
+    "ml_count": "holding_registers",
+    "qx_bits": "coils",
+    "mx_bits": "coils",
+    "ix_bits": "discrete_inputs",
+    "iw_count": "input_registers",
+}
+
+
+def _as_int(value, default):
+    """A count from an uploaded JSON file, or the default if it is not one."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value if value >= 0 else default
+
+
+def _section(buffer_mapping, name):
+    section = buffer_mapping.get(name)
+    return section if isinstance(section, dict) else {}
+
+
+def _requested_counts(config_map):
+    """What the config asks each segment to expose, before any clamping.
+
+    ONE PLACE UNDERSTANDS THE THREE SHAPES an uploaded config can take --
+    segmented, legacy (max_coils and friends), and no buffer_mapping at all --
+    so the clamp below and the warning above cannot disagree about what was
+    asked for. They did disagree: the warning read only the segmented shape, so
+    a legacy config was clamped without a word, and a config with no
+    buffer_mapping reported nothing while the defaults it falls back to were
+    clamped in silence. Those two are exactly the old-editor upload that the
+    clamp exists for -- the case where the image sizes never reached the
+    device is the only case where anything shrinks at all.
+    """
+    buffer_mapping = config_map.get("buffer_mapping")
+    if not isinstance(buffer_mapping, dict):
+        buffer_mapping = {}
+
+    if isinstance(buffer_mapping.get("holding_registers"), dict):
+        hr = _section(buffer_mapping, "holding_registers")
+        coils = _section(buffer_mapping, "coils")
+        di = _section(buffer_mapping, "discrete_inputs")
+        ir = _section(buffer_mapping, "input_registers")
+        return "segmented", {
+            "qw_count": _as_int(hr.get("qw_count"), DEFAULT_HOLDING_REG_CONFIG["qw_count"]),
+            "mw_count": _as_int(hr.get("mw_count"), DEFAULT_HOLDING_REG_CONFIG["mw_count"]),
+            "md_count": _as_int(hr.get("md_count"), DEFAULT_HOLDING_REG_CONFIG["md_count"]),
+            "ml_count": _as_int(hr.get("ml_count"), DEFAULT_HOLDING_REG_CONFIG["ml_count"]),
+            "qx_bits": _as_int(coils.get("qx_bits"), DEFAULT_COILS_CONFIG["qx_bits"]),
+            "mx_bits": _as_int(coils.get("mx_bits"), DEFAULT_COILS_CONFIG["mx_bits"]),
+            "ix_bits": _as_int(di.get("ix_bits"), DEFAULT_DISCRETE_INPUTS_CONFIG["ix_bits"]),
+            "iw_count": _as_int(ir.get("iw_count"), DEFAULT_INPUT_REGISTERS_CONFIG["iw_count"]),
+        }
+
+    # Legacy shape, and with it the config that carries no buffer_mapping: the
+    # defaults are what ends up being clamped, so they are what was asked for.
+    return "legacy", {
+        "qw_count": _as_int(buffer_mapping.get("max_holding_registers"), 1024),
+        "mw_count": 0,  # No memory support in legacy mode
+        "md_count": 0,
+        "ml_count": 0,
+        "qx_bits": _as_int(buffer_mapping.get("max_coils"), 8192),
+        "mx_bits": 0,  # No memory support in legacy mode
+        "ix_bits": _as_int(buffer_mapping.get("max_discrete_inputs"), 8192),
+        "iw_count": _as_int(buffer_mapping.get("max_input_registers"), 1024),
+    }
+
+
+def _trim_to_one_table(counts, layout):
+    """Shrink tail segments until the composed block fits one Modbus table.
+
+    `layout` is the block's segments in address order, each with the number of
+    addresses one element occupies (%MD is two registers, %ML is four). The
+    blocks lay their segments out head to tail, so trimming from the tail
+    leaves every earlier segment at the address a client already knows.
+    """
+    total = sum(counts[key] * width for key, width in layout)
+    for key, width in reversed(layout):
+        if total <= MODBUS_MAX_ADDRESSES:
+            return
+        over = total - MODBUS_MAX_ADDRESSES
+        drop = min(counts[key], -(-over // width))
+        counts[key] -= drop
+        total -= drop * width
+
+
+# THE COMPOSED BLOCK, DECIDED (RTOP-284, C1.4)
+#
+# The holding-register block lays four segments end to end -- qw | mw | 2*md |
+# 4*ml -- so it spans four tables in one contiguous Modbus range. The question
+# was what "clamp against its own table" means once those four differ in
+# length, with three answers on the table: the lowest common extent, truncate
+# at the first segment that runs out, or a non-contiguous layout.
+#
+# It is none of them, because the premise is wrong. The block already dispatches
+# each ADDRESS to exactly one segment (OpenPLCSegmentedHoldingRegistersDataBlock
+# keeps qw_end, mw_start/end, md_start/end, ml_start/end), and therefore to
+# exactly one table. So each segment is clamped against its own table and the
+# block is the concatenation of what is left. The other three answers all throw
+# away storage the project asked for: the lowest common extent shrinks segments
+# that have room, and truncating at the first exhausted one drops segments that
+# have their own.
+#
+# THE CONSEQUENCE FOR THE CLIENT, which is the part worth stating: a segment's
+# START ADDRESS moves when a table before it shrinks. That is not new -- the
+# layout has always been a function of the counts, so it already moved whenever
+# the user changed one -- and the address map screen in the editor is what
+# tells them where each segment begins. What IS new is that the counts can now
+# change because the project changed, without anyone editing the Modbus screen.
+#
+# Which image table each Modbus segment actually lives in. The clamp follows
+# this rather than one figure, because the tables no longer share a length
+# (RTOP-284): %QW comes out of int_output and %ML out of lint_memory, and a
+# project may size those very differently.
+SEGMENT_TABLES = {
+    "qw_count": "int_output",
+    "mw_count": "int_memory",
+    "md_count": "dint_memory",
+    "ml_count": "lint_memory",
+    "qx_bits": "bool_output",
+    "mx_bits": "bool_memory",
+    "ix_bits": "bool_input",
+    "iw_count": "int_input",
+}
+
+
+def _segment_limit(key, buffer_size):
+    """How much of its own table this segment may expose.
+
+    Falls back to `buffer_size` when the runtime did not deliver per-table
+    sizes, because on a square run that IS the length every table has.
+
+    Bit segments are in bits and their table is in elements of eight, which is
+    the same conversion the image.conf format makes explicit.
+    """
+    reach = table_capacity(SEGMENT_TABLES[key], buffer_size)
+    return reach * MAX_BITS if key.endswith("_bits") else reach
+
+
+def _fit_counts(asked, buffer_size):
+    """Fit the requested exposure to the image, then to the address space."""
+    fitted = {key: min(asked[key], _segment_limit(key, buffer_size)) for key in SEGMENT_TABLES}
+
+    # THE IMAGE CEILING IS NOT THE PROTOCOL'S CEILING. Fitting each segment to
+    # the image allows 65536 apiece, and the register block composes four of
+    # them as qw + mw + 2*md + 4*ml -- 524288 entries for addresses no PDU can
+    # reach, allocated as a Python list at startup. Fit the composed block too.
+    _trim_to_one_table(fitted, [("qw_count", 1), ("mw_count", 1), ("md_count", 2), ("ml_count", 4)])
+    _trim_to_one_table(fitted, [("qx_bits", 1), ("mx_bits", 1)])
+    _trim_to_one_table(fitted, [("ix_bits", 1)])
+    _trim_to_one_table(fitted, [("iw_count", 1)])
+    return fitted
+
+
+def _log_clamped_segments(config_map, buffer_config):
+    """Say what the exposure could not hold, once, at startup.
+
+    The clamp itself is already honest to a Modbus client -- anything past the
+    declared block gets exception 02 from pymodbus. But the person who
+    configured the server is not the client: they set 1024 registers in the
+    editor and would otherwise have to notice, from the other end of a network,
+    that only some of them answer. This is the line they can find on the device.
+
+    Only reports segments that actually shrank, comparing what was asked for
+    against what was built, so it covers both reasons a segment can shrink: the
+    image is smaller than the exposure, or the composed block would not fit one
+    Modbus table. On the normal path nothing shrinks, because the editor sizes
+    the image from the exposure it was asked for.
+    """
+    _, asked = _requested_counts(config_map)
+
+    shrunk = []
+    for key, section in SEGMENT_SECTIONS.items():
+        built = buffer_config.get(section, {}).get(key, 0)
+        if asked[key] > built:
+            shrunk.append(f"{key} {asked[key]} -> {built}")
+
+    if shrunk:
+        logger.warn(
+            "Modbus exposure reduced to fit the I/O image ("
+            + ", ".join(shrunk)
+            + "). Addresses beyond the reduced range answer Illegal Data Address. "
+            "This means the image sizes did not reach this device: check that the "
+            "program was uploaded by a current editor."
+        )
+
+
+def parse_buffer_mapping_config(config_map, buffer_size):
     """
     Parse buffer_mapping configuration from JSON config.
     Supports both legacy format (max_coils, etc.) and new segmented format.
 
+    `buffer_size` is the runtime's ACTUAL image size for the program now
+    loaded, from ``runtime_args.safe_access_buffer_size()``. Every count is
+    clamped to it (RTOP-284) -- this used to clamp to a copy of the runtime's
+    old fixed 1024, kept in step by hand and unable to be right for more than
+    one program at a time.
+
+    THE CLAMP IS WHAT MAKES OUT-OF-RANGE HONEST, not just tidy. Each data block
+    declares itself as wide as the counts returned here, and getValues answers
+    exception 02 (Illegal Data Address) for anything past that. Declare a block
+    wider than the image and the addresses in the gap fail the buffer read and
+    answer ZERO -- a plausible, wrong value that a client cannot tell from a
+    real zero, logged once per read at scan rate. Clamped to the image, the two
+    agree and the refusal is issued where the range is known.
+
+    Note this also settles the case where the user configured nothing: the
+    editor materialises its defaults (1024 registers, 8192 coils) into
+    modbus_slave.json even when the project never opened the Modbus screen, so
+    the common project would otherwise declare 1024 registers over an image of
+    eight.
+
     Returns a dict with parsed configuration for each data block type.
     """
-    buffer_mapping = config_map.get("buffer_mapping", {})
-
-    # Check for new segmented format
-    if "holding_registers" in buffer_mapping and isinstance(
-        buffer_mapping["holding_registers"], dict
-    ):
-        # New segmented format
-        hr_config = buffer_mapping.get("holding_registers", {})
-        coils_config = buffer_mapping.get("coils", {})
-        di_config = buffer_mapping.get("discrete_inputs", {})
-        ir_config = buffer_mapping.get("input_registers", {})
-
-        return {
-            "format": "segmented",
-            "holding_registers": {
-                "qw_count": min(
-                    hr_config.get("qw_count", DEFAULT_HOLDING_REG_CONFIG["qw_count"]), BUFFER_SIZE
-                ),
-                "mw_count": min(
-                    hr_config.get("mw_count", DEFAULT_HOLDING_REG_CONFIG["mw_count"]), BUFFER_SIZE
-                ),
-                "md_count": min(
-                    hr_config.get("md_count", DEFAULT_HOLDING_REG_CONFIG["md_count"]), BUFFER_SIZE
-                ),
-                "ml_count": min(
-                    hr_config.get("ml_count", DEFAULT_HOLDING_REG_CONFIG["ml_count"]), BUFFER_SIZE
-                ),
-            },
-            "coils": {
-                "qx_bits": min(
-                    coils_config.get("qx_bits", DEFAULT_COILS_CONFIG["qx_bits"]),
-                    BUFFER_SIZE * MAX_BITS,
-                ),
-                "mx_bits": min(
-                    coils_config.get("mx_bits", DEFAULT_COILS_CONFIG["mx_bits"]),
-                    BUFFER_SIZE * MAX_BITS,
-                ),
-            },
-            "discrete_inputs": {
-                "ix_bits": min(
-                    di_config.get("ix_bits", DEFAULT_DISCRETE_INPUTS_CONFIG["ix_bits"]),
-                    BUFFER_SIZE * MAX_BITS,
-                ),
-            },
-            "input_registers": {
-                "iw_count": min(
-                    ir_config.get("iw_count", DEFAULT_INPUT_REGISTERS_CONFIG["iw_count"]),
-                    BUFFER_SIZE,
-                ),
-            },
-            "word_order": config_map.get("word_order", "high_word_first"),
-        }
-
-    # Legacy format (max_coils, max_discrete_inputs, etc.)
-    # Convert to segmented format with no memory location support
-    max_coils = buffer_mapping.get("max_coils", 8192)
-    max_discrete_inputs = buffer_mapping.get("max_discrete_inputs", 8192)
-    max_holding_registers = buffer_mapping.get("max_holding_registers", 1024)
-    max_input_registers = buffer_mapping.get("max_input_registers", 1024)
+    fmt, asked = _requested_counts(config_map)
+    fitted = _fit_counts(asked, buffer_size)
 
     return {
-        "format": "legacy",
+        "format": fmt,
         "holding_registers": {
-            "qw_count": min(max_holding_registers, BUFFER_SIZE),
-            "mw_count": 0,  # No memory support in legacy mode
-            "md_count": 0,
-            "ml_count": 0,
+            "qw_count": fitted["qw_count"],
+            "mw_count": fitted["mw_count"],
+            "md_count": fitted["md_count"],
+            "ml_count": fitted["ml_count"],
         },
         "coils": {
-            "qx_bits": min(max_coils, BUFFER_SIZE * MAX_BITS),
-            "mx_bits": 0,  # No memory support in legacy mode
+            "qx_bits": fitted["qx_bits"],
+            "mx_bits": fitted["mx_bits"],
         },
         "discrete_inputs": {
-            "ix_bits": min(max_discrete_inputs, BUFFER_SIZE * MAX_BITS),
+            "ix_bits": fitted["ix_bits"],
         },
         "input_registers": {
-            "iw_count": min(max_input_registers, BUFFER_SIZE),
+            "iw_count": fitted["iw_count"],
         },
-        "word_order": "high_word_first",
+        "word_order": (
+            config_map.get("word_order", "high_word_first")
+            if fmt == "segmented"
+            else "high_word_first"
+        ),
     }
 
 
@@ -1034,6 +1233,15 @@ def start_loop():
         logger.error("Plugin not initialized")
         return False
 
+    # THE IMAGE SIZE COMES FIRST, because every count parsed below is clamped
+    # to it. The runtime allocates the image per program load (RTOP-284), so
+    # this is the size for the program running right now -- not a constant this
+    # plugin can keep a copy of.
+    buffer_size, size_error = runtime_args.safe_access_buffer_size()
+    if buffer_size == -1:
+        logger.error(f"Failed to access buffer size: {size_error}")
+        return False
+
     # Load configuration and create data blocks
     try:
         # Try to load configuration from plugin_specific_config_file_path
@@ -1056,7 +1264,7 @@ def start_loop():
                     logger.debug(f"Available config sections: {list(config_map.keys())}")
 
                 # Parse buffer mapping configuration
-                buffer_config = parse_buffer_mapping_config(config_map)
+                buffer_config = parse_buffer_mapping_config(config_map, buffer_size)
                 logger.info(f"Buffer mapping format: {buffer_config['format']}")
             else:
                 logger.warn(f"Failed to load configuration file: {status} - using defaults")
@@ -1068,14 +1276,14 @@ def start_loop():
 
         # Use default configuration if not loaded from file
         if buffer_config is None:
-            buffer_config = parse_buffer_mapping_config({})
+            config_map = {}
+            buffer_config = parse_buffer_mapping_config(config_map, buffer_size)
             logger.info("Using default buffer mapping configuration")
 
-        # Safely access buffer size using validation
-        buffer_size, size_error = runtime_args.safe_access_buffer_size()
-        if buffer_size == -1:
-            logger.error(f"Failed to access buffer size: {size_error}")
-            return False
+        # After both routes, because the defaults are clamped just like a
+        # config file is: a device with no modbus_slave.json at all still ends
+        # up exposing 1024 registers over whatever image the program needs.
+        _log_clamped_segments(config_map, buffer_config)
 
         # Create OpenPLC-connected data blocks based on configuration
         hr_config = buffer_config["holding_registers"]

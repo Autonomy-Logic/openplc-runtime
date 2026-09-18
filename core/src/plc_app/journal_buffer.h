@@ -25,11 +25,12 @@
 #ifndef JOURNAL_BUFFER_H
 #define JOURNAL_BUFFER_H
 
-#include <stdbool.h>
-#include <stdint.h>
-#include <stddef.h>
-#include <pthread.h>
 #include "../lib/iec_types.h"
+#include "image_table_id.h"
+#include <pthread.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -115,12 +116,65 @@ typedef struct {
     IEC_ULINT **lint_output;
     IEC_ULINT **lint_memory;
 
-    /* Buffer size (number of elements in each array) */
+    /* How long each array above is, in its own elements, indexed by
+     * journal_buffer_type_t.
+     *
+     * Taken at journal_init, from the SAME moment as the pointers beside it.
+     * The bound and the pointers have to come from one point in time: reading
+     * the live image sizes while holding pointers captured earlier would, if
+     * the two ever diverged, apply a new length to an old allocation. They do
+     * not diverge today -- the image is allocated before the cycle thread that
+     * calls journal_init exists, and a re-load stops that thread first -- but
+     * the coupling was implicit, and implicit is what this whole task keeps
+     * finding. */
+    uint32_t table_sizes[JOURNAL_TYPE_COUNT];
+
+    /* THE SMALLEST ARRAY, NOT THE LENGTH OF ALL OF THEM (RTOP-284).
+     *
+     * The arrays above no longer share a length. This field was a second copy
+     * of the one-number assumption, internal to the runtime, and it is kept
+     * only for the few places that still want a conservative single figure:
+     * it is the minimum, so using it as a bound refuses an index rather than
+     * letting one run off the end of a shorter array.
+     *
+     * Anything bounding a WRITE asks image_table_capacity() for the table that
+     * write is going to, which is what apply_write_raw does. */
     int buffer_size;
 
     /* Image table mutex (for emergency flush and apply operations) */
     pthread_mutex_t *image_mutex;
 } journal_buffer_ptrs_t;
+
+/**
+ * @brief How many forces were dropped for being outside the image, and reset.
+ *
+ * Forces that name an address the image does not have are counted rather than
+ * logged, because both force paths run under `image_lock()` on the real-time
+ * thread and `log_warn` takes a mutex with no priority inheritance before a
+ * blocking socket write.
+ *
+ * Call this from OFF the real-time path -- between cycles, or when answering a
+ * status request -- and report what it returns. Reading clears the counter, so
+ * each drop is reported once.
+ *
+ * @return Drops since the last call.
+ */
+/**
+ * @brief Which image table a journal buffer type stores.
+ *
+ * The two enums name the same fourteen tables in DIFFERENT orders -- the
+ * journal puts each width's memory beside its input and output, image_tables.h
+ * groups the memory tables at the end -- so a cast between them lands under
+ * another table's bounds. Exposed so the caller filling `table_sizes` uses the
+ * same mapping the journal itself does rather than a second copy of it.
+ *
+ * @param type A `journal_buffer_type_t`.
+ * @return The matching `image_table_id_t`, or `IMAGE_TABLE_COUNT` if the type
+ *         is out of range.
+ */
+image_table_id_t journal_type_to_image_table(uint8_t type);
+
+unsigned journal_take_force_drops(void);
 
 /**
  * @brief Initialize the journal buffer system
@@ -215,12 +269,21 @@ int journal_write_lint(journal_buffer_type_t type, uint16_t index,
  * @param index Buffer array index
  * @param bit   Bit index (0-7) for BOOL types; ignored otherwise
  * @param value Forced value (sized for the largest type)
+ * @return 0 when the slot is now forced, -1 when the request was refused
+ *         because the address is outside the image (or the bit index outside
+ *         a BOOL byte).
+ *
+ * RETURNS RATHER THAN ONLY COUNTING, because the caller can act on it and the
+ * counter cannot. `apply_located` pins the program's IECVar too, and a force
+ * that this function refuses but the IECVar accepts shows in the debugger as
+ * forced while the image slot is untouched — the one state that is worse than
+ * a refusal, since it is a refusal the user is told is a success.
  *
  * @note MUST be called only from the dispatcher's debug-write drain, under the
  *       image lock — the same serialization domain as journal_apply_and_clear.
  */
-void journal_force_set(journal_buffer_type_t type, uint16_t index,
-                       uint8_t bit, uint64_t value);
+int journal_force_set(journal_buffer_type_t type, uint16_t index,
+                      uint8_t bit, uint64_t value);
 
 /**
  * @brief Release a forced image slot (writes flow through again)
@@ -228,11 +291,13 @@ void journal_force_set(journal_buffer_type_t type, uint16_t index,
  * @param type  Buffer type
  * @param index Buffer array index
  * @param bit   Bit index (0-7) for BOOL types; ignored otherwise
+ * @return 0 when the slot is no longer forced, -1 when the request was
+ *         refused because the address is outside the image.
  *
  * @note Same calling constraint as journal_force_set.
  */
-void journal_force_clear(journal_buffer_type_t type, uint16_t index,
-                         uint8_t bit);
+int journal_force_clear(journal_buffer_type_t type, uint16_t index,
+                        uint8_t bit);
 
 /**
  * @brief Apply all pending journal entries to image tables and clear the journal

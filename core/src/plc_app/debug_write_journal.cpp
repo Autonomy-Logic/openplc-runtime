@@ -142,16 +142,35 @@ void apply_located(const DbgwEntry *e, uint8_t area, uint8_t size,
         journal_write_located(jt, size, byte_index, bit_index, val);
         break;
     case DBGW_OP_FORCE:
-        /* Program view: pin the IECVar so get() returns the forced value. */
+        /* IMAGE FIRST, AND ONLY THEN THE PROGRAM VIEW.
+         *
+         * These two pins have to agree or the debugger lies. The image slot
+         * can refuse -- the address is outside the table, or the forced-slot
+         * map was never allocated -- while `ext_strucpp_debug_set` always
+         * accepts, because the IECVar exists whatever the image is sized to.
+         * Pinning the IECVar first therefore showed the variable as FORCED in
+         * the editor and over OPC UA while the image slot took nothing, so the
+         * program kept driving it and the displayed value was fiction. A
+         * refusal the user is told is a success is worse than the refusal.
+         *
+         * There is no channel back to the requester from here: the write was
+         * enqueued by `runtime_external_write`, which already returned to the
+         * caller a cycle ago. Leaving the variable visibly unforced is the
+         * only honest signal this path still owns, and it is the one the
+         * person who asked for the force is looking at. */
+        if (journal_force_set(jt, byte_index, bit_index, val) != 0)
+            break;
         if (ext_strucpp_debug_set)
             ext_strucpp_debug_set(e->arr, e->elem, true, e->bytes, e->len);
-        /* Image view: seed + pin the slot; copy_out and plugin writes drop. */
-        journal_force_set(jt, byte_index, bit_index, val);
         break;
     case DBGW_OP_UNFORCE:
+        /* Unforce releases both regardless. A refused clear means the slot
+         * could not have been forced in the first place, and leaving the
+         * IECVar pinned because of it would strand the variable forced with
+         * no way to release it. */
+        journal_force_clear(jt, byte_index, bit_index);
         if (ext_strucpp_debug_set)
             ext_strucpp_debug_set(e->arr, e->elem, false, nullptr, 0);
-        journal_force_clear(jt, byte_index, bit_index);
         break;
     default:
         break;
