@@ -329,7 +329,22 @@ class OpenPLCUserManager(UserManager):
         self.rate_limiter = RateLimiter(rate_limit_config)
 
         # Build user dictionaries
-        self.users = {user.username: user for user in config.users if user.type == "password"}
+        # A password user with no hash cannot authenticate — `_validate_password`
+        # has no format to match and refuses it — so registering it only creates
+        # an account that looks configured and never works. Refuse it at load,
+        # where the reason can be said once, instead of once per failed login.
+        _credentialled = []
+        for user in config.users:
+            if user.type != "password":
+                continue
+            if not getattr(user, "password_hash", None):
+                log_error(
+                    f"OPC-UA user '{user.username}' has no password hash and is REFUSED. "
+                    f"Set a password for it in the editor, or remove it."
+                )
+                continue
+            _credentialled.append(user)
+        self.users = {user.username: user for user in _credentialled}
         self.cert_users = {
             user.certificate_id: user for user in config.users if user.type == "certificate"
         }
