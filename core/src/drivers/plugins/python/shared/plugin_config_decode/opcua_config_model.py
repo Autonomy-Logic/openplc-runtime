@@ -53,6 +53,11 @@ class SecurityProfile:
     security_policy: str
     security_mode: str
     auth_methods: List[str]
+    # Role granted to Anonymous sessions on this profile. Explicit rather than
+    # inferred: an anonymous client has no identity, so what it may do is stated
+    # here. Absent (projects authored before this field) -> least-privilege
+    # 'viewer'. Only meaningful when 'Anonymous' is in auth_methods.
+    anonymous_role: str = "viewer"
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'SecurityProfile':
@@ -66,12 +71,16 @@ class SecurityProfile:
         except KeyError as e:
             raise ValueError(f"Missing required field in security profile: {e}")
 
+        # Optional; default to viewer for backward compatibility.
+        anonymous_role = data.get("anonymous_role", "viewer") or "viewer"
+
         return cls(
             name=name,
             enabled=enabled,
             security_policy=security_policy,
             security_mode=security_mode,
-            auth_methods=auth_methods
+            auth_methods=auth_methods,
+            anonymous_role=anonymous_role
         )
 
 @dataclass

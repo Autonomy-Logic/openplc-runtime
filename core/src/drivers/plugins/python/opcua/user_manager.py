@@ -530,22 +530,23 @@ class OpenPLCUserManager(UserManager):
         """
         Authenticate as anonymous user.
 
-        Anonymous role assignment is policy-driven by the user list:
+        Anonymous role assignment is EXPLICIT, taken from the profile's
+        ``anonymous_role`` field, which the editor defaults to the
+        least-privilege 'viewer' (read-only). An anonymous client carries no
+        identity, so what it may do is a deliberate configuration choice rather
+        than something inferred from whether users happen to exist. An
+        administrator raises the role to 'operator' or 'engineer' only to allow
+        unauthenticated writes.
 
-          - When no users are configured (config.users is empty), the
-            server is effectively single-tenant — there's no privilege
-            model to enforce, so anonymous gets the highest role
-            (engineer / Admin). This makes "drop in OPC-UA, set
-            insecure profile, click connect" work end-to-end without
-            needing to set up users just to get write access.
-          - When at least one user is configured, anonymous keeps the
-            read-only viewer role. The administrator opted into a
-            user model, so anonymous shouldn't bypass it.
+        Backward compatibility: projects authored before this field carry no
+        ``anonymous_role``; the config model defaults it to 'viewer', so an old
+        project's anonymous sessions become read-only. (This is a deliberate
+        security tightening from the previous "no users => engineer" heuristic;
+        anyone who relied on anonymous writes sets the role to engineer.)
 
-        Either way, per-variable permissions still apply. A variable
-        whose viewer permission is "rw" is writable by anyone; one
-        whose engineer permission is "r" is read-only even for the
-        engineer role.
+        Either way, per-variable permissions still apply. A variable whose
+        viewer permission is "rw" is writable by anyone; one whose engineer
+        permission is "r" is read-only even for the engineer role.
 
         Args:
             profile: The security profile
@@ -557,16 +558,22 @@ class OpenPLCUserManager(UserManager):
             log_warn("Anonymous authentication not allowed for this profile")
             return None, None
 
-        if len(self.config.users) == 0:
-            # No user model configured — give anonymous full role so
-            # writes work without having to set up users.
-            openplc_role = "engineer"
-            asyncua_role = UserRole.Admin
-        else:
-            # Users configured — anonymous is read-only viewer.
+        # Explicit, config-driven role (defaults to viewer). Map to the asyncua
+        # role for operation-level checks; per-variable enforcement uses the
+        # OpenPLC role string.
+        openplc_role = getattr(profile, "anonymous_role", "viewer") or "viewer"
+        if openplc_role not in self.ROLE_MAPPING:
+            log_warn(
+                f"Unknown anonymous_role '{openplc_role}' on profile "
+                f"'{getattr(profile, 'name', '?')}', falling back to viewer"
+            )
             openplc_role = "viewer"
-            asyncua_role = UserRole.User
+        asyncua_role = self.ROLE_MAPPING[openplc_role]
 
+        log_debug(
+            f"Anonymous session on profile '{getattr(profile, 'name', '?')}' "
+            f"mapped to role '{openplc_role}'"
+        )
         return User(role=asyncua_role, name="anonymous"), openplc_role
 
     def _extract_cert_id(self, certificate: Any) -> Optional[str]:
