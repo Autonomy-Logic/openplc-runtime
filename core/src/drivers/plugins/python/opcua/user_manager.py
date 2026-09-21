@@ -129,7 +129,7 @@ try:
 except ImportError:
     from opcua_logging import log_debug, log_error, log_info, log_warn
 
-from shared.plugin_config_decode.opcua_config_model import OpcuaConfig  # noqa: E402
+from shared.plugin_config_decode.opcua_config_model import OpcuaConfig, normalize_role  # noqa: E402
 
 # Rate limiting constants
 DEFAULT_MAX_ATTEMPTS = 5
@@ -357,6 +357,33 @@ class OpenPLCUserManager(UserManager):
             elif user.type == "certificate" and user.certificate_id:
                 self._user_roles[f"cert:{user.certificate_id}"] = str(user.role)
 
+        # Anonymous role is a PER-PROFILE field, but anonymous authentication
+        # carries no endpoint identity into get_user(), so the lookup can only
+        # take the FIRST enabled profile that offers Anonymous
+        # (_find_profile_by_auth_method). The editor is where two Anonymous
+        # profiles should be prevented; this is the belt-and-suspenders: if more
+        # than one enabled profile offers Anonymous, warn at load (once, where
+        # the admin sees it) that list order decides the role, and name the one
+        # that wins. Behaviour is unchanged — the first profile is still used.
+        anon_profiles = [
+            p for p in getattr(config.server, "security_profiles", [])
+            if getattr(p, "enabled", False) and "Anonymous" in getattr(p, "auth_methods", [])
+        ]
+        if len(anon_profiles) > 1:
+            winner = anon_profiles[0]
+            detail = ", ".join(
+                f"'{getattr(p, 'name', '?')}'(anonymous_role={getattr(p, 'anonymous_role', 'viewer')})"
+                for p in anon_profiles
+            )
+            log_warn(
+                "OPC-UA: more than one enabled security profile offers Anonymous "
+                f"[{detail}]. Anonymous sessions cannot be mapped to a specific "
+                f"endpoint, so the FIRST profile in list order wins — "
+                f"'{getattr(winner, 'name', '?')}' with anonymous_role "
+                f"'{getattr(winner, 'anonymous_role', 'viewer')}'. Configure a single "
+                "Anonymous profile in the editor to make this unambiguous."
+            )
+
         log_info(
             f"UserManager initialized: {len(self.users)} password users, "
             f"{len(self.cert_users)} certificate users, rate limiting enabled"
@@ -558,16 +585,15 @@ class OpenPLCUserManager(UserManager):
             log_warn("Anonymous authentication not allowed for this profile")
             return None, None
 
-        # Explicit, config-driven role (defaults to viewer). Map to the asyncua
-        # role for operation-level checks; per-variable enforcement uses the
-        # OpenPLC role string.
-        openplc_role = getattr(profile, "anonymous_role", "viewer") or "viewer"
-        if openplc_role not in self.ROLE_MAPPING:
-            log_warn(
-                f"Unknown anonymous_role '{openplc_role}' on profile "
-                f"'{getattr(profile, 'name', '?')}', falling back to viewer"
-            )
-            openplc_role = "viewer"
+        # Explicit, config-driven role (defaults to viewer). The value is
+        # validated at parse time (opcua_config_model.SecurityProfile), and
+        # normalized here through normalize_role() — the same strip+lowercase
+        # normalization callbacks applies to every other role — so casing or
+        # whitespace ("Engineer", " engineer ") cannot make an anonymous session
+        # silently degrade to viewer. Map to the asyncua role for
+        # operation-level checks; per-variable enforcement uses the OpenPLC role
+        # string. normalize_role always returns a ROLE_MAPPING key.
+        openplc_role = normalize_role(getattr(profile, "anonymous_role", "viewer") or "viewer")
         asyncua_role = self.ROLE_MAPPING[openplc_role]
 
         log_debug(
