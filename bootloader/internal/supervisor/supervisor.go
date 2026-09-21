@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimespec"
 )
 
 // State is the supervisor's externally visible condition, reported by the
@@ -460,9 +461,9 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	// env var) and restarting the bootloader: the container is rebuilt from
 	// the spec instead of silently keeping the old configuration.
 	desired := s.spec.ImageRef()
-	if s.containerIsStale(ctx, inspect, desired) {
-		s.log.Info("runtime container is not on the desired image, recreating",
-			"running", inspect.Config.Image, "desired", desired)
+	if stale, reason := s.containerIsStale(ctx, inspect, desired); stale {
+		s.log.Info("runtime container needs replacing, recreating",
+			"reason", reason, "running", inspect.Config.Image, "desired", desired)
 		if err := s.recreate(ctx, inspect); err != nil {
 			return err
 		}
@@ -493,7 +494,9 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	}
 }
 
-// containerIsStale reports whether the running container needs replacing.
+// containerIsStale reports whether the running container needs replacing, and
+// why. The reason is logged: "recreating" with no cause is the kind of line
+// that costs an hour when a device starts replacing its runtime unexpectedly.
 //
 // Compares resolved image IDs, not tag strings. A container pins its image by
 // ID, so a re-pull of the same tag can leave the container on the OLD layers
@@ -505,20 +508,36 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 // the ordinary version change; the ID lookup only runs when the tags agree.
 func (s *Supervisor) containerIsStale(
 	ctx context.Context, inspect *dockerapi.ContainerInspect, desired string,
-) bool {
+) (bool, string) {
 	if inspect.Config.Image != desired {
-		return true
+		return true, "image tag differs from the desired one"
+	}
+	// A container created before RTOP-292 has a private UTS namespace, so the
+	// runtime inside it answers LAN discovery with a container id instead of
+	// the device's hostname. The image can be identical, so no other check
+	// here notices, and the device would keep the broken container until its
+	// next version change -- on a vendor board pinned to a version, forever.
+	//
+	// Recreating costs one runtime restart, once: the replacement is built
+	// from the current spec and shares the namespace, so this is false on
+	// every later reconcile. It cannot loop.
+	if inspect.HostConfig.UTSMode != runtimespec.UTSModeHost {
+		return true, "container does not share the host UTS namespace, so " +
+			"discovery would report a container id as the device name"
 	}
 	if inspect.Image == "" {
-		return false
+		return false, ""
 	}
 	image, err := s.docker.InspectImage(ctx, desired)
 	if err != nil || image == nil || image.ID == "" {
 		// No answer from the daemon: the tags match, so treat the container as
 		// current rather than recreating a working runtime on a failed lookup.
-		return false
+		return false, ""
 	}
-	return inspect.Image != image.ID
+	if inspect.Image != image.ID {
+		return true, "image tag resolves to different layers than the container pins"
+	}
+	return false, ""
 }
 
 // recreate replaces the container, stopping it gracefully first if it runs.

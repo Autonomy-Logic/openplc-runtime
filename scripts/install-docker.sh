@@ -602,12 +602,21 @@ start_bootloader() {
     # --restart always is what survives a reboot with no systemd unit of ours,
     # so the bootloader must never exit on its own.
     #
+    # --uts=host so the recovery-mode discovery responder answers with the
+    # DEVICE's hostname. Without it the bootloader sees a private UTS namespace
+    # whose name Docker sets to a container id, and a device whose runtime is
+    # down -- exactly when someone needs to find it -- would list itself as
+    # "abbc519d6324" instead of the board (RTOP-292). The runtime container
+    # gets the same flag from the bootloader's own spec, in
+    # bootloader/internal/runtimespec.
+    #
     # The runtime data directory is read-only here: the bootloader authenticates
     # against the runtime's accounts and must not modify one.
     docker run -d \
         --name "$BOOTLOADER_CONTAINER" \
         --restart always \
         --network host \
+        --uts=host \
         -v /var/run/docker.sock:/var/run/docker.sock \
         -v "$BOOTLOADER_STATE_DIR:$BOOTLOADER_STATE_DIR" \
         -v "$RUNTIME_DATA_DIR:$RUNTIME_DATA_DIR:ro" \

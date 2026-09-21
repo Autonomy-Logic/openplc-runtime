@@ -33,8 +33,13 @@ type ContainerState struct {
 // a self-update that silently dropped them would leave a device subtly
 // misconfigured in a way nobody would connect to "the bootloader updated".
 type ContainerHostConfig struct {
-	Binds         []string      `json:"Binds"`
-	NetworkMode   string        `json:"NetworkMode"`
+	Binds       []string `json:"Binds"`
+	NetworkMode string   `json:"NetworkMode"`
+	// UTSMode is "host" when the container shares the host's UTS namespace,
+	// and empty for Docker's default of a private one. Read for two reasons:
+	// the supervisor uses it to spot a runtime container created before
+	// RTOP-292, and a self-update has to carry it onto the replacement.
+	UTSMode       string        `json:"UTSMode"`
 	Privileged    bool          `json:"Privileged"`
 	RestartPolicy RestartPolicy `json:"RestartPolicy"`
 }

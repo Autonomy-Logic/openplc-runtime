@@ -165,6 +165,15 @@ func TestContainerSpecCarriesTheParityFlags(t *testing.T) {
 		t.Errorf("NetworkMode must be host for EtherCAT and UDP discovery, got %v",
 			host["NetworkMode"])
 	}
+	// Without this the runtime answers LAN discovery with the name Docker gave
+	// a private UTS namespace, which is a container id, and the editor lists
+	// the device as "abbc519d6324" instead of its hostname (RTOP-292).
+	// NetworkMode host is not a substitute: the daemon resolves the hostname
+	// once at create time, and only as a default it is free to not implement.
+	if host["UTSMode"] != "host" {
+		t.Errorf("UTSMode must be host so discovery reports the device hostname, got %v",
+			host["UTSMode"])
+	}
 	binds := host["Binds"].([]any)
 	var sawDev bool
 	for _, b := range binds {

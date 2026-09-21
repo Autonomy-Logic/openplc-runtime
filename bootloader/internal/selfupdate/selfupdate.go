@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimespec"
 )
 
 // Environment the parent sets on the child. Their presence is what puts the
@@ -256,12 +257,24 @@ func replacementSpec(parent *dockerapi.ContainerInspect, newImage string) map[st
 		restart = "always"
 	}
 
+	// The host UTS namespace, so the recovery-mode discovery responder keeps
+	// answering with the device's hostname rather than a container id
+	// (RTOP-292). Forced rather than copied from the parent: a bootloader
+	// installed before that change has a private namespace, and inheriting it
+	// would carry the bug across the one operation whose whole purpose is to
+	// leave a newer bootloader behind.
+	utsMode := parent.HostConfig.UTSMode
+	if utsMode == "" {
+		utsMode = runtimespec.UTSModeHost
+	}
+
 	spec := map[string]any{
 		"Image": newImage,
 		"Env":   env,
 		"HostConfig": map[string]any{
 			"Binds":         parent.HostConfig.Binds,
 			"NetworkMode":   parent.HostConfig.NetworkMode,
+			"UTSMode":       utsMode,
 			"Privileged":    parent.HostConfig.Privileged,
 			"RestartPolicy": map[string]any{"Name": restart},
 		},
@@ -286,6 +299,7 @@ func defaultSpec(newImage string) map[string]any {
 				"/var/lib/openplc-runtime:/var/lib/openplc-runtime:ro",
 			},
 			"NetworkMode":   "host",
+			"UTSMode":       runtimespec.UTSModeHost,
 			"RestartPolicy": map[string]any{"Name": "always"},
 		},
 	}

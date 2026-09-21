@@ -20,6 +20,14 @@ set -euo pipefail
 
 HOST_CONTAINER=openplc-testhost
 HOST_IMAGE=openplc-testhost:latest
+
+# The test host's own hostname, standing in for the device's.
+#
+# Set explicitly because Docker's default is the container id, and a harness
+# whose "device" is already named like a container id cannot tell a correct
+# reply from the RTOP-292 bug -- both look like hex. A name no container id
+# could be makes the discovery assertions meaningful.
+DEVICE_HOSTNAME="${DEVICE_HOSTNAME:-slm-rp4-testhost}"
 DOCKER_VOLUME=openplc-testhost-docker
 REGISTRY=localhost:5000
 
@@ -71,6 +79,7 @@ cmd_up() {
     # machine reach them -- which is how the editor and web UI get tested
     # against a real device without one on the desk.
     docker run -d --name "$HOST_CONTAINER" --privileged \
+        --hostname "$DEVICE_HOSTNAME" \
         -p 8443:8443 -p 8445:8445 \
         -v "$DOCKER_VOLUME":/var/lib/docker \
         -v "$REPO_ROOT":/workspace:ro \
@@ -80,6 +89,7 @@ cmd_up() {
     for _ in $(seq 1 120); do
         if inner docker info >/dev/null 2>&1; then
             log "inner daemon ready: $(inner docker version --format '{{.Server.Version}}')"
+            log "device hostname: $(inner hostname)"
             return 0
         fi
         sleep 0.5

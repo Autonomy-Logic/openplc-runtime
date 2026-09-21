@@ -17,6 +17,30 @@
 //     Deliberately NOT the orchestrator's dedicated-NIC mechanism, which moves
 //     a host NIC into a container namespace and removes it from the host.
 //
+//   - UTSMode host: the device's own hostname, live. This is what the editor
+//     shows as the device name in its LAN device list, because the discovery
+//     responder answers with gethostname() (webserver/discovery/
+//     network_discovery.py). Without it the runtime reports whatever Docker
+//     put in a private UTS namespace, and the editor lists a container id
+//     instead of the board -- a vendor's SLM-RP4 appeared as "abbc519d6324"
+//     (RTOP-292).
+//
+//     NetworkMode host alone is NOT enough, for two reasons. The daemon
+//     resolves its own os.Hostname() into Config.Hostname once, at CREATE
+//     time, so a board named after the installer ran keeps the old name until
+//     the container is replaced. And that copy is a daemon default rather than
+//     a guarantee: an engine that does not implement it leaves the runtime
+//     with a container id and no way to find out otherwise, since the
+//     container holds no mount and no socket that would reveal the host's
+//     name. Sharing the namespace makes gethostname() a live syscall against
+//     the device's own, which is correct by construction on any engine and
+//     follows a later rename with no recreate.
+//
+//     No new privilege: a container that is already Privileged with
+//     NetworkMode host can do strictly more than set a hostname. It also
+//     corrects the OPC-UA plugin's certificate CN and advertised endpoints,
+//     which are built from the same call.
+//
 //   - No CPU limits, ever. This is the one trap that survives "just make it
 //     privileged", because it is not a privilege. Setting Cpus/CpuQuota/
 //     CpuPeriod/Memory enables the cgroup CPU controller, and with
@@ -69,6 +93,7 @@ type RestartPolicy struct {
 type HostConfig struct {
 	Privileged    bool          `json:"Privileged"`
 	NetworkMode   string        `json:"NetworkMode"`
+	UTSMode       string        `json:"UTSMode"`
 	Binds         []string      `json:"Binds"`
 	Ulimits       []Ulimit      `json:"Ulimits"`
 	RestartPolicy RestartPolicy `json:"RestartPolicy"`
@@ -116,6 +141,12 @@ const (
 	DefaultRepository     = "ghcr.io/autonomy-logic/openplc-runtime"
 	DefaultDataDir        = "/var/lib/openplc-runtime"
 	DefaultBootloaderPort = 8445
+
+	// UTSModeHost is Docker's value for "share the host's UTS namespace".
+	// Exported because the supervisor compares a running container against it
+	// to decide whether that container predates RTOP-292, and a literal in two
+	// packages is how the two drift apart.
+	UTSModeHost = "host"
 )
 
 // forbiddenBindTargets are host paths that must never be handed to the runtime
@@ -333,6 +364,7 @@ func (c *Config) ContainerSpec(imageRef string) any {
 		HostConfig: HostConfig{
 			Privileged:  true,
 			NetworkMode: "host",
+			UTSMode:     UTSModeHost,
 			Binds:       binds,
 			Ulimits: []Ulimit{
 				{Name: "rtprio", Soft: 99, Hard: 99},
