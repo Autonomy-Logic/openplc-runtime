@@ -32,6 +32,12 @@ REGISTRY = "localhost:5000"
 STUB_REPO = f"{REGISTRY}/openplc-stub"
 REAL_REPO = f"{REGISTRY}/openplc-runtime"
 
+# The real runtime release under test. Must match the tag in harness.sh's
+# REAL_BASE, and should name the version actually shipping: the SLM-RP4 units
+# in the field run v4.2.3, and a suite pinned to an older tag proves nothing
+# about what they run.
+REAL_VERSION = "v4.2.3"
+
 BOOTLOADER_IMAGE = "openplc-bootloader:test"
 BOOTLOADER_NAME = "openplc-bootloader"
 RUNTIME_NAME = "openplc-runtime"
@@ -828,6 +834,25 @@ def test_the_bootloader_replaces_itself_without_disturbing_the_runtime():
         raise Failure(f"the helper must never restart: {helper.get('HostConfig')}")
 
 
+def _bake_pre_fix_runtime_container(image: str, *, running: bool) -> str:
+    """Replace the runtime container with one a pre-fix bootloader would have
+    made: same image, same everything, private UTS namespace. Returns its id.
+    """
+    remove_container(RUNTIME_NAME)
+    sh("docker", "create", "--name", RUNTIME_NAME,
+       "--privileged", "--network", "host",
+       "-v", "/dev:/dev", "-v", f"{DATA_DIR}:{DATA_DIR}",
+       "-e", f"OPENPLC_PERSISTENT_DATA_DIR={DATA_DIR}",
+       image)
+    if running:
+        sh("docker", "start", RUNTIME_NAME)
+
+    legacy = container_state(RUNTIME_NAME)
+    if legacy["HostConfig"]["UTSMode"] == "host":
+        raise Failure("the legacy container was not built with a private namespace")
+    return legacy["Id"]
+
+
 @case
 def test_a_runtime_container_with_a_private_uts_namespace_is_replaced():
     """The field-upgrade path for RTOP-292.
@@ -836,48 +861,48 @@ def test_a_runtime_container_with_a_private_uts_namespace_is_replaced():
     image can be identical, so nothing else the supervisor compares notices.
     A vendor board pinned to a version would have kept the broken container
     for good. The bootloader has to replace it once on adoption.
+
+    Both states are covered because both ship. A device that installed
+    normally before the fix has the container RUNNING. An SLM-RP4 image has it
+    STOPPED and never started: the installer runs at image-build time and
+    provision/55-openplc.sh kills the build daemon instead of stopping the
+    containers, precisely so the restart policy revives them on the board. The
+    stopped one is the state that reached the vendor, and it takes a different
+    path through recreate(), which skips the graceful stop.
     """
-    reset()
-    wait_healthy()
+    for running in (True, False):
+        state = "running" if running else "stopped"
+        reset()
+        wait_healthy()
+        image = container_state(RUNTIME_NAME)["Config"]["Image"]
 
-    # Rebuild the runtime container the way a pre-fix bootloader would have:
-    # same image and same everything else, private UTS namespace.
-    image = container_state(RUNTIME_NAME)["Config"]["Image"]
-    remove_container(RUNTIME_NAME)
-    sh("docker", "create", "--name", RUNTIME_NAME,
-       "--privileged", "--network", "host",
-       "-v", "/dev:/dev", "-v", f"{DATA_DIR}:{DATA_DIR}",
-       "-e", f"OPENPLC_PERSISTENT_DATA_DIR={DATA_DIR}",
-       image)
-    sh("docker", "start", RUNTIME_NAME)
+        legacy_id = _bake_pre_fix_runtime_container(image, running=running)
 
-    legacy = container_state(RUNTIME_NAME)
-    if legacy["HostConfig"]["UTSMode"] == "host":
-        raise Failure("the legacy container was not built with a private namespace")
-    legacy_id = legacy["Id"]
+        sh("docker", "restart", BOOTLOADER_NAME)
+        wait_healthy(timeout=120)
 
-    sh("docker", "restart", BOOTLOADER_NAME)
-    wait_healthy(timeout=120)
+        current = container_state(RUNTIME_NAME)
+        if current["Id"] == legacy_id:
+            raise Failure(
+                f"({state}) the bootloader adopted a container that cannot report "
+                "the device hostname instead of replacing it"
+            )
+        if current["HostConfig"]["UTSMode"] != "host":
+            raise Failure(
+                f"({state}) the replacement must share the namespace, got "
+                f"{current['HostConfig']['UTSMode']!r}"
+            )
 
-    current = container_state(RUNTIME_NAME)
-    if current["Id"] == legacy_id:
-        raise Failure(
-            "the bootloader adopted a container that cannot report the device "
-            "hostname instead of replacing it"
-        )
-    if current["HostConfig"]["UTSMode"] != "host":
-        raise Failure(
-            "the replacement must share the namespace, got "
-            f"{current['HostConfig']['UTSMode']!r}"
-        )
-
-    # And only once. Recreating on a configuration difference risks a device
-    # that replaces its runtime on every reconcile and never stays up.
-    replaced_id = current["Id"]
-    sh("docker", "restart", BOOTLOADER_NAME)
-    wait_healthy(timeout=120)
-    if container_state(RUNTIME_NAME)["Id"] != replaced_id:
-        raise Failure("the corrected container must be adopted, not replaced again")
+        # And only once. Recreating on a configuration difference risks a
+        # device that replaces its runtime on every reconcile and never stays
+        # up.
+        replaced_id = current["Id"]
+        sh("docker", "restart", BOOTLOADER_NAME)
+        wait_healthy(timeout=120)
+        if container_state(RUNTIME_NAME)["Id"] != replaced_id:
+            raise Failure(
+                f"({state}) the corrected container must be adopted, not replaced again"
+            )
 
 
 @case
@@ -910,7 +935,7 @@ def test_lan_discovery_reports_the_device_hostname_and_follows_a_rename():
     """
     original = device_hostname()
     try:
-        reset(repository=REAL_REPO, version="v4.2.1")
+        reset(repository=REAL_REPO, version=REAL_VERSION)
         wait_healthy(timeout=300)
 
         reply = discovery_probe(timeout=10)
@@ -941,7 +966,7 @@ def test_the_real_runtime_image_comes_up_under_the_bootloader():
     """Everything above uses the stub. This proves the real thing works: the
     actual OpenPLC runtime, started by the bootloader, reaching healthy and
     reporting the policy the editor keys off."""
-    reset(repository=REAL_REPO, version="v4.2.1")
+    reset(repository=REAL_REPO, version=REAL_VERSION)
     # Generous: the real runtime loads plugin venvs on a cold start, and the
     # image's own start-period is 90s.
     wait_healthy(timeout=300)

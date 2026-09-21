@@ -46,7 +46,12 @@ REAL_REPO="$REGISTRY/openplc-runtime"
 # minutes (it is a full source install), and the only setting that covers the
 # Dockerfile itself -- which is where `./install.sh` silently switching to the
 # container path broke the release build.
-REAL_BASE="${REAL_BASE:-ghcr.io/autonomy-logic/openplc-runtime:v4.2.1}"
+REAL_BASE="${REAL_BASE:-ghcr.io/autonomy-logic/openplc-runtime:v4.2.3}"
+
+# The tag the inner registry serves, taken from REAL_BASE so the two cannot
+# drift. tests/integration/test_bootloader.py pins the same value in
+# REAL_VERSION and both must name the release actually being shipped.
+REAL_TAG="${REAL_BASE##*:}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -176,7 +181,7 @@ cmd_seed() {
         # The only path that covers the Dockerfile. Its `RUN ./install.sh` has
         # to reach the source build; when install.sh started defaulting to the
         # container path, nothing here noticed and the release build broke.
-        inner docker build -q -t "$REAL_REPO:v4.2.1" /workspace >/dev/null
+        inner docker build -q -t "$REAL_REPO:$REAL_TAG" /workspace >/dev/null
     else
         log "building the real runtime image from $REAL_BASE"
         # A thin layer over a published runtime, carrying the webserver files
@@ -188,9 +193,9 @@ COPY webserver/restapi.py webserver/app.py /workdir/webserver/
 HEALTHCHECK --interval=10s --timeout=10s --start-period=90s --retries=3 \\
     CMD curl -kfsS https://127.0.0.1:8443/api/version >/dev/null || exit 1
 EOF
-docker build -q -f /tmp/real.Dockerfile -t $REAL_REPO:v4.2.1 /workspace >/dev/null"
+docker build -q -f /tmp/real.Dockerfile -t $REAL_REPO:$REAL_TAG /workspace >/dev/null"
     fi
-    inner docker push -q "$REAL_REPO:v4.2.1" >/dev/null
+    inner docker push -q "$REAL_REPO:$REAL_TAG" >/dev/null
 
     log "registry contents:"
     inner curl -fsS "http://$REGISTRY/v2/_catalog" | tr -d '\n'; echo
