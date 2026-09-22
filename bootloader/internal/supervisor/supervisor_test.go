@@ -38,6 +38,14 @@ type fakeDocker struct {
 	// test keeps describing one the supervisor should leave alone.
 	privateUTS bool
 
+	// neverReportsUTS models a hypothetical engine that accepts UTSMode on
+	// create and never echoes it back in an inspect. There is no such engine
+	// that we know of, which is exactly why it is modelled here: the UTS
+	// check is the only staleness check reading a value the daemon reports
+	// rather than one we asked for, and an engine like this would otherwise
+	// have it recreating the runtime on every reconcile forever.
+	neverReportsUTS bool
+
 	created  int
 	started  int
 	stopped  int
@@ -95,7 +103,9 @@ func (f *fakeDocker) CreateContainer(_ context.Context, _ string, _ any) (*docke
 	// A freshly created container carries the spec's image AND the spec's UTS
 	// mode, so a recreate resolves the mismatch rather than looping forever.
 	f.configImage = "test:1"
-	f.privateUTS = false
+	if !f.neverReportsUTS {
+		f.privateUTS = false
+	}
 	return &dockerapi.CreateContainerResponse{ID: "deadbeef"}, nil
 }
 
@@ -708,6 +718,31 @@ func TestTheUTSRecreateHappensOnceAndDoesNotLoop(t *testing.T) {
 	if docker.created != afterFirst {
 		t.Fatalf("the corrected container must be adopted, not replaced again "+
 			"(creates went %d -> %d)", afterFirst, docker.created)
+	}
+}
+
+func TestTheUTSCheckCannotLoopWhenTheDaemonNeverReportsIt(t *testing.T) {
+	// The failure this guards is unbounded, and far worse than the bug it
+	// fixes: a device replacing its runtime on every reconcile never keeps a
+	// PLC running, whereas one showing the wrong name still controls a
+	// machine. So the check spends at most one recreate per process, and this
+	// pins that down against an engine that never confirms the flag.
+	docker := &fakeDocker{
+		exists: true, running: true, health: "healthy", imagePresent: true,
+		startMakesHealthy: true,
+		privateUTS:        true,
+		neverReportsUTS:   true,
+	}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+
+	for i := 0; i < 4; i++ {
+		if err := sup.Reconcile(context.Background()); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+	if docker.created != 1 {
+		t.Fatalf("the UTS check must spend at most one recreate per process, "+
+			"got %d over four reconciles", docker.created)
 	}
 }
 
