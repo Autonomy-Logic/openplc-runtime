@@ -22,9 +22,8 @@ set -euo pipefail
 HOST_CONTAINER=openplc-testhost
 HOST_IMAGE=openplc-testhost:latest
 
-# The test host's hostname, standing in for the device's. Set explicitly: with
-# Docker's container-id default, a correct reply and the RTOP-292 bug both look
-# like hex and the discovery assertions prove nothing.
+# The device's hostname. Set explicitly: on Docker's container-id default a
+# correct reply and the RTOP-292 bug both look like hex.
 DEVICE_HOSTNAME="${DEVICE_HOSTNAME:-slm-rp4-testhost}"
 DOCKER_VOLUME=openplc-testhost-docker
 REGISTRY=localhost:5000
@@ -46,8 +45,7 @@ REAL_REPO="$REGISTRY/openplc-runtime"
 # container path broke the release build.
 REAL_BASE="${REAL_BASE:-ghcr.io/autonomy-logic/openplc-runtime:v4.2.3}"
 
-# The tag the inner registry serves. Exported so test_bootloader.py reads it
-# rather than repeating it; the two drifting is a missing-tag failure.
+# The tag the inner registry serves. Exported so the suite reads it once.
 export REAL_TAG="${REAL_BASE##*:}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -206,8 +204,7 @@ cmd_shell() {
     exec docker exec -it "$HOST_CONTAINER" bash
 }
 
-# cmd_test runs the suite with REAL_TAG carried in, which is what keeps the
-# registry and the assertions naming one version.
+# cmd_test runs the suite with REAL_TAG carried in.
 cmd_test() {
     exec docker exec -e "REAL_TAG=$REAL_TAG" "$HOST_CONTAINER" \
         python3 /workspace/tests/integration/test_bootloader.py "$@"

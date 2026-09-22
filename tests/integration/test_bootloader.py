@@ -32,8 +32,8 @@ REGISTRY = "localhost:5000"
 STUB_REPO = f"{REGISTRY}/openplc-stub"
 REAL_REPO = f"{REGISTRY}/openplc-runtime"
 
-# The real runtime release under test, from harness.sh so one place names it.
-# The fallback is for a direct run and must match harness.sh's REAL_BASE tag.
+# The real runtime release under test. The fallback is for a direct run and
+# must match harness.sh's REAL_BASE tag.
 REAL_VERSION = os.environ.get("REAL_TAG") or "v4.2.3"
 
 BOOTLOADER_IMAGE = "openplc-bootloader:test"
@@ -356,12 +356,7 @@ DISCOVERY_MAGIC = b"OPENPLC_DISCOVER_V1"
 
 
 def device_hostname() -> str:
-    """The hostname of the test host, standing in for the device's.
-
-    Read from the kernel rather than from a constant so the rename case below
-    is checked against what the device actually reports, not against what the
-    test hoped it set.
-    """
+    """The test host's hostname, read from the kernel rather than a constant."""
     return os.uname().nodename
 
 
@@ -371,17 +366,15 @@ def set_device_hostname(name: str) -> None:
 
 
 def discovery_probe(timeout: float = 5.0) -> dict:
-    """Send the editor's discovery magic and return the reply it would parse.
+    """Probe discovery and return the reply the editor would parse.
 
-    Deliberately the wire protocol and not an HTTP endpoint: the name the
-    editor shows comes from this datagram, so anything that does not go over
-    the socket proves nothing about what a user sees.
+    The wire protocol, not an HTTP endpoint: the name the editor shows comes
+    from this datagram.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    # Re-sent, as the editor does: a datagram may vanish, and the responder
-    # starts just after the healthcheck it answers. The interval clears the
-    # responder's 0.1s per-IP rate limit, which would drop the retries.
+    # Re-sent, as the editor does: a datagram may vanish. The interval clears
+    # the responder's 0.1s per-IP rate limit, which would drop the retries.
     sock.settimeout(0.5)
     deadline = time.time() + timeout
     try:
@@ -429,11 +422,8 @@ def test_bootstrap_creates_and_supervises_the_runtime():
         raise Failure("the runtime must be privileged for hardware parity")
     if host["NetworkMode"] != "host":
         raise Failure(f"want host networking, got {host['NetworkMode']}")
-    # RTOP-292. Without this the runtime answers LAN discovery with the name
-    # Docker gave a private UTS namespace, which is a container id, and the
-    # editor lists the device as "abbc519d6324" instead of its hostname.
-    # The flag only. What the runtime actually SEES is asserted against the
-    # real image, below: the stub is FROM scratch and has no hostname binary.
+    # RTOP-292: without this, discovery reports a container id. The flag only;
+    # the stub is FROM scratch, so what it SEES is checked on the real image.
     if host["UTSMode"] != "host":
         raise Failure(f"want the host UTS namespace, got {host['UTSMode']!r}")
     if host["RestartPolicy"]["Name"] != "no":
@@ -828,9 +818,7 @@ def test_the_bootloader_replaces_itself_without_disturbing_the_runtime():
 
 
 def _bake_pre_fix_runtime_container(image: str, *, running: bool) -> str:
-    """Replace the runtime container with one a pre-fix bootloader would have
-    made: same image, same everything, private UTS namespace. Returns its id.
-    """
+    """Runtime container as a pre-fix bootloader made it. Returns its id."""
     remove_container(RUNTIME_NAME)
     sh("docker", "create", "--name", RUNTIME_NAME,
        "--privileged", "--network", "host",
@@ -850,18 +838,9 @@ def _bake_pre_fix_runtime_container(image: str, *, running: bool) -> str:
 def test_a_runtime_container_with_a_private_uts_namespace_is_replaced():
     """The field-upgrade path for RTOP-292.
 
-    Devices already out there run a container created before the fix, and the
-    image can be identical, so nothing else the supervisor compares notices.
-    A vendor board pinned to a version would have kept the broken container
-    for good. The bootloader has to replace it once on adoption.
-
-    Both states are covered because both ship. A device that installed
-    normally before the fix has the container RUNNING. An SLM-RP4 image has it
-    STOPPED and never started: the installer runs at image-build time and
-    provision/55-openplc.sh kills the build daemon instead of stopping the
-    containers, precisely so the restart policy revives them on the board. The
-    stopped one is the state that reached the vendor, and it takes a different
-    path through recreate(), which skips the graceful stop.
+    Both states ship: a normal pre-fix install leaves it RUNNING, an SLM-RP4
+    image leaves it STOPPED and never started, which skips the graceful stop
+    in recreate().
     """
     for running in (True, False):
         state = "running" if running else "stopped"
@@ -900,9 +879,8 @@ def test_a_runtime_container_with_a_private_uts_namespace_is_replaced():
 
 @case
 def test_recovery_mode_discovery_reports_the_device_hostname():
-    """A device whose runtime is down is exactly when someone needs to find
-    it, and the bootloader answers discovery in its place. That reply has to
-    name the board too (RTOP-292)."""
+    """The bootloader answers discovery when the runtime is down, and that
+    reply has to name the board too (RTOP-292)."""
     reset(version="v1.0.0", extra_env=["STUB_FAIL=exit"])
     wait_for("recovery mode", lambda: bootloader_state() == "recovery", timeout=120)
 
@@ -920,11 +898,8 @@ def test_recovery_mode_discovery_reports_the_device_hostname():
 def test_lan_discovery_reports_the_device_hostname_and_follows_a_rename():
     """The user-visible bug, end to end against the real runtime.
 
-    The editor shows the `hostname` field of this datagram as the device name,
-    so this is the assertion that matches what a vendor sees. The rename half
-    is the part NetworkMode host alone cannot pass: the daemon resolves the
-    hostname once, at container-create time, so a board named after the
-    installer ran would keep reporting the old name.
+    The rename half is what NetworkMode host alone cannot pass, since the
+    daemon resolves the hostname once at create time.
     """
     original = device_hostname()
     try:

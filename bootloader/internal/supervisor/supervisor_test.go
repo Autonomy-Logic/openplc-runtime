@@ -32,14 +32,12 @@ type fakeDocker struct {
 	// image so existing tests keep describing a matching container.
 	configImage string
 
-	// privateUTS models a pre-RTOP-292 container: a private UTS namespace,
-	// which an inspect reports as empty. Defaults to the corrected container
-	// so every other test still describes one to leave alone.
+	// privateUTS models a pre-RTOP-292 container. Defaults off, so every other
+	// test still describes a container to leave alone.
 	privateUTS bool
 
-	// neverReportsUTS models an engine that accepts UTSMode on create and
-	// never echoes it back. None is known; it is modelled because that engine
-	// would otherwise drive an endless recreate loop.
+	// neverReportsUTS models an engine that accepts UTSMode and never echoes
+	// it back, which would otherwise loop. None is known.
 	neverReportsUTS bool
 
 	created  int
@@ -96,8 +94,8 @@ func (f *fakeDocker) CreateContainer(_ context.Context, _ string, _ any) (*docke
 	f.created++
 	f.exists = true
 	f.running = false
-	// A freshly created container carries the spec's image AND the spec's UTS
-	// mode, so a recreate resolves the mismatch rather than looping forever.
+	// A new container carries the spec's image and UTS mode, so a recreate
+	// resolves the mismatch instead of looping.
 	f.configImage = "test:1"
 	if !f.neverReportsUTS {
 		f.privateUTS = false
@@ -664,8 +662,7 @@ func TestAContainerOnTheWrongImageIsRecreated(t *testing.T) {
 	}
 }
 
-// RTOP-292: a pre-fix container reports a container id to discovery, and the
-// image checks see nothing wrong, so a board pinned to a version would keep it.
+// RTOP-292: the image checks see nothing wrong, so a pinned board keeps it.
 func TestAContainerWithAPrivateUTSNamespaceIsRecreated(t *testing.T) {
 	docker := &fakeDocker{
 		exists: true, running: true, health: "healthy", imagePresent: true,
@@ -686,8 +683,7 @@ func TestAContainerWithAPrivateUTSNamespaceIsRecreated(t *testing.T) {
 	}
 }
 
-// Recreating on a configuration difference risks a device that replaces its
-// runtime every reconcile, so the second pass must adopt it untouched.
+// The second pass must adopt the replacement, not replace it again.
 func TestTheUTSRecreateHappensOnceAndDoesNotLoop(t *testing.T) {
 	docker := &fakeDocker{
 		exists: true, running: true, health: "healthy", imagePresent: true,
@@ -710,8 +706,7 @@ func TestTheUTSRecreateHappensOnceAndDoesNotLoop(t *testing.T) {
 	}
 }
 
-// The guarded failure is unbounded and worse than the bug: a device replacing
-// its runtime every reconcile never keeps a PLC running.
+// Unbounded, and worse than the bug: the PLC would never stay up.
 func TestTheUTSCheckCannotLoopWhenTheDaemonNeverReportsIt(t *testing.T) {
 	docker := &fakeDocker{
 		exists: true, running: true, health: "healthy", imagePresent: true,

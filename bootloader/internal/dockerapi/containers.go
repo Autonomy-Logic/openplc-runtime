@@ -35,8 +35,7 @@ type ContainerState struct {
 type ContainerHostConfig struct {
 	Binds       []string `json:"Binds"`
 	NetworkMode string   `json:"NetworkMode"`
-	// "host" when the container shares the host's UTS namespace, empty for
-	// Docker's private default. Read to spot a pre-RTOP-292 container.
+	// "host", or empty for Docker's private default (RTOP-292).
 	UTSMode       string        `json:"UTSMode"`
 	Privileged    bool          `json:"Privileged"`
 	RestartPolicy RestartPolicy `json:"RestartPolicy"`

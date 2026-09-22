@@ -263,9 +263,7 @@ func replacementSpec(parent *dockerapi.ContainerInspect, newImage string) map[st
 		"HostConfig": map[string]any{
 			"Binds":       parent.HostConfig.Binds,
 			"NetworkMode": parent.HostConfig.NetworkMode,
-			// Set, never inherited: a pre-RTOP-292 parent has a private
-			// namespace, and copying it would carry the bug across the one
-			// operation meant to leave a newer bootloader behind.
+			// Set, never inherited: a pre-RTOP-292 parent would pass the bug on.
 			"UTSMode":       runtimespec.UTSModeHost,
 			"Privileged":    parent.HostConfig.Privileged,
 			"RestartPolicy": map[string]any{"Name": restart},

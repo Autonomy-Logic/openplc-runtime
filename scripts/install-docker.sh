@@ -602,12 +602,10 @@ start_bootloader() {
     # --restart always is what survives a reboot with no systemd unit of ours,
     # so the bootloader must never exit on its own.
     #
-    # --uts=host so the recovery-mode discovery responder names the DEVICE and
-    # not a container id, which is what a device with a downed runtime would
-    # otherwise list itself as (RTOP-292).
-    #
     # The runtime data directory is read-only here: the bootloader authenticates
     # against the runtime's accounts and must not modify one.
+
+    # --uts=host so recovery-mode discovery names the DEVICE (RTOP-292).
     docker run -d \
         --name "$BOOTLOADER_CONTAINER" \
         --restart always \

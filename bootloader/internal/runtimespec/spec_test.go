@@ -165,8 +165,7 @@ func TestContainerSpecCarriesTheParityFlags(t *testing.T) {
 		t.Errorf("NetworkMode must be host for EtherCAT and UDP discovery, got %v",
 			host["NetworkMode"])
 	}
-	// Without this discovery reports a container id. NetworkMode host is not
-	// a substitute: the daemon resolves the hostname once, at create time.
+	// NetworkMode host is not a substitute: it resolves once, at create time.
 	if host["UTSMode"] != "host" {
 		t.Errorf("UTSMode must be host so discovery reports the device hostname, got %v",
 			host["UTSMode"])

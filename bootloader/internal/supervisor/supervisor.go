@@ -180,8 +180,7 @@ type Supervisor struct {
 	// consecutiveFailures drives restart backoff, reset by a healthy start.
 	consecutiveFailures int
 	// utsRecreated latches the one recreate the UTS check may drive per
-	// process; see containerIsStale. Under mu: Reconcile runs from the event
-	// loop, the updater and an API handler.
+	// process; see containerIsStale. Under mu: Reconcile has three callers.
 	utsRecreated bool
 	// onRecovery is invoked when the supervisor enters recovery, so the UDP
 	// discovery responder can be switched on without this package importing it.
@@ -468,8 +467,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	if stale, reason := s.containerIsStale(ctx, inspect, desired); stale {
 		s.log.Info("runtime container needs replacing, recreating",
 			"reason", reason, "running", inspect.Config.Image, "desired", desired)
-		// Before the recreate, so a failure part way through cannot retry
-		// the same replacement forever.
+		// Before the recreate, so a partial failure cannot retry forever.
 		if inspect.HostConfig.UTSMode != runtimespec.UTSModeHost {
 			s.markUTSRecreated()
 		}
@@ -478,8 +476,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 		}
 		if replaced, err := s.docker.InspectContainer(ctx, s.cfg.ContainerName); err == nil &&
 			replaced.HostConfig.UTSMode != runtimespec.UTSModeHost {
-			// Asked for and not granted; nothing more to do but say so,
-			// rather than leave the device quietly misnamed.
+			// Asked for and not granted: say so, do not leave it silent.
 			s.log.Warn("the runtime container does not share the host UTS namespace "+
 				"even though the spec asked for it; LAN discovery will report a "+
 				"container id instead of this device's hostname",
@@ -513,8 +510,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 }
 
 // containerIsStale reports whether the running container needs replacing, and
-// why. The reason is logged: "recreating" with no cause is the kind of line
-// that costs an hour when a device starts replacing its runtime unexpectedly.
+// why. The reason is logged, so an unexpected recreate can be traced.
 //
 // Compares resolved image IDs, not tag strings. A container pins its image by
 // ID, so a re-pull of the same tag can leave the container on the OLD layers
@@ -530,11 +526,9 @@ func (s *Supervisor) containerIsStale(
 	if inspect.Config.Image != desired {
 		return true, "image tag differs from the desired one"
 	}
-	// A pre-RTOP-292 container reports a container id to discovery, and the
-	// image can match, so nothing else notices.
-	//
-	// Latched: alone among these checks it reads what the daemon reports back,
-	// so an engine honouring UTSMode without echoing it would loop forever.
+	// A pre-RTOP-292 container reports a container id and the image can match,
+	// so nothing else notices. Latched: it alone reads what the daemon reports
+	// back, which an engine could omit and loop forever.
 	if !s.utsRecreateDone() && inspect.HostConfig.UTSMode != runtimespec.UTSModeHost {
 		return true, "container does not share the host UTS namespace, so " +
 			"discovery would report a container id as the device name"
@@ -554,8 +548,7 @@ func (s *Supervisor) containerIsStale(
 	return false, ""
 }
 
-// utsRecreateDone reports whether the UTS check has already spent its one
-// recreate in this process.
+// utsRecreateDone reports whether that one recreate is already spent.
 func (s *Supervisor) utsRecreateDone() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -17,11 +17,9 @@
 //     Deliberately NOT the orchestrator's dedicated-NIC mechanism, which moves
 //     a host NIC into a container namespace and removes it from the host.
 //
-//   - UTSMode host: the device's own hostname, live, which is what the editor
-//     lists as the device name (the responder answers with gethostname()).
-//     NetworkMode host alone is not enough: the daemon copies its hostname in
-//     once, at CREATE time, so an image built in a container ships that
-//     container's id -- RTOP-292. Grants nothing new over Privileged.
+//   - UTSMode host: the device's hostname, live, which is what discovery
+//     reports. NetworkMode host alone copies it once at CREATE time, so an
+//     image built in a container ships that container's id (RTOP-292).
 //
 //   - No CPU limits, ever. This is the one trap that survives "just make it
 //     privileged", because it is not a privilege. Setting Cpus/CpuQuota/
@@ -124,10 +122,8 @@ const (
 	DefaultDataDir        = "/var/lib/openplc-runtime"
 	DefaultBootloaderPort = 8445
 
-	// UTSModeHost is Docker's value for "share the host's UTS namespace".
-	// Exported because the supervisor compares a running container against it
-	// to decide whether that container predates RTOP-292, and a literal in two
-	// packages is how the two drift apart.
+	// UTSModeHost is Docker's "share the host's UTS namespace". Exported so
+	// the supervisor compares against it rather than a second literal.
 	UTSModeHost = "host"
 )
 
