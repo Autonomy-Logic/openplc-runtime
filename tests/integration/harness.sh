@@ -12,21 +12,19 @@
 # and real SCHED_FIFO latency must be validated on an SLM-RP4.
 #
 # Usage:
-#   ./harness.sh up      # build and start the test host
-#   ./harness.sh seed    # load images and fill the inner registry
-#   ./harness.sh shell   # interactive shell on the test host
-#   ./harness.sh down    # tear everything down
+#   ./harness.sh up            # build and start the test host
+#   ./harness.sh seed          # load images and fill the inner registry
+#   ./harness.sh test [filter] # run the suite against it
+#   ./harness.sh shell         # interactive shell on the test host
+#   ./harness.sh down          # tear everything down
 set -euo pipefail
 
 HOST_CONTAINER=openplc-testhost
 HOST_IMAGE=openplc-testhost:latest
 
-# The test host's own hostname, standing in for the device's.
-#
-# Set explicitly because Docker's default is the container id, and a harness
-# whose "device" is already named like a container id cannot tell a correct
-# reply from the RTOP-292 bug -- both look like hex. A name no container id
-# could be makes the discovery assertions meaningful.
+# The test host's hostname, standing in for the device's. Set explicitly: with
+# Docker's container-id default, a correct reply and the RTOP-292 bug both look
+# like hex and the discovery assertions prove nothing.
 DEVICE_HOSTNAME="${DEVICE_HOSTNAME:-slm-rp4-testhost}"
 DOCKER_VOLUME=openplc-testhost-docker
 REGISTRY=localhost:5000
@@ -48,10 +46,9 @@ REAL_REPO="$REGISTRY/openplc-runtime"
 # container path broke the release build.
 REAL_BASE="${REAL_BASE:-ghcr.io/autonomy-logic/openplc-runtime:v4.2.3}"
 
-# The tag the inner registry serves, taken from REAL_BASE so the two cannot
-# drift. tests/integration/test_bootloader.py pins the same value in
-# REAL_VERSION and both must name the release actually being shipped.
-REAL_TAG="${REAL_BASE##*:}"
+# The tag the inner registry serves. Exported so test_bootloader.py reads it
+# rather than repeating it; the two drifting is a missing-tag failure.
+export REAL_TAG="${REAL_BASE##*:}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -209,6 +206,13 @@ cmd_shell() {
     exec docker exec -it "$HOST_CONTAINER" bash
 }
 
+# cmd_test runs the suite with REAL_TAG carried in, which is what keeps the
+# registry and the assertions naming one version.
+cmd_test() {
+    exec docker exec -e "REAL_TAG=$REAL_TAG" "$HOST_CONTAINER" \
+        python3 /workspace/tests/integration/test_bootloader.py "$@"
+}
+
 cmd_down() {
     log "tearing down"
     docker rm -f "$HOST_CONTAINER" >/dev/null 2>&1 || true
@@ -222,7 +226,8 @@ cmd_down() {
 case "${1:-}" in
     up)    cmd_up ;;
     seed)  cmd_seed ;;
+    test)  shift; cmd_test "$@" ;;
     shell) cmd_shell ;;
     down)  cmd_down ;;
-    *)     die "usage: $0 {up|seed|shell|down}" ;;
+    *)     die "usage: $0 {up|seed|test|shell|down}" ;;
 esac

@@ -32,18 +32,14 @@ type fakeDocker struct {
 	// image so existing tests keep describing a matching container.
 	configImage string
 
-	// privateUTS models a container created before RTOP-292: Docker's default
-	// of a private UTS namespace, which an inspect reports as an empty
-	// UTSMode. The default here is the corrected container, so every other
-	// test keeps describing one the supervisor should leave alone.
+	// privateUTS models a pre-RTOP-292 container: a private UTS namespace,
+	// which an inspect reports as empty. Defaults to the corrected container
+	// so every other test still describes one to leave alone.
 	privateUTS bool
 
-	// neverReportsUTS models a hypothetical engine that accepts UTSMode on
-	// create and never echoes it back in an inspect. There is no such engine
-	// that we know of, which is exactly why it is modelled here: the UTS
-	// check is the only staleness check reading a value the daemon reports
-	// rather than one we asked for, and an engine like this would otherwise
-	// have it recreating the runtime on every reconcile forever.
+	// neverReportsUTS models an engine that accepts UTSMode on create and
+	// never echoes it back. None is known; it is modelled because that engine
+	// would otherwise drive an endless recreate loop.
 	neverReportsUTS bool
 
 	created  int
@@ -668,13 +664,9 @@ func TestAContainerOnTheWrongImageIsRecreated(t *testing.T) {
 	}
 }
 
+// RTOP-292: a pre-fix container reports a container id to discovery, and the
+// image checks see nothing wrong, so a board pinned to a version would keep it.
 func TestAContainerWithAPrivateUTSNamespaceIsRecreated(t *testing.T) {
-	// RTOP-292. A container created before the fix has Docker's default
-	// private UTS namespace, so the runtime inside it answers LAN discovery
-	// with a container id and the editor lists the device as "abbc519d6324"
-	// instead of its hostname. The image is identical, so the image checks
-	// see nothing wrong and the device would keep the broken container until
-	// its next version change -- on a vendor board pinned to a version, never.
 	docker := &fakeDocker{
 		exists: true, running: true, health: "healthy", imagePresent: true,
 		startMakesHealthy: true,
@@ -694,12 +686,9 @@ func TestAContainerWithAPrivateUTSNamespaceIsRecreated(t *testing.T) {
 	}
 }
 
+// Recreating on a configuration difference risks a device that replaces its
+// runtime every reconcile, so the second pass must adopt it untouched.
 func TestTheUTSRecreateHappensOnceAndDoesNotLoop(t *testing.T) {
-	// The risk in recreating on a configuration difference rather than an
-	// image one: if the replacement does not satisfy the same check, every
-	// reconcile replaces the runtime and the PLC never stays up. The
-	// replacement is built from the current spec, which sets UTSMode host, so
-	// the second reconcile must adopt it untouched.
 	docker := &fakeDocker{
 		exists: true, running: true, health: "healthy", imagePresent: true,
 		startMakesHealthy: true,
@@ -721,12 +710,9 @@ func TestTheUTSRecreateHappensOnceAndDoesNotLoop(t *testing.T) {
 	}
 }
 
+// The guarded failure is unbounded and worse than the bug: a device replacing
+// its runtime every reconcile never keeps a PLC running.
 func TestTheUTSCheckCannotLoopWhenTheDaemonNeverReportsIt(t *testing.T) {
-	// The failure this guards is unbounded, and far worse than the bug it
-	// fixes: a device replacing its runtime on every reconcile never keeps a
-	// PLC running, whereas one showing the wrong name still controls a
-	// machine. So the check spends at most one recreate per process, and this
-	// pins that down against an engine that never confirms the flag.
 	docker := &fakeDocker{
 		exists: true, running: true, health: "healthy", imagePresent: true,
 		startMakesHealthy: true,
@@ -746,10 +732,8 @@ func TestTheUTSCheckCannotLoopWhenTheDaemonNeverReportsIt(t *testing.T) {
 	}
 }
 
+// The other half of the pair: an already-correct container is left alone.
 func TestAContainerSharingTheHostUTSNamespaceIsAdopted(t *testing.T) {
-	// The other half of the pair above: a container that already shares the
-	// namespace is left alone, so the fix costs one restart and not one per
-	// reconcile.
 	docker := &fakeDocker{
 		exists: true, running: true, health: "healthy", imagePresent: true,
 		startMakesHealthy: true,

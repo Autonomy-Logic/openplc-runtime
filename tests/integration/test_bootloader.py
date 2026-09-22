@@ -32,11 +32,9 @@ REGISTRY = "localhost:5000"
 STUB_REPO = f"{REGISTRY}/openplc-stub"
 REAL_REPO = f"{REGISTRY}/openplc-runtime"
 
-# The real runtime release under test. Must match the tag in harness.sh's
-# REAL_BASE, and should name the version actually shipping: the SLM-RP4 units
-# in the field run v4.2.3, and a suite pinned to an older tag proves nothing
-# about what they run.
-REAL_VERSION = "v4.2.3"
+# The real runtime release under test, from harness.sh so one place names it.
+# The fallback is for a direct run and must match harness.sh's REAL_BASE tag.
+REAL_VERSION = os.environ.get("REAL_TAG") or "v4.2.3"
 
 BOOTLOADER_IMAGE = "openplc-bootloader:test"
 BOOTLOADER_NAME = "openplc-bootloader"
@@ -199,10 +197,8 @@ def start_bootloader(extra_args: list[str] | None = None) -> None:
     args = [
         "docker", "run", "-d", "--name", BOOTLOADER_NAME,
         "--restart", "always", "--network", "host",
-        # Mirrors install.sh. Kept in step by hand, because this list is a
-        # second copy of those flags: --uts=host is what makes the bootloader's
-        # recovery-mode discovery reply carry the device hostname rather than a
-        # container id (RTOP-292).
+        # Mirrors install.sh, kept in step by hand. --uts=host is what makes
+        # the recovery-mode reply name the device (RTOP-292).
         "--uts=host",
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-v", f"{STATE_DIR}:{STATE_DIR}",
@@ -383,12 +379,9 @@ def discovery_probe(timeout: float = 5.0) -> dict:
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    # Re-sent rather than asked once, which is what the editor does too: it
-    # broadcasts repeatedly across a window (discover-runtimes.ts). A single
-    # datagram is allowed to vanish -- and the responder starts a moment after
-    # the healthcheck it answers, so one attempt turns a working device into a
-    # flaky test. Longer than the responder's 0.1s per-IP rate limit, or the
-    # retries themselves would be dropped.
+    # Re-sent, as the editor does: a datagram may vanish, and the responder
+    # starts just after the healthcheck it answers. The interval clears the
+    # responder's 0.1s per-IP rate limit, which would drop the retries.
     sock.settimeout(0.5)
     deadline = time.time() + timeout
     try:

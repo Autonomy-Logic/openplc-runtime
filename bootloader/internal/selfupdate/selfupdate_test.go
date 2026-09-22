@@ -306,8 +306,8 @@ func TestTheChildReplacesTheParentPreservingItsConfiguration(t *testing.T) {
 		t.Errorf("want host networking preserved, got %v", host["NetworkMode"])
 	}
 	if host["UTSMode"] != runtimespec.UTSModeHost {
-		t.Errorf("want the host UTS namespace so recovery-mode discovery reports "+
-			"the device hostname, got %v", host["UTSMode"])
+		t.Errorf("want the host UTS namespace so recovery discovery names the "+
+			"device, got %v", host["UTSMode"])
 	}
 	if host["RestartPolicy"].(map[string]any)["Name"] != "always" {
 		t.Errorf("the replacement must come back at boot, got %v", host["RestartPolicy"])
@@ -385,29 +385,31 @@ func TestTheChildRecreatesEvenIfTheParentIsAlreadyGone(t *testing.T) {
 	}
 }
 
+// A pre-RTOP-292 parent must not pass its namespace on: the operator would
+// have to reinstall to get a fix they already downloaded.
 func TestAParentWithAPrivateUTSNamespaceDoesNotPassItOn(t *testing.T) {
-	// A bootloader installed before RTOP-292 has Docker's default private UTS
-	// namespace, which an inspect reports as an empty UTSMode. Copying the
-	// parent's configuration is normally the right instinct, but here it would
-	// carry the bug across the one operation whose entire purpose is to leave a
-	// newer bootloader behind -- and the operator would have to reinstall to
-	// get a fix they already downloaded.
-	docker := newFake()
-	parent := parentContainer()
-	parent.HostConfig.UTSMode = ""
-	docker.containers["openplc-bootloader"] = parent
-	setChildEnv(t, "openplc-bootloader", "ghcr.io/x/bootloader:bootloader-v1.1.0")
+	// "" is what Docker actually reports for a private namespace; "private"
+	// covers the field being set rather than defaulted, which an earlier
+	// revision inherited.
+	for _, parentUTS := range []string{"", "private"} {
+		docker := newFake()
+		parent := parentContainer()
+		parent.HostConfig.UTSMode = parentUTS
+		docker.containers["openplc-bootloader"] = parent
+		setChildEnv(t, "openplc-bootloader", "ghcr.io/x/bootloader:bootloader-v1.1.0")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := Execute(ctx, docker, quietLogger()); err != nil {
-		t.Fatalf("execute: %v", err)
-	}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := Execute(ctx, docker, quietLogger()); err != nil {
+			cancel()
+			t.Fatalf("parent %q: execute: %v", parentUTS, err)
+		}
+		cancel()
 
-	host := hostConfig(t, docker.created["openplc-bootloader"])
-	if host["UTSMode"] != runtimespec.UTSModeHost {
-		t.Errorf("the replacement must share the host UTS namespace even when the "+
-			"parent did not, got %v", host["UTSMode"])
+		host := hostConfig(t, docker.created["openplc-bootloader"])
+		if host["UTSMode"] != runtimespec.UTSModeHost {
+			t.Errorf("parent %q: the replacement must share the host UTS namespace, got %v",
+				parentUTS, host["UTSMode"])
+		}
 	}
 }
 

@@ -257,24 +257,16 @@ func replacementSpec(parent *dockerapi.ContainerInspect, newImage string) map[st
 		restart = "always"
 	}
 
-	// The host UTS namespace, so the recovery-mode discovery responder keeps
-	// answering with the device's hostname rather than a container id
-	// (RTOP-292). Forced rather than copied from the parent: a bootloader
-	// installed before that change has a private namespace, and inheriting it
-	// would carry the bug across the one operation whose whole purpose is to
-	// leave a newer bootloader behind.
-	utsMode := parent.HostConfig.UTSMode
-	if utsMode == "" {
-		utsMode = runtimespec.UTSModeHost
-	}
-
 	spec := map[string]any{
 		"Image": newImage,
 		"Env":   env,
 		"HostConfig": map[string]any{
-			"Binds":         parent.HostConfig.Binds,
-			"NetworkMode":   parent.HostConfig.NetworkMode,
-			"UTSMode":       utsMode,
+			"Binds":       parent.HostConfig.Binds,
+			"NetworkMode": parent.HostConfig.NetworkMode,
+			// Set, never inherited: a pre-RTOP-292 parent has a private
+			// namespace, and copying it would carry the bug across the one
+			// operation meant to leave a newer bootloader behind.
+			"UTSMode":       runtimespec.UTSModeHost,
 			"Privileged":    parent.HostConfig.Privileged,
 			"RestartPolicy": map[string]any{"Name": restart},
 		},
