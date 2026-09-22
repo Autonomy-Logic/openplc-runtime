@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimespec"
 )
 
 // --- fakes ---------------------------------------------------------------
@@ -30,6 +31,14 @@ type fakeDocker struct {
 	// what Reconcile compares against the spec. Defaults to the spec's own
 	// image so existing tests keep describing a matching container.
 	configImage string
+
+	// privateUTS models a pre-RTOP-292 container. Defaults off, so every other
+	// test still describes a container to leave alone.
+	privateUTS bool
+
+	// neverReportsUTS models an engine that accepts UTSMode and never echoes
+	// it back, which would otherwise loop. None is known.
+	neverReportsUTS bool
 
 	created  int
 	started  int
@@ -65,6 +74,10 @@ func (f *fakeDocker) InspectContainer(_ context.Context, _ string) (*dockerapi.C
 	if inspect.Config.Image == "" {
 		inspect.Config.Image = "test:1"
 	}
+	inspect.HostConfig.UTSMode = runtimespec.UTSModeHost
+	if f.privateUTS {
+		inspect.HostConfig.UTSMode = ""
+	}
 	inspect.State.Running = f.running
 	inspect.State.ExitCode = f.exit
 	if f.health != "" {
@@ -81,9 +94,12 @@ func (f *fakeDocker) CreateContainer(_ context.Context, _ string, _ any) (*docke
 	f.created++
 	f.exists = true
 	f.running = false
-	// A freshly created container carries the spec's image, so a recreate
-	// resolves the mismatch rather than looping forever.
+	// A new container carries the spec's image and UTS mode, so a recreate
+	// resolves the mismatch instead of looping.
 	f.configImage = "test:1"
+	if !f.neverReportsUTS {
+		f.privateUTS = false
+	}
 	return &dockerapi.CreateContainerResponse{ID: "deadbeef"}, nil
 }
 
@@ -643,6 +659,88 @@ func TestAContainerOnTheWrongImageIsRecreated(t *testing.T) {
 	}
 	if docker.removed == 0 {
 		t.Fatal("the stale container must be removed before recreating")
+	}
+}
+
+// RTOP-292: the image checks see nothing wrong, so a pinned board keeps it.
+func TestAContainerWithAPrivateUTSNamespaceIsRecreated(t *testing.T) {
+	docker := &fakeDocker{
+		exists: true, running: true, health: "healthy", imagePresent: true,
+		startMakesHealthy: true,
+		privateUTS:        true,
+	}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if docker.created != 1 {
+		t.Fatalf("a container not sharing the host UTS namespace must be recreated, creates=%d",
+			docker.created)
+	}
+	if docker.removed == 0 {
+		t.Fatal("the stale container must be removed before recreating")
+	}
+}
+
+// The second pass must adopt the replacement, not replace it again.
+func TestTheUTSRecreateHappensOnceAndDoesNotLoop(t *testing.T) {
+	docker := &fakeDocker{
+		exists: true, running: true, health: "healthy", imagePresent: true,
+		startMakesHealthy: true,
+		privateUTS:        true,
+	}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	afterFirst := docker.created
+
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if docker.created != afterFirst {
+		t.Fatalf("the corrected container must be adopted, not replaced again "+
+			"(creates went %d -> %d)", afterFirst, docker.created)
+	}
+}
+
+// Unbounded, and worse than the bug: the PLC would never stay up.
+func TestTheUTSCheckCannotLoopWhenTheDaemonNeverReportsIt(t *testing.T) {
+	docker := &fakeDocker{
+		exists: true, running: true, health: "healthy", imagePresent: true,
+		startMakesHealthy: true,
+		privateUTS:        true,
+		neverReportsUTS:   true,
+	}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+
+	for i := 0; i < 4; i++ {
+		if err := sup.Reconcile(context.Background()); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+	if docker.created != 1 {
+		t.Fatalf("the UTS check must spend at most one recreate per process, "+
+			"got %d over four reconciles", docker.created)
+	}
+}
+
+// The other half of the pair: an already-correct container is left alone.
+func TestAContainerSharingTheHostUTSNamespaceIsAdopted(t *testing.T) {
+	docker := &fakeDocker{
+		exists: true, running: true, health: "healthy", imagePresent: true,
+		startMakesHealthy: true,
+	}
+	sup := newTestSupervisor(docker, &fakeProbe{})
+
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if docker.created != 0 {
+		t.Fatalf("a container with UTSMode %q must be adopted, creates=%d",
+			runtimespec.UTSModeHost, docker.created)
 	}
 }
 
