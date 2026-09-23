@@ -12,14 +12,19 @@
 # and real SCHED_FIFO latency must be validated on an SLM-RP4.
 #
 # Usage:
-#   ./harness.sh up      # build and start the test host
-#   ./harness.sh seed    # load images and fill the inner registry
-#   ./harness.sh shell   # interactive shell on the test host
-#   ./harness.sh down    # tear everything down
+#   ./harness.sh up            # build and start the test host
+#   ./harness.sh seed          # load images and fill the inner registry
+#   ./harness.sh test [filter] # run the suite against it
+#   ./harness.sh shell         # interactive shell on the test host
+#   ./harness.sh down          # tear everything down
 set -euo pipefail
 
 HOST_CONTAINER=openplc-testhost
 HOST_IMAGE=openplc-testhost:latest
+
+# The device's hostname. Set explicitly: on Docker's container-id default a
+# correct reply and the RTOP-292 bug both look like hex.
+DEVICE_HOSTNAME="${DEVICE_HOSTNAME:-slm-rp4-testhost}"
 DOCKER_VOLUME=openplc-testhost-docker
 REGISTRY=localhost:5000
 
@@ -38,7 +43,10 @@ REAL_REPO="$REGISTRY/openplc-runtime"
 # minutes (it is a full source install), and the only setting that covers the
 # Dockerfile itself -- which is where `./install.sh` silently switching to the
 # container path broke the release build.
-REAL_BASE="${REAL_BASE:-ghcr.io/autonomy-logic/openplc-runtime:v4.2.1}"
+REAL_BASE="${REAL_BASE:-ghcr.io/autonomy-logic/openplc-runtime:v4.2.3}"
+
+# The tag the inner registry serves. Exported so the suite reads it once.
+export REAL_TAG="${REAL_BASE##*:}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -71,6 +79,7 @@ cmd_up() {
     # machine reach them -- which is how the editor and web UI get tested
     # against a real device without one on the desk.
     docker run -d --name "$HOST_CONTAINER" --privileged \
+        --hostname "$DEVICE_HOSTNAME" \
         -p 8443:8443 -p 8445:8445 \
         -v "$DOCKER_VOLUME":/var/lib/docker \
         -v "$REPO_ROOT":/workspace:ro \
@@ -80,6 +89,7 @@ cmd_up() {
     for _ in $(seq 1 120); do
         if inner docker info >/dev/null 2>&1; then
             log "inner daemon ready: $(inner docker version --format '{{.Server.Version}}')"
+            log "device hostname: $(inner hostname)"
             return 0
         fi
         sleep 0.5
@@ -166,7 +176,7 @@ cmd_seed() {
         # The only path that covers the Dockerfile. Its `RUN ./install.sh` has
         # to reach the source build; when install.sh started defaulting to the
         # container path, nothing here noticed and the release build broke.
-        inner docker build -q -t "$REAL_REPO:v4.2.1" /workspace >/dev/null
+        inner docker build -q -t "$REAL_REPO:$REAL_TAG" /workspace >/dev/null
     else
         log "building the real runtime image from $REAL_BASE"
         # A thin layer over a published runtime, carrying the webserver files
@@ -178,9 +188,9 @@ COPY webserver/restapi.py webserver/app.py /workdir/webserver/
 HEALTHCHECK --interval=10s --timeout=10s --start-period=90s --retries=3 \\
     CMD curl -kfsS https://127.0.0.1:8443/api/version >/dev/null || exit 1
 EOF
-docker build -q -f /tmp/real.Dockerfile -t $REAL_REPO:v4.2.1 /workspace >/dev/null"
+docker build -q -f /tmp/real.Dockerfile -t $REAL_REPO:$REAL_TAG /workspace >/dev/null"
     fi
-    inner docker push -q "$REAL_REPO:v4.2.1" >/dev/null
+    inner docker push -q "$REAL_REPO:$REAL_TAG" >/dev/null
 
     log "registry contents:"
     inner curl -fsS "http://$REGISTRY/v2/_catalog" | tr -d '\n'; echo
@@ -192,6 +202,12 @@ docker build -q -f /tmp/real.Dockerfile -t $REAL_REPO:v4.2.1 /workspace >/dev/nu
 
 cmd_shell() {
     exec docker exec -it "$HOST_CONTAINER" bash
+}
+
+# cmd_test runs the suite with REAL_TAG carried in.
+cmd_test() {
+    exec docker exec -e "REAL_TAG=$REAL_TAG" "$HOST_CONTAINER" \
+        python3 /workspace/tests/integration/test_bootloader.py "$@"
 }
 
 cmd_down() {
@@ -207,7 +223,8 @@ cmd_down() {
 case "${1:-}" in
     up)    cmd_up ;;
     seed)  cmd_seed ;;
+    test)  shift; cmd_test "$@" ;;
     shell) cmd_shell ;;
     down)  cmd_down ;;
-    *)     die "usage: $0 {up|seed|shell|down}" ;;
+    *)     die "usage: $0 {up|seed|test|shell|down}" ;;
 esac

@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimespec"
 )
 
 // State is the supervisor's externally visible condition, reported by the
@@ -178,6 +179,9 @@ type Supervisor struct {
 	preUpdateReason string
 	// consecutiveFailures drives restart backoff, reset by a healthy start.
 	consecutiveFailures int
+	// utsRecreated latches the one recreate the UTS check may drive per
+	// process; see containerIsStale. Under mu: Reconcile has three callers.
+	utsRecreated bool
 	// onRecovery is invoked when the supervisor enters recovery, so the UDP
 	// discovery responder can be switched on without this package importing it.
 	onRecovery        func(Status)
@@ -460,11 +464,23 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	// env var) and restarting the bootloader: the container is rebuilt from
 	// the spec instead of silently keeping the old configuration.
 	desired := s.spec.ImageRef()
-	if s.containerIsStale(ctx, inspect, desired) {
-		s.log.Info("runtime container is not on the desired image, recreating",
-			"running", inspect.Config.Image, "desired", desired)
+	if stale, reason := s.containerIsStale(ctx, inspect, desired); stale {
+		s.log.Info("runtime container needs replacing, recreating",
+			"reason", reason, "running", inspect.Config.Image, "desired", desired)
+		// Before the recreate, so a partial failure cannot retry forever.
+		if inspect.HostConfig.UTSMode != runtimespec.UTSModeHost {
+			s.markUTSRecreated()
+		}
 		if err := s.recreate(ctx, inspect); err != nil {
 			return err
+		}
+		if replaced, err := s.docker.InspectContainer(ctx, s.cfg.ContainerName); err == nil &&
+			replaced.HostConfig.UTSMode != runtimespec.UTSModeHost {
+			// Asked for and not granted: say so, do not leave it silent.
+			s.log.Warn("the runtime container does not share the host UTS namespace "+
+				"even though the spec asked for it; LAN discovery will report a "+
+				"container id instead of this device's hostname",
+				"utsMode", replaced.HostConfig.UTSMode)
 		}
 		return s.startAndConfirm(ctx)
 	}
@@ -493,7 +509,8 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	}
 }
 
-// containerIsStale reports whether the running container needs replacing.
+// containerIsStale reports whether the running container needs replacing, and
+// why. The reason is logged, so an unexpected recreate can be traced.
 //
 // Compares resolved image IDs, not tag strings. A container pins its image by
 // ID, so a re-pull of the same tag can leave the container on the OLD layers
@@ -505,20 +522,44 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 // the ordinary version change; the ID lookup only runs when the tags agree.
 func (s *Supervisor) containerIsStale(
 	ctx context.Context, inspect *dockerapi.ContainerInspect, desired string,
-) bool {
+) (bool, string) {
 	if inspect.Config.Image != desired {
-		return true
+		return true, "image tag differs from the desired one"
+	}
+	// A pre-RTOP-292 container reports a container id and the image can match,
+	// so nothing else notices. Latched: it alone reads what the daemon reports
+	// back, which an engine could omit and loop forever.
+	if !s.utsRecreateDone() && inspect.HostConfig.UTSMode != runtimespec.UTSModeHost {
+		return true, "container does not share the host UTS namespace, so " +
+			"discovery would report a container id as the device name"
 	}
 	if inspect.Image == "" {
-		return false
+		return false, ""
 	}
 	image, err := s.docker.InspectImage(ctx, desired)
 	if err != nil || image == nil || image.ID == "" {
 		// No answer from the daemon: the tags match, so treat the container as
 		// current rather than recreating a working runtime on a failed lookup.
-		return false
+		return false, ""
 	}
-	return inspect.Image != image.ID
+	if inspect.Image != image.ID {
+		return true, "image tag resolves to different layers than the container pins"
+	}
+	return false, ""
+}
+
+// utsRecreateDone reports whether that one recreate is already spent.
+func (s *Supervisor) utsRecreateDone() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.utsRecreated
+}
+
+// markUTSRecreated spends it.
+func (s *Supervisor) markUTSRecreated() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.utsRecreated = true
 }
 
 // recreate replaces the container, stopping it gracefully first if it runs.
