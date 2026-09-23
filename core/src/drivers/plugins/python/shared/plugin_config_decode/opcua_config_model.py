@@ -44,6 +44,31 @@ VALID_DATATYPES = frozenset([
     "INT32", "FLOAT",
 ])
 
+# OpenPLC per-variable role names, least- to most-privileged. Single source of
+# truth for every role consumer (config parse here, user_manager, callbacks).
+VALID_ROLES = frozenset(["viewer", "operator", "engineer"])
+
+
+def normalize_role(role: Any) -> str:
+    """Normalize any role value to one of 'viewer' | 'operator' | 'engineer'.
+
+    The one normalization every role consumer shares so config parsing,
+    anonymous-session mapping (user_manager) and per-variable enforcement
+    (callbacks) all agree. Strings are stripped and lowercased; asyncua-style
+    ``Admin``/``User`` names (enum or string) map to engineer/viewer; anything
+    unrecognized falls back to the least-privileged ``viewer``.
+    """
+    # asyncua UserRole and similar enums expose the name via `.name`.
+    name = role.name if hasattr(role, "name") else role
+    r = str(name).strip().lower()
+    if r in VALID_ROLES:
+        return r
+    if "admin" in r:
+        return "engineer"
+    if "user" in r:
+        return "viewer"
+    return "viewer"
+
 
 @dataclass
 class SecurityProfile:
@@ -53,6 +78,11 @@ class SecurityProfile:
     security_policy: str
     security_mode: str
     auth_methods: List[str]
+    # Role granted to Anonymous sessions on this profile. Explicit rather than
+    # inferred: an anonymous client has no identity, so what it may do is stated
+    # here. Absent (projects authored before this field) -> least-privilege
+    # 'viewer'. Only meaningful when 'Anonymous' is in auth_methods.
+    anonymous_role: str = "viewer"
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'SecurityProfile':
@@ -66,12 +96,30 @@ class SecurityProfile:
         except KeyError as e:
             raise ValueError(f"Missing required field in security profile: {e}")
 
+        # Optional; default to viewer for backward compatibility. Validate at
+        # parse time (like VALID_DATATYPES) so a typo surfaces once at server
+        # start — where the admin sees it — instead of a per-session log_warn.
+        # Case/whitespace are normalized so "Engineer" or " engineer " are
+        # accepted; anything not a known role is rejected rather than silently
+        # degraded, since that role decides what an unauthenticated client may do.
+        raw_role = data.get("anonymous_role")
+        if raw_role is None or raw_role == "":
+            anonymous_role = "viewer"
+        else:
+            anonymous_role = str(raw_role).strip().lower()
+            if anonymous_role not in VALID_ROLES:
+                raise ValueError(
+                    f"Invalid anonymous_role '{raw_role}' in security profile "
+                    f"'{name}'. Valid roles: {sorted(VALID_ROLES)}"
+                )
+
         return cls(
             name=name,
             enabled=enabled,
             security_policy=security_policy,
             security_mode=security_mode,
-            auth_methods=auth_methods
+            auth_methods=auth_methods,
+            anonymous_role=anonymous_role
         )
 
 @dataclass

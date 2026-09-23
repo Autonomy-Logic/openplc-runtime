@@ -604,10 +604,13 @@ start_bootloader() {
     #
     # The runtime data directory is read-only here: the bootloader authenticates
     # against the runtime's accounts and must not modify one.
+
+    # --uts=host so recovery-mode discovery names the DEVICE (RTOP-292).
     docker run -d \
         --name "$BOOTLOADER_CONTAINER" \
         --restart always \
         --network host \
+        --uts=host \
         -v /var/run/docker.sock:/var/run/docker.sock \
         -v "$BOOTLOADER_STATE_DIR:$BOOTLOADER_STATE_DIR" \
         -v "$RUNTIME_DATA_DIR:$RUNTIME_DATA_DIR:ro" \

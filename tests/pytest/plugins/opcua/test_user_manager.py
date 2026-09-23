@@ -42,6 +42,7 @@ class MockSecurityProfile:
     security_policy: str
     security_mode: str
     auth_methods: List[str]
+    anonymous_role: str = "viewer"
 
 
 @dataclass
@@ -449,6 +450,97 @@ class TestAnonymousAuthentication:
 
         assert user is None
 
+    def test_anonymous_explicit_engineer_role(self):
+        """An explicit anonymous_role of engineer maps to Admin/engineer."""
+        profiles = [
+            MockSecurityProfile(
+                name="insecure",
+                enabled=True,
+                security_policy="None",
+                security_mode="None",
+                auth_methods=["Anonymous"],
+                anonymous_role="engineer",
+            )
+        ]
+        manager = OpenPLCUserManager(create_test_config(profiles=profiles))
+
+        user = manager.get_user(None)
+
+        assert user is not None
+        assert user.role == UserRole.Admin
+        assert user.openplc_role == "engineer"
+
+    def test_anonymous_role_is_normalized_case_and_whitespace(self):
+        """A capitalized/padded role ('  Engineer ') is normalized, not degraded
+        to viewer — the same normalization every other role consumer applies."""
+        profiles = [
+            MockSecurityProfile(
+                name="insecure",
+                enabled=True,
+                security_policy="None",
+                security_mode="None",
+                auth_methods=["Anonymous"],
+                anonymous_role="  Engineer ",
+            )
+        ]
+        manager = OpenPLCUserManager(create_test_config(profiles=profiles))
+
+        user = manager.get_user(None)
+
+        assert user is not None
+        assert user.role == UserRole.Admin
+        assert user.openplc_role == "engineer"
+
+    def test_anonymous_operator_role(self):
+        """Operator maps to the User asyncua role with openplc_role 'operator'."""
+        profiles = [
+            MockSecurityProfile(
+                name="insecure",
+                enabled=True,
+                security_policy="None",
+                security_mode="None",
+                auth_methods=["Anonymous"],
+                anonymous_role="operator",
+            )
+        ]
+        manager = OpenPLCUserManager(create_test_config(profiles=profiles))
+
+        user = manager.get_user(None)
+
+        assert user is not None
+        assert user.openplc_role == "operator"
+
+    def test_multiple_anonymous_profiles_warns_and_first_wins(self, capsys):
+        """Belt-and-suspenders for the editor's one-Anonymous-profile rule: with
+        two enabled Anonymous profiles, init warns and the FIRST in list order
+        decides the anonymous role (behaviour unchanged)."""
+        profiles = [
+            MockSecurityProfile(
+                name="insecure",
+                enabled=True,
+                security_policy="None",
+                security_mode="None",
+                auth_methods=["Anonymous"],
+                anonymous_role="viewer",
+            ),
+            MockSecurityProfile(
+                name="secure_anon",
+                enabled=True,
+                security_policy="Basic256Sha256",
+                security_mode="SignAndEncrypt",
+                auth_methods=["Anonymous"],
+                anonymous_role="engineer",
+            ),
+        ]
+        manager = OpenPLCUserManager(create_test_config(profiles=profiles))
+        err = capsys.readouterr().err  # log_warn writes to stderr
+
+        assert "more than one enabled security profile offers Anonymous" in err
+        # First profile (viewer) wins, not the engineer one listed second.
+        user = manager.get_user(None)
+        assert user is not None
+        assert user.openplc_role == "viewer"
+
 
 class TestRateLimitingIntegration:
     """Tests for rate limiting in authentication."""
@@ -679,3 +771,33 @@ class TestRateLimitIdentifier:
 
         identifier = manager._get_rate_limit_identifier(None, None)
         assert identifier is None
+
+
+class TestBlankPasswordUserRefused:
+    """A password user with no hash cannot authenticate, so it must not be
+    registered — registering it creates an account that looks configured and
+    silently never works. Refused at load (see UserManager.__init__)."""
+
+    def test_password_user_without_hash_is_dropped(self):
+        config = create_test_config(
+            users=[
+                MockUser(type="password", username="good", password_hash="pbkdf2:sha256:600000$s$h",
+                         certificate_id=None, role="engineer"),
+                MockUser(type="password", username="blank", password_hash=None,
+                         certificate_id=None, role="viewer"),
+            ]
+        )
+        manager = OpenPLCUserManager(config)
+        assert "good" in manager.users
+        assert "blank" not in manager.users
+
+    def test_empty_string_hash_is_also_dropped(self):
+        config = create_test_config(
+            users=[
+                MockUser(type="password", username="blank", password_hash="",
+                         certificate_id=None, role="viewer"),
+            ]
+        )
+        manager = OpenPLCUserManager(config)
+        assert "blank" not in manager.users
+        assert len(manager.users) == 0

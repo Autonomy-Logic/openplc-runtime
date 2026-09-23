@@ -17,6 +17,10 @@
 //     Deliberately NOT the orchestrator's dedicated-NIC mechanism, which moves
 //     a host NIC into a container namespace and removes it from the host.
 //
+//   - UTSMode host: the device's hostname, live, which is what discovery
+//     reports. NetworkMode host alone copies it once at CREATE time, so an
+//     image built in a container ships that container's id (RTOP-292).
+//
 //   - No CPU limits, ever. This is the one trap that survives "just make it
 //     privileged", because it is not a privilege. Setting Cpus/CpuQuota/
 //     CpuPeriod/Memory enables the cgroup CPU controller, and with
@@ -69,6 +73,7 @@ type RestartPolicy struct {
 type HostConfig struct {
 	Privileged    bool          `json:"Privileged"`
 	NetworkMode   string        `json:"NetworkMode"`
+	UTSMode       string        `json:"UTSMode"`
 	Binds         []string      `json:"Binds"`
 	Ulimits       []Ulimit      `json:"Ulimits"`
 	RestartPolicy RestartPolicy `json:"RestartPolicy"`
@@ -116,6 +121,10 @@ const (
 	DefaultRepository     = "ghcr.io/autonomy-logic/openplc-runtime"
 	DefaultDataDir        = "/var/lib/openplc-runtime"
 	DefaultBootloaderPort = 8445
+
+	// UTSModeHost is Docker's "share the host's UTS namespace". Exported so
+	// the supervisor compares against it rather than a second literal.
+	UTSModeHost = "host"
 )
 
 // forbiddenBindTargets are host paths that must never be handed to the runtime
@@ -333,6 +342,7 @@ func (c *Config) ContainerSpec(imageRef string) any {
 		HostConfig: HostConfig{
 			Privileged:  true,
 			NetworkMode: "host",
+			UTSMode:     UTSModeHost,
 			Binds:       binds,
 			Ulimits: []Ulimit{
 				{Name: "rtprio", Soft: 99, Hard: 99},

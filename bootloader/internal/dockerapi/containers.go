@@ -33,8 +33,10 @@ type ContainerState struct {
 // a self-update that silently dropped them would leave a device subtly
 // misconfigured in a way nobody would connect to "the bootloader updated".
 type ContainerHostConfig struct {
-	Binds         []string      `json:"Binds"`
-	NetworkMode   string        `json:"NetworkMode"`
+	Binds       []string `json:"Binds"`
+	NetworkMode string   `json:"NetworkMode"`
+	// "host", or empty for Docker's private default (RTOP-292).
+	UTSMode       string        `json:"UTSMode"`
 	Privileged    bool          `json:"Privileged"`
 	RestartPolicy RestartPolicy `json:"RestartPolicy"`
 }

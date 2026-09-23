@@ -94,7 +94,8 @@ Each security profile defines a connection method with specific security require
     "enabled": true,
     "security_policy": "None",
     "security_mode": "None",
-    "auth_methods": ["Anonymous"]
+    "auth_methods": ["Anonymous"],
+    "anonymous_role": "viewer"
   },
   {
     "name": "signed",
@@ -120,6 +121,9 @@ Each security profile defines a connection method with specific security require
 | `security_policy` | string | Cryptographic algorithm suite (see table below). |
 | `security_mode` | string | Message protection level (see table below). |
 | `auth_methods` | array | Allowed authentication methods for this profile. |
+| `anonymous_role` | string | Role granted to Anonymous sessions on this profile: `"viewer"`, `"operator"`, or `"engineer"`. Optional; **defaults to `"viewer"`** (least privilege) when omitted. Only meaningful when `auth_methods` includes `"Anonymous"`. Validated at load — an unknown value is rejected. |
+
+> **Anonymous role.** An anonymous client has no identity, so `anonymous_role` states, explicitly, what it may do — enforced against the per-variable permission matrix exactly like a named user's role. It defaults to `"viewer"` (read-only); raise it to `"operator"` or `"engineer"` only deliberately, since it grants write access to unauthenticated clients. Anonymous sessions cannot be tied to a specific endpoint, so **configure at most one enabled profile with `"Anonymous"`**; if several are enabled the first in list order decides the role (the runtime warns at start).
 
 #### Security Policy Values
 

@@ -25,11 +25,11 @@ if _parent_dir not in sys.path:
 try:
     from .opcua_logging import log_debug, log_error, log_info, log_warn
     from .opcua_types import VariableNode
-    from .opcua_utils import map_plc_to_opcua_type, convert_value_for_opcua
+    from .opcua_utils import map_plc_to_opcua_type, convert_value_for_opcua, default_for_opcua
 except ImportError:
     from opcua_logging import log_debug, log_error, log_info, log_warn
     from opcua_types import VariableNode
-    from opcua_utils import map_plc_to_opcua_type, convert_value_for_opcua
+    from opcua_utils import map_plc_to_opcua_type, convert_value_for_opcua, default_for_opcua
 
 from shared.plugin_config_decode.opcua_config_model import (
     OpcuaConfig,
@@ -45,15 +45,12 @@ def _type_default(datatype: str) -> Any:
     """Per-type seed value for newly-created OPC-UA nodes. Replaces
     the removed `initial_value` config field — the first sync cycle
     overwrites this with the program's actual current value via
-    debug_read, so the seed only shows for one polling tick."""
-    t = (datatype or "").upper()
-    if t == "BOOL":
-        return False
-    if t in ("REAL", "LREAL"):
-        return 0.0
-    if t in ("STRING", "WSTRING"):
-        return ""
-    return 0
+    debug_read, so the seed only shows for one polling tick.
+
+    Defers to the shared table: this copy had drifted, seeding a WSTRING with
+    `""` where the rest of the plugin uses `b""` — and a WSTRING node is a
+    ByteString, so the seed was the wrong Python type for a whole tick."""
+    return default_for_opcua(datatype)
 
 
 class AddressSpaceBuilder:

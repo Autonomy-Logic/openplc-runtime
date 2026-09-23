@@ -52,6 +52,132 @@ _READ_BUFFER_SIZE = 256
 # Status code from debug_dispatch.hpp
 STATUS_OK = 0x7E
 
+# STRING / WSTRING are variable-length and share one wire format with
+# strucpp's debug surface: a single count byte, then the payload.
+#
+#   STRING   [count][count bytes]            padded to 127 bytes
+#   WSTRING  [count][count * 2 bytes LE]     padded to 253 bytes
+#
+# `count` is in BYTES for STRING and in UTF-16 CODE UNITS for WSTRING, and is
+# capped at DEBUG_STRING_CAP on both sides -- strucpp's `validate_payload`
+# REFUSES a longer write outright rather than truncating it, so the truncation
+# has to happen here.
+#
+# BYTES, not characters: `IECString` stores `char data_[MaxLen + 1]` with
+# `length_` counting bytes, and `_truncate_utf8` below spends its whole body on
+# that fact. The two comments used to contradict each other, and the difference
+# is user-visible -- 126 bytes is ~63 two-byte accented characters, or ~31
+# four-byte emoji, not 126 of either.
+STRING_DATATYPES = frozenset(["STRING", "WSTRING"])
+DEBUG_STRING_CAP = 126
+
+
+# Warnings raised from the READ path, which asyncua calls once per variable per
+# client Read. A leaf that is persistently malformed is not a new event every
+# poll -- at a one-second poll and a handful of clients it is a log that scrolls
+# its own cause off the screen. Say it once per distinct problem and stay quiet
+# after that; the condition is a property of the program, not of the poll.
+_warned: set = set()
+
+
+def _warn_once(key: str, message: str) -> None:
+    if key in _warned:
+        return
+    _warned.add(key)
+    log_warn(f"{message} (further identical warnings suppressed)")
+
+
+def _is_string(datatype: str) -> bool:
+    return (datatype or "").upper() in STRING_DATATYPES
+
+
+def _decode_string(datatype: str, buf: Any, n: int) -> Optional[Any]:
+    """Decode strucpp's [count][payload] wire form.
+
+    STRING comes back as `str`, WSTRING as `bytes` of UTF-16LE code units --
+    NOT as `str`. Transcoding to UTF-8 here would be lossy for lone surrogates
+    and would not match how the value is exposed over OPC-UA (a ByteString),
+    so the bytes are handed over verbatim and the encoding is documented on
+    the node.
+    """
+    if n < 1:
+        return None
+    count = int(buf[0])
+    if count > DEBUG_STRING_CAP:
+        _warn_once(
+            f"malformed-count:{datatype}",
+            f"string payload claims {count} units, cap is {DEBUG_STRING_CAP}; truncating",
+        )
+        count = DEBUG_STRING_CAP
+    wide = datatype.upper() == "WSTRING"
+    payload_len = count * 2 if wide else count
+    if 1 + payload_len > n:
+        _warn_once(
+            f"payload-overruns-read:{datatype}",
+            f"string payload of {payload_len} bytes exceeds the {n} bytes read",
+        )
+        return None
+    raw = bytes(bytearray(buf[1:1 + payload_len]))
+    if wide:
+        return raw
+    # UTF-8, because that is what the rest of the system already agrees on:
+    # the editor's debugger decodes this same wire form with the `len8-utf8`
+    # codec (`variable-sizes.ts`). `errors="replace"` rather than strict so a
+    # truncated multi-byte sequence degrades to one replacement character
+    # instead of taking down the read.
+    return raw.decode("utf-8", errors="replace")
+
+
+def _encode_string(datatype: str, value: Any) -> Optional[bytes]:
+    """Encode a Python value into strucpp's [count][payload] wire form."""
+    wide = datatype.upper() == "WSTRING"
+    if wide:
+        if isinstance(value, str):
+            raw = value.encode("utf-16-le")
+        elif isinstance(value, (bytes, bytearray)):
+            raw = bytes(value)
+        else:
+            return None
+        # An odd byte count is not a short string, it is a malformed one.
+        if len(raw) % 2:
+            log_warn("WSTRING payload has an odd byte count; dropping the trailing byte")
+            raw = raw[:-1]
+        count = min(len(raw) // 2, DEBUG_STRING_CAP)
+        # Do not cut between the halves of a surrogate pair. The STRING path
+        # goes to real trouble not to split a UTF-8 sequence (_truncate_utf8);
+        # the same care is owed here, because a lone high surrogate is not a
+        # shorter string, it is an undecodable one -- `bytes.decode('utf-16-le')`
+        # raises on it. Astral characters (emoji, most CJK extensions) are the
+        # common case.
+        if count > 0:
+            last = int.from_bytes(raw[(count - 1) * 2 : count * 2], "little")
+            if 0xD800 <= last <= 0xDBFF:  # high surrogate with its pair cut off
+                count -= 1
+        payload = raw[: count * 2]
+    else:
+        if isinstance(value, (bytes, bytearray)):
+            raw = bytes(value)
+        else:
+            raw = str(value).encode("utf-8")
+        payload = _truncate_utf8(raw, DEBUG_STRING_CAP)
+        count = len(payload)
+    return bytes([count]) + payload
+
+
+def _truncate_utf8(raw: bytes, limit: int) -> bytes:
+    """Cut `raw` to at most `limit` bytes without splitting a character.
+
+    The cap is a BYTE budget, but UTF-8 characters are 1-4 bytes, so a blind
+    slice can leave a half-character that decodes to a replacement on the way
+    back out. Walk back off any continuation byte (0b10xxxxxx) instead.
+    """
+    if len(raw) <= limit:
+        return raw
+    end = limit
+    while end > 0 and (raw[end] & 0xC0) == 0x80:
+        end -= 1
+    return raw[:end]
+
 
 def _ctype_for(datatype: str) -> Optional[Any]:
     """Map an IEC type name to the ctypes scalar that owns its bytes
@@ -83,8 +209,13 @@ def _ctype_for(datatype: str) -> Optional[Any]:
     if t in TIME_DATATYPES:
         # strucpp encodes time-family types as int64 nanoseconds (TIME_t).
         return ctypes.c_int64
-    if t in ("STRING", "WSTRING"):
-        return None  # variable-length, not yet supported by debug surface
+    if t in STRING_DATATYPES:
+        # Variable-length: no fixed-width ctype owns these. They ARE readable
+        # and writable -- strucpp wires read_string / write_string /
+        # read_wstring / write_wstring into type_ops[] at tags 19/20 -- through
+        # _decode_string / _encode_string instead. Callers must therefore pair
+        # a None from here with an _is_string() check rather than giving up.
+        return None
     return None
 
 
@@ -97,9 +228,7 @@ def debug_read_value(args: Any, arr: int, elem: int, datatype: str) -> Optional[
     "skip this variable for the current cycle".
     """
     ctype = _ctype_for(datatype)
-    if ctype is None:
-        # STRING/WSTRING — not supported yet (Phase 4a in
-        # debug_dispatch.hpp explicitly stubs string reads).
+    if ctype is None and not _is_string(datatype):
         return None
 
     buf = (ctypes.c_uint8 * _READ_BUFFER_SIZE)()
@@ -113,8 +242,11 @@ def debug_read_value(args: Any, arr: int, elem: int, datatype: str) -> Optional[
         log_error(f"debug_read({arr}, {elem}) raised: {e}")
         return None
     if n == 0:
-        # Out-of-bounds, no program, or string-stub — skip.
+        # Out-of-bounds or no program loaded — skip.
         return None
+
+    if _is_string(datatype):
+        return _decode_string(datatype, buf, n)
 
     # Reinterpret the leading bytes as the typed scalar.
     typed = ctypes.cast(buf, ctypes.POINTER(ctype)).contents
@@ -131,16 +263,21 @@ def debug_write_value(args: Any, arr: int, elem: int, datatype: str, value: Any)
     Returns True on STATUS_OK, False otherwise.
     """
     ctype = _ctype_for(datatype)
-    if ctype is None:
+    if ctype is None and not _is_string(datatype):
         return False
 
-    try:
-        encoded = ctype(value)
-    except (TypeError, ValueError) as e:
-        log_warn(f"debug_write({arr}, {elem}, {datatype}): cannot encode {value!r}: {e}")
-        return False
-
-    raw = bytes(encoded)
+    if _is_string(datatype):
+        raw = _encode_string(datatype, value)
+        if raw is None:
+            log_warn(f"debug_write({arr}, {elem}, {datatype}): cannot encode {value!r}")
+            return False
+    else:
+        try:
+            encoded = ctype(value)
+        except (TypeError, ValueError) as e:
+            log_warn(f"debug_write({arr}, {elem}, {datatype}): cannot encode {value!r}: {e}")
+            return False
+        raw = bytes(encoded)
     buf = (ctypes.c_uint8 * len(raw))(*raw)
     try:
         status = args.debug_write(
@@ -162,15 +299,26 @@ def debug_force_value(args: Any, arr: int, elem: int, datatype: str, value: Any)
     Exposed for any plugin feature that wants debugger-style pinning.
     """
     ctype = _ctype_for(datatype)
-    if ctype is None:
-        return False
-    try:
-        encoded = ctype(value)
-    except (TypeError, ValueError) as e:
-        log_warn(f"debug_force({arr}, {elem}, {datatype}): cannot encode {value!r}: {e}")
+    if ctype is None and not _is_string(datatype):
         return False
 
-    raw = bytes(encoded)
+    # Strings force through the same wire form as a write. Read and write each
+    # grew a string path and force did not, so forcing a STRING answered False
+    # with no reason given -- the same silence that hid the read bug, kept
+    # alive in the one operation nobody calls yet.
+    if _is_string(datatype):
+        encoded_str = _encode_string(datatype, value)
+        if encoded_str is None:
+            log_warn(f"debug_force({arr}, {elem}, {datatype}): cannot encode {value!r}")
+            return False
+        raw = encoded_str
+    else:
+        try:
+            encoded = ctype(value)
+        except (TypeError, ValueError) as e:
+            log_warn(f"debug_force({arr}, {elem}, {datatype}): cannot encode {value!r}: {e}")
+            return False
+        raw = bytes(encoded)
     buf = (ctypes.c_uint8 * len(raw))(*raw)
     try:
         status = args.debug_set(
@@ -227,7 +375,9 @@ def initialize_variable_cache(
             log_warn(f"debug_size({arr}, {elem}) raised: {e}")
             continue
         if size == 0:
-            # Out-of-bounds or string-stub — skip.
+            # Out of bounds, or no program loaded. NOT a string: strucpp's
+            # handle_size reports 127 / 253 for STRING / WSTRING, so those
+            # cache normally.
             continue
         datatype = datatypes.get((arr, elem), "UNKNOWN")
         cache[(arr, elem)] = VariableMetadata(
