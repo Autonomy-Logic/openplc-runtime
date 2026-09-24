@@ -75,6 +75,11 @@ State management: `core/src/plc_app/plc_state_manager.cpp`
 - **Driver code**: `core/src/drivers/`
 - **Plugin examples**: `core/src/drivers/plugins/python/` and `core/src/drivers/plugins/native/`
 
+### EtherCAT
+- **Master**: EtherDOG, a separate process (`build/etherdog`) supervised by `webserver/etherdog_manager.py`
+- **Client plugin**: `core/src/drivers/plugins/native/ethercat/` joins EtherDOG's layout with `ethercat_iomapping.json`
+- Details: `docs/ETHERCAT.md`
+
 ### Key Subsystems
 - **Scan cycle manager**: `core/src/plc_app/scan_cycle_manager.c` - deterministic timing
 - **Debug handler**: `core/src/plc_app/debug_handler.c` - WebSocket debug protocol

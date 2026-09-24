@@ -17,7 +17,9 @@ import os
 import platform
 import shutil
 import ssl
+import tempfile
 import threading
+import zipfile
 from pathlib import Path
 from typing import Callable, Final, Optional
 
@@ -28,6 +30,7 @@ from webserver import project_snapshot
 from webserver.credentials import CertGen
 from webserver.debug_websocket import init_debug_websocket
 from webserver.discovery.discovery_routes import discovery_bp
+from webserver.etherdog_manager import EtherDogManager, legacy_ethercat_config_in_use
 from webserver.discovery.network_discovery import (
     responder as network_discovery_responder,
 )
@@ -72,6 +75,11 @@ app.config["MAX_CONTENT_LENGTH"] = (
 login_manager = flask_login.LoginManager()
 login_manager.init_app(app)
 
+# EtherDOG first: plc_main's EtherCAT plugin reads the session file it writes, and a PLC that
+# auto-starts at boot needs the bus configured before its plugins start.
+etherdog_manager = EtherDogManager()
+etherdog_manager.start()
+
 runtime_manager = RuntimeManager(
     runtime_path="./build/plc_main",
     plc_socket="/run/runtime/plc_runtime.socket",
@@ -90,6 +98,7 @@ network_discovery_responder.start()
 # without triggering a re-import of this module (which would create
 # a duplicate RuntimeManager when run with python -m webserver.app).
 app_restapi.config["RUNTIME_MANAGER"] = runtime_manager
+app_restapi.config["ETHERDOG_MANAGER"] = etherdog_manager
 
 BASE_DIR: Final[Path] = Path(__file__).parent
 CERT_FILE: Final[Path] = (BASE_DIR / "certOPENPLC.pem").resolve()
@@ -329,6 +338,27 @@ def stage_project_snapshot() -> str:
     return ""
 
 
+def _upload_has_legacy_ethercat(zip_file, valid_files) -> bool:
+    """True when the upload's conf/ethercat.json (pre-split format) describes EtherCAT masters."""
+    names = [
+        info.filename
+        for info in valid_files
+        if info.filename == "conf/ethercat.json" or info.filename.endswith("/conf/ethercat.json")
+    ]
+    if not names:
+        return False
+    try:
+        with zipfile.ZipFile(zip_file, "r") as zf:
+            text = zf.read(names[0]).decode("utf-8", errors="replace")
+    except (zipfile.BadZipFile, KeyError, OSError) as e:
+        logger.warning("Could not inspect conf/ethercat.json in the upload: %s", e)
+        return False
+    with tempfile.TemporaryDirectory() as tmp:
+        conf = Path(tmp)
+        (conf / "ethercat.json").write_text(text, encoding="utf-8")
+        return legacy_ethercat_config_in_use(conf)
+
+
 def handle_upload_file(data: dict) -> dict:
     if build_state.status == BuildStatus.COMPILING:
         return {
@@ -365,6 +395,19 @@ def handle_upload_file(data: dict) -> dict:
             }
 
         extract_dir = "core/generated"
+
+        # Programs built before the EtherCAT configuration split carry one ethercat.json that
+        # the runtime no longer reads. Refuse them before anything on the device changes.
+        if _upload_has_legacy_ethercat(zip_file, valid_files):
+            build_state.status = BuildStatus.FAILED
+            return {
+                "UploadFileFail": (
+                    "This program was built with an Editor that writes the old EtherCAT "
+                    "configuration (conf/ethercat.json). Rebuild it with an Editor that emits "
+                    "ethercat_busconfig.json and ethercat_iomapping.json."
+                ),
+                "CompilationStatus": build_state.status.name,
+            }
 
         # Point of no return: past here the program on the device is being
         # replaced, so the stored project snapshot must go with it. Clearing
@@ -403,6 +446,10 @@ def handle_upload_file(data: dict) -> dict:
 
         # Update built-in plugin configurations based on extracted config files
         update_plugin_configurations(extract_dir)
+
+        # The bus half of the EtherCAT configuration belongs to EtherDOG.
+        busconfig = Path(extract_dir) / "conf" / "ethercat_busconfig.json"
+        etherdog_manager.apply_busconfig(busconfig if busconfig.exists() else None)
 
         # ?clean=1 — wired from the editor's "Clean build and upload" UI
         # option. Forces a full recompile by wiping core/build/ and the

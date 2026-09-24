@@ -7,10 +7,10 @@
  *        location string parser ("%IX0.3", "%QW3", etc.).
  */
 
-#include "ethercat_io.h"
+#include "ethercat_iomap.h"
 #include "unity.h"
 
-TEST_SOURCE_FILE("core/src/drivers/plugins/native/ethercat/cjson/cJSON.c")
+TEST_SOURCE_FILE("core/src/drivers/plugins/native/cjson/cJSON.c")
 
 void setUp(void) {}
 void tearDown(void) {}

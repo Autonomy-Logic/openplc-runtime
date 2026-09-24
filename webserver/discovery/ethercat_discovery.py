@@ -4,8 +4,8 @@
 """EtherCAT discovery helpers.
 
 Validation utilities for EtherCAT configuration and interface names.
-Network operations (scan, list-interfaces, test) are handled by the
-native EtherCAT plugin via plugin commands routed through the unix socket.
+Network operations (scan, list-interfaces, test) are handled by EtherDOG, the
+EtherCAT master service, through webserver.etherdog_manager.
 """
 
 import re

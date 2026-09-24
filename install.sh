@@ -488,11 +488,6 @@ build_native_plugins() {
     # Create plugins output directory
     mkdir -p "$plugins_output_dir"
 
-    # Initialize git submodules (needed by plugins that vendor libraries like SOEM)
-    if [ -f "$OPENPLC_DIR/.gitmodules" ]; then
-        log_info "Initializing git submodules for native plugins..."
-        git -C "$OPENPLC_DIR" submodule update --init --recursive
-    fi
 
     # Find directories with CMakeLists.txt (indicates buildable plugin)
     local plugins_found=0
@@ -582,6 +577,44 @@ build_native_plugins() {
 }
 
 
+# EtherDOG, the EtherCAT master service supervised by the webserver. Its source stays in the install.
+ETHERDOG_REPO="${ETHERDOG_REPO:-https://github.com/Autonomy-Logic/EtherDOG.git}"
+ETHERDOG_REF="${ETHERDOG_REF:-main}"
+
+build_etherdog() {
+    local src="${ETHERDOG_SRC:-}"
+    if [ -z "$src" ] && [ -f "$OPENPLC_DIR/etherdog/CMakeLists.txt" ]; then
+        src="$OPENPLC_DIR/etherdog"
+    fi
+    if [ -z "$src" ]; then
+        src="$OPENPLC_DIR/third_party/etherdog"
+        if [ ! -f "$src/CMakeLists.txt" ]; then
+            log_info "Fetching EtherDOG ($ETHERDOG_REF) from $ETHERDOG_REPO..."
+            rm -rf "$src"
+            mkdir -p "$(dirname "$src")"
+            if ! git clone --quiet --depth 1 --branch "$ETHERDOG_REF" --recurse-submodules \
+                    --shallow-submodules "$ETHERDOG_REPO" "$src"; then
+                log_warning "Could not fetch EtherDOG; EtherCAT will be unavailable."
+                return 0
+            fi
+        fi
+    fi
+
+    log_info "Building EtherDOG from $src..."
+    local build_dir="$src/build"
+    if ! cmake -S "$src" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release >/dev/null ||
+       ! cmake --build "$build_dir" -j"$(nproc 2>/dev/null || echo 2)"; then
+        log_warning "EtherDOG build failed; EtherCAT will be unavailable."
+        return 0
+    fi
+
+    local exe="$build_dir/etherdog"
+    [ -f "$exe.exe" ] && exe="$exe.exe"
+    mkdir -p "$OPENPLC_DIR/build"
+    cp "$exe" "$OPENPLC_DIR/build/"
+    log_success "EtherDOG installed to $OPENPLC_DIR/build/$(basename "$exe")"
+}
+
 # Setup runtime directory (needed for both Linux and Docker)
 # On MSYS2, use /run/runtime which maps to the MSYS2 installation directory
 if is_msys2; then
@@ -624,6 +657,9 @@ if compile_plc; then
     # Build native plugins after main compilation
     echo "Building native plugins..."
     build_native_plugins
+
+    echo "Building EtherDOG (EtherCAT master service)..."
+    build_etherdog
 
     # Create installation marker (must be done before starting the service)
     touch "$OPENPLC_DIR/.installed"

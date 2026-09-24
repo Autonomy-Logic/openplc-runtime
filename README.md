@@ -287,7 +287,7 @@ The installation script will:
 3. Create Python virtual environment at `venvs/runtime/`
 4. Install Python dependencies
 5. Compile the PLC runtime core with CMake
-6. Build native plugins (e.g., EtherCAT, S7comm)
+6. Build native plugins (e.g., EtherCAT client, S7comm) and EtherDOG, the EtherCAT master service
 7. Install and start a systemd service (`openplc-runtime`) when systemd is available
 
 ### Manual Build
