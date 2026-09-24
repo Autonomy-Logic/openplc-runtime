@@ -208,13 +208,12 @@ static void *relay_thread(void *arg)
 
 int init(void *args)
 {
-    plugin_logger_init(&g_logger, "ETHERCAT", NULL);
+    plugin_logger_init(&g_logger, "ETHERCAT", args);
     if (args == NULL) {
         plugin_logger_error(&g_logger, "init args is NULL");
         return -1;
     }
     memcpy(&g_args, args, sizeof(g_args));
-    plugin_logger_init(&g_logger, "ETHERCAT", args);
 
     const char *override = getenv("ETHERDOG_SESSION_FILE");
     if (override != NULL && override[0] != '\0')
