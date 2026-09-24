@@ -38,6 +38,7 @@ DEFAULT_BUSCONFIG_PATH = Path("./build/plugins") / BUSCONFIG_NAME
 MAX_RAPID_EXITS = 3
 RAPID_EXIT_WINDOW_S = 30.0
 READY_TIMEOUT_S = 10.0
+STALE_STOP_TIMEOUT_S = 5.0
 OUTPUT_TAIL_LINES = 20
 
 USAGE_ERROR_EXIT = 2
@@ -232,7 +233,30 @@ class EtherDogManager:
         self._exit_times.append(now)
         return len(self._exit_times) >= MAX_RAPID_EXITS
 
+    def _stop_stale(self) -> None:
+        """Shut down an EtherDOG left running by an earlier webserver, which would otherwise hold
+        the control endpoint. Its token is still in the token file."""
+        try:
+            self._token = self.paths.token_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            return
+        try:
+            self.command({"command": "shutdown"}, timeout=2.0)
+        except EtherDogUnavailable:
+            return
+        logger.warning("Stopped an EtherDOG left running by a previous webserver")
+        deadline = time.monotonic() + STALE_STOP_TIMEOUT_S
+        while time.monotonic() < deadline:
+            try:
+                with _connect(self.paths.control, 0.5):
+                    pass
+            except OSError:
+                return
+            time.sleep(0.2)
+        logger.error("The previous EtherDOG did not exit; the new one may fail to start")
+
     def _supervise(self) -> None:
+        self._stop_stale()
         if not self._spawn():
             return
         while self._running:

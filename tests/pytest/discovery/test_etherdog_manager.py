@@ -238,3 +238,22 @@ def test_clean_exit_is_not_restarted(run_dir: Path) -> None:
     time.sleep(0.5)
     assert _launches(run_dir) == 1
     assert manager.disabled_reason is None
+
+
+def test_stale_etherdog_is_shut_down(run_dir: Path) -> None:
+    manager = _manager(run_dir, "")
+    manager.paths.token_file.parent.mkdir(parents=True, exist_ok=True)
+    manager.paths.token_file.write_text("old-token\n")
+    server = FakeEtherDog(str(run_dir / "etherdog.socket"), "old-token")
+    received: list[str] = []
+    original = manager.command
+
+    def record(request: dict, timeout: float = 10.0) -> dict:
+        received.append(request["command"])
+        reply = original(request, timeout)
+        server.close()
+        return reply
+
+    manager.command = record  # type: ignore[method-assign]
+    manager._stop_stale()
+    assert received == ["shutdown"]
