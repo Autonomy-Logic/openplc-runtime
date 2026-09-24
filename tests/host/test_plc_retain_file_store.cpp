@@ -16,14 +16,16 @@
  *     (Baremetal's flash driver DOES carry an explicit length, because its
  *     region is fixed-size and trailing erased bytes read as 0xFF — the two
  *     formats are deliberately not the same, and this test pins this one.);
- *   - discarding the payload when the identity does not match;
+ *   - KEEPING the payload when the identity does not match, because the
+ *     identity is the program's MD5 and so changes on any edit at all — the
+ *     layout hash one layer up is what decides whether the bytes still fit;
  *   - treating a file too short to carry the header as unattributable;
  *   - holding the identity from load() so the next save() can label its bytes.
  *
  * Until this file existed, that path's only evidence was a by-hand run on an
- * SLM-RP4 recorded in a PR body. The case it proves — a program's values are
- * refused for a DIFFERENT program even when the retain layout is identical — is
- * exactly the one a layout hash cannot catch, so it is worth being able to
+ * SLM-RP4 recorded in a PR body. The case it now proves — that an ordinary
+ * logic edit does NOT cost a commissioned plant its retained values — is the
+ * one that used to fail on every single upload, so it is worth being able to
  * re-run without hardware.
  *
  * WHY NOT CEEDLING, AND WHY NOT THE LIFECYCLE HARNESS
@@ -218,14 +220,37 @@ static void case_same_program_restores()
     CHECK(memcmp(out, blob, sizeof(blob)) == 0, "the payload should come back unchanged");
 }
 
-/* THE CASE A LAYOUT HASH CANNOT CATCH.
+/* A PROGRAM EDIT MUST NOT COST THE PLANT ITS RETAINED VALUES.
  *
- * Both programs here retain the same shape — same length, same bytes would pack
- * identically — and differ only in identity. Without this check the second
- * program silently inherits the first one's state. */
-static void case_different_program_is_discarded()
+ * This case asserted the opposite until the fix this replaces it for, and the
+ * reversal is the whole point, so it is worth saying why rather than leaving a
+ * diff that looks like a check being weakened.
+ *
+ * The identity stored here is PROGRAM_ID — the MD5 of program.st — so it
+ * changes on ANY edit: move a rung, rename a comment, add a line anywhere.
+ * Discarding on a mismatch therefore meant every retained value in a
+ * commissioned plant reset on every upload, which is precisely the guarantee
+ * the RETAIN qualifier exists to give. IEC 61131-3 §6.5.6.1 rule 1 defines a
+ * retained value as "the values the variables had when the resource or
+ * configuration was stopped", conditioned on the starting operation being a
+ * warm restart and on nothing else; "download", "reload" and "online change"
+ * appear nowhere in Part 3.
+ *
+ * And the check that SHOULD refuse a genuinely incompatible blob already
+ * exists one layer up, in ext_strucpp_retain_unpack(): magic, format, crc,
+ * truncation and the LAYOUT HASH, with plc_retain.cpp naming which failed.
+ * STruC++ hashes the layout instead of the program deliberately — a body edit
+ * leaves it unchanged, while adding, removing, retyping or reordering a
+ * retained variable changes it and the blob is refused. This store sitting in
+ * front of that with a project MD5 defeated it rather than reinforcing it.
+ *
+ * WHAT IS GIVEN UP: two DIFFERENT projects sharing one retain.bin path whose
+ * layout hashes happen to collide would read each other's values — a 32-bit
+ * collision on a path nobody takes, against a certainty on the path everybody
+ * takes. */
+static void case_different_program_keeps_its_values()
 {
-    g_case = "a different program's values are discarded, not inherited";
+    g_case = "an edited program still gets its retained values";
     reset();
 
     const uint8_t blob[] = {0xDE, 0xAD, 0xBE, 0xEF};
@@ -240,27 +265,30 @@ static void case_different_program_is_discarded()
     const int rc = plc_retain_file_store_load(MD5_B, PLC_RETAIN_PROGRAM_ID_LEN, out, sizeof(out),
                                               &got);
 
-    CHECK(rc == 0, "a stale store is not an error — it is an empty one");
-    CHECK(got == 0, "NOTHING may be handed back to a different program");
-    CHECK(!store_file_exists(), "the stale file should be removed, not left to be re-read");
+    CHECK(rc == 0, "a store written by an earlier build is not an error");
+    CHECK(got == sizeof(blob), "the bytes must be handed up, for the layout check to judge");
+    CHECK(got == sizeof(blob) && memcmp(out, blob, sizeof(blob)) == 0,
+          "and handed up UNCHANGED — this is the plant's commissioned state");
+    CHECK(store_file_exists(), "the file must not be removed on an identity mismatch");
     CHECK(g_log.find("different program") != std::string::npos,
-          "the operator must be told storage was cleared, and why");
+          "the operator should still be told the bytes predate this build");
+    CHECK(g_log.find("storage cleared") == std::string::npos,
+          "and must NOT be told they were cleared, because they were not");
 
-    /* And the new program's first commit must be labelled with ITS identity,
-     * from the id the load above held — otherwise the next start discards it
-     * too and retention never works for this program. */
+    /* The identity still has to be taken from load(), so the next commit
+     * labels the bytes with the program that is actually running. */
     const uint8_t fresh[] = {0x11, 0x22};
     plc_retain_file_store_save(fresh, sizeof(fresh));
     plc_retain_file_store_flush();
     plc_retain_file_store_stop();
 
     FILE *f = fopen(g_store_path.c_str(), "rb");
-    CHECK(f != nullptr, "the new program should be able to store");
+    CHECK(f != nullptr, "the running program should be able to store");
     if (f) {
         char id[PLC_RETAIN_PROGRAM_ID_LEN];
         CHECK(fread(id, 1, sizeof(id), f) == sizeof(id), "header readable");
         CHECK(memcmp(id, MD5_B, sizeof(id)) == 0,
-              "the commit after a discard must carry the NEW program's id");
+              "the next commit must carry the RUNNING program's id");
         fclose(f);
     }
 }
@@ -380,7 +408,7 @@ int main()
     printf("plc_retain_file_store — identity handling\n");
     case_header_layout();
     case_same_program_restores();
-    case_different_program_is_discarded();
+    case_different_program_keeps_its_values();
     case_short_file_is_unattributable();
     case_empty_store_is_not_an_error();
     case_wrong_identity_length_is_refused();
