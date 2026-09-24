@@ -36,6 +36,7 @@ DEFAULT_BUSCONFIG_PATH = Path("./build/plugins") / BUSCONFIG_NAME
 RESTART_BACKOFF_S = 2.0
 MAX_BACKOFF_S = 30.0
 MONITOR_INTERVAL_S = 1.0
+DLL_NOT_FOUND_EXIT = 127
 
 
 class EtherDogUnavailable(RuntimeError):
@@ -199,6 +200,12 @@ class EtherDogManager:
                 continue
             code = proc.returncode if proc is not None else None
             logger.warning("EtherDOG exited (code %s); restarting in %.0f s", code, self._backoff)
+            # 127 on Windows: a DLL failed to load, usually wpcap.dll
+            if IS_WINDOWS and code == DLL_NOT_FOUND_EXIT:
+                logger.error(
+                    "EtherCAT requires Npcap (https://npcap.com) to access the network "
+                    "interface. Please install Npcap and restart the runtime."
+                )
             time.sleep(self._backoff)
             self._backoff = min(self._backoff * 2, MAX_BACKOFF_S)
             if self._running:
