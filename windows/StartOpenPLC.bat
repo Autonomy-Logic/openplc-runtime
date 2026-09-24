@@ -46,7 +46,7 @@ if not exist "%MSYS2_ROOT%\run\runtime" (
 )
 
 REM Start the OpenPLC Runtime
-"%MSYS2_ROOT%\usr\bin\bash.exe" -lc "cd '%OPENPLC_MSYS_PATH%' && ./venvs/runtime/bin/python3 -m webserver.app"
+"%MSYS2_ROOT%\usr\bin\bash.exe" -lc "cd '%OPENPLC_MSYS_PATH%' && exec ./venvs/runtime/bin/python3 -m webserver.app"
 
 if %ERRORLEVEL% neq 0 (
     echo.

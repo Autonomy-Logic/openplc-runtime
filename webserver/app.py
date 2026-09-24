@@ -16,6 +16,7 @@ import json
 import os
 import platform
 import shutil
+import signal
 import ssl
 import tempfile
 import threading
@@ -542,7 +543,17 @@ def restapi_callback_post(argument: str, data: dict) -> dict:
     return handler(data)
 
 
+def _stop_on_signal(signum: int, _frame: object) -> None:
+    # Same shutdown path as Ctrl+C, so EtherDOG zeroes the outputs and plc_main stops cleanly
+    signal.signal(signum, signal.SIG_IGN)  # a repeat must not interrupt the cleanup
+    raise KeyboardInterrupt(f"signal {signum}")
+
+
 def run_https():
+    for sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
+        if sig is not None:
+            signal.signal(sig, _stop_on_signal)
+
     # rest api register
     app_restapi.register_blueprint(restapi_bp, url_prefix="/api")
     app_restapi.register_blueprint(discovery_bp)
