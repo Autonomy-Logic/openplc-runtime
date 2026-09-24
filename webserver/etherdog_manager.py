@@ -244,6 +244,11 @@ class EtherDogManager:
                 self._pump.join(timeout=2.0)
             if not self._running:
                 return
+            # EtherDOG exits 0 only when asked to stop (SIGINT/SIGTERM or "shutdown")
+            if code == 0:
+                self._running = False
+                logger.info("EtherDOG stopped; not restarting it")
+                return
             output = list(self._output)
             reason = _fatal_exit_reason(code, output)
             if reason is not None:
@@ -311,7 +316,7 @@ class EtherDogManager:
                 self._configure_locked()
                 return
         # A new program gets a fresh start, as the PLC runtime does after safe mode
-        if self._disabled_reason is not None and self.installed:
+        if not self._running and self.installed:
             logger.info("Retrying EtherDOG for the new program")
             self.start()
 

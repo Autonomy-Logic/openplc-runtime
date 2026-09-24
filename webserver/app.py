@@ -615,6 +615,7 @@ def run_https():
         # logger.info("HTTP server stopped by KeyboardInterrupt")
         pass
     finally:
+        etherdog_manager.stop()
         logger.info("Runtime manager stopped")
         runtime_manager.stop()
         network_discovery_responder.stop()

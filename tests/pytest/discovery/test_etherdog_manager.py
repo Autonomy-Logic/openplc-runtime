@@ -229,3 +229,12 @@ def test_new_program_retries_disabled_etherdog(run_dir: Path) -> None:
     manager.apply_busconfig(None)
     assert _wait_for(lambda: _launches(run_dir) > etherdog_manager.MAX_RAPID_EXITS)
     assert _wait_for(lambda: manager.disabled_reason is not None)
+
+
+def test_clean_exit_is_not_restarted(run_dir: Path) -> None:
+    manager = _fake_binary(run_dir, "exit 0")
+    manager.start()
+    assert _wait_for(lambda: not manager._running)
+    time.sleep(0.5)
+    assert _launches(run_dir) == 1
+    assert manager.disabled_reason is None
