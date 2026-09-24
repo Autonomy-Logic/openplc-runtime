@@ -328,27 +328,40 @@ install_deps_apk() {
 # For MSYS2 on Windows
 install_deps_msys2() {
     echo "Installing dependencies via pacman (MSYS2)..."
-    # Update package database (but don't do full system upgrade to avoid breaking frozen bundles)
-    pacman -Sy --noconfirm
-    # Install required packages
     # Note: python-cryptography is installed via pacman because pip cannot build
     # Rust-based packages on MSYS2/Cygwin.
     # Plugin venvs use --system-site-packages to access these pre-built packages.
     # bcrypt is skipped on MSYS2 - the OPC-UA plugin uses PBKDF2 fallback (Python stdlib).
-    pacman -S --noconfirm --needed \
-        base-devel \
-        gcc \
-        make \
-        cmake \
-        pkg-config \
-        python \
-        python-pip \
-        python-setuptools \
-        python-cryptography \
-        git \
-        sqlite3 \
-        msys2-w32api-headers \
+    local pkgs=(
+        base-devel
+        gcc
+        make
+        cmake
+        pkg-config
+        python
+        python-pip
+        python-setuptools
+        python-cryptography
+        git
+        sqlite3
+        msys2-w32api-headers
         msys2-w32api-runtime
+    )
+    # pacman does not support partial upgrades (-Sy then -S): a newer package can land
+    # without the newer libraries it links against. Leave a complete bundle untouched,
+    # otherwise upgrade the whole system together with the install.
+    if ! pacman -T "${pkgs[@]}" >/dev/null; then
+        pacman -Syu --noconfirm --needed "${pkgs[@]}"
+    fi
+    # Repair an install already broken by an earlier partial upgrade
+    if ! cmake --version >/dev/null 2>&1; then
+        echo "cmake does not run, upgrading MSYS2 packages to repair it..."
+        pacman -Syu --noconfirm
+        if ! cmake --version >/dev/null 2>&1; then
+            echo "ERROR: cmake still does not run after upgrading MSYS2 packages" >&2
+            exit 1
+        fi
+    fi
 }
 
 compile_plc() {
