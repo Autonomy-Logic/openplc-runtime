@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file test_ethercat_proc.c
  * @brief Unit tests for ecat_run_argv() — fork+execvp helper.

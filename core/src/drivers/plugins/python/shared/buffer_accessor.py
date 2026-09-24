@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # pylint: disable=R0913,R0917
 # R0913: Too many arguments (required for generic buffer operations)
 # R0917: Too many positional arguments (required for generic buffer operations)

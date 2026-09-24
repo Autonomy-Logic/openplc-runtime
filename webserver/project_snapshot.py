@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Storage for the source project snapshot a client sends with an upload.
 
 The editor compiles a project and uploads only the build artifacts, so nothing

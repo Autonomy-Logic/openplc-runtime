@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // Package dockerapi is a minimal client for the Docker Engine API over the
 // host's unix socket.
 //

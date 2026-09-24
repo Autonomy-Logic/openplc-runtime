@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # logger/formatter.py
 from datetime import datetime, timezone
 import logging

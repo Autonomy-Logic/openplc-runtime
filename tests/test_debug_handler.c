@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /*
  * test_debug_handler.c — wire-level tests for the new STruC++ debugger
  * ABI (FC 0x41-0x45) at the `process_debug_data` boundary.

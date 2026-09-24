@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 Mutex Manager for OpenPLC Python Plugin System
 

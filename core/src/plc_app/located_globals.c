@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /* -----------------------------------------------------------------------------
  * located_globals.c — see located_globals.h for the rationale.
  * -------------------------------------------------------------------------- */

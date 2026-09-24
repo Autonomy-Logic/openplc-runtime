@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Modbus Master plugin connection management utilities."""
 
 import time

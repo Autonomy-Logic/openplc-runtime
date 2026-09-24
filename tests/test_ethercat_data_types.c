@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file test_ethercat_data_types.c
  * @brief Unit tests for ecat_parse_data_type() — data type string recognition

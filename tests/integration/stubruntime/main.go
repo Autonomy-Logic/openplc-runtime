@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // Command stubruntime stands in for the OpenPLC runtime in integration tests.
 //
 // It serves the two endpoints the bootloader actually depends on -- an

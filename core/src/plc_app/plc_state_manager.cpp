@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // plc_state_manager.cpp
 //
 // Walks the loaded program's ConfigurationInstance via virtual dispatch

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /*
  * Host test for the built-in retain file store's identity handling.
  *

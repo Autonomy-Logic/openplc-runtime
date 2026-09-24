@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Runtime version exposed at /api/version and via the
 X-OpenPLC-Runtime-Version response header.
 

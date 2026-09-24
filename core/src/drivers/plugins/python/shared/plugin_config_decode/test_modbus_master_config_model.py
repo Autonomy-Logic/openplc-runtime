@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 import pytest
 from .modbus_master_config_model import (
     ERROR_HANDLING_KEEP_LAST,

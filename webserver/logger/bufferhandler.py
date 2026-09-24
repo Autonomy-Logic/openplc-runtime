@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # logger/bufferhandler.py
 import logging
 from collections import deque

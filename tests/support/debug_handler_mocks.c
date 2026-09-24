@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /*
  * debug_handler_mocks.c — implementation of the test-side debugger ABI
  * fakes. See debug_handler_mocks.h for the contract.

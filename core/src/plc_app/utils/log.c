@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 #include "log.h"
 #include <errno.h>
 #include <pthread.h>

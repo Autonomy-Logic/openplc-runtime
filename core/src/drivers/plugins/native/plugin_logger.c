@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file plugin_logger.c
  * @brief Centralized Plugin Logger Implementation for Native OpenPLC Plugins

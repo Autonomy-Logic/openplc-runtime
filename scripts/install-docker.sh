@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # OpenPLC Runtime installer -- container edition (RTOP-283).
 #
 # Two ways in, one script:

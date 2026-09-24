@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /* -----------------------------------------------------------------------------
  * located_globals.h — resolve which locatedVars[] entries are CONFIGURATION
  * VAR_GLOBAL ... AT, by joining against the .so's locatedGlobals[] array.

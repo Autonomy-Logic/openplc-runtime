@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file journal_buffer.c
  * @brief Journal Buffer Implementation for Race-Condition-Free Plugin Writes

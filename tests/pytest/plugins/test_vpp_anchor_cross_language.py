@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Cross-language contract test for the licensing ANCHOR normalization.
 
 Why this exists

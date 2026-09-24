@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 #ifndef __PYTHON_PLUGIN_BRIDGE_H
 #define __PYTHON_PLUGIN_BRIDGE_H
 

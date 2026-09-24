@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 from typing import List, Dict, Any, Optional, Literal
 from dataclasses import dataclass
 import json

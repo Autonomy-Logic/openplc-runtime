@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // Package api is the bootloader's control API on port 8445.
 //
 // Deliberately small. This is the interface to the component that recovers a
