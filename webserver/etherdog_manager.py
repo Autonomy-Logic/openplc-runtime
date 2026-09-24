@@ -157,10 +157,18 @@ class EtherDogManager:
         except OSError as e:
             logger.error("Could not write the EtherDOG session file: %s", e)
 
+    def _saved_token(self) -> str | None:
+        try:
+            token = self.paths.token_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return token if len(token) == 64 and all(c in "0123456789abcdef" for c in token) else None
+
     def _write_session(self) -> None:
         self.paths.state_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.paths.state_dir, 0o700)
-        self._token = secrets.token_hex(32)
+        # Kept across restarts so a leftover EtherDOG can still be told to shut down
+        self._token = self._saved_token() or secrets.token_hex(32)
         _write_private(self.paths.token_file, self._token + "\n")
         session = {
             "control": self.paths.control,
@@ -236,9 +244,8 @@ class EtherDogManager:
     def _stop_stale(self) -> None:
         """Shut down an EtherDOG left running by an earlier webserver, which would otherwise hold
         the control endpoint. Its token is still in the token file."""
-        try:
-            self._token = self.paths.token_file.read_text(encoding="utf-8").strip()
-        except OSError:
+        self._token = self._saved_token() or ""
+        if not self._token:
             return
         try:
             self.command({"command": "shutdown"}, timeout=2.0)
