@@ -8,10 +8,12 @@ import os
 import socket
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
+from webserver import etherdog_manager
 from webserver.discovery.discovery_routes import _with_plugin_state
 from webserver.etherdog_manager import (
     EtherDogManager,
@@ -132,3 +134,98 @@ def test_session_file_is_private(run_dir: Path) -> None:
     assert session["control"].startswith("unix:")
     assert os.stat(manager.paths.session_file).st_mode & 0o077 == 0
     assert os.stat(manager.paths.token_file).st_mode & 0o077 == 0
+
+
+def _fake_binary(run_dir: Path, body: str) -> EtherDogManager:
+    """An executable that counts its launches in <run_dir>/launches, then runs @body."""
+    binary = run_dir / "etherdog-bin"
+    binary.write_text(f'#!/bin/sh\necho x >> "{run_dir}/launches"\n{body}\n')
+    binary.chmod(0o755)
+    return EtherDogManager(binary=str(binary), run_dir=run_dir)
+
+
+def _launches(run_dir: Path) -> int:
+    path = run_dir / "launches"
+    return len(path.read_text().splitlines()) if path.exists() else 0
+
+
+def _wait_for(predicate, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _session(manager: EtherDogManager) -> dict:
+    return json.loads(manager.paths.session_file.read_text())
+
+
+def test_missing_binary_disables_without_raising(run_dir: Path) -> None:
+    manager = EtherDogManager(binary=str(run_dir / "absent"), run_dir=run_dir)
+    manager.start()
+    assert "not installed" in manager.disabled_reason
+    assert "not installed" in _session(manager)["disabled"]
+    assert "not installed" in manager.plugin_style_command({"command": "status"}, 1.0)["error"]
+
+
+def test_missing_npcap_disables_after_one_exit(run_dir: Path, monkeypatch) -> None:
+    monkeypatch.setattr(etherdog_manager, "IS_WINDOWS", True)
+    manager = _fake_binary(
+        run_dir,
+        "echo 'etherdog.exe: error while loading shared libraries: wpcap.dll: "
+        "cannot open shared object file' >&2; exit 127",
+    )
+    manager.start()
+    assert _wait_for(lambda: manager.disabled_reason is not None)
+    assert manager.disabled_reason == etherdog_manager.NPCAP_REASON
+    assert _session(manager)["disabled"] == etherdog_manager.NPCAP_REASON
+    time.sleep(0.5)
+    assert _launches(run_dir) == 1
+
+
+def test_missing_library_on_linux_is_fatal(run_dir: Path, monkeypatch) -> None:
+    monkeypatch.setattr(etherdog_manager, "IS_WINDOWS", False)
+    manager = _fake_binary(
+        run_dir, "echo 'libfoo.so: cannot open shared object file' >&2; exit 127"
+    )
+    manager.start()
+    assert _wait_for(lambda: manager.disabled_reason is not None)
+    assert "libfoo.so" in manager.disabled_reason
+    assert _launches(run_dir) == 1
+
+
+def test_rapid_exits_disable_after_limit(run_dir: Path) -> None:
+    manager = _fake_binary(run_dir, "exit 1")
+    manager.start()
+    assert _wait_for(lambda: manager.disabled_reason is not None)
+    assert f"{etherdog_manager.MAX_RAPID_EXITS} times" in manager.disabled_reason
+    assert _launches(run_dir) == etherdog_manager.MAX_RAPID_EXITS
+
+
+def test_restart_is_immediate(run_dir: Path, monkeypatch) -> None:
+    monkeypatch.setattr(etherdog_manager, "READY_TIMEOUT_S", 0.2)
+    # First launch exits, the second stays up
+    manager = _fake_binary(
+        run_dir, f'[ "$(wc -l < "{run_dir}/launches")" -gt 1 ] && exec sleep 30\nexit 1'
+    )
+    started = time.monotonic()
+    manager.start()
+    try:
+        assert _wait_for(lambda: _launches(run_dir) == 2, timeout=3.0)
+        assert time.monotonic() - started < 2.0
+        assert manager.disabled_reason is None
+    finally:
+        manager._running = False
+        if manager._process is not None:
+            manager._process.kill()
+
+
+def test_new_program_retries_disabled_etherdog(run_dir: Path) -> None:
+    manager = _fake_binary(run_dir, "exit 1")
+    manager.start()
+    assert _wait_for(lambda: manager.disabled_reason is not None)
+    manager.apply_busconfig(None)
+    assert _wait_for(lambda: _launches(run_dir) > etherdog_manager.MAX_RAPID_EXITS)
+    assert _wait_for(lambda: manager.disabled_reason is not None)

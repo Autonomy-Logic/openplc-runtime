@@ -75,8 +75,9 @@ static int call_json(edl_link_t *link, const char *command, char *resp, size_t s
 static int link_up(char *err, size_t err_size)
 {
     edl_session_t session;
-    if (edl_read_session(g_session_file, &session, err, err_size) != 0)
-        return -1;
+    int session_rc = edl_read_session(g_session_file, &session, err, err_size);
+    if (session_rc != 0)
+        return session_rc;
     if (edl_connect(&g_link, &session, err, err_size) != 0)
         return -1;
 
@@ -258,7 +259,12 @@ int start_loop(void)
     }
 
     char err[512];
-    if (link_up(err, sizeof(err)) != 0) {
+    int rc = link_up(err, sizeof(err));
+    if (rc == EDL_DISABLED) {
+        plugin_logger_warn(&g_logger, "%s", err);
+        return 0;
+    }
+    if (rc != 0) {
         plugin_logger_error(&g_logger, "EtherCAT start failed: %s", err);
         return -1;
     }

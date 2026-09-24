@@ -43,7 +43,10 @@ typedef struct {
     bool open[EDL_MAX_MASTERS];
 } edl_link_t;
 
-/** Read the webserver's session file. Returns 0, or -1 with @p err filled. */
+/** edl_read_session: the webserver disabled EtherDOG; @p err holds the reason. */
+#define EDL_DISABLED (-2)
+
+/** Read the webserver's session file. Returns 0, EDL_DISABLED or -1, with @p err filled. */
 int edl_read_session(const char *path, edl_session_t *out, char *err, size_t err_size);
 
 void edl_init(edl_link_t *link);

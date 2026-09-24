@@ -18,6 +18,7 @@ import socket
 import subprocess
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,10 +34,19 @@ DEFAULT_RUN_DIR = Path("/run/runtime")
 BUSCONFIG_NAME = "ethercat_busconfig.json"
 DEFAULT_BUSCONFIG_PATH = Path("./build/plugins") / BUSCONFIG_NAME
 
-RESTART_BACKOFF_S = 2.0
-MAX_BACKOFF_S = 30.0
-MONITOR_INTERVAL_S = 1.0
-DLL_NOT_FOUND_EXIT = 127
+# Same policy as the PLC runtime: this many exits within the window disables EtherDOG
+MAX_RAPID_EXITS = 3
+RAPID_EXIT_WINDOW_S = 30.0
+READY_TIMEOUT_S = 10.0
+OUTPUT_TAIL_LINES = 20
+
+USAGE_ERROR_EXIT = 2
+MISSING_LIBRARY_EXITS = (127, 0xC0000135)  # Cygwin loader, Windows STATUS_DLL_NOT_FOUND
+NPCAP_MARKERS = ("wpcap", "packet.dll", "npcap")
+NPCAP_REASON = (
+    "Npcap is not installed; EtherCAT requires Npcap (https://npcap.com) to access the "
+    "network interface. Install it and restart the runtime"
+)
 
 
 class EtherDogUnavailable(RuntimeError):
@@ -93,9 +103,12 @@ class EtherDogManager:
         self.log_socket = log_socket or f"unix:{run_dir / 'log_runtime.socket'}"
         self._token = ""
         self._process: subprocess.Popen[str] | None = None
+        self._pump: threading.Thread | None = None
+        self._output: deque[str] = deque(maxlen=OUTPUT_TAIL_LINES)
         self._lock = threading.Lock()
         self._running = False
-        self._backoff = RESTART_BACKOFF_S
+        self._exit_times: list[float] = []
+        self._disabled_reason: str | None = None
         self._monitor: threading.Thread | None = None
 
     # --- process lifecycle -------------------------------------------------------------
@@ -104,14 +117,20 @@ class EtherDogManager:
     def installed(self) -> bool:
         return os.path.isfile(self.paths.binary) or os.path.isfile(self.paths.binary + ".exe")
 
+    @property
+    def disabled_reason(self) -> str | None:
+        """Why EtherDOG is not running, or None while it is supervised."""
+        return self._disabled_reason
+
     def start(self) -> None:
-        """Start EtherDOG (if installed) and keep it running."""
+        """Start EtherDOG (if installed) and keep it running. Never raises: without EtherDOG
+        the runtime still runs, only EtherCAT is unavailable."""
         if not self.installed:
-            logger.info("EtherDOG not installed at %s; EtherCAT is unavailable", self.paths.binary)
+            self._disable(f"EtherDOG is not installed at {self.paths.binary}")
             return
+        self._disabled_reason = None
+        self._exit_times.clear()
         self._running = True
-        self._write_session()
-        self._spawn()
         self._monitor = threading.Thread(target=self._supervise, daemon=True)
         self._monitor.start()
 
@@ -128,6 +147,15 @@ class EtherDogManager:
             except subprocess.TimeoutExpired:
                 proc.kill()
 
+    def _disable(self, reason: str) -> None:
+        self._running = False
+        self._disabled_reason = reason
+        logger.warning("%s. EtherCAT is disabled; the runtime continues without it.", reason)
+        try:
+            _write_private(self.paths.session_file, json.dumps({"disabled": reason}) + "\n")
+        except OSError as e:
+            logger.error("Could not write the EtherDOG session file: %s", e)
+
     def _write_session(self) -> None:
         self.paths.state_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.paths.state_dir, 0o700)
@@ -140,7 +168,8 @@ class EtherDogManager:
         }
         _write_private(self.paths.session_file, json.dumps(session) + "\n")
 
-    def _spawn(self) -> None:
+    def _spawn(self) -> bool:
+        """Start the process. False when it cannot be executed at all."""
         cmd = [
             self.paths.binary,
             "--control",
@@ -152,7 +181,9 @@ class EtherDogManager:
             "--log-socket",
             self.log_socket,
         ]
+        self._output.clear()
         try:
+            self._write_session()
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -161,24 +192,26 @@ class EtherDogManager:
                 bufsize=1,
             )
         except OSError as e:
-            logger.error("Failed to start EtherDOG: %s", e)
             self._process = None
-            return
-        threading.Thread(target=self._pump_logs, args=(self._process,), daemon=True).start()
-        if self._wait_ready(timeout=10.0):
+            self._disable(f"EtherDOG cannot be started: {e}")
+            return False
+        self._pump = threading.Thread(target=self._pump_logs, args=(self._process,), daemon=True)
+        self._pump.start()
+        if self._wait_ready(timeout=READY_TIMEOUT_S):
             logger.info("EtherDOG started (pid %d)", self._process.pid)
             self._reapply_busconfig()
-        else:
+        elif self._process.poll() is None:
             logger.error("EtherDOG did not open its control socket in time")
+        return True
 
     def _pump_logs(self, proc: subprocess.Popen[str]) -> None:
-        """Drain EtherDOG's stderr. Its lines already reach the log stream through the log
-        socket, so only errors are repeated here, for the window before that socket is up."""
+        """Drain EtherDOG's stdout/stderr and keep the tail for exit diagnosis. Its log lines
+        already reach the log stream through the log socket."""
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.rstrip()
-            if line and "[ERROR]" in line:
-                logger.debug("[ETHERDOG stderr] %s", line)
+            if line:
+                self._output.append(line)
 
     def _wait_ready(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
@@ -192,31 +225,48 @@ class EtherDogManager:
                 time.sleep(0.2)
         return False
 
+    def _record_exit(self) -> bool:
+        """Record an exit; True when it is one too many within the window."""
+        now = time.monotonic()
+        self._exit_times = [t for t in self._exit_times if now - t < RAPID_EXIT_WINDOW_S]
+        self._exit_times.append(now)
+        return len(self._exit_times) >= MAX_RAPID_EXITS
+
     def _supervise(self) -> None:
+        if not self._spawn():
+            return
         while self._running:
-            time.sleep(MONITOR_INTERVAL_S)
             proc = self._process
-            if not self._running or (proc is not None and proc.poll() is None):
-                continue
-            code = proc.returncode if proc is not None else None
-            logger.warning("EtherDOG exited (code %s); restarting in %.0f s", code, self._backoff)
-            # 127 on Windows: a DLL failed to load, usually wpcap.dll
-            if IS_WINDOWS and code == DLL_NOT_FOUND_EXIT:
-                logger.error(
-                    "EtherCAT requires Npcap (https://npcap.com) to access the network "
-                    "interface. Please install Npcap and restart the runtime."
+            if proc is None:
+                return
+            code = proc.wait()
+            if self._pump is not None:
+                self._pump.join(timeout=2.0)
+            if not self._running:
+                return
+            output = list(self._output)
+            reason = _fatal_exit_reason(code, output)
+            if reason is not None:
+                for line in output[-5:]:
+                    logger.error("[ETHERDOG] %s", line)
+                self._disable(reason)
+                return
+            if self._record_exit():
+                self._disable(
+                    f"EtherDOG exited {MAX_RAPID_EXITS} times within {RAPID_EXIT_WINDOW_S:.0f} s "
+                    f"(last exit code {code})"
                 )
-            time.sleep(self._backoff)
-            self._backoff = min(self._backoff * 2, MAX_BACKOFF_S)
-            if self._running:
-                self._spawn()
-                if self._process is not None and self._process.poll() is None:
-                    self._backoff = RESTART_BACKOFF_S
+                return
+            logger.warning("EtherDOG exited (code %s); restarting", code)
+            if not self._spawn():
+                return
 
     # --- commands ------------------------------------------------------------------------
 
     def command(self, request: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:
         """Send one command and return EtherDOG's JSON reply."""
+        if self._disabled_reason is not None:
+            raise EtherDogUnavailable(self._disabled_reason)
         if not self.installed:
             raise EtherDogUnavailable("EtherDOG is not installed")
         try:
@@ -257,8 +307,13 @@ class EtherDogManager:
                 shutil.copy2(source, self.paths.busconfig)
             elif self.paths.busconfig.exists():
                 self.paths.busconfig.unlink()
-            if self.installed and self._process is not None and self._process.poll() is None:
+            if self._running and self._process is not None and self._process.poll() is None:
                 self._configure_locked()
+                return
+        # A new program gets a fresh start, as the PLC runtime does after safe mode
+        if self._disabled_reason is not None and self.installed:
+            logger.info("Retrying EtherDOG for the new program")
+            self.start()
 
     def _reapply_busconfig(self) -> None:
         with self._lock:
@@ -278,6 +333,22 @@ class EtherDogManager:
             logger.error("EtherDOG rejected the bus configuration: %s", result["error"])
         elif params:
             logger.info("EtherDOG bus configuration loaded from %s", path)
+
+
+def _fatal_exit_reason(code: int, output: list[str]) -> str | None:
+    """Why EtherDOG can never start as installed, or None when a restart may help."""
+    text = "\n".join(output).lower()
+    missing_library = (
+        code in MISSING_LIBRARY_EXITS or "error while loading shared libraries" in text
+    )
+    if missing_library:
+        if IS_WINDOWS and (any(m in text for m in NPCAP_MARKERS) or not output):
+            return NPCAP_REASON
+        detail = output[-1] if output else f"exit code {code}"
+        return f"EtherDOG cannot load a required library ({detail})"
+    if code == USAGE_ERROR_EXIT:
+        return "EtherDOG rejected its command line (exit code 2)"
+    return None
 
 
 def _write_private(path: Path, text: str) -> None:

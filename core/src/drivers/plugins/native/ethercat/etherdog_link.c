@@ -59,6 +59,12 @@ int edl_read_session(const char *path, edl_session_t *out, char *err, size_t err
     text[n] = '\0';
 
     cJSON *root = cJSON_Parse(text);
+    const cJSON *disabled = root ? cJSON_GetObjectItemCaseSensitive(root, "disabled") : NULL;
+    if (cJSON_IsString(disabled)) {
+        snprintf(err, err_size, "EtherCAT is disabled: %s", disabled->valuestring);
+        cJSON_Delete(root);
+        return EDL_DISABLED;
+    }
     const cJSON *control = root ? cJSON_GetObjectItemCaseSensitive(root, "control") : NULL;
     if (!cJSON_IsString(control)) {
         snprintf(err, err_size, "EtherDOG session file %s has no 'control' endpoint", path);
