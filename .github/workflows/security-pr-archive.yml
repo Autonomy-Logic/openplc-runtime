@@ -1,0 +1,87 @@
+name: Security — archive SBOM on merge
+
+# Python variant. Runs when a commit lands on the default branch (a PR merged, or
+# a direct push). Regenerates the SBOM + raw scan for that state and stores them
+# on a dedicated ORPHAN branch `security-archive` under <id>-<date>/ — a permanent
+# per-merge trail WITHOUT bloating the code branch or slowing clones.
+#
+# `push` (not pull_request): the token is always writable (works for merged fork
+# PRs) and it only fires for the default branch. SBOM + raw scan only (no rendered
+# report) — nothing that could become a stale/false attestation.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: security-archive
+  cancel-in-progress: false
+
+env:
+  # Repos with native deps set this (e.g. orchestrator-agent: "--only-binary av").
+  SBOM_PIP_ARGS: ""
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (post-merge state)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: "22" }
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: { python-version: "3.12" }
+
+      - name: Install osv-scanner
+        run: |
+          OSV_VER=v2.4.0   # pinned; verified against the release SHA256SUMS
+          curl -sSfL "https://github.com/google/osv-scanner/releases/download/${OSV_VER}/osv-scanner_linux_amd64" -o /tmp/osv-scanner_linux_amd64
+          curl -sSfL "https://github.com/google/osv-scanner/releases/download/${OSV_VER}/osv-scanner_SHA256SUMS" -o /tmp/osv_SHA256SUMS
+          ( cd /tmp && grep " osv-scanner_linux_amd64$" osv_SHA256SUMS | sha256sum -c - )
+          install -m 0755 /tmp/osv-scanner_linux_amd64 /usr/local/bin/osv-scanner
+
+      - name: Generate SBOM + scan (SBOM & raw scan only — no rendered report)
+        run: |
+          NAME=$(node -p "require('./security/report-config.json').sbomBasename")
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+          bash scripts/generate-sbom.sh
+          CFG=""; [ -f osv-scanner.toml ] && CFG="--config=osv-scanner.toml"
+          set +e
+          osv-scanner scan $CFG --format=json --output=/tmp/osv.json "sbom/$NAME.cdx.json"
+          rc=$?
+          set -e
+          if [ "$rc" != "0" ] && [ "$rc" != "1" ]; then echo "::error::osv-scanner failed (exit $rc)"; exit 1; fi
+          [ -s /tmp/osv.json ] || echo '{"results":[]}' > /tmp/osv.json
+          node scripts/scan-vulns.mjs /tmp/osv.json sbom/vulnerabilities.csv
+
+      - name: Publish snapshot to the security-archive orphan branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          MSG=$(git log -1 --format=%s)
+          PR=$(printf '%s' "$MSG" | grep -oE '#[0-9]+' | head -1 | tr -d '#')
+          if [ -n "$PR" ]; then ID="pr-$PR"; else ID="commit-$(git rev-parse --short HEAD)"; fi
+          DIR="${ID}-$(date -u +%Y-%m-%d)"
+          URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git clone --depth 1 --branch security-archive "$URL" /tmp/arch 2>/dev/null; then
+            :
+          else
+            git clone --depth 1 "$URL" /tmp/arch
+            git -C /tmp/arch checkout --orphan security-archive
+            git -C /tmp/arch rm -rf . >/dev/null 2>&1 || true
+          fi
+          mkdir -p "/tmp/arch/$DIR"
+          cp "sbom/$NAME.cdx.json" "sbom/$NAME.spdx.json" "sbom/$NAME.components.csv" sbom/vulnerabilities.csv "/tmp/arch/$DIR/"
+          git -C /tmp/arch -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" add "$DIR"
+          if git -C /tmp/arch diff --cached --quiet; then
+            echo "No SBOM changes to archive for $DIR."
+          else
+            git -C /tmp/arch -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "chore(security): SBOM snapshot ${DIR}"
+            git -C /tmp/arch push "$URL" HEAD:security-archive
+          fi

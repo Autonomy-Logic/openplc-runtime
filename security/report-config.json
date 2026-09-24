@@ -1,0 +1,38 @@
+{
+  "product": "openplc-runtime",
+  "title": "OpenPLC Runtime",
+  "subtitle": "IEC 61131-3 PLC execution engine (C/C++ core + Python web server)",
+  "version": "4.1.8",
+  "sbomBasename": "openplc-runtime",
+  "ecosystem": "pip",
+  "securityContact": "Thiago Alves — thiago.alves@autonomylogic.com",
+  "advisorySource": "PyPI Advisory Database / OSV via osv-scanner (OSV) (equivalent to Dependabot for Python)",
+  "advisories": { "total": 0, "critical": 0, "high": 0, "moderate": 0, "low": 0 },
+  "counts": {
+    "affected": { "n": 0, "sev": "none require action" },
+    "mitigated": { "n": 0, "sev": "—" },
+    "notAffected": { "n": 0, "pct": "—" }
+  },
+  "headline": "<b>No vulnerability requires remediation and none is exploitable in the product.</b> The runtime is a hybrid C/C++ execution core plus a Python (Flask) management web server. The Python dependency surface is small, and the current resolved dependency set carries no known advisory. The single third-party C library (SOEM, EtherCAT) has no known vulnerability. Advisories that surface above the VEX baseline in a future scan are re-triaged every monthly cycle.",
+  "scope": "The OpenPLC Runtime consists of a C/C++ execution core (the real-time PLC engine and native fieldbus plugins: EtherCAT, S7comm, built with CMake) and a Python (Flask) web server for management, configuration, and monitoring (REST + WebSocket). This assessment covers both third-party dependency ecosystems: the Python packages (from requirements.txt) and the third-party C libraries linked into the core.",
+  "scopeNote": "The first-party C/C++ source (the PLC engine, the S7comm/OPC-UA plugins, and the STruCpp runtime library) is Autonomy Logic's own code, not third-party supply chain. The only third-party C library is <code>SOEM</code> (EtherCAT), tracked as a pinned git submodule and queried against OSV (no known advisory) — it is outside this npm/pip SBOM and inventoried separately. The runtime embeds the system CPython interpreter; its version tracks the deployment base image and should be kept current with security releases.",
+  "methodologyNote": "Python dependencies were resolved into a clean virtual environment from <code>requirements.txt</code> and audited against the PyPI Advisory Database / OSV (the same coverage as Dependabot for Python); test/build-only packages were separated from runtime packages. Third-party C libraries are pinned as git submodules and queried against OSV. For each advisory, source was analyzed to determine whether the specific vulnerable function is invoked and whether its input is attacker-controlled.",
+  "licenseNote": "The OpenPLC Runtime is <b>MIT-licensed</b> (first-party code); the Python dependencies are permissive (MIT/BSD/Apache/PSF, with one MPL-2.0 file-level weak-copyleft component). <b>Material item — SOEM (EtherCAT master library) is GPLv3 or commercial (dual-licensed by RT-Labs).</b> SOEM is vendored as a git submodule and linked into the optional EtherCAT native plugin; under the open-source option it is GPLv3, making that combined plugin subject to GPLv3 copyleft, and SOEM's license notes that commercial products likely need a purchased license. This affects only the EtherCAT plugin — the MIT core and the other plugins (Modbus, OPC-UA, S7comm) are unaffected. Recommend legal review (obtain a commercial SOEM license, comply with GPLv3 for that plugin, or ship it as a separable optional component).",
+  "affected": [],
+  "mitigated": [],
+  "notAffected": [],
+  "criticalNote": "The current resolved dependency set has no known advisory. The single third-party C library (SOEM, EtherCAT) has no known advisory for its pinned commit. Any advisory that surfaces above the VEX baseline in a future scan — for example after a dependency resolution moves — is listed as surfacing and triaged in that cycle rather than assumed safe.",
+  "remediation": [
+    "<b>No action required</b> for exploitable vulnerabilities — all 5 advisories are not reachable in the running product and SOEM has no known advisory.",
+    "<b>Hygiene:</b> pin Python dependencies to exact versions in requirements.txt; keep the embedded CPython and base image current with security releases.",
+    "<b>Legal:</b> resolve the SOEM / EtherCAT-plugin licensing question (GPLv3-or-commercial) — material for the acquirer's IP review."
+  ],
+  "practices": [
+    { "practice": "Small, auditable third-party surface (both ecosystems inventoried)", "status": "In place" },
+    { "practice": "Third-party C libraries pinned as git submodules (reproducible)", "status": "In place" },
+    { "practice": "Automated dependency updates (Dependabot / advisory databases)", "status": "In place" },
+    { "practice": "SBOM generated per release in CycloneDX and SPDX", "status": "In place" },
+    { "practice": "Pin Python dependencies to exact versions in requirements.txt", "status": "Recommended" },
+    { "practice": "Resolve the SOEM / EtherCAT-plugin licensing question", "status": "Recommended" }
+  ]
+}
