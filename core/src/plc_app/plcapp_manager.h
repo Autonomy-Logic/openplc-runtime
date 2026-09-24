@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 #ifndef PLUGIN_MANAGER_H
 #define PLUGIN_MANAGER_H
 

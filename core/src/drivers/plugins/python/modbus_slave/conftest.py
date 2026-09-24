@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 import pytest
 import threading
 import simple_modbus  # <-- Make sure this import is here

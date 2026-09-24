@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /*
  * test_located_globals.c — unit tests for located_globals_join_ex(), which
  * resolves which locatedVars[] entries are CONFIGURATION VAR_GLOBAL ... AT by

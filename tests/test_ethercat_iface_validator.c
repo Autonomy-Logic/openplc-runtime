@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file test_ethercat_iface_validator.c
  * @brief Unit tests for ecat_is_valid_iface_name() — the Linux iface

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file plc_retain.cpp
  * @brief Retain-variable persistence — the runtime's half (NODE-94).

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file test_ethercat_iec_location.c
  * @brief Unit tests for ecat_io_parse_iec_location() — IEC 61131-3

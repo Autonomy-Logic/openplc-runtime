@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 #define PY_SSIZE_T_CLEAN
 
 // Suppress _POSIX_C_SOURCE redefinition warning from Python.h on MSYS2/Cygwin

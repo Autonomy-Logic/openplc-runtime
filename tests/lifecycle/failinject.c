@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file failinject.c
  * @brief LD_PRELOAD shim that fails exactly one pthread_create, on demand.

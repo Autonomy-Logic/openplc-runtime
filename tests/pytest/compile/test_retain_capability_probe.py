@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """The retain capability probe, and the gate it drives.
 
 Why this file exists

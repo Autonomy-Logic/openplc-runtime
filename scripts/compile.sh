@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 #
 # compile.sh — build the user PLC program into core/build/new_libplc.so
 #

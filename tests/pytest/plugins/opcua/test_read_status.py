@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """A value the plugin could not read must be reported Bad, never defaulted.
 
 This is the behaviour the STRING bug hid behind. Every STRING read returned ''

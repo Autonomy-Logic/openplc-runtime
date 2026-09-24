@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file plugin_types.h
  * @brief Common type definitions for OpenPLC plugins
@@ -15,7 +18,7 @@
 #ifndef PLUGIN_TYPES_H
 #define PLUGIN_TYPES_H
 
-#include "../lib/iec_types.h"
+#include "../lib/plc_image_types.h"
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>

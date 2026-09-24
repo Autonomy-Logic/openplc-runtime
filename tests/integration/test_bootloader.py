@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """End-to-end tests for the RTOP-283 bootloader, run inside the test host.
 
 These drive the real thing: a real Docker daemon, a real registry, real image

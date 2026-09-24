@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // runtime_v4_entry.cpp
 //
 // Static C-linkage shim compiled into every user .so. Identical for every

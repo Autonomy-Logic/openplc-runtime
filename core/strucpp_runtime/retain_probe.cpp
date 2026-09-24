@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // retain_probe.cpp
 //
 // Build-time capability probe for the STruC++ runtime headers that arrive

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Fixtures for Discovery Service tests."""
 
 from typing import Any

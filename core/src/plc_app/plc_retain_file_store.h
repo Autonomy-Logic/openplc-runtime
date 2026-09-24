@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file plc_retain_file_store.h
  * @brief The runtime's own retain backend: a file on the data partition.

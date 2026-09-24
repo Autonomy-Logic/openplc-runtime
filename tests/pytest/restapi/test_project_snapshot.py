@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Behavioural tests for the stored source-project snapshot.
 
 The device stores an optional archive of the project a program was built from

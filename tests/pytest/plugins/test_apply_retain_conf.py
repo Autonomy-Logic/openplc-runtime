@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Behavioural tests for installing persistent-storage settings from an upload.
 
 Retain settings belong to the project, so the interesting behaviour is not "can

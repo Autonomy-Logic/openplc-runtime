@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // Package runtimeauth authenticates callers against the runtime's own
 // credentials.
 //

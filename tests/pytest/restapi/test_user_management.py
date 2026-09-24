@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Behavioural tests for the runtime user-management REST API.
 
 Covers RBAC (admin vs user), the bootstrap first-user flow, the unified

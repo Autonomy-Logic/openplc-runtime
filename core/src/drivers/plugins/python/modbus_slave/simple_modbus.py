@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # pylint: disable=C0103,C0301,C0302,C0413,W0107,W0602,W0621,C0415,R0913,R0914,R0917
 # C0103: Method/variable naming (getValues/setValues required by pymodbus API)
 # C0301: Line too long (some lines exceed 100 chars)

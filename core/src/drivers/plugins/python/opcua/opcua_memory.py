@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 OPC-UA plugin memory access — STruC++ debugger surface.
 

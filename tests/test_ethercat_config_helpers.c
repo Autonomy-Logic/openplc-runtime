@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file test_ethercat_config_helpers.c
  * @brief Unit tests for the small public helpers in ethercat_config.c:

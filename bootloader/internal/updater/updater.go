@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // Package updater changes which runtime version a device runs.
 //
 // The whole flow, and the reasoning behind its order:

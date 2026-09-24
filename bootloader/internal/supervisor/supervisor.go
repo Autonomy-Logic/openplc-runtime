@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // Package supervisor owns the runtime container's lifecycle.
 //
 // This is the part of the bootloader that decides what the runtime container

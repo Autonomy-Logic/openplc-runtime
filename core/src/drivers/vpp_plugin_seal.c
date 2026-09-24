@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 #include "vpp_plugin_seal.h"
 #include "../plc_app/utils/log.h"
 

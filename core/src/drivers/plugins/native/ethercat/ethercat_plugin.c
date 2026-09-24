@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file ethercat_plugin.c
  * @brief EtherCAT Plugin Implementation for OpenPLC Runtime v4

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Test-wide bootstrap for modules that reach ``webserver.config``.
 
 ``webserver.config`` has import-time side effects: it resolves a persistent
