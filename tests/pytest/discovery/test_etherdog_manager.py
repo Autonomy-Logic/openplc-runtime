@@ -300,3 +300,14 @@ def test_clean_exit_is_not_restarted(run_dir: Path) -> None:
     time.sleep(0.5)
     assert _launches(run_dir) == 1
     assert manager.disabled_reason is None
+
+
+def test_interface_names_accept_linux_and_npcap_devices() -> None:
+    from webserver.discovery.ethercat_discovery import _validate_interface_name
+
+    assert _validate_interface_name("eth0")[0]
+    assert _validate_interface_name(r"\Device\NPF_{4815A5BB-BD8C-401C-8C2F-A81AFDD6EC0D}")[0]
+    assert _validate_interface_name(r"\Device\NPF_Loopback")[0]
+    assert not _validate_interface_name(r"\Device\NPF_{x}; rm -rf /")[0]
+    assert not _validate_interface_name("a" * 16)[0]
+    assert not _validate_interface_name("eth0;reboot")[0]
