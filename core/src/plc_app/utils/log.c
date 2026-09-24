@@ -172,11 +172,31 @@ static void log_write(LogLevel level, const char *fmt, va_list args)
         va_end(args_copy);
     }
 
-    // Format the log message in JSON format
-    int n =
-        snprintf(log_msg, sizeof(log_msg), "{\"timestamp\":\"%ld\",\"level\":\"%s\",\"message\":\"",
-                 (long)now, level_to_str(level));
-    n += vsnprintf(log_msg + n, sizeof(log_msg) - n, fmt, args);
+    // Format the log message in JSON format; the message is escaped so quotes cannot break it
+    char text[LOG_MESSAGE_SIZE];
+    vsnprintf(text, sizeof(text), fmt, args);
+    int head = snprintf(log_msg, sizeof(log_msg),
+                        "{\"timestamp\":\"%ld\",\"level\":\"%s\",\"message\":\"", (long)now,
+                        level_to_str(level));
+    size_t n = head > 0 ? (size_t)head : 0;
+    const size_t tail = sizeof("\"}\n");
+    for (const char *c = text; *c != '\0' && n + tail + 6 < sizeof(log_msg); c++)
+    {
+        unsigned char ch = (unsigned char)*c;
+        if (ch == '"' || ch == '\\')
+        {
+            log_msg[n++] = '\\';
+            log_msg[n++] = (char)ch;
+        }
+        else if (ch < 0x20)
+        {
+            n += (size_t)snprintf(log_msg + n, sizeof(log_msg) - n, "\\u%04x", ch);
+        }
+        else
+        {
+            log_msg[n++] = (char)ch;
+        }
+    }
     snprintf(log_msg + n, sizeof(log_msg) - n, "\"}\n");
 
     // Send to unix socket if connected
