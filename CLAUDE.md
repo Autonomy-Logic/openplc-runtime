@@ -2,6 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Process entry point
+
+For every tracked feature, bug, investigation, implementation, test or pull request, start with
+`/autonomy:mister`. Mister verifies the Jira task and current documents, reconciles routine task
+drift, checks the stage gates and loads the skill for the next step. Do not begin a parallel
+investigation or implementation before that check. If Mister or a required connected service is
+unavailable, report the missing dependency; do not invent Jira, Confluence, approval or branch state.
+
+This file defines repository-specific commands, architecture and code conventions. It is not a
+copy of the company process. When process text here conflicts with the current Mister plugin or
+Confluence template, follow Mister and report this file as stale. Do not reuse instructions or
+assumptions from an earlier Claude conversation. During implementation, use the approved
+implementation plan as the primary context and load the RG or CRA only for a cited constraint or
+unresolved ambiguity.
+
 ## Build Commands
 
 ```bash
@@ -98,6 +113,8 @@ State management: `core/src/plc_app/plc_state_manager.cpp`
 
 ### Python Best Practices
 
+- Do not use `typing.Any`. Model structured data with dataclasses, `TypedDict`, `Protocol` or concrete types; treat external data as `object` and narrow or validate it at the boundary.
+
 - Type hints on every function signature; use dataclasses or TypedDict for structured data instead of loose dicts.
 - Catch specific exceptions; never bare `except:` and never swallow errors silently — log with context.
 - No mutable default arguments; use context managers (`with`) for files, sockets, and locks.
@@ -124,7 +141,7 @@ State management: `core/src/plc_app/plc_state_manager.cpp`
 ## Git Workflow
 
 - Base branch: `development` — feature branches start from it and PRs target it.
-- Branch naming: `RTOP-<n>-<kebab-slug>` (e.g. `RTOP-129-discovery-service-infrastructure`). Non-ticket maintenance uses `chore/`, `fix/`, `docs/`.
+- Branch naming for tracked work follows Mister: `feature/RTOP-<n>-<kebab-slug>` for demands and `bugfix/RTOP-<n>-<kebab-slug>` for bugs. Non-ticket maintenance uses `chore/`, `ci/` or `docs/`.
 - Commit messages: Conventional Commits (spec in `docs/DEVELOPMENT.md`), concise and focused on why.
 
 ## Issue Tracker
