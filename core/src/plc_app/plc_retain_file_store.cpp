@@ -319,11 +319,40 @@ int plc_retain_file_store_load(const char *program_md5, uint16_t md5_len, uint8_
 
     if (memcmp(stored_id, program_md5, PROGRAM_ID_LEN) != 0)
     {
-        fclose(f);
-        discard_stored();
-        log_info("Retain: stored values belong to a different program — storage cleared, "
-                 "retained variables start at their initial values");
-        return 0;
+        /* NOT discarded. Offered upward, and let the layout decide.
+         *
+         * PROGRAM_ID is the MD5 of program.st, so it changes on ANY edit —
+         * move a rung, rename a comment — and discarding here meant every
+         * retained value in a commissioned plant reset on every upload. That
+         * is the one guarantee the RETAIN qualifier exists to give:
+         * IEC 61131-3 §6.5.6.1 rule 1 defines a retained value as "the values
+         * the variables had when the resource or configuration was stopped",
+         * conditioned on the STARTING OPERATION being a warm restart and on
+         * nothing else. The words "download", "reload" and "online change"
+         * appear nowhere in Part 3.
+         *
+         * The check that belongs here already exists one layer up and was
+         * built for exactly this: ext_strucpp_retain_unpack() validates magic,
+         * format, crc, TRUNCATION and the LAYOUT HASH before a byte reaches a
+         * variable, and plc_retain.cpp names which of those failed. STruC++'s
+         * own debug-table-gen.ts says why it hashes the layout rather than the
+         * program: "a body edit leaves this unchanged and retained values
+         * survive, while adding, removing, retyping or reordering a retained
+         * variable changes it and the stored blob is refused. The project MD5
+         * would have discarded retained state on every unrelated edit."
+         *
+         * So this gate was not reinforcing that design, it was defeating it —
+         * and ModBee's ESP32 store (NodeUioRetain.cpp) keeps the identity for
+         * saves and never compares it on read, which is why retain has been
+         * seen surviving program changes on real hardware and not here.
+         *
+         * WHAT IS GIVEN UP, stated plainly for the review: two DIFFERENT
+         * projects sharing one retain.bin path whose layout hashes happen to
+         * collide would now read each other's values. That is a 32-bit
+         * collision on a path nobody takes, weighed against a certainty on the
+         * path everybody takes. */
+        log_info("Retain: stored values were written by a different program — "
+                 "keeping them; the layout check decides whether they fit");
     }
 
     const size_t n = fread(out, 1, cap, f);
