@@ -601,7 +601,14 @@ build_etherdog() {
     fi
     if [ -z "$src" ]; then
         src="$OPENPLC_DIR/third_party/etherdog"
-        if [ ! -f "$src/CMakeLists.txt" ]; then
+        if [ -d "$src/.git" ]; then
+            log_info "Updating EtherDOG ($ETHERDOG_REF)..."
+            if ! { git -C "$src" fetch --quiet --depth 1 origin "$ETHERDOG_REF" &&
+                   git -C "$src" checkout --quiet --force FETCH_HEAD &&
+                   git -C "$src" submodule update --quiet --init --recursive --depth 1; }; then
+                log_warning "Could not update EtherDOG; building the existing copy."
+            fi
+        elif [ ! -f "$src/CMakeLists.txt" ]; then
             log_info "Fetching EtherDOG ($ETHERDOG_REF) from $ETHERDOG_REPO..."
             rm -rf "$src"
             mkdir -p "$(dirname "$src")"
