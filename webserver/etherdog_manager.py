@@ -3,8 +3,9 @@
 
 """Supervises EtherDOG, the EtherCAT master service, and talks to it.
 
-Starts it, hands it the bus configuration from the upload, and forwards commands. plc_main
-reaches it through the session file written here (control endpoint + token).
+Starts it, stages the bus configuration from an upload, and forwards commands. plc_main reaches
+it through the session file written here (control endpoint, data transport, bus configuration);
+the EtherCAT plugin loads that configuration and starts the bus together with the program.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 import json
 import os
 import platform
-import secrets
+import signal
 import shutil
 import socket
 import subprocess
@@ -38,7 +39,7 @@ DEFAULT_BUSCONFIG_PATH = Path("./build/plugins") / BUSCONFIG_NAME
 MAX_RAPID_EXITS = 3
 RAPID_EXIT_WINDOW_S = 30.0
 READY_TIMEOUT_S = 10.0
-STALE_STOP_TIMEOUT_S = 5.0
+LEFTOVER_KILL_TIMEOUT_S = 5.0
 OUTPUT_TAIL_LINES = 20
 
 USAGE_ERROR_EXIT = 2
@@ -62,8 +63,7 @@ class EtherDogPaths:
 
     @property
     def control(self) -> str:
-        if IS_WINDOWS:
-            return "tcp:127.0.0.1:18444"
+        # EtherDOG checks the peer's uid on unix sockets, on Linux and MSYS2 alike
         return f"unix:{self.run_dir / 'etherdog.socket'}"
 
     @property
@@ -73,10 +73,6 @@ class EtherDogPaths:
     @property
     def session_file(self) -> Path:
         return self.run_dir / "etherdog.json"
-
-    @property
-    def token_file(self) -> Path:
-        return self.state_dir / "token"
 
 
 def _connect(control: str, timeout: float) -> socket.socket:
@@ -102,9 +98,9 @@ class EtherDogManager:
         self.paths = EtherDogPaths(binary=binary, run_dir=run_dir, busconfig=busconfig)
         # Same log server plc_main writes to, so EtherDOG's lines reach the runtime log stream.
         self.log_socket = log_socket or f"unix:{run_dir / 'log_runtime.socket'}"
-        self._token = ""
         self._process: subprocess.Popen[str] | None = None
         self._pump: threading.Thread | None = None
+        self._ready = False
         self._output: deque[str] = deque(maxlen=OUTPUT_TAIL_LINES)
         self._lock = threading.Lock()
         self._running = False
@@ -147,6 +143,10 @@ class EtherDogManager:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.error("EtherDOG (pid %d) did not exit after SIGKILL", proc.pid)
 
     def _disable(self, reason: str) -> None:
         self._running = False
@@ -157,25 +157,22 @@ class EtherDogManager:
         except OSError as e:
             logger.error("Could not write the EtherDOG session file: %s", e)
 
-    def _saved_token(self) -> str | None:
-        try:
-            token = self.paths.token_file.read_text(encoding="utf-8").strip()
-        except OSError:
-            return None
-        return token if len(token) == 64 and all(c in "0123456789abcdef" for c in token) else None
-
     def _write_session(self) -> None:
         self.paths.state_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.paths.state_dir, 0o700)
-        # Kept across restarts so a leftover EtherDOG can still be told to shut down
-        self._token = self._saved_token() or secrets.token_hex(32)
-        _write_private(self.paths.token_file, self._token + "\n")
         session = {
             "control": self.paths.control,
-            "token": self._token,
             "data": "udp" if IS_WINDOWS else "unix",
+            "busconfig": str(self.paths.busconfig.resolve()),
         }
         _write_private(self.paths.session_file, json.dumps(session) + "\n")
+
+    def _kill_leftovers(self) -> None:
+        """Kill EtherDOG processes started from this binary by an earlier webserver; one would
+        hold the control socket and the network interface."""
+        for pid in _processes_running(self.paths.binary):
+            logger.warning("Stopping a leftover EtherDOG (pid %d)", pid)
+            _terminate(pid, LEFTOVER_KILL_TIMEOUT_S)
 
     def _spawn(self) -> bool:
         """Start the process. False when it cannot be executed at all."""
@@ -183,14 +180,13 @@ class EtherDogManager:
             self.paths.binary,
             "--control",
             self.paths.control,
-            "--token-file",
-            str(self.paths.token_file),
             "--state-dir",
             str(self.paths.state_dir),
             "--log-socket",
             self.log_socket,
         ]
         self._output.clear()
+        self._ready = False
         try:
             self._write_session()
             self._process = subprocess.Popen(
@@ -207,20 +203,23 @@ class EtherDogManager:
         self._pump = threading.Thread(target=self._pump_logs, args=(self._process,), daemon=True)
         self._pump.start()
         if self._wait_ready(timeout=READY_TIMEOUT_S):
+            self._ready = True
             logger.info("EtherDOG started (pid %d)", self._process.pid)
-            self._reapply_busconfig()
         elif self._process.poll() is None:
             logger.error("EtherDOG did not open its control socket in time")
         return True
 
     def _pump_logs(self, proc: subprocess.Popen[str]) -> None:
-        """Drain EtherDOG's stdout/stderr and keep the tail for exit diagnosis. Its log lines
-        already reach the log stream through the log socket."""
+        """Drain EtherDOG's stdout/stderr and keep the tail for exit diagnosis. Once EtherDOG is
+        up its log lines arrive through the log socket; before that, errors are logged here."""
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.rstrip()
-            if line:
-                self._output.append(line)
+            if not line:
+                continue
+            self._output.append(line)
+            if not self._ready and "[ERROR]" in line:
+                logger.error("%s", line.split("[ERROR] ", 1)[-1])
 
     def _wait_ready(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
@@ -241,29 +240,8 @@ class EtherDogManager:
         self._exit_times.append(now)
         return len(self._exit_times) >= MAX_RAPID_EXITS
 
-    def _stop_stale(self) -> None:
-        """Shut down an EtherDOG left running by an earlier webserver, which would otherwise hold
-        the control endpoint. Its token is still in the token file."""
-        self._token = self._saved_token() or ""
-        if not self._token:
-            return
-        try:
-            self.command({"command": "shutdown"}, timeout=2.0)
-        except EtherDogUnavailable:
-            return
-        logger.warning("Stopped an EtherDOG left running by a previous webserver")
-        deadline = time.monotonic() + STALE_STOP_TIMEOUT_S
-        while time.monotonic() < deadline:
-            try:
-                with _connect(self.paths.control, 0.5):
-                    pass
-            except OSError:
-                return
-            time.sleep(0.2)
-        logger.error("The previous EtherDOG did not exit; the new one may fail to start")
-
     def _supervise(self) -> None:
-        self._stop_stale()
+        self._kill_leftovers()
         if not self._spawn():
             return
         while self._running:
@@ -309,7 +287,7 @@ class EtherDogManager:
             with _connect(self.paths.control, timeout) as sock:
                 sock.settimeout(timeout)
                 reader = sock.makefile("r", encoding="utf-8")
-                hello = {"command": "hello", "params": {"token": self._token}}
+                hello = {"command": "hello"}
                 sock.sendall(json.dumps(hello).encode() + b"\n")
                 reply = json.loads(reader.readline() or "{}")
                 if "error" in reply:
@@ -336,7 +314,11 @@ class EtherDogManager:
     # --- bus configuration -----------------------------------------------------------------
 
     def apply_busconfig(self, source: Path | None) -> None:
-        """Install the bus configuration from an upload (None removes it) and load it."""
+        """Stage the bus configuration from an upload (None removes it) and stop the bus.
+
+        The EtherCAT plugin loads the staged file and starts the bus when the new program
+        starts, so the bus never runs a configuration that belongs to another program.
+        """
         with self._lock:
             if source is not None:
                 self.paths.busconfig.parent.mkdir(parents=True, exist_ok=True)
@@ -344,31 +326,18 @@ class EtherDogManager:
             elif self.paths.busconfig.exists():
                 self.paths.busconfig.unlink()
             if self._running and self._process is not None and self._process.poll() is None:
-                self._configure_locked()
+                try:
+                    result = self.command({"command": "stop"}, timeout=15.0)
+                except EtherDogUnavailable as e:
+                    logger.error("Could not stop the EtherCAT bus for the upload: %s", e)
+                    return
+                if "error" in result:
+                    logger.error("EtherDOG could not stop the bus: %s", result["error"])
                 return
         # A new program gets a fresh start, as the PLC runtime does after safe mode
         if not self._running and self.installed:
             logger.info("Retrying EtherDOG for the new program")
             self.start()
-
-    def _reapply_busconfig(self) -> None:
-        with self._lock:
-            self._configure_locked()
-
-    def _configure_locked(self) -> None:
-        path = self.paths.busconfig
-        params = {"path": str(path.resolve())} if path.exists() else {}
-        try:
-            # The bus belongs to the program being replaced; stop it before reconfiguring.
-            self.command({"command": "stop"}, timeout=15.0)
-            result = self.command({"command": "configure", "params": params}, timeout=15.0)
-        except EtherDogUnavailable as e:
-            logger.error("Could not configure EtherDOG: %s", e)
-            return
-        if "error" in result:
-            logger.error("EtherDOG rejected the bus configuration: %s", result["error"])
-        elif params:
-            logger.info("EtherDOG bus configuration loaded from %s", path)
 
 
 def _fatal_exit_reason(code: int, output: list[str]) -> str | None:
@@ -387,12 +356,54 @@ def _fatal_exit_reason(code: int, output: list[str]) -> str | None:
     return None
 
 
+def _processes_running(binary: str) -> list[int]:
+    """PIDs of processes whose executable is @binary (Linux and MSYS2 both have /proc)."""
+    targets = {os.path.realpath(p) for p in (binary, binary + ".exe") if os.path.isfile(p)}
+    proc = Path("/proc")
+    if not targets or not proc.is_dir():
+        return []
+    pids = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            exe = os.readlink(entry / "exe")
+        except OSError:
+            continue
+        # An executable replaced by a reinstall shows up as "<path> (deleted)"
+        exe = exe.removesuffix(" (deleted)")
+        if os.path.realpath(exe) in targets:
+            pids.append(int(entry.name))
+    return pids
+
+
+def _terminate(pid: int, timeout: float) -> None:
+    """SIGTERM, then SIGKILL once @timeout passes."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return
+        except PermissionError as e:
+            logger.error("Cannot stop process %d: %s", pid, e)
+            return
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+    logger.error("Process %d did not exit", pid)
+
+
 def _write_private(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(path), flags, 0o600)
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
-    os.chmod(path, 0o600)
 
 
 def legacy_ethercat_config_in_use(conf_dir: Path) -> bool:

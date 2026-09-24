@@ -5,7 +5,8 @@
  * @file etherdog_link.h
  * @brief Client side of the EtherDOG protocol: JSON control lines and cyclic data datagrams.
  *
- * The session file written by the webserver gives the control endpoint and the token.
+ * The session file written by the webserver gives the control endpoint, the data transport and
+ * the bus configuration to load when the bus starts.
  */
 
 #ifndef ETHERDOG_LINK_H
@@ -19,19 +20,23 @@
 #define EDL_MAX_MASTERS 4
 #define EDL_FRAME_HEADER 24
 #define EDL_MAX_PAYLOAD 4096
+/** Largest control reply accepted, far above any real bus (a full 4 KB image is about 13 MB). */
+#define EDL_MAX_REPLY (64u * 1024u * 1024u)
 
 /** Default location of the session file the webserver writes before starting plc_main. */
 #define EDL_SESSION_FILE "/run/runtime/etherdog.json"
 
 typedef struct {
-    char control[160]; /* "unix:<path>" or "tcp:127.0.0.1:<port>" */
-    char token[160];
-    bool udp;          /* data transport: loopback UDP instead of AF_UNIX */
+    char control[160];   /* "unix:<path>" or "tcp:127.0.0.1:<port>" */
+    char token[160];     /* optional */
+    char busconfig[512]; /* bus configuration file, "" when there is none */
+    bool udp;            /* data transport: loopback UDP instead of AF_UNIX */
 } edl_session_t;
 
 typedef struct {
     int ctl_fd;
-    char rbuf[64 * 1024];
+    char *rbuf; /* grows with the longest reply line */
+    size_t rcap;
     size_t rlen;
 
     int data_fd;
@@ -51,12 +56,15 @@ int edl_read_session(const char *path, edl_session_t *out, char *err, size_t err
 
 void edl_init(edl_link_t *link);
 
-/** Connect the control socket and authenticate with "hello". */
+/** Connect the control socket and send "hello" (with the token, if any). */
 int edl_connect(edl_link_t *link, const edl_session_t *session, char *err, size_t err_size);
 
-/** Send one request line and read one response line. Returns 0, or -1 on I/O failure. */
-int edl_call(edl_link_t *link, const char *request, char *response, size_t response_size,
-             int timeout_ms);
+/**
+ * @brief Send one request line and read one reply line of any length (up to EDL_MAX_REPLY).
+ * @param response set to the reply, heap-allocated; the caller frees it
+ * @return 0, or -1 on I/O failure, timeout or a reply over EDL_MAX_REPLY
+ */
+int edl_call(edl_link_t *link, const char *request, char **response, int timeout_ms);
 
 /**
  * @brief Bind a local datagram socket and ask EtherDOG to open the data session.
@@ -78,7 +86,7 @@ int edl_recv_inputs(edl_link_t *link, uint8_t *buf, size_t buf_size, int timeout
 int edl_send_outputs(edl_link_t *link, int master, const uint8_t *payload, size_t len,
                      bool valid);
 
-/** Close the data socket (and unlink its path) and the control connection. */
+/** Close the data socket (and unlink its path) and the control connection; frees buffers. */
 void edl_close(edl_link_t *link);
 
 /** Input frame flags. */

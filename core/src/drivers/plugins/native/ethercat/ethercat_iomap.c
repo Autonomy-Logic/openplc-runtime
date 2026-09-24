@@ -53,8 +53,9 @@ int ecat_io_parse_iec_location(const char *loc_str, iec_location_t *loc)
     if (!isdigit((unsigned char)*p))
         return -1;
     char *endptr = NULL;
+    errno = 0;
     long byte_val = strtol(p, &endptr, 10);
-    if (endptr == p || byte_val < 0)
+    if (endptr == p || errno == ERANGE || byte_val < 0 || byte_val > ECAT_IOMAP_MAX_BYTE_INDEX)
         return -1;
     loc->byte_index = (int)byte_val;
     p = endptr;
@@ -177,6 +178,13 @@ int ecat_iomap_load(const char *path, ecat_iomap_t *map, char *err, size_t err_s
             snprintf(err, err_size, "%s: each master needs 'name' and 'entries'", path);
             goto done;
         }
+        for (int k = 0; k < map->master_count - 1; k++) {
+            if (strcmp(map->masters[k].name, name->valuestring) == 0) {
+                snprintf(err, err_size, "%s: master name '%s' is used twice", path,
+                         name->valuestring);
+                goto done;
+            }
+        }
         snprintf(mm->name, sizeof(mm->name), "%s", name->valuestring);
 
         const cJSON *e;
@@ -298,6 +306,11 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
         }
 
         ecat_bound_master_t *bm = &out->masters[idx->valueint];
+        if (bm->active) {
+            snprintf(err, err_size, "master '%s': layout index %d is bound twice", mm->name,
+                     idx->valueint);
+            return -1;
+        }
         bm->active = true;
         bm->output_bytes =
             (uint32_t)cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(lm, "output_bytes"));
@@ -334,7 +347,7 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
                 snprintf(err, err_size, "%s: layout offset out of range", me->iec_location);
                 return -1;
             }
-            if (me->loc.byte_index >= args->buffer_size) {
+            if (me->loc.byte_index < 0 || me->loc.byte_index >= args->buffer_size) {
                 snprintf(err, err_size, "%s exceeds the image table size (%d)", me->iec_location,
                          args->buffer_size);
                 return -1;
@@ -348,12 +361,18 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
                 .journal_index = me->loc.byte_index,
                 .journal_bit = me->loc.size == IEC_SIZE_BIT ? me->loc.bit_index : 0,
             };
+            int *count = is_output ? &bm->output_count : &bm->input_count;
+            if (*count >= ECAT_IOMAP_MAX_ENTRIES) {
+                snprintf(err, err_size, "master '%s' has more than %d %s entries", mm->name,
+                         ECAT_IOMAP_MAX_ENTRIES, is_output ? "output" : "input");
+                return -1;
+            }
             if (is_output) {
                 if (x.plc_ptr == NULL)
                     continue; /* location not declared in the program */
-                bm->outputs[bm->output_count++] = x;
+                bm->outputs[(*count)++] = x;
             } else {
-                bm->inputs[bm->input_count++] = x;
+                bm->inputs[(*count)++] = x;
             }
         }
     }

@@ -5,7 +5,9 @@
 
 import json
 import os
+import shutil
 import socket
+import subprocess
 import tempfile
 import threading
 import time
@@ -59,11 +61,11 @@ def test_ethercat_plugin_reads_iomapping_file(tmp_path: Path) -> None:
 
 
 class FakeEtherDog:
-    """Unix-socket server that requires a token, then echoes the command it received."""
+    """Unix-socket server that records each command and echoes it back."""
 
-    def __init__(self, path: str, token: str) -> None:
+    def __init__(self, path: str) -> None:
         self.path = path
-        self.token = token
+        self.received: list[str] = []
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.bind(path)
         self.sock.listen(4)
@@ -77,16 +79,11 @@ class FakeEtherDog:
             except OSError:
                 return
             with conn, conn.makefile("rw", encoding="utf-8") as f:
-                hello = json.loads(f.readline())
-                if hello.get("params", {}).get("token") != self.token:
-                    f.write('{"error": "authentication failed"}\n')
+                for line in f:
+                    command = json.loads(line)["command"]
+                    self.received.append(command)
+                    f.write(json.dumps({"status": "success", "echo": command}) + "\n")
                     f.flush()
-                    continue
-                f.write('{"status": "success", "name": "EtherDOG"}\n')
-                f.flush()
-                request = json.loads(f.readline())
-                f.write(json.dumps({"status": "success", "echo": request["command"]}) + "\n")
-                f.flush()
 
     def close(self) -> None:
         self.sock.close()
@@ -98,42 +95,107 @@ def run_dir():
         yield Path(d)
 
 
-def _manager(run_dir: Path, token: str) -> EtherDogManager:
+def _manager(run_dir: Path) -> EtherDogManager:
     binary = run_dir / "etherdog-bin"
     binary.write_text("")
-    manager = EtherDogManager(binary=str(binary), run_dir=run_dir)
-    manager._token = token
-    return manager
+    return EtherDogManager(binary=str(binary), run_dir=run_dir, busconfig=run_dir / "bus.json")
 
 
-def test_command_authenticates_and_returns_reply(run_dir: Path) -> None:
-    server = FakeEtherDog(str(run_dir / "etherdog.socket"), "secret")
+def test_command_says_hello_and_returns_reply(run_dir: Path) -> None:
+    server = FakeEtherDog(str(run_dir / "etherdog.socket"))
     try:
-        reply = _manager(run_dir, "secret").command({"command": "status"})
+        reply = _manager(run_dir).command({"command": "status"})
         assert reply == {"status": "success", "echo": "status"}
+        assert server.received == ["hello", "status"]
     finally:
         server.close()
 
 
-def test_command_rejected_with_wrong_token(run_dir: Path) -> None:
-    server = FakeEtherDog(str(run_dir / "etherdog.socket"), "secret")
-    try:
-        manager = _manager(run_dir, "wrong")
-        with pytest.raises(EtherDogUnavailable):
-            manager.command({"command": "status"})
-        assert "error" in manager.plugin_style_command({"command": "status"}, timeout=2.0)
-    finally:
-        server.close()
-
-
-def test_session_file_is_private(run_dir: Path) -> None:
-    manager = _manager(run_dir, "")
+def test_session_file_names_endpoint_transport_and_busconfig(run_dir: Path) -> None:
+    manager = _manager(run_dir)
     manager._write_session()
     session = json.loads(manager.paths.session_file.read_text())
-    assert session["token"] == manager._token and len(session["token"]) == 64
-    assert session["control"].startswith("unix:")
+    assert session["control"] == f"unix:{run_dir / 'etherdog.socket'}"
+    assert session["data"] in ("unix", "udp")
+    assert session["busconfig"] == str((run_dir / "bus.json").resolve())
+    assert "token" not in session
     assert os.stat(manager.paths.session_file).st_mode & 0o077 == 0
-    assert os.stat(manager.paths.token_file).st_mode & 0o077 == 0
+
+
+def test_session_file_is_not_written_through_a_symlink(run_dir: Path) -> None:
+    manager = _manager(run_dir)
+    target = run_dir / "elsewhere"
+    target.write_text("keep")
+    manager.paths.session_file.symlink_to(target)
+    with pytest.raises(OSError):
+        manager._write_session()
+    assert target.read_text() == "keep"
+
+
+def test_upload_stops_the_bus_and_only_stages_the_config(run_dir: Path) -> None:
+    server = FakeEtherDog(str(run_dir / "etherdog.socket"))
+    manager = _manager(run_dir)
+    manager._running = True
+    manager._process = subprocess.Popen(["sleep", "30"])
+    source = run_dir / "upload.json"
+    source.write_text("[]")
+    try:
+        manager.apply_busconfig(source)
+        assert (run_dir / "bus.json").read_text() == "[]"
+        assert server.received == ["hello", "stop"]  # the plugin configures and starts it
+
+        manager.apply_busconfig(None)
+        assert not (run_dir / "bus.json").exists()
+    finally:
+        manager._process.kill()
+        manager._process.wait()
+        server.close()
+
+
+def test_leftover_etherdog_is_killed(run_dir: Path) -> None:
+    binary = run_dir / "etherdog-bin"
+    shutil.copy(shutil.which("sleep"), binary)
+    leftover = subprocess.Popen([str(binary), "30"])
+    try:
+        manager = EtherDogManager(binary=str(binary), run_dir=run_dir)
+        assert etherdog_manager._processes_running(str(binary)) == [leftover.pid]
+        manager._kill_leftovers()
+        assert leftover.wait(timeout=5) != 0
+    finally:
+        if leftover.poll() is None:
+            leftover.kill()
+
+
+def test_startup_errors_on_stderr_are_logged_as_errors(run_dir: Path, monkeypatch, caplog) -> None:
+    monkeypatch.setattr(etherdog_manager, "READY_TIMEOUT_S", 0.3)
+    manager = _fake_binary(
+        run_dir, "echo '[2026-01-01 00:00:00] [ERROR] [BUS] bad config'; sleep 30"
+    )
+    try:
+        with caplog.at_level("ERROR"):
+            manager._spawn()
+            assert _wait_for(lambda: any("bad config" in r.message for r in caplog.records))
+        record = next(r for r in caplog.records if "bad config" in r.message)
+        assert record.levelname == "ERROR"
+        assert record.message == "[BUS] bad config"
+    finally:
+        manager._process.kill()
+        manager._process.wait()
+
+
+def test_stop_reaps_a_process_it_had_to_kill(run_dir: Path, monkeypatch) -> None:
+    manager = _fake_binary(run_dir, "trap '' TERM INT; sleep 30")
+    manager._process = subprocess.Popen([manager.paths.binary])
+    manager._running = True
+    monkeypatch.setattr(manager, "command", lambda *a, **k: {})
+    real_wait = manager._process.wait
+
+    def short_wait(timeout=None):
+        return real_wait(timeout=0.2 if timeout == 10 else timeout)
+
+    monkeypatch.setattr(manager._process, "wait", short_wait)
+    manager.stop()
+    assert manager._process.returncode is not None
 
 
 def _fake_binary(run_dir: Path, body: str) -> EtherDogManager:
@@ -238,30 +300,3 @@ def test_clean_exit_is_not_restarted(run_dir: Path) -> None:
     time.sleep(0.5)
     assert _launches(run_dir) == 1
     assert manager.disabled_reason is None
-
-
-def test_stale_etherdog_is_shut_down(run_dir: Path) -> None:
-    manager = _manager(run_dir, "")
-    manager.paths.token_file.parent.mkdir(parents=True, exist_ok=True)
-    manager.paths.token_file.write_text("ab" * 32 + "\n")
-    server = FakeEtherDog(str(run_dir / "etherdog.socket"), "ab" * 32)
-    received: list[str] = []
-    original = manager.command
-
-    def record(request: dict, timeout: float = 10.0) -> dict:
-        received.append(request["command"])
-        reply = original(request, timeout)
-        server.close()
-        return reply
-
-    manager.command = record  # type: ignore[method-assign]
-    manager._stop_stale()
-    assert received == ["shutdown"]
-
-
-def test_token_survives_restart(run_dir: Path) -> None:
-    manager = _manager(run_dir, "")
-    manager._write_session()
-    first = manager._token
-    manager._write_session()
-    assert manager._token == first

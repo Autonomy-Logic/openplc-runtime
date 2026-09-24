@@ -6,8 +6,8 @@
  * @brief EtherCAT client plugin: relays process data between EtherDOG and the image tables.
  *
  * The EtherCAT master is EtherDOG, supervised by the webserver:
- *   start_loop: connect, start the bus, read the layout, bind it to ethercat_iomapping.json,
- *               open the data session, spawn the relay thread
+ *   start_loop: connect, load the bus configuration, start the bus, read the layout, bind it
+ *               to ethercat_iomapping.json, open the data session, spawn the relay thread
  *   relay:      per input frame, publish %I through the journal, then read %Q under
  *               image_lock and answer with an output frame
  *   stop_loop:  stop the relay, close the session and stop the bus
@@ -36,12 +36,12 @@
 #include "plugin_logger.h"
 #include "plugin_types.h"
 
-#define RELAY_PRIORITY 85
+/* Used when the bus configuration gives no task_priority; EtherDOG's own default is 90. */
+#define DEFAULT_RELAY_PRIORITY 90
 #define RECV_TIMEOUT_MS 100
 #define SILENCE_RECONNECT_MS 1000
 #define RECONNECT_BACKOFF_MS 1000
 #define START_TIMEOUT_MS 60000
-#define LAYOUT_BUF (512 * 1024)
 
 static plugin_logger_t g_logger;
 static plugin_runtime_args_t g_args;
@@ -51,6 +51,10 @@ static ecat_bound_map_t g_bound;
 static edl_link_t g_link;
 static bool g_linked = false;
 static bool g_have_map = false;
+static int g_relay_priority = DEFAULT_RELAY_PRIORITY;
+
+/* Last input flags per master, to log bus state changes once. -1: none seen yet. */
+static int g_last_flags[EDL_MAX_MASTERS];
 
 static pthread_t g_relay;
 static atomic_bool g_running = false;
@@ -64,14 +68,76 @@ static void sleep_ms(int ms)
     nanosleep(&ts, NULL);
 }
 
-static int call_json(edl_link_t *link, const char *command, char *resp, size_t size, int timeout)
+/* Returns 0 with *resp heap-allocated (caller frees), or -1. */
+static int call_json(edl_link_t *link, const char *command, char **resp, int timeout)
 {
     char req[64];
     snprintf(req, sizeof(req), "{\"command\":\"%s\"}", command);
-    return edl_call(link, req, resp, size, timeout);
+    return edl_call(link, req, resp, timeout);
 }
 
-/* Bring the link up: connect, start the bus, bind the layout, open the data session. */
+/* Load the bus configuration; the bus starts only with the program, so both always match. */
+static int configure_bus(const edl_session_t *session, char *err, size_t err_size)
+{
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "command", "configure");
+    if (session->busconfig[0] != '\0')
+        cJSON_AddStringToObject(cJSON_AddObjectToObject(req, "params"), "path", session->busconfig);
+    char *line = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    char *resp = NULL;
+    int rc = line ? edl_call(&g_link, line, &resp, 15000) : -1;
+    free(line);
+    if (rc != 0) {
+        snprintf(err, err_size, "no reply from EtherDOG to 'configure'");
+        return -1;
+    }
+
+    cJSON *root = cJSON_Parse(resp);
+    const cJSON *e = root ? cJSON_GetObjectItemCaseSensitive(root, "error") : NULL;
+    const cJSON *masters = root ? cJSON_GetObjectItemCaseSensitive(root, "masters") : NULL;
+    rc = 0;
+    if (cJSON_IsString(e)) {
+        /* Still running from before a reconnect: it already holds this program's configuration */
+        if (strstr(e->valuestring, "running") == NULL) {
+            snprintf(err, err_size, "EtherDOG rejected the bus configuration: %.300s",
+                     e->valuestring);
+            rc = -1;
+        }
+    } else if (cJSON_IsArray(masters)) {
+        int priority = 0;
+        const cJSON *m;
+        cJSON_ArrayForEach(m, masters)
+        {
+            const cJSON *p = cJSON_GetObjectItemCaseSensitive(m, "task_priority");
+            if (cJSON_IsNumber(p) && p->valueint > priority)
+                priority = p->valueint;
+        }
+        g_relay_priority = priority >= 1 && priority <= 99 ? priority : DEFAULT_RELAY_PRIORITY;
+    }
+    cJSON_Delete(root);
+    free(resp);
+    return rc;
+}
+
+/* Masters EtherDOG runs that the mapping does not mention: their data is ignored. */
+static void warn_unmapped_masters(const cJSON *layout)
+{
+    const cJSON *masters = cJSON_GetObjectItemCaseSensitive(layout, "masters");
+    const cJSON *m;
+    cJSON_ArrayForEach(m, masters)
+    {
+        const cJSON *idx = cJSON_GetObjectItemCaseSensitive(m, "index");
+        const cJSON *name = cJSON_GetObjectItemCaseSensitive(m, "name");
+        if (cJSON_IsNumber(idx) && idx->valueint >= 0 && idx->valueint < ECAT_IOMAP_MAX_MASTERS &&
+            !g_bound.masters[idx->valueint].active)
+            plugin_logger_warn(&g_logger,
+                               "EtherCAT master '%s' has no I/O mapping; its data is ignored",
+                               cJSON_IsString(name) ? name->valuestring : "?");
+    }
+}
+
+/* Bring the link up: connect, configure and start the bus, bind the layout, open the data session. */
 static int link_up(char *err, size_t err_size)
 {
     edl_session_t session;
@@ -81,8 +147,11 @@ static int link_up(char *err, size_t err_size)
     if (edl_connect(&g_link, &session, err, err_size) != 0)
         return -1;
 
-    static char resp[LAYOUT_BUF];
-    if (call_json(&g_link, "start", resp, sizeof(resp), START_TIMEOUT_MS) != 0) {
+    char *resp = NULL;
+    cJSON *layout = NULL;
+    if (configure_bus(&session, err, err_size) != 0)
+        goto fail;
+    if (call_json(&g_link, "start", &resp, START_TIMEOUT_MS) != 0) {
         snprintf(err, err_size, "no reply from EtherDOG to 'start'");
         goto fail;
     }
@@ -90,20 +159,25 @@ static int link_up(char *err, size_t err_size)
         snprintf(err, err_size, "EtherDOG could not start the bus: %.300s", resp);
         goto fail;
     }
-    if (call_json(&g_link, "layout", resp, sizeof(resp), 5000) != 0) {
+    free(resp);
+    resp = NULL;
+    if (call_json(&g_link, "layout", &resp, 5000) != 0) {
         snprintf(err, err_size, "no reply from EtherDOG to 'layout'");
         goto fail;
     }
 
-    cJSON *layout = cJSON_Parse(resp);
+    layout = cJSON_Parse(resp);
     if (layout == NULL) {
         snprintf(err, err_size, "EtherDOG layout reply is not JSON");
         goto fail;
     }
-    int rc = ecat_iomap_bind(&g_map, layout, &g_args, &g_bound, err, err_size);
-    cJSON_Delete(layout);
-    if (rc != 0)
+    if (ecat_iomap_bind(&g_map, layout, &g_args, &g_bound, err, err_size) != 0)
         goto fail;
+    warn_unmapped_masters(layout);
+    cJSON_Delete(layout);
+    layout = NULL;
+    free(resp);
+    resp = NULL;
 
     char dir_buf[256];
     snprintf(dir_buf, sizeof(dir_buf), "%s", g_session_file);
@@ -117,10 +191,14 @@ static int link_up(char *err, size_t err_size)
                                "Master %d: %d input(s), %d output(s) bound (image %u/%u bytes)", i,
                                m->input_count, m->output_count, m->input_bytes, m->output_bytes);
     }
+    for (int i = 0; i < EDL_MAX_MASTERS; i++)
+        g_last_flags[i] = -1;
     g_linked = true;
     return 0;
 
 fail:
+    cJSON_Delete(layout);
+    free(resp);
     edl_close(&g_link);
     g_linked = false;
     return -1;
@@ -129,23 +207,50 @@ fail:
 static void link_down(bool stop_bus)
 {
     if (g_link.ctl_fd >= 0) {
-        char resp[256];
-        call_json(&g_link, "close_data", resp, sizeof(resp), 2000);
+        char *resp = NULL;
+        call_json(&g_link, "close_data", &resp, 2000);
+        free(resp);
+        resp = NULL;
         if (stop_bus)
-            call_json(&g_link, "stop", resp, sizeof(resp), 10000);
+            call_json(&g_link, "stop", &resp, 10000);
+        free(resp);
     }
     edl_close(&g_link);
     g_linked = false;
+}
+
+static void apply_relay_priority(void)
+{
+    struct sched_param sp = { .sched_priority = g_relay_priority };
+    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0)
+        plugin_logger_warn(&g_logger, "relay: SCHED_FIFO(%d) unavailable: %s", g_relay_priority,
+                           strerror(errno));
+}
+
+/* Logs a master's bus state change; the program keeps running on the last inputs. */
+static void track_bus_state(int master, uint8_t flags)
+{
+    int state = flags & (EDL_FLAG_VALID | EDL_FLAG_WKC_OK);
+    int last = g_last_flags[master];
+    g_last_flags[master] = state;
+    if (last == state)
+        return;
+    if (!(state & EDL_FLAG_VALID)) {
+        plugin_logger_warn(&g_logger,
+                           "EtherCAT master %d: bus not operational; inputs keep their last values",
+                           master);
+    } else if (!(state & EDL_FLAG_WKC_OK)) {
+        plugin_logger_warn(&g_logger, "EtherCAT master %d: working counter mismatch", master);
+    } else if (last != -1) {
+        plugin_logger_info(&g_logger, "EtherCAT master %d: bus operational again", master);
+    }
 }
 
 static void *relay_thread(void *arg)
 {
     (void)arg;
     pthread_setname_np(pthread_self(), "ecat-relay");
-    struct sched_param sp = { .sched_priority = RELAY_PRIORITY };
-    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0)
-        plugin_logger_warn(&g_logger, "relay: SCHED_FIFO(%d) unavailable: %s", RELAY_PRIORITY,
-                           strerror(errno));
+    apply_relay_priority();
 
     uint8_t frame[EDL_FRAME_HEADER + EDL_MAX_PAYLOAD];
     uint8_t outputs[EDL_MAX_PAYLOAD];
@@ -165,6 +270,7 @@ static void *relay_thread(void *arg)
             plugin_logger_info(&g_logger, "EtherDOG link %s", reported ? "restored" : "up");
             reported = false;
             silent_ms = 0;
+            apply_relay_priority();
         }
 
         int master = 0;
@@ -176,8 +282,10 @@ static void *relay_thread(void *arg)
         if (rc <= 0) {
             silent_ms += RECV_TIMEOUT_MS;
             if (rc < 0 || silent_ms >= SILENCE_RECONNECT_MS) {
-                plugin_logger_warn(&g_logger, "EtherDOG silent for %d ms, reconnecting",
-                                   silent_ms);
+                plugin_logger_warn(&g_logger,
+                                   "EtherCAT link to EtherDOG lost (%s); inputs keep their last "
+                                   "values, reconnecting",
+                                   rc < 0 ? "socket error" : "no data for 1 s");
                 link_down(false);
                 reported = true;
             }
@@ -186,12 +294,9 @@ static void *relay_thread(void *arg)
         silent_ms = 0;
 
         const ecat_bound_master_t *m = &g_bound.masters[master];
-        if (!m->active) {
-            /* A running master nothing is mapped to: keep it fed with zero outputs. */
-            memset(outputs, 0, sizeof(outputs));
-            edl_send_outputs(&g_link, master, outputs, len, true);
-            continue;
-        }
+        if (!m->active)
+            continue; /* unmapped (warned at link up); EtherDOG holds its outputs at zero */
+        track_bus_state(master, flags);
 
         if (flags & EDL_FLAG_VALID)
             ecat_iomap_publish_inputs(m, payload, len, &g_args);
@@ -325,11 +430,22 @@ int execute_command(const char *command_json, char *response, size_t response_si
         cJSON_Delete(resp);
         return -1;
     }
-    int rc = edl_call(&link, command_json, response, response_size, 30000);
+    char *reply = NULL;
+    int rc = edl_call(&link, command_json, &reply, 30000);
     edl_close(&link);
     if (rc != 0) {
         snprintf(response, response_size, "{\"error\":\"no reply from EtherDOG\"}");
         return -1;
     }
+    size_t len = strlen(reply);
+    if (len >= response_size) {
+        snprintf(response, response_size,
+                 "{\"error\":\"EtherDOG reply is %zu bytes, larger than the %zu-byte buffer\"}",
+                 len, response_size);
+        free(reply);
+        return -1;
+    }
+    memcpy(response, reply, len + 1);
+    free(reply);
     return strstr(response, "\"error\"") != NULL ? -1 : 0;
 }

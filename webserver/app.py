@@ -338,6 +338,11 @@ def stage_project_snapshot() -> str:
     return ""
 
 
+# First versions that split the EtherCAT configuration into busconfig and iomapping
+ETHERDOG_MIN_RUNTIME_VERSION = "4.3.0"
+ETHERDOG_MIN_EDITOR_VERSION = "4.3.2"
+
+
 def _upload_has_legacy_ethercat(zip_file, valid_files) -> bool:
     """True when the upload's conf/ethercat.json (pre-split format) describes EtherCAT masters."""
     names = [
@@ -403,8 +408,9 @@ def handle_upload_file(data: dict) -> dict:
             return {
                 "UploadFileFail": (
                     "This program was built with an Editor that writes the old EtherCAT "
-                    "configuration (conf/ethercat.json). Rebuild it with an Editor that emits "
-                    "ethercat_busconfig.json and ethercat_iomapping.json."
+                    "configuration (conf/ethercat.json), which runtime "
+                    f"{ETHERDOG_MIN_RUNTIME_VERSION} and newer no longer read. Rebuild it with "
+                    f"OpenPLC Editor {ETHERDOG_MIN_EDITOR_VERSION} or newer."
                 ),
                 "CompilationStatus": build_state.status.name,
             }

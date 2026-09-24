@@ -163,3 +163,20 @@ void test_iec_location_OnlyPercent_ShouldFail(void)
     iec_location_t loc;
     TEST_ASSERT_EQUAL_INT(-1, ecat_io_parse_iec_location("%", &loc));
 }
+
+/* ---- Invalid: byte index out of range ---- */
+
+void test_iec_location_ByteIndexBeyondIntRange_ShouldFail(void)
+{
+    iec_location_t loc;
+    TEST_ASSERT_EQUAL_INT(-1, ecat_io_parse_iec_location("%QX4294967295.0", &loc));
+    TEST_ASSERT_EQUAL_INT(-1, ecat_io_parse_iec_location("%QX99999999999999999999.0", &loc));
+}
+
+void test_iec_location_ByteIndexAboveJournalRange_ShouldFail(void)
+{
+    iec_location_t loc;
+    TEST_ASSERT_EQUAL_INT(-1, ecat_io_parse_iec_location("%IW65536", &loc));
+    TEST_ASSERT_EQUAL_INT(0, ecat_io_parse_iec_location("%IW65535", &loc));
+    TEST_ASSERT_EQUAL_INT(65535, loc.byte_index);
+}

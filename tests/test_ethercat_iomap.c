@@ -235,3 +235,15 @@ void test_publish_inputs_writes_journal(void)
     TEST_ASSERT_EQUAL_INT(3, last_int_index);
     TEST_ASSERT_EQUAL_HEX16(0x1234, last_int_value);
 }
+
+void test_load_rejects_duplicate_master_names(void)
+{
+    FILE *fp = fopen(TMPFILE, "w");
+    TEST_ASSERT_NOT_NULL(fp);
+    fprintf(fp, "{\"version\":1,\"masters\":[{\"name\":\"m0\",\"entries\":[]},"
+                "{\"name\":\"m0\",\"entries\":[]}]}");
+    fclose(fp);
+    char err[256];
+    TEST_ASSERT_EQUAL_INT(-1, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)));
+    TEST_ASSERT_NOT_NULL(strstr(err, "used twice"));
+}

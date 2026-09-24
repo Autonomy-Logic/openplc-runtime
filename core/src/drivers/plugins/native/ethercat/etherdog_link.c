@@ -77,6 +77,9 @@ int edl_read_session(const char *path, edl_session_t *out, char *err, size_t err
         snprintf(out->token, sizeof(out->token), "%s", token->valuestring);
     const cJSON *data = cJSON_GetObjectItemCaseSensitive(root, "data");
     out->udp = cJSON_IsString(data) && strcmp(data->valuestring, "udp") == 0;
+    const cJSON *busconfig = cJSON_GetObjectItemCaseSensitive(root, "busconfig");
+    if (cJSON_IsString(busconfig) && strlen(busconfig->valuestring) < sizeof(out->busconfig))
+        snprintf(out->busconfig, sizeof(out->busconfig), "%s", busconfig->valuestring);
     cJSON_Delete(root);
     return 0;
 }
@@ -139,9 +142,9 @@ static int connect_spec(const char *spec, char *err, size_t err_size)
     return -1;
 }
 
-int edl_call(edl_link_t *link, const char *request, char *response, size_t response_size,
-             int timeout_ms)
+int edl_call(edl_link_t *link, const char *request, char **response, int timeout_ms)
 {
+    *response = NULL;
     if (link->ctl_fd < 0)
         return -1;
     size_t len = strlen(request);
@@ -161,23 +164,34 @@ int edl_call(edl_link_t *link, const char *request, char *response, size_t respo
         return -1;
 
     for (;;) {
-        char *nl = memchr(link->rbuf, '\n', link->rlen);
+        char *nl = link->rlen > 0 ? memchr(link->rbuf, '\n', link->rlen) : NULL;
         if (nl != NULL) {
             size_t line = (size_t)(nl - link->rbuf);
-            size_t copy = line < response_size - 1 ? line : response_size - 1;
-            memcpy(response, link->rbuf, copy);
-            response[copy] = '\0';
+            char *out = malloc(line + 1);
+            if (out == NULL)
+                return -1;
+            memcpy(out, link->rbuf, line);
+            out[line] = '\0';
             memmove(link->rbuf, nl + 1, link->rlen - line - 1);
             link->rlen -= line + 1;
+            *response = out;
             return 0;
         }
-        if (link->rlen >= sizeof(link->rbuf))
-            return -1;
+        if (link->rlen == link->rcap) {
+            if (link->rcap >= EDL_MAX_REPLY)
+                return -1;
+            size_t cap = link->rcap ? link->rcap * 2 : 64 * 1024;
+            char *grown = realloc(link->rbuf, cap);
+            if (grown == NULL)
+                return -1;
+            link->rbuf = grown;
+            link->rcap = cap;
+        }
         struct pollfd pfd = { .fd = link->ctl_fd, .events = POLLIN };
         int rc = poll(&pfd, 1, timeout_ms);
         if (rc <= 0)
             return -1;
-        ssize_t n = recv(link->ctl_fd, link->rbuf + link->rlen, sizeof(link->rbuf) - link->rlen, 0);
+        ssize_t n = recv(link->ctl_fd, link->rbuf + link->rlen, link->rcap - link->rlen, 0);
         if (n <= 0)
             return -1;
         link->rlen += (size_t)n;
@@ -193,8 +207,8 @@ int edl_connect(edl_link_t *link, const edl_session_t *session, char *err, size_
 
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "command", "hello");
-    cJSON *params = cJSON_AddObjectToObject(req, "params");
-    cJSON_AddStringToObject(params, "token", session->token);
+    if (session->token[0] != '\0')
+        cJSON_AddStringToObject(cJSON_AddObjectToObject(req, "params"), "token", session->token);
     char *line = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     if (line == NULL) {
@@ -202,14 +216,16 @@ int edl_connect(edl_link_t *link, const edl_session_t *session, char *err, size_
         return -1;
     }
 
-    char resp[1024];
-    int rc = edl_call(link, line, resp, sizeof(resp), 5000);
+    char *resp = NULL;
+    int rc = edl_call(link, line, &resp, 5000);
     free(line);
     if (rc != 0 || strstr(resp, "\"error\"") != NULL) {
-        snprintf(err, err_size, "EtherDOG refused the connection: %s", rc ? "no reply" : resp);
+        snprintf(err, err_size, "EtherDOG refused the connection: %.300s", rc ? "no reply" : resp);
+        free(resp);
         edl_close(link);
         return -1;
     }
+    free(resp);
     return 0;
 }
 
@@ -299,8 +315,8 @@ int edl_open_data(edl_link_t *link, const edl_session_t *session, const char *lo
     cJSON_AddStringToObject(cJSON_AddObjectToObject(req, "params"), "endpoint", endpoint);
     char *line = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
-    char resp[4096];
-    int rc = line ? edl_call(link, line, resp, sizeof(resp), 5000) : -1;
+    char *resp = NULL;
+    int rc = line ? edl_call(link, line, &resp, 5000) : -1;
     free(line);
     if (rc != 0) {
         snprintf(err, err_size, "no reply to open_data");
@@ -311,10 +327,12 @@ int edl_open_data(edl_link_t *link, const edl_session_t *session, const char *lo
     const cJSON *e = root ? cJSON_GetObjectItemCaseSensitive(root, "error") : NULL;
     const cJSON *masters = root ? cJSON_GetObjectItemCaseSensitive(root, "masters") : NULL;
     if (cJSON_IsString(e) || !cJSON_IsArray(masters)) {
-        snprintf(err, err_size, "open_data refused: %s", cJSON_IsString(e) ? e->valuestring : resp);
+        snprintf(err, err_size, "open_data refused: %.300s", cJSON_IsString(e) ? e->valuestring : resp);
         cJSON_Delete(root);
+        free(resp);
         return -1;
     }
+    free(resp);
     memset(link->open, 0, sizeof(link->open));
     const cJSON *m;
     cJSON_ArrayForEach(m, masters)
@@ -404,6 +422,9 @@ void edl_close(edl_link_t *link)
     link->data_fd = -1;
     link->ctl_fd = -1;
     link->data_path[0] = '\0';
+    free(link->rbuf);
+    link->rbuf = NULL;
+    link->rcap = 0;
     link->rlen = 0;
     memset(link->open, 0, sizeof(link->open));
 }

@@ -24,6 +24,8 @@
 #define ECAT_IOMAP_MAX_MASTERS 4
 #define ECAT_IOMAP_MAX_ENTRIES 512
 #define ECAT_IOMAP_NAME_LEN 64
+/** Highest byte index a location may use; the runtime's journal indexes are 16-bit. */
+#define ECAT_IOMAP_MAX_BYTE_INDEX 65535
 
 typedef enum { IEC_SIZE_BIT, IEC_SIZE_BYTE, IEC_SIZE_WORD, IEC_SIZE_DWORD, IEC_SIZE_LWORD } iec_size_t;
 typedef enum { IEC_DIR_INPUT, IEC_DIR_OUTPUT } iec_dir_t;
