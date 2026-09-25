@@ -209,5 +209,6 @@ setup_plugin_venvs() {
 setup_plugin_venvs
 setup_runtime_venv
 
-# Start the PLC webserver (forward all arguments)
-"$OPENPLC_DIR/venvs/runtime/bin/python3" -m "webserver.app" "$@"
+# Start the PLC webserver (forward all arguments). exec, so SIGTERM (docker stop, systemd)
+# reaches it and it can stop EtherDOG and plc_main cleanly.
+exec "$OPENPLC_DIR/venvs/runtime/bin/python3" -m "webserver.app" "$@"

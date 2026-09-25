@@ -16,8 +16,11 @@ import json
 import os
 import platform
 import shutil
+import signal
 import ssl
+import tempfile
 import threading
+import zipfile
 from pathlib import Path
 from typing import Callable, Final, Optional
 
@@ -28,6 +31,7 @@ from webserver import project_snapshot
 from webserver.credentials import CertGen
 from webserver.debug_websocket import init_debug_websocket
 from webserver.discovery.discovery_routes import discovery_bp
+from webserver.etherdog_manager import EtherDogManager, legacy_ethercat_config_in_use
 from webserver.discovery.network_discovery import (
     responder as network_discovery_responder,
 )
@@ -39,6 +43,7 @@ from webserver.plcapp_management import (
     apply_retain_conf,
     apply_vpp_plugin_conf,
     build_state,
+    ensure_plc_stopped,
     run_compile,
     safe_extract,
     update_plugin_configurations,
@@ -72,6 +77,11 @@ app.config["MAX_CONTENT_LENGTH"] = (
 login_manager = flask_login.LoginManager()
 login_manager.init_app(app)
 
+# EtherDOG first: plc_main's EtherCAT plugin reads the session file it writes, and a PLC that
+# auto-starts at boot needs the bus configured before its plugins start.
+etherdog_manager = EtherDogManager()
+etherdog_manager.start()
+
 runtime_manager = RuntimeManager(
     runtime_path="./build/plc_main",
     plc_socket="/run/runtime/plc_runtime.socket",
@@ -90,6 +100,7 @@ network_discovery_responder.start()
 # without triggering a re-import of this module (which would create
 # a duplicate RuntimeManager when run with python -m webserver.app).
 app_restapi.config["RUNTIME_MANAGER"] = runtime_manager
+app_restapi.config["ETHERDOG_MANAGER"] = etherdog_manager
 
 BASE_DIR: Final[Path] = Path(__file__).parent
 CERT_FILE: Final[Path] = (BASE_DIR / "certOPENPLC.pem").resolve()
@@ -329,6 +340,35 @@ def stage_project_snapshot() -> str:
     return ""
 
 
+# First versions that split the EtherCAT configuration into busconfig and iomapping
+ETHERDOG_MIN_RUNTIME_VERSION = "4.3.0"
+ETHERDOG_MIN_EDITOR_VERSION = "4.3.2"
+
+# How long an upload waits for a running PLC to stop
+PLC_STOP_TIMEOUT_S = 30.0
+
+
+def _upload_has_legacy_ethercat(zip_file, valid_files) -> bool:
+    """True when the upload's conf/ethercat.json (pre-split format) describes EtherCAT masters."""
+    names = [
+        info.filename
+        for info in valid_files
+        if info.filename == "conf/ethercat.json" or info.filename.endswith("/conf/ethercat.json")
+    ]
+    if not names:
+        return False
+    try:
+        with zipfile.ZipFile(zip_file, "r") as zf:
+            text = zf.read(names[0]).decode("utf-8", errors="replace")
+    except (zipfile.BadZipFile, KeyError, OSError) as e:
+        logger.warning("Could not inspect conf/ethercat.json in the upload: %s", e)
+        return False
+    with tempfile.TemporaryDirectory() as tmp:
+        conf = Path(tmp)
+        (conf / "ethercat.json").write_text(text, encoding="utf-8")
+        return legacy_ethercat_config_in_use(conf)
+
+
 def handle_upload_file(data: dict) -> dict:
     if build_state.status == BuildStatus.COMPILING:
         return {
@@ -365,6 +405,32 @@ def handle_upload_file(data: dict) -> dict:
             }
 
         extract_dir = "core/generated"
+
+        # Programs built before the EtherCAT configuration split carry one ethercat.json that
+        # the runtime no longer reads. Refuse them before anything on the device changes.
+        if _upload_has_legacy_ethercat(zip_file, valid_files):
+            build_state.status = BuildStatus.FAILED
+            return {
+                "UploadFileFail": (
+                    "This program was built with an Editor that writes the old EtherCAT "
+                    "configuration (conf/ethercat.json), which runtime "
+                    f"{ETHERDOG_MIN_RUNTIME_VERSION} and newer no longer read. Rebuild it with "
+                    f"OpenPLC Editor {ETHERDOG_MIN_EDITOR_VERSION} or newer."
+                ),
+                "CompilationStatus": build_state.status.name,
+            }
+
+        # The Editor stops the PLC before uploading; other clients may not. Nothing below may
+        # run beside the old program: the EtherCAT bus configuration is staged next.
+        stopped, was_running = ensure_plc_stopped(runtime_manager, timeout_s=PLC_STOP_TIMEOUT_S)
+        if not stopped:
+            build_state.status = BuildStatus.FAILED
+            return {
+                "UploadFileFail": "The running PLC could not be stopped; upload cancelled",
+                "CompilationStatus": build_state.status.name,
+            }
+        if was_running:
+            build_state.log("[WARNING] The PLC was running; stopped it before the upload\n")
 
         # Point of no return: past here the program on the device is being
         # replaced, so the stored project snapshot must go with it. Clearing
@@ -403,6 +469,10 @@ def handle_upload_file(data: dict) -> dict:
 
         # Update built-in plugin configurations based on extracted config files
         update_plugin_configurations(extract_dir)
+
+        # The bus half of the EtherCAT configuration belongs to EtherDOG.
+        busconfig = Path(extract_dir) / "conf" / "ethercat_busconfig.json"
+        etherdog_manager.apply_busconfig(busconfig if busconfig.exists() else None)
 
         # ?clean=1 — wired from the editor's "Clean build and upload" UI
         # option. Forces a full recompile by wiping core/build/ and the
@@ -489,7 +559,17 @@ def restapi_callback_post(argument: str, data: dict) -> dict:
     return handler(data)
 
 
+def _stop_on_signal(signum: int, _frame: object) -> None:
+    # Same shutdown path as Ctrl+C, so EtherDOG zeroes the outputs and plc_main stops cleanly
+    signal.signal(signum, signal.SIG_IGN)  # a repeat must not interrupt the cleanup
+    raise KeyboardInterrupt(f"signal {signum}")
+
+
 def run_https():
+    for sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
+        if sig is not None:
+            signal.signal(sig, _stop_on_signal)
+
     # rest api register
     app_restapi.register_blueprint(restapi_bp, url_prefix="/api")
     app_restapi.register_blueprint(discovery_bp)
@@ -568,6 +648,7 @@ def run_https():
         # logger.info("HTTP server stopped by KeyboardInterrupt")
         pass
     finally:
+        etherdog_manager.stop()
         logger.info("Runtime manager stopped")
         runtime_manager.stop()
         network_discovery_responder.stop()

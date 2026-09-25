@@ -6,7 +6,7 @@
 Endpoints:
     GET  /api/discovery/interfaces          - List network interfaces (common)
     GET  /api/discovery/ethercat/status     - Check if EtherCAT discovery service is available
-    POST /api/discovery/ethercat/scan       - Scan network for EtherCAT slaves (via SOEM plugin)
+    POST /api/discovery/ethercat/scan       - Scan network for EtherCAT slaves (via EtherDOG)
     POST /api/discovery/ethercat/validate   - Validate EtherCAT configuration
     POST /api/discovery/ethercat/test       - Test connection to specific EtherCAT slave
 """
@@ -23,6 +23,14 @@ from webserver.discovery.ethercat_discovery import (
 )
 
 discovery_bp = Blueprint("discovery", __name__, url_prefix="/api/discovery")
+
+
+def _with_plugin_state(result: dict) -> dict:
+    """Add the Editor's "plugin_state" key next to EtherDOG's per-master "state"."""
+    for master in result.get("masters", []):
+        if isinstance(master, dict) and "state" in master:
+            master.setdefault("plugin_state", master["state"])
+    return result
 
 
 @discovery_bp.route("/ethercat/status", methods=["GET"])
@@ -48,16 +56,12 @@ def ethercat_status():
               type: string
               description: Status message
     """
-    # Discovery is built into the runtime via the native EtherCAT plugin (SOEM).
-    # Verify the runtime is actually reachable before reporting available.
-    runtime_manager = current_app.config["RUNTIME_MANAGER"]
-
-    ping_response = runtime_manager.ping()
-    if ping_response and ping_response.startswith("PING:OK"):
-        return jsonify(
-            {"available": True, "message": "Discovery service is ready (native SOEM plugin)"}
-        )
-    return jsonify({"available": False, "message": "PLC runtime is not reachable"})
+    # Discovery is served by EtherDOG, the EtherCAT master service.
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
+    result = etherdog.plugin_style_command({"command": "status"}, timeout=5.0)
+    if "error" in result:
+        return jsonify({"available": False, "message": f"EtherDOG unavailable: {result['error']}"})
+    return jsonify({"available": True, "message": "Discovery service is ready (EtherDOG)"})
 
 
 @discovery_bp.route("/interfaces", methods=["GET"])
@@ -95,13 +99,9 @@ def network_interfaces():
       500:
         description: Error retrieving interfaces
     """
-    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
 
-    result = runtime_manager.send_plugin_command(
-        "ethercat",
-        json.dumps({"command": "list-interfaces"}),
-        timeout=5.0,
-    )
+    result = etherdog.plugin_style_command({"command": "list-interfaces"}, timeout=5.0)
 
     if "error" in result:
         return (
@@ -243,13 +243,11 @@ def ethercat_scan():
     if not is_valid:
         return jsonify({"status": "error", "message": error_msg}), 400
 
-    # Route scan through the native EtherCAT plugin via unix socket
-    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+    # Scans go straight to EtherDOG, so they work with no program loaded.
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
 
-    result = runtime_manager.send_plugin_command(
-        "ethercat",
-        json.dumps({"command": "scan", "params": {"interface": interface}}),
-        timeout=10.0,
+    result = etherdog.plugin_style_command(
+        {"command": "scan", "params": {"interface": interface}}, timeout=10.0
     )
 
     if "error" in result:
@@ -284,7 +282,7 @@ def ethercat_scan():
 @jwt_required()
 def ethercat_runtime_status():
     """
-    Get the current EtherCAT runtime status from the native plugin.
+    Get the current EtherCAT bus status from EtherDOG.
     ---
     tags:
       - EtherCAT
@@ -348,24 +346,20 @@ def ethercat_runtime_status():
       503:
         description: Runtime not available
     """
-    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
 
-    result = runtime_manager.send_plugin_command(
-        "ethercat",
-        json.dumps({"command": "status"}),
-        timeout=5.0,
-    )
+    result = etherdog.plugin_style_command({"command": "status"}, timeout=5.0)
 
     if "error" in result:
         return jsonify({"status": "error", "message": result["error"]}), 503
-    return jsonify(result), 200
+    return jsonify(_with_plugin_state(result)), 200
 
 
 @discovery_bp.route("/ethercat/diagnostics", methods=["GET"])
 @jwt_required()
 def ethercat_diagnostics():
     """
-    Get detailed EtherCAT diagnostic information from the native plugin.
+    Get detailed EtherCAT diagnostic information from EtherDOG.
     ---
     tags:
       - EtherCAT
@@ -394,17 +388,13 @@ def ethercat_diagnostics():
       503:
         description: Runtime not available
     """
-    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
 
-    result = runtime_manager.send_plugin_command(
-        "ethercat",
-        json.dumps({"command": "diagnostics"}),
-        timeout=5.0,
-    )
+    result = etherdog.plugin_style_command({"command": "diagnostics"}, timeout=5.0)
 
     if "error" in result:
         return jsonify({"status": "error", "message": result["error"]}), 503
-    return jsonify(result), 200
+    return jsonify(_with_plugin_state(result)), 200
 
 
 @discovery_bp.route("/ethercat/validate", methods=["POST"])
@@ -605,16 +595,10 @@ def ethercat_test():
     if not is_valid:
         return jsonify({"status": "error", "message": error_msg}), 400
 
-    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
 
-    result = runtime_manager.send_plugin_command(
-        "ethercat",
-        json.dumps(
-            {
-                "command": "test",
-                "params": {"interface": interface, "position": position},
-            }
-        ),
+    result = etherdog.plugin_style_command(
+        {"command": "test", "params": {"interface": interface, "position": position}},
         timeout=10.0,
     )
 
