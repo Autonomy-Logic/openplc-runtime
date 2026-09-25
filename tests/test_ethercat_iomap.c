@@ -247,3 +247,27 @@ void test_load_rejects_duplicate_master_names(void)
     TEST_ASSERT_EQUAL_INT(-1, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)));
     TEST_ASSERT_NOT_NULL(strstr(err, "used twice"));
 }
+
+static void write_mapping_with(int count)
+{
+    FILE *fp = fopen(TMPFILE, "w");
+    TEST_ASSERT_NOT_NULL(fp);
+    fprintf(fp, "{\"version\":1,\"masters\":[{\"name\":\"m0\",\"entries\":[");
+    for (int i = 0; i < count; i++)
+        fprintf(fp, "%s{\"slave\":1,\"index\":\"0x6000\",\"subindex\":%d,\"iec_location\":\"%%IW%d\"}",
+                i ? "," : "", i % 256, i);
+    fprintf(fp, "]}]}");
+    fclose(fp);
+}
+
+void test_load_accepts_the_entry_limit_and_rejects_one_more(void)
+{
+    char err[256];
+    write_mapping_with(ECAT_IOMAP_MAX_ENTRIES);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)), err);
+    TEST_ASSERT_EQUAL_INT(2048, map.masters[0].entry_count);
+
+    write_mapping_with(ECAT_IOMAP_MAX_ENTRIES + 1);
+    TEST_ASSERT_EQUAL_INT(-1, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)));
+    TEST_ASSERT_NOT_NULL(strstr(err, "more than 2048 entries"));
+}

@@ -22,7 +22,7 @@
 #include "plugin_types.h"
 
 #define ECAT_IOMAP_MAX_MASTERS 4
-#define ECAT_IOMAP_MAX_ENTRIES 512
+#define ECAT_IOMAP_MAX_ENTRIES 2048
 #define ECAT_IOMAP_NAME_LEN 64
 /** Highest byte index a location may use; the runtime's journal indexes are 16-bit. */
 #define ECAT_IOMAP_MAX_BYTE_INDEX 65535
