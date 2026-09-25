@@ -45,6 +45,15 @@ def _listen_later(path: str, delay: float) -> threading.Thread:
     return t
 
 
+def _errors_about(caplog, run_dir: Path) -> list[str]:
+    """ERROR records about this test's socket; the app's own runtime manager logs too."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "ERROR" and str(run_dir) in r.getMessage()
+    ]
+
+
 def test_connects_once_the_socket_appears_without_errors(run_dir: Path, monkeypatch, caplog) -> None:
     manager = _manager(run_dir)
     monkeypatch.setattr(manager, "is_runtime_alive", lambda: True)
@@ -52,7 +61,7 @@ def test_connects_once_the_socket_appears_without_errors(run_dir: Path, monkeypa
     with caplog.at_level("ERROR"):
         manager._connect_runtime_socket_when_ready()
     assert manager.runtime_socket.is_connected()
-    assert not [r for r in caplog.records if r.levelname == "ERROR"]
+    assert not _errors_about(caplog, run_dir)
     manager.runtime_socket.close()
 
 
@@ -63,7 +72,8 @@ def test_reports_once_when_the_runtime_never_listens(run_dir: Path, monkeypatch,
     with caplog.at_level("ERROR"):
         manager._connect_runtime_socket_when_ready()
     assert not manager.runtime_socket.is_connected()
-    assert len([r for r in caplog.records if "Failed to connect to runtime socket" in r.message]) == 1
+    failures = _errors_about(caplog, run_dir)
+    assert len(failures) == 1 and "Failed to connect to runtime socket" in failures[0]
 
 
 def test_stops_waiting_when_the_runtime_exits(run_dir: Path, monkeypatch) -> None:
