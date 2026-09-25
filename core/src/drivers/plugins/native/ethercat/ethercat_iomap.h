@@ -86,6 +86,9 @@ typedef struct {
 
 typedef struct {
     ecat_bound_master_t masters[ECAT_IOMAP_MAX_MASTERS];
+    /* Mapped masters EtherDOG reports as not operational: left unbound */
+    char not_ready[ECAT_IOMAP_MAX_MASTERS][ECAT_IOMAP_NAME_LEN];
+    int not_ready_count;
 } ecat_bound_map_t;
 
 /** Load and validate the mapping file. Returns 0, or -1 with @p err naming the problem. */
@@ -96,9 +99,11 @@ int ecat_iomap_load(const char *path, ecat_iomap_t *map, char *err, size_t err_s
  *
  * Every mapped entry must exist in the layout with a matching direction and width; any
  * mismatch fails the whole bind with @p err naming the entry. Entries whose PLC variable is
- * not declared in the program are skipped, as the in-process plugin did.
+ * not declared in the program are skipped, as the in-process plugin did. A mapped master that
+ * EtherDOG reports as not operational is left unbound and listed in @p out->not_ready; the
+ * others are bound.
  *
- * @return 0 on success, -1 on failure.
+ * @return 0 on success, -1 on failure (including when no mapped master is operational).
  */
 int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime_args_t *args,
                     ecat_bound_map_t *out, char *err, size_t err_size);

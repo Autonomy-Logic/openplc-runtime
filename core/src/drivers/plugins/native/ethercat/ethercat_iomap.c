@@ -301,8 +301,8 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
             return -1;
         }
         if (!cJSON_IsTrue(ready)) {
-            snprintf(err, err_size, "master '%s' is not operational", mm->name);
-            return -1;
+            snprintf(out->not_ready[out->not_ready_count++], ECAT_IOMAP_NAME_LEN, "%s", mm->name);
+            continue;
         }
 
         ecat_bound_master_t *bm = &out->masters[idx->valueint];
@@ -375,6 +375,10 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
                 bm->inputs[(*count)++] = x;
             }
         }
+    }
+    if (map->master_count > 0 && out->not_ready_count == map->master_count) {
+        snprintf(err, err_size, "no mapped master is operational (first: '%s')", out->not_ready[0]);
+        return -1;
     }
     return 0;
 }

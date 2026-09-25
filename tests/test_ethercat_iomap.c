@@ -199,6 +199,61 @@ void test_bind_fails_when_master_not_running(void)
     TEST_ASSERT_NOT_NULL(strstr(err, "other"));
 }
 
+/* m0 operational, m1 not */
+static const char *TWO_MASTER_LAYOUT =
+    "{\"status\":\"success\",\"masters\":["
+    "{\"index\":0,\"name\":\"m0\",\"ready\":true,\"output_bytes\":1,\"input_bytes\":1,"
+    "\"entries\":[{\"slave\":1,\"pdo\":\"0x1a00\",\"index\":\"0x6000\",\"subindex\":1,"
+    "\"direction\":\"input\",\"bit_offset\":0,\"bit_length\":1,\"data_type\":\"BOOL\","
+    "\"name\":\"In1\"}]},"
+    "{\"index\":1,\"name\":\"m1\",\"ready\":false,\"output_bytes\":0,\"input_bytes\":0,"
+    "\"entries\":[]}]}";
+
+static int bind_two_masters(const char *m0_entries, char *err, size_t err_size)
+{
+    FILE *fp = fopen(TMPFILE, "w");
+    TEST_ASSERT_NOT_NULL(fp);
+    fprintf(fp,
+            "{\"version\":1,\"masters\":[{\"name\":\"m0\",\"entries\":[%s]},"
+            "{\"name\":\"m1\",\"entries\":[{\"slave\":1,\"index\":\"0x6000\",\"subindex\":1,"
+            "\"iec_location\":\"%%IX2.0\"}]}]}",
+            m0_entries);
+    fclose(fp);
+    TEST_ASSERT_EQUAL_INT(0, ecat_iomap_load(TMPFILE, &map, err, err_size));
+    cJSON *layout = cJSON_Parse(TWO_MASTER_LAYOUT);
+    TEST_ASSERT_NOT_NULL(layout);
+    int rc = ecat_iomap_bind(&map, layout, &args, &bound, err, err_size);
+    cJSON_Delete(layout);
+    return rc;
+}
+
+void test_bind_skips_a_master_that_is_not_operational(void)
+{
+    char err[256] = "";
+    int rc = bind_two_masters(
+        "{\"slave\":1,\"index\":\"0x6000\",\"subindex\":1,\"iec_location\":\"%IX0.0\"}", err,
+        sizeof(err));
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, rc, err);
+    TEST_ASSERT_TRUE(bound.masters[0].active);
+    TEST_ASSERT_EQUAL_INT(1, bound.masters[0].input_count);
+    TEST_ASSERT_FALSE(bound.masters[1].active);
+    TEST_ASSERT_EQUAL_INT(1, bound.not_ready_count);
+    TEST_ASSERT_EQUAL_STRING("m1", bound.not_ready[0]);
+}
+
+void test_bind_fails_when_no_master_is_operational(void)
+{
+    char err[256] = "";
+    FILE *fp = fopen(TMPFILE, "w");
+    fputs("{\"version\":1,\"masters\":[{\"name\":\"m1\",\"entries\":[]}]}", fp);
+    fclose(fp);
+    TEST_ASSERT_EQUAL_INT(0, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)));
+    cJSON *layout = cJSON_Parse(TWO_MASTER_LAYOUT);
+    TEST_ASSERT_EQUAL_INT(-1, ecat_iomap_bind(&map, layout, &args, &bound, err, sizeof(err)));
+    cJSON_Delete(layout);
+    TEST_ASSERT_NOT_NULL(strstr(err, "no mapped master is operational"));
+}
+
 /* --- per-cycle copies --------------------------------------------------------------------- */
 
 void test_collect_outputs_packs_bits_and_words(void)

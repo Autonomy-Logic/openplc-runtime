@@ -174,6 +174,11 @@ static int link_up(char *err, size_t err_size)
     if (ecat_iomap_bind(&g_map, layout, &g_args, &g_bound, err, err_size) != 0)
         goto fail;
     warn_unmapped_masters(layout);
+    for (int i = 0; i < g_bound.not_ready_count; i++)
+        plugin_logger_warn(&g_logger,
+                           "EtherCAT master '%s' is not operational; its I/O stays off until the "
+                           "bus restarts",
+                           g_bound.not_ready[i]);
     cJSON_Delete(layout);
     layout = NULL;
     free(resp);
@@ -256,17 +261,26 @@ static void *relay_thread(void *arg)
     uint8_t outputs[EDL_MAX_PAYLOAD];
     int silent_ms = 0;
     char err[512];
+    char last_err[512] = "";
     bool reported = false;
 
     while (atomic_load(&g_running)) {
         if (!g_linked) {
-            if (link_up(err, sizeof(err)) != 0) {
-                if (!reported)
-                    plugin_logger_warn(&g_logger, "EtherDOG link down, retrying: %s", err);
+            int rc = link_up(err, sizeof(err));
+            if (rc != 0) {
+                /* Each distinct reason once */
+                if (strcmp(err, last_err) != 0) {
+                    if (rc == EDL_DISABLED)
+                        plugin_logger_warn(&g_logger, "EtherCAT disabled: %s", err);
+                    else
+                        plugin_logger_warn(&g_logger, "EtherDOG link down, retrying: %s", err);
+                    snprintf(last_err, sizeof(last_err), "%s", err);
+                }
                 reported = true;
                 sleep_ms(RECONNECT_BACKOFF_MS);
                 continue;
             }
+            last_err[0] = '\0';
             plugin_logger_info(&g_logger, "EtherDOG link %s", reported ? "restored" : "up");
             reported = false;
             silent_ms = 0;
@@ -362,22 +376,11 @@ int start_loop(void)
         return -1;
     }
 
-    char err[512];
-    int rc = link_up(err, sizeof(err));
-    if (rc == EDL_DISABLED) {
-        plugin_logger_warn(&g_logger, "%s", err);
-        return 0;
-    }
-    if (rc != 0) {
-        plugin_logger_error(&g_logger, "EtherCAT start failed: %s", err);
-        return -1;
-    }
-
+    /* The relay brings the link up and retries until EtherDOG is ready */
     atomic_store(&g_running, true);
     if (pthread_create(&g_relay, NULL, relay_thread, NULL) != 0) {
         plugin_logger_error(&g_logger, "cannot create relay thread: %s", strerror(errno));
         atomic_store(&g_running, false);
-        link_down(true);
         return -1;
     }
     g_relay_started = true;

@@ -294,9 +294,9 @@ void test_start_configures_starts_and_publishes_inputs(void)
 {
     TEST_ASSERT_EQUAL_INT(0, init(&args));
     TEST_ASSERT_EQUAL_INT(0, start_loop());
+    TEST_ASSERT_TRUE(wait_for(&input_bit_writes, 3, 2000));
     TEST_ASSERT_EQUAL_INT(1, atomic_load(&n_configure));
     TEST_ASSERT_EQUAL_INT(1, atomic_load(&n_start));
-    TEST_ASSERT_TRUE(wait_for(&input_bit_writes, 3, 2000));
 
     double t0 = now_s();
     stop_loop();
@@ -322,16 +322,42 @@ void test_relay_reconnects_and_warns_when_etherdog_goes_quiet(void)
     pthread_mutex_unlock(&warn_lock);
 }
 
-void test_start_without_etherdog_fails_cleanly(void)
+static void listen_control(void)
 {
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof(a));
+    a.sun_family = AF_UNIX;
+    snprintf(a.sun_path, sizeof(a.sun_path), "%s", ctl_path);
+    listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    TEST_ASSERT_EQUAL_INT(0, bind(listen_fd, (struct sockaddr *)&a, sizeof(a)));
+    TEST_ASSERT_EQUAL_INT(0, listen(listen_fd, 4));
+    atomic_store(&serving, true);
+    pthread_create(&ctl_thread, NULL, serve_control, NULL);
+}
+
+void test_start_before_etherdog_is_ready_retries_until_it_is(void)
+{
+    /* No control socket yet: EtherDOG is still starting */
     atomic_store(&serving, false);
     pthread_join(ctl_thread, NULL);
     close(listen_fd);
-    listen_fd = socket(AF_UNIX, SOCK_STREAM, 0); /* tearDown closes it */
     unlink(ctl_path);
-    atomic_store(&serving, true);
-    pthread_create(&ctl_thread, NULL, serve_control, NULL);
 
     TEST_ASSERT_EQUAL_INT(0, init(&args));
-    TEST_ASSERT_EQUAL_INT(-1, start_loop());
+    TEST_ASSERT_EQUAL_INT(0, start_loop());
+    usleep(300 * 1000);
+    TEST_ASSERT_EQUAL_INT(0, atomic_load(&n_configure));
+    pthread_mutex_lock(&warn_lock);
+    TEST_ASSERT_NOT_NULL(strstr(warnings, "link down, retrying"));
+    pthread_mutex_unlock(&warn_lock);
+
+    /* feed_thread exited with serving=false; restart it with the control socket */
+    pthread_join(feed_thread, NULL);
+    listen_control();
+    pthread_create(&feed_thread, NULL, feed_inputs, NULL);
+
+    TEST_ASSERT_TRUE(wait_for(&n_start, 1, 3000));
+    TEST_ASSERT_TRUE(wait_for(&input_bit_writes, 3, 2000));
+    stop_loop();
+    TEST_ASSERT_EQUAL_INT(1, atomic_load(&n_stop));
 }
