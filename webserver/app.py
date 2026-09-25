@@ -43,6 +43,7 @@ from webserver.plcapp_management import (
     apply_retain_conf,
     apply_vpp_plugin_conf,
     build_state,
+    ensure_plc_stopped,
     run_compile,
     safe_extract,
     update_plugin_configurations,
@@ -343,6 +344,9 @@ def stage_project_snapshot() -> str:
 ETHERDOG_MIN_RUNTIME_VERSION = "4.3.0"
 ETHERDOG_MIN_EDITOR_VERSION = "4.3.2"
 
+# How long an upload waits for a running PLC to stop
+PLC_STOP_TIMEOUT_S = 30.0
+
 
 def _upload_has_legacy_ethercat(zip_file, valid_files) -> bool:
     """True when the upload's conf/ethercat.json (pre-split format) describes EtherCAT masters."""
@@ -415,6 +419,18 @@ def handle_upload_file(data: dict) -> dict:
                 ),
                 "CompilationStatus": build_state.status.name,
             }
+
+        # The Editor stops the PLC before uploading; other clients may not. Nothing below may
+        # run beside the old program: the EtherCAT bus configuration is staged next.
+        stopped, was_running = ensure_plc_stopped(runtime_manager, timeout_s=PLC_STOP_TIMEOUT_S)
+        if not stopped:
+            build_state.status = BuildStatus.FAILED
+            return {
+                "UploadFileFail": "The running PLC could not be stopped; upload cancelled",
+                "CompilationStatus": build_state.status.name,
+            }
+        if was_running:
+            build_state.log("[WARNING] The PLC was running; stopped it before the upload\n")
 
         # Point of no return: past here the program on the device is being
         # replaced, so the stored project snapshot must go with it. Clearing

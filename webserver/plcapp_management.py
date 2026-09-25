@@ -284,6 +284,27 @@ def _wait_for_plc_idle(runtime_manager: RuntimeManager, timeout_s: float) -> boo
     return False
 
 
+def ensure_plc_stopped(runtime_manager: RuntimeManager, timeout_s: float) -> tuple[bool, bool]:
+    """Stop the PLC if it is running and wait until it has stopped.
+
+    Returns (stopped, was_running). stopped is False when the PLC still runs or is still in a
+    transition after timeout_s. A runtime that cannot be reached counts as stopped: no
+    program runs.
+    """
+    if not _wait_for_plc_idle(runtime_manager, timeout_s):
+        return False, False
+    if "RUNNING" not in (runtime_manager.status_plc() or "").upper():
+        return True, False
+    runtime_manager.stop_plc()
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        resp = (runtime_manager.status_plc() or "").upper()
+        if "RUNNING" not in resp and "TRANSITIONING" not in resp:
+            return True, True
+        time.sleep(0.1)
+    return False, True
+
+
 def validate_vpp_plugins_conf(conf_path: str, runtime_root: str, vpp_build_dir: str) -> tuple[bool, str]:
     """Containment check for an upload-supplied ``vpp_plugins.conf``.
 
