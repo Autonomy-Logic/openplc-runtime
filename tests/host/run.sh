@@ -32,6 +32,13 @@ TESTS=(
 )
 
 failures=0
+
+# Focused regression: debug-drain-after-overrun
+if ! (
+    python3 tests/host/test_dispatch_debug_drain.py
+); then
+    failures=$((failures + 1))
+fi
 for entry in "${TESTS[@]}"; do
   test_src="${entry%%:*}"
   deps="${entry#*:}"
