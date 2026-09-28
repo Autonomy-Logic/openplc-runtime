@@ -993,6 +993,19 @@ void *plc_cycle_thread(void *arg)
                 pthread_mutex_lock(&done_mutex);
                 continue;              /* now just wait out the deadline */
             }
+            /* An overrun may retire cycle_end before its worker finishes.
+             * If no new task was released, quiescence still permits external
+             * mutations even though this frame no longer owes cycle_end.
+             * Do not repeat plugin hooks or copy stale program outputs here. */
+            if (!cycle_end_pending &&
+                g_tasks_running.load(std::memory_order_acquire) == 0)
+            {
+                pthread_mutex_unlock(&done_mutex);
+                image_lock();
+                debug_write_journal_drain();
+                image_unlock();
+                pthread_mutex_lock(&done_mutex);
+            }
             int rc = pthread_cond_timedwait(&done_cond, &done_mutex, &next_tick);
             if (rc == ETIMEDOUT) break;   /* deadline reached → next tick */
             /* rc == 0 (signalled) or spurious → loop and re-check the predicate */
