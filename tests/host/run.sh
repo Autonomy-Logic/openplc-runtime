@@ -32,6 +32,14 @@ TESTS=(
 )
 
 failures=0
+
+# Focused regression: watchdog-progress-counter
+if ! (
+    cc -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -Icore/src/plc_app tests/host/test_watchdog_progress.c -pthread -o "$OUT/watchdog-progress" &&
+    "$OUT/watchdog-progress"
+); then
+    failures=$((failures + 1))
+fi
 for entry in "${TESTS[@]}"; do
   test_src="${entry%%:*}"
   deps="${entry#*:}"
