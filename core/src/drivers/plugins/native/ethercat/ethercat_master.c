@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file ethercat_master.c
  * @brief EtherCAT Master SOEM Wrapper Implementation

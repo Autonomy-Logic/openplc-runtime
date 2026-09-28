@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # OpenPLC Runtime - MSYS2 Provisioning Script
 # This script is run inside MSYS2 to install all required packages and dependencies
 # for the OpenPLC Runtime Windows distribution.

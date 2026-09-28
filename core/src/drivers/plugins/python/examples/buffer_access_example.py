@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 Example demonstrating comprehensive buffer access with the enhanced SafeBufferAccess class
 This example shows how to use all the new read functions and batch operations for optimized mutex usage.

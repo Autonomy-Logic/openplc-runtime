@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file ethercat_io.c
  * @brief EtherCAT I/O Module — IEC location parsing, channel mapping, and process data exchange

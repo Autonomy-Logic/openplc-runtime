@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 #include "plugin_config.h" // For plugin_config_t, etc.
 #include "plugin_driver.h"
 #include "unity.h"

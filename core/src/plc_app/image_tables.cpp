@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // image_tables.cpp
 //
 // Resolves the strucpp .so's exported symbols (configuration accessor,

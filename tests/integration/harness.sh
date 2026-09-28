@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # Integration harness for the RTOP-283 bootloader.
 #
 # Runs a Debian container with its own Docker daemon (see Dockerfile.testhost),

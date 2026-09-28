@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /*
  * debug_handler_mocks.h — controllable fakes for the strucpp debugger ABI.
  *

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // Package selfupdate replaces the bootloader with a newer version of itself.
 //
 // A container cannot replace itself: removing it kills the process doing the

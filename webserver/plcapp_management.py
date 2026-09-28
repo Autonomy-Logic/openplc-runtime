@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 import glob
 import os
 import shutil

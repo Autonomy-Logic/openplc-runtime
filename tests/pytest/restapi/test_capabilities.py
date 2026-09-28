@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Behavioural tests for GET /api/version and GET /api/capabilities.
 
 Both endpoints exist so an editor can decide, before login, whether it may

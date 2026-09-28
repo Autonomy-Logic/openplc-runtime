@@ -457,8 +457,8 @@ def init(runtime_args_capsule):
     #include <string.h>
     #include <pthread.h>
 
-    // Include IEC types from the OpenPLC runtime
-    #include "iec_types.h"
+    // IEC image-table cell types from the OpenPLC runtime (core/src/lib)
+    #include "plc_image_types.h"
 
     // Define plugin_runtime_args_t structure locally to avoid Python dependencies
     typedef struct {

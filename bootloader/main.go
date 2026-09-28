@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // Command openplc-bootloader brings up and maintains one local OpenPLC runtime
 // container (RTOP-283).
 //

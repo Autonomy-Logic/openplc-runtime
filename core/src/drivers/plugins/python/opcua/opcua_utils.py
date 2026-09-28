@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """OPC-UA plugin utility functions."""
 
 import ctypes

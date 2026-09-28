@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file ethercat_proc.h
  * @brief Process-spawn helpers for the EtherCAT plugin.

@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 set -euo pipefail
 
 # Detect the project root directory
