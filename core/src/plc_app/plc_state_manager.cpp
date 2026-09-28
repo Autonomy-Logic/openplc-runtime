@@ -43,6 +43,7 @@ extern "C" {
 #include "scan_cycle_manager.h"
 #include "utils/log.h"
 #include "utils/utils.h"
+#include "utils/watchdog.h"
 
 static PLCState         plc_state    = PLC_STATE_STOPPED;
 static pthread_mutex_t  state_mutex  = PTHREAD_MUTEX_INITIALIZER;
@@ -51,7 +52,7 @@ struct timespec  timer_start;
 pthread_t        plc_thread;
 PluginManager   *plc_program = NULL;
 
-extern std::atomic<long>  plc_heartbeat;
+
 extern plugin_driver_t   *plugin_driver;
 
 /* -----------------------------------------------------------------------
@@ -851,7 +852,7 @@ void *plc_cycle_thread(void *arg)
         const int64_t master_time = (int64_t)master_tick * (int64_t)base_ns;
 
         /* Always: feed the global watchdog. */
-        plc_heartbeat.store((long)time(nullptr), std::memory_order_relaxed);
+        watchdog_feed();
 
         /* Which tasks are due this tick? */
         bool any_due = false;

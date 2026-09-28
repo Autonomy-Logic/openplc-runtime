@@ -13,7 +13,13 @@
 #include "utils.h"
 #include "watchdog.h"
 
-atomic_long plc_heartbeat;
+static atomic_ulong plc_heartbeat;
+
+void watchdog_feed(void)
+{
+    /* Progress, not wall time: an NTP step must not look like a stalled tick. */
+    atomic_fetch_add_explicit(&plc_heartbeat, 1UL, memory_order_relaxed);
+}
 
 /* Watchdog loop period. The stuck-transition bound is NOT defined here: it comes
  * from plc_state_manager.h, where it is derived from the same constant the
@@ -25,7 +31,7 @@ atomic_long plc_heartbeat;
 void *watchdog_thread(void *arg)
 {
     (void)arg;
-    long last = atomic_load(&plc_heartbeat);
+    unsigned long last = atomic_load(&plc_heartbeat);
     int transitioning_ticks = 0;
 
     while (1)
@@ -52,6 +58,7 @@ void *watchdog_thread(void *arg)
         if (current_state == PLC_STATE_TRANSITIONING_TO_RUN ||
             current_state == PLC_STATE_TRANSITIONING_TO_STOP)
         {
+            last = atomic_load(&plc_heartbeat);
             transitioning_ticks++;
             if (transitioning_ticks * WATCHDOG_TICK_S > TRANSITION_STUCK_S)
             {
@@ -67,17 +74,13 @@ void *watchdog_thread(void *arg)
 
         if (current_state != PLC_STATE_RUNNING)
         {
-            // Reset tracking when not running so we get a fresh
-            // baseline when the PLC starts again
-            if (current_state == PLC_STATE_ERROR)
-            {
-                last = 0;
-                atomic_store(&plc_heartbeat, 0);
-            }
+            /* Refresh the reader baseline without resetting the producer.
+             * STOP/ERROR must not overwrite a concurrently advancing tick. */
+            last = atomic_load(&plc_heartbeat);
             continue;
         }
 
-        long now = atomic_load(&plc_heartbeat);
+        unsigned long now = atomic_load(&plc_heartbeat);
         if (now == last)
         {
             log_error("Watchdog: No heartbeat detected - PLC program is unresponsive");

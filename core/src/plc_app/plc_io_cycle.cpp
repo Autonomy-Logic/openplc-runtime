@@ -18,8 +18,9 @@ extern "C" {
 #include "journal_buffer.h"
 #include "plc_io_cycle.h"
 #include "utils/utils.h"
+#include "utils/watchdog.h"
 
-extern std::atomic<long>  plc_heartbeat;
+
 extern plugin_driver_t   *plugin_driver;
 
 // --- Threaded (process-image) model housekeeping ---------------------------
@@ -43,6 +44,6 @@ extern "C" void plc_run_io_cycle_threaded_post(void)
 {
     if (ext_strucpp_advance_time) ext_strucpp_advance_time(base_tick_ns);
     if (plugin_driver) plugin_driver_cycle_end(plugin_driver);
-    plc_heartbeat.store((long)time(nullptr));
+    watchdog_feed();
     ++scan_counter;
 }
