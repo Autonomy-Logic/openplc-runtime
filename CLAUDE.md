@@ -77,8 +77,8 @@ ceedling gcov:all
 # Runtime C++ that Ceedling does not reach (tests/host/test_*.cpp, C++17)
 ./tests/host/run.sh
 
-# Bootloader (Go), same checks as CI
-cd bootloader && gofmt -l . && go vet ./... && go test -race -count=1 ./...
+# Bootloader (Go), same checks as CI (gofmt -l always exits 0, so test -z fails on any listed file)
+cd bootloader && test -z "$(gofmt -l .)" && go vet ./... && go test -race -count=1 ./...
 ```
 
 - CI (`.github/workflows/tests.yml`, on every PR): gofmt, go vet and `go test -race` for `bootloader/`;
