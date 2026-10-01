@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file journal_buffer.h
  * @brief Journal Buffer System for Race-Condition-Free Plugin Writes
@@ -25,12 +28,12 @@
 #ifndef JOURNAL_BUFFER_H
 #define JOURNAL_BUFFER_H
 
-#include "../lib/iec_types.h"
-#include "image_table_id.h"
-#include <pthread.h>
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
+#include <stddef.h>
+#include <pthread.h>
+#include "../lib/plc_image_types.h"
+#include "image_table_id.h"
 
 #ifdef __cplusplus
 extern "C" {

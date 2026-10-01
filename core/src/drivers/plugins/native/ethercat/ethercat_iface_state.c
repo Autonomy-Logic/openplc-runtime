@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file ethercat_iface_state.c
  * @brief Implementation of ethercat_iface_state.h.

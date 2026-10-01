@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file fakevpp_plugin.c
  * @brief Test-only native plugin standing in for a board's VPP package.

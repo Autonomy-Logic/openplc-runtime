@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /* Out-of-range forces, COUNTED rather than logged.
  *
  * Saying it out loud is right -- a silent drop is the defect this change set

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 import sys
 
 # Parse --print-debug argument before any logger imports

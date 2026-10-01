@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file plugin_types.h
  * @brief Common type definitions for OpenPLC plugins
@@ -15,7 +18,7 @@
 #ifndef PLUGIN_TYPES_H
 #define PLUGIN_TYPES_H
 
-#include "../lib/iec_types.h"
+#include "../lib/plc_image_types.h"
 /* The image table identities, so a plugin receiving the sizes array can name
  * the entries it indexes rather than counting positions (RTOP-284, B2).
  * Publishing a type costs no ABI: no struct gains a field and no offset

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 #ifndef PLC_STATE_MANAGER_H
 #define PLC_STATE_MANAGER_H
 

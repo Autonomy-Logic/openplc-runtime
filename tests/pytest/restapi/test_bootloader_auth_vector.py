@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Python half of the bootloader's shared authentication vector (RTOP-283).
 
 The bootloader is written in Go and reimplements two formats this codebase owns:

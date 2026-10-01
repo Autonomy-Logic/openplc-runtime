@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 Configuration helper for OPC-UA endpoints to handle connectivity issues.
 This module provides utilities to configure endpoints that work with different clients.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // Package runtimespec decides how the runtime container is run.
 //
 // This is the ONE place those flags exist. The plan settled on a single

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 #ifndef SCAN_CYCLE_MANAGER_H
 #define SCAN_CYCLE_MANAGER_H
 

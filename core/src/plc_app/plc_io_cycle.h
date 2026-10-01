@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 #ifndef OPENPLC_PLC_IO_CYCLE_H
 #define OPENPLC_PLC_IO_CYCLE_H
 

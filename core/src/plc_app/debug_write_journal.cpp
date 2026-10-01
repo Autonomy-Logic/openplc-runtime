@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /*
  * debug_write_journal.cpp — see debug_write_journal.h.
  *

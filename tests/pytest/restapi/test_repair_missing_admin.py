@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """A device left with accounts but no administrator.
 
 That state is a dead end rather than an inconvenience: once any user exists,

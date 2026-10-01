@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # Builds the runtime, compiles a real PLC program, builds the test fixtures, and
 # runs the finding-by-finding suite. Single runtime instance at a time: the
 # command socket is single-client, so no webserver competes for it.

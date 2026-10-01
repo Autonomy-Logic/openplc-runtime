@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // strucpp_abi.hpp — runtime-side mirror of the strucpp ABI we walk.
 //
 // The runtime executable is built ONCE; the .so it loads at runtime

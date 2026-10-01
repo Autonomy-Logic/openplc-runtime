@@ -1,30 +1,12 @@
-//-----------------------------------------------------------------------------
-// Copyright 2025 Thiago Alves
-// This file is part of the OpenPLC Runtime.
-//
-// OpenPLC is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// OpenPLC is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with OpenPLC.  If not, see <http://www.gnu.org/licenses/>.
-//------
-//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // This file is responsible for loading function blocks written in Python.
 // Python function blocks communicate with the PLC runtime via shared memory.
 //
 // Logging is done via function pointers that are set by the runtime after
 // loading libplc.so. This avoids symbol resolution issues between the
 // shared library and the main executable.
-//
-// Thiago Alves, Dec 2025
-//-----------------------------------------------------------------------------
 
 #include <errno.h>
 #include <fcntl.h>

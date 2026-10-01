@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # tests/test_modbus_slave_device.py
 import time
 from types import SimpleNamespace

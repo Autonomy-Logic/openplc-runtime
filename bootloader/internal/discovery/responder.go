@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // Package discovery answers the editor's LAN discovery probe while the runtime
 // is not running.
 //

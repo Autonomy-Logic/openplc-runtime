@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """PR #162 review findings: one test per finding, run against a real runtime.
 
 Each test drives plc_main directly over its command socket, with the fake VPP

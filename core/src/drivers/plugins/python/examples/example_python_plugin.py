@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 Example plugin for testing the updated python_plugin_get_symbols function
 This demonstrates the expected functions that should be present in a Python plugin

@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # OpenPLC Runtime Plugin Virtual Environment Manager
 # Manages virtual environments for Python plugins to avoid dependency conflicts
 

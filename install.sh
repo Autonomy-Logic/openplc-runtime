@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 set -e
 
 # Detect if running on MSYS2/MinGW/Cygwin (Windows)
