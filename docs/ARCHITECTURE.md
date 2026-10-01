@@ -84,10 +84,11 @@ EMPTY → INIT → RUNNING ⟷ STOPPED → ERROR
 
 1. **Main Thread**: Initialization and signal handling
 2. **Unix Socket Thread**: Accepts and processes commands
-3. **PLC Cycle Thread**: Executes scan cycles with real-time priority
-4. **Stats Thread**: Logs performance metrics
-5. **Watchdog Thread**: Monitors heartbeat and terminates on hang
-6. **Log Thread**: Manages log socket connection
+3. **PLC Cycle Thread / Dispatcher**: Loads the program, then runs the GCD master-tick dispatcher at SCHED_FIFO 98
+4. **Task Threads**: One per IEC TASK, SCHED_FIFO 49 - IEC priority (IEC 0..48, clamped)
+5. **Stats Thread**: Logs performance metrics
+6. **Watchdog Thread**: SCHED_FIFO 99; bounds stops and detects a stalled dispatcher
+7. **Log Thread**: Manages log socket connection
 
 ## Real-Time Execution
 
@@ -156,14 +157,30 @@ docker run -v openplc-runtime-data:/var/run/runtime ...
 
 ## Watchdog System
 
-The watchdog monitors PLC health by tracking the `plc_heartbeat` atomic variable:
+Three layers, from the gentlest to the last resort. Constants live in
+`core/src/plc_app/task_policy.h`.
 
-- **Update Frequency**: Every scan cycle
-- **Timeout**: 2 seconds without update
-- **Action**: Terminates process if PLC becomes unresponsive
-- **State Awareness**: Only monitors during RUNNING state
+1. **Stuck task (dispatcher).** A task found still in one scan for 10 of its own
+   periods trips the dispatcher. It claims a stop, drains every task, and the stop
+   lands in ERROR. Slow tasks that finish never trip: the count resets whenever the
+   task is found idle.
+2. **Drain and abort (dispatcher).** On every stop each in-flight scan may run until
+   10 periods after its release. A task still scanning then gets `SIGUSR2`, whose
+   handler jumps to the task's recovery point. A stop that aborted a task lands in
+   ERROR. On every stop all `%Q` outputs are written to 0 and pushed by a final I/O
+   cycle before plugins stop.
+3. **Process exit (watchdog thread, FIFO 99).** If an aborted task does not exit
+   within 2 s, a stop exceeds 10 x the longest task interval + 30.5 s, or the
+   dispatcher has not ticked for max(10 base ticks, 1 s), the runtime calls
+   `_exit(42)`. Outputs are not driven on this path; the hardware safe-state
+   watchdog covers it. The webserver restarts the runtime with
+   `--safe-mode --fault`, and it reports ERROR without loading the program.
 
-**Implementation:** `core/src/plc_app/utils/watchdog.c`
+All runtime mutexes that can take it use `PTHREAD_PRIO_INHERIT`, and state reads
+are lock free, so a starved normal-priority thread cannot block the dispatcher or
+the watchdog on a single CPU.
+
+**Implementation:** `core/src/plc_app/utils/watchdog.c`, `core/src/plc_app/plc_state_manager.cpp`
 
 ## Performance Monitoring
 
@@ -188,7 +205,7 @@ Stats are logged every 5 seconds via the stats thread.
 - Signal handling for SIGINT (graceful shutdown)
 - State transitions validated before execution
 - Plugin failures isolated from core runtime
-- Watchdog ensures process termination on hang
+- Watchdog stops a stuck program, and exits for a safe-mode restart when it cannot
 
 ## Directory Structure
 
