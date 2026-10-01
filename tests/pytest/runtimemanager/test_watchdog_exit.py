@@ -3,6 +3,8 @@
 
 """RuntimeManager restarts plc_main in safe mode after a watchdog fault exit."""
 
+# pylint: disable=protected-access,redefined-outer-name
+
 import subprocess
 from unittest.mock import MagicMock
 

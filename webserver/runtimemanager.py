@@ -421,10 +421,10 @@ class RuntimeManager:
 
             # Parse: "PLUGIN_CMD:OK:{json}" or "PLUGIN_CMD:ERROR:{json}"
             if response.startswith("PLUGIN_CMD:OK:"):
-                json_str = response[len("PLUGIN_CMD:OK:"):]
+                json_str = response[len("PLUGIN_CMD:OK:") :]
                 return json.loads(json_str)
             elif response.startswith("PLUGIN_CMD:ERROR:"):
-                json_str = response[len("PLUGIN_CMD:ERROR:"):]
+                json_str = response[len("PLUGIN_CMD:ERROR:") :]
                 return json.loads(json_str)
             else:
                 return {"error": f"Unexpected response: {response[:200]}"}
