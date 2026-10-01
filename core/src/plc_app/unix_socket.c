@@ -130,6 +130,28 @@ static void *transition_worker(void *arg)
     return NULL;
 }
 
+static bool spawn_transition_worker(PLCState target)
+{
+    PLCState *arg = malloc(sizeof(PLCState));
+    if (!arg)
+    {
+        log_error("Failed to allocate transition argument");
+        return false;
+    }
+    *arg = target;
+
+    pthread_t tid;
+    int rc = pthread_create(&tid, NULL, transition_worker, arg);
+    if (rc != 0)
+    {
+        log_error("Failed to create transition thread (%s)", strerror(rc));
+        free(arg);
+        return false;
+    }
+    pthread_detach(tid);
+    return true;
+}
+
 // Start a background thread that performs the (potentially slow) state
 // transition. Returns false when the request was refused; otherwise the
 // transition is under way (or, if the worker could not be spawned, has already
@@ -173,25 +195,17 @@ bool plc_begin_transition(PLCState target)
     // Completing it here blocks this caller for the duration -- the socket is
     // single-client, so the editor waits -- which on a thread-or-memory exhaustion
     // path is the cheaper of the two costs by a wide margin.
-    PLCState *arg = malloc(sizeof(PLCState));
-    if (!arg)
+    if (!spawn_transition_worker(target))
     {
-        log_error("Failed to allocate transition argument — completing the "
-                  "transition on the calling thread");
+        log_error("Completing the transition on the calling thread");
         return run_transition(target);
     }
-    *arg = target;
-
-    pthread_t tid;
-    if (pthread_create(&tid, NULL, transition_worker, arg) != 0)
-    {
-        log_error("Failed to create transition thread (%s) — completing the "
-                  "transition on the calling thread", strerror(errno));
-        free(arg);
-        return run_transition(target);
-    }
-    pthread_detach(tid);
     return true;
+}
+
+bool plc_complete_claimed_transition_async(PLCState target)
+{
+    return spawn_transition_worker(target);
 }
 
 // helper: read one line terminated by '\n' from a socket

@@ -26,4 +26,15 @@ void unix_socket_set_plugin_driver(void *driver);
 // (same overlap protection: plc_claim_transition refuses while TRANSITIONING).
 bool plc_begin_transition(PLCState target);
 
+/**
+ * @brief Run an already claimed transition on a new detached worker thread.
+ *
+ * For callers that claimed with plc_claim_transition() and must not run the
+ * transition themselves, e.g. the dispatcher, which the stop's teardown joins.
+ *
+ * @param target PLC_STATE_RUNNING or PLC_STATE_STOPPED
+ * @return false when the worker could not be spawned; the claim is still held
+ */
+bool plc_complete_claimed_transition_async(PLCState target);
+
 #endif // UNIX_SOCKET_H

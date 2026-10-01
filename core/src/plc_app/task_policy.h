@@ -22,6 +22,10 @@ extern "C"
  * default of 50 for threaded IRQ handlers. */
 #define PLC_FIFO_TASK_MAX 49
 
+/* A task still in one scan after this many of its own periods is stuck. Also
+ * the grace each task gets to finish its scan when the PLC stops. */
+#define PLC_TASK_STUCK_PERIODS 10
+
 /* IEC TASK priority range accepted by the runtime. 0 is the highest. */
 #define PLC_IEC_PRIORITY_MIN 0
 #define PLC_IEC_PRIORITY_MAX 48

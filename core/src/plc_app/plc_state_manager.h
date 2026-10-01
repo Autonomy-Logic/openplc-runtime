@@ -21,11 +21,13 @@
 #include <atomic>
 typedef std::atomic<long>               plc_atomic_long_t;
 typedef std::atomic<uint_least64_t>     plc_atomic_u64_t;
+typedef std::atomic<int_least64_t>      plc_atomic_i64_t;
 extern "C" {
 #else
 #include <stdatomic.h>
 typedef atomic_long                     plc_atomic_long_t;
 typedef atomic_uint_least64_t           plc_atomic_u64_t;
+typedef atomic_int_least64_t            plc_atomic_i64_t;
 #endif
 
 /**
@@ -109,12 +111,15 @@ typedef struct PlcTaskCtx
     plc_atomic_long_t     released;
     plc_atomic_long_t     completed;
     plc_atomic_long_t     overrun_count;
+    plc_atomic_long_t     stuck_ticks;     /* consecutive due ticks found still in a scan */
+    plc_atomic_long_t     exited;          /* 1 once the thread function has returned */
+    plc_atomic_i64_t      release_ns;      /* CLOCK_MONOTONIC time of the last release */
 
     sigjmp_buf            crash_jmp;
     volatile sig_atomic_t crash_sig;
     volatile sig_atomic_t holding_mutex;   /* image-tables mutex held (crash unlock) */
+    volatile sig_atomic_t in_body;         /* inside the scan window the abort may jump out of */
 
-    plc_atomic_long_t     heartbeat;
     plc_atomic_u64_t      local_tick;
 
     /* Per-task scan/cycle/latency tracker. Each task thread updates its
