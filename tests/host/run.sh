@@ -29,6 +29,7 @@ trap 'rm -rf "$OUT"' EXIT
 # test source : extra sources it links
 TESTS=(
   "tests/host/test_plc_retain_file_store.cpp:core/src/plc_app/plc_retain_file_store.cpp"
+  "tests/host/test_rt_mutex.cpp:"
 )
 
 failures=0

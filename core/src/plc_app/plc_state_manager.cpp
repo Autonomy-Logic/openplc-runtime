@@ -42,10 +42,13 @@ extern "C" {
 #include "plcapp_manager.h"
 #include "scan_cycle_manager.h"
 #include "utils/log.h"
+#include "utils/rt_mutex.h"
 #include "utils/utils.h"
 
-static PLCState         plc_state    = PLC_STATE_STOPPED;
-static pthread_mutex_t  state_mutex  = PTHREAD_MUTEX_INITIALIZER;
+/* Writers serialise on state_mutex; readers load the atomic without locking. */
+static std::atomic<PLCState> plc_state{PLC_STATE_STOPPED};
+static_assert(std::atomic<PLCState>::is_always_lock_free, "state reads must not lock");
+static pthread_mutex_t       state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 struct timespec  timer_start;
 pthread_t        plc_thread;
@@ -100,6 +103,13 @@ static std::atomic<int> g_tasks_running{0};
 static pthread_mutex_t  done_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t   done_cond;   /* initialised once, CLOCK_MONOTONIC */
 static pthread_once_t   done_cond_once = PTHREAD_ONCE_INIT;
+
+__attribute__((constructor)) static void state_manager_locks_init_pi(void)
+{
+    rt_mutex_upgrade_static(&state_mutex, "state_mutex");
+    rt_mutex_upgrade_static(&plc_tasks_lock, "plc_tasks_lock");
+    rt_mutex_upgrade_static(&done_mutex, "done_mutex");
+}
 
 /* One-time init of done_cond on the CLOCK_MONOTONIC clock (the default is
  * CLOCK_REALTIME, which would mismatch the dispatcher's monotonic deadline and
@@ -1187,10 +1197,7 @@ extern "C" int unload_plc_program(PluginManager *pm)
 
 extern "C" PLCState plc_get_state(void)
 {
-    pthread_mutex_lock(&state_mutex);
-    PLCState s = plc_state;
-    pthread_mutex_unlock(&state_mutex);
-    return s;
+    return plc_state.load(std::memory_order_acquire);
 }
 
 extern "C" bool plc_state_is_transitioning(void)

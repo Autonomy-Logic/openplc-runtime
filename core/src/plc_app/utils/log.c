@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Autonomy®
 
 #include "log.h"
+#include "rt_mutex.h"
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
@@ -19,6 +20,11 @@ static LogLevel current_level    = LOG_LEVEL_INFO;
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 int socket_fd                    = -1;
 bool print_logs                  = false;
+
+__attribute__((constructor)) static void log_mutex_init_pi(void)
+{
+    rt_mutex_upgrade_static(&log_mutex, "log_mutex");
+}
 
 extern volatile sig_atomic_t keep_running;
 

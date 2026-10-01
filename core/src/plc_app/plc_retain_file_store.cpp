@@ -9,6 +9,7 @@
 #include "plc_retain_file_store.h"
 
 #include "plc_retain.h"  // PLC_RETAIN_PROGRAM_ID_LEN — one definition for both sides
+#include "utils/rt_mutex.h"
 
 #include <atomic>
 #include <mutex>
@@ -43,7 +44,7 @@ static_assert(PROGRAM_ID_LEN == PLC_RETAIN_PROGRAM_ID_LEN,
               "identity the runtime hands to read() — a shorter or longer header would be "
               "indistinguishable from a torn write and every load would discard good values.");
 
-std::mutex           g_lock;
+RtMutex              g_lock;
 std::vector<uint8_t> g_pending;
 bool                 g_dirty = false;
 
@@ -194,7 +195,7 @@ void commit(const uint8_t *buf, uint16_t len, const std::string &program_id)
 void discard_stored()
 {
     {
-        std::lock_guard<std::mutex> guard(g_lock);
+        std::lock_guard<RtMutex> guard(g_lock);
         g_pending.clear();
         g_dirty = false;
     }
@@ -222,7 +223,7 @@ void flush_loop()
              * save() every cycle and must never wait on a disk write. The
              * identity is snapshotted with the bytes so the pair committed
              * below is the pair that was current at this instant. */
-            std::lock_guard<std::mutex> guard(g_lock);
+            std::lock_guard<RtMutex> guard(g_lock);
             if (!g_dirty) continue;
             snapshot    = g_pending;
             snapshot_id = g_program_md5;
@@ -254,7 +255,7 @@ void plc_retain_file_store_stop(void)
         if (g_flusher.joinable()) g_flusher.join();
 
         /* Final flush: a clean stop should not discard the last interval. */
-        std::lock_guard<std::mutex> guard(g_lock);
+        std::lock_guard<RtMutex> guard(g_lock);
         if (g_dirty && !g_pending.empty())
         {
             commit(g_pending.data(), (uint16_t)g_pending.size(), g_program_md5);
@@ -278,7 +279,7 @@ int plc_retain_file_store_save(const uint8_t *blob, uint16_t len)
 {
     if (!g_enabled.load() || !blob || len == 0 || len > RETAIN_MAX) return -1;
 
-    std::lock_guard<std::mutex> guard(g_lock);
+    std::lock_guard<RtMutex> guard(g_lock);
     /* Only mark dirty on an actual change. The runtime deliberately does not
      * diff — it cannot know what a write costs here — so doing it at this layer
      * is how a slow medium avoids rewriting an unchanged blob every interval. */
@@ -301,7 +302,7 @@ int plc_retain_file_store_load(const char *program_md5, uint16_t md5_len, uint8_
      * a store that just discarded a previous program's values still has to
      * label the new program's first commit. */
     {
-        std::lock_guard<std::mutex> guard(g_lock);
+        std::lock_guard<RtMutex> guard(g_lock);
         g_program_md5.assign(program_md5, md5_len);
     }
 
@@ -337,7 +338,7 @@ int plc_retain_file_store_load(const char *program_md5, uint16_t md5_len, uint8_
 
     /* Prime the in-memory copy so the first flush after start does not rewrite
      * a byte-identical file. */
-    std::lock_guard<std::mutex> guard(g_lock);
+    std::lock_guard<RtMutex> guard(g_lock);
     g_pending.assign(out, out + n);
     g_dirty = false;
     return 0;
@@ -349,7 +350,7 @@ int plc_retain_file_store_flush(void)
      * plc_retain_file_store_stop(): the PLC can be started again without the
      * daemon restarting, and joining the thread here would leave the next run
      * with nothing committing on a timer. */
-    std::lock_guard<std::mutex> guard(g_lock);
+    std::lock_guard<RtMutex> guard(g_lock);
     if (!g_dirty || g_pending.empty()) return 0;
     commit(g_pending.data(), (uint16_t)g_pending.size(), g_program_md5);
     g_dirty = false;
