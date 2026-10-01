@@ -6,6 +6,7 @@
 # pylint: disable=protected-access,redefined-outer-name
 
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -35,7 +36,9 @@ def manager(monkeypatch: pytest.MonkeyPatch) -> rm.RuntimeManager:
 
 
 def test_exit_code_constant_matches_runtime() -> None:
-    header = open("core/src/plc_app/task_policy.h", encoding="utf-8").read()
+    header_path = Path(__file__).resolve().parents[3] / "core/src/plc_app/task_policy.h"
+    with open(header_path, encoding="utf-8") as header_file:
+        header = header_file.read()
     assert f"#define PLC_EXIT_WATCHDOG_FAULT {rm.RUNTIME_EXIT_WATCHDOG_FAULT}" in header
 
 

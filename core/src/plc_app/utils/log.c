@@ -282,10 +282,20 @@ void log_emergency(const char *msg)
         return;
     if (socket_fd >= 0)
     {
+        char escaped[LOG_MESSAGE_SIZE / 2];
+        size_t e = 0;
+        for (const char *p = msg; *p && e + 2 < sizeof(escaped); ++p)
+        {
+            if (*p == '"' || *p == '\\')
+                escaped[e++] = '\\';
+            escaped[e++] = *p;
+        }
+        escaped[e] = '\0';
+
         char json[LOG_MESSAGE_SIZE];
         int m = snprintf(json, sizeof(json),
                          "{\"timestamp\":\"%ld\",\"level\":\"ERROR\",\"message\":\"%s\"}\n",
-                         (long)time(NULL), msg);
+                         (long)time(NULL), escaped);
         if (m > 0)
         {
             size_t len = (size_t)m < sizeof(json) ? (size_t)m : sizeof(json) - 1;

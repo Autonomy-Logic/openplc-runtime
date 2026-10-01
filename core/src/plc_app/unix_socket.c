@@ -3,6 +3,7 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -140,8 +141,26 @@ static bool spawn_transition_worker(PLCState target)
     }
     *arg = target;
 
+    /* Explicit SCHED_OTHER: the dispatcher (FIFO 98) also spawns this worker for a fault stop. */
+    pthread_attr_t attr;
+    int rc = pthread_attr_init(&attr);
+    if (rc != 0)
+    {
+        log_error("Failed to init transition thread attributes (%s)", strerror(rc));
+        free(arg);
+        return false;
+    }
+    struct sched_param sp = {.sched_priority = 0};
+    if (pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED) != 0 ||
+        pthread_attr_setschedpolicy(&attr, SCHED_OTHER) != 0 ||
+        pthread_attr_setschedparam(&attr, &sp) != 0)
+    {
+        log_warn("Transition thread inherits the caller's scheduling");
+    }
+
     pthread_t tid;
-    int rc = pthread_create(&tid, NULL, transition_worker, arg);
+    rc = pthread_create(&tid, &attr, transition_worker, arg);
+    pthread_attr_destroy(&attr);
     if (rc != 0)
     {
         log_error("Failed to create transition thread (%s)", strerror(rc));

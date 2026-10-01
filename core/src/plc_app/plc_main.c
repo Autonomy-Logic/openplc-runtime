@@ -5,6 +5,7 @@
 #include <Python.h>
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -20,6 +21,7 @@
 #include "plc_state_manager.h"
 #include "plc_switch.h"
 #include "plcapp_manager.h"
+#include "task_policy.h"
 #include "unix_socket.h"
 #include "utils/log.h"
 #include "utils/utils.h"
@@ -128,6 +130,19 @@ int main(int argc, char *argv[])
     // No need to force STOPPED here: plc_state is statically initialised to it,
     // and plc_set_state() is now the body of a claimed transition rather than a
     // setter -- calling it with nothing loaded would just log a failed unload.
+
+    if (access(PLC_WATCHDOG_FAULT_MARKER, F_OK) == 0)
+    {
+        if (unlink(PLC_WATCHDOG_FAULT_MARKER) != 0)
+            log_warn("Could not remove %s: %s", PLC_WATCHDOG_FAULT_MARKER, strerror(errno));
+        safe_mode   = true;
+        after_fault = true;
+    }
+    if (after_fault && !safe_mode)
+    {
+        log_warn("--fault is only honoured together with --safe-mode; ignoring it");
+        after_fault = false;
+    }
 
     // Initialize watchdog
     if (watchdog_init() != 0)

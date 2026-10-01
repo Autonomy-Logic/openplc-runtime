@@ -45,6 +45,10 @@ extern "C"
  * (webserver/runtimemanager.py) restarts the runtime in safe mode on it. */
 #define PLC_EXIT_WATCHDOG_FAULT 42
 
+/* Written before the watchdog exit and consumed at the next boot, which then
+ * starts in safe mode reporting ERROR even when the exit code was not seen. */
+#define PLC_WATCHDOG_FAULT_MARKER "/run/runtime/watchdog_fault"
+
 /* IEC TASK priority range accepted by the runtime. 0 is the highest. */
 #define PLC_IEC_PRIORITY_MIN 0
 #define PLC_IEC_PRIORITY_MAX 48

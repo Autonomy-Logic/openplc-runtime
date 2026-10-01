@@ -27,7 +27,7 @@ extern "C" {
  *     before bodies; no image lock held).
  *
  *   plc_run_io_cycle_threaded_post() — advance time, fire plugin cycle_end,
- *     update heartbeat, increment scan_counter (fastest task, after bodies).
+ *     feed the watchdog, increment scan_counter (fastest task, after bodies).
  */
 void plc_run_io_cycle_threaded_drain(void);
 void plc_run_io_cycle_threaded_pre(void);

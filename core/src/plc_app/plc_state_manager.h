@@ -111,14 +111,14 @@ typedef struct PlcTaskCtx
     plc_atomic_long_t     released;
     plc_atomic_long_t     completed;
     plc_atomic_long_t     overrun_count;
-    plc_atomic_long_t     stuck_ticks;     /* consecutive due ticks found still in a scan */
+    plc_atomic_long_t     stuck_ticks;     /* consecutive due ticks found still in one scan */
     plc_atomic_long_t     exited;          /* 1 once the thread function has returned */
     plc_atomic_i64_t      release_ns;      /* CLOCK_MONOTONIC time of the last release */
 
     sigjmp_buf            crash_jmp;
     volatile sig_atomic_t crash_sig;
     volatile sig_atomic_t holding_mutex;   /* image-tables mutex held (crash unlock) */
-    volatile sig_atomic_t in_body;         /* inside the scan window the abort may jump out of */
+    volatile sig_atomic_t in_body;         /* inside IEC program code, where the abort may jump out */
 
     plc_atomic_u64_t      local_tick;
 
@@ -226,17 +226,9 @@ int64_t plc_stop_budget_ms(void);
 /** @brief True while a transition is in flight (either direction). */
 bool plc_state_is_transitioning(void);
 
-/* How long a state change may plausibly take before something is wrong.
- *
- * ONE bound, two consumers, deliberately ordered: transition_worker stops waiting
- * to observe the landing at PLC_TRANSITION_LANDING_TIMEOUT_MS, and the watchdog
- * forces ERROR strictly later. Two independent numbers is how the watchdog came to
- * fire 30 s before the runtime itself had given up -- ending a transition while its
- * worker was still executing it.
- *
- * Generous on purpose: a start brings plugins up (SPI base scans, fieldbus probes,
- * certificate generation) and a stop joins task threads. The bound is here to catch
- * a transition that will never finish, not to police a slow one. */
+/* transition_worker stops waiting for a landing at PLC_TRANSITION_LANDING_TIMEOUT_MS.
+ * The watchdog forces ERROR on a start stuck past PLC_TRANSITION_STUCK_TIMEOUT_MS; a
+ * stuck stop is bounded by plc_stop_budget_ms() and ends in watchdog_fatal_exit(). */
 #define PLC_TRANSITION_LANDING_TIMEOUT_MS 90000
 #define PLC_TRANSITION_STUCK_TIMEOUT_MS   (PLC_TRANSITION_LANDING_TIMEOUT_MS + 30000)
 

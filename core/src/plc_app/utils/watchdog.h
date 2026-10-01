@@ -6,6 +6,9 @@
 
 #include <stdint.h>
 
+/* Size of a watchdog_fatal_exit() reason buffer. */
+#define WATCHDOG_REASON_LEN 160
+
 #ifdef __cplusplus
 extern "C"
 {

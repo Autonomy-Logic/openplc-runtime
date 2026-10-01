@@ -157,13 +157,14 @@ docker run -v openplc-runtime-data:/var/run/runtime ...
 
 ## Watchdog System
 
-Three layers, from the gentlest to the last resort. Constants live in
-`core/src/plc_app/task_policy.h`.
+Three layers, from the gentlest to the last resort. The numbers below are the
+defaults of the constants in `core/src/plc_app/task_policy.h`.
 
-1. **Stuck task (dispatcher).** A task found still in one scan for 10 of its own
-   periods trips the dispatcher. It claims a stop, drains every task, and the stop
-   lands in ERROR. Slow tasks that finish never trip: the count resets whenever the
-   task is found idle.
+1. **Stuck task (dispatcher).** A task found still in the same scan on 10
+   consecutive due ticks (10 of its own periods) trips the dispatcher. It claims a
+   stop, drains every task, and the stop lands in ERROR. The count resets whenever
+   the task is found idle, so a task whose scans finish within 10 periods never
+   trips. Ticks replayed after a late dispatcher count as missed periods too.
 2. **Drain and abort (dispatcher).** On every stop each in-flight scan may run until
    10 periods after its release. A task still scanning then gets `SIGUSR2`, whose
    handler jumps to the task's recovery point. A stop that aborted a task lands in

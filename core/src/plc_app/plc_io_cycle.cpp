@@ -26,7 +26,7 @@ extern plugin_driver_t   *plugin_driver;
 // The drain runs at every task's copy-in (under the image mutex) so each task
 // sees freshly-applied plugin/peer writes. The pre/post halves run only on the
 // fastest task: pre opens the plugin cycle window before bodies, post advances
-// the scan clock, closes the plugin window, and bumps the global heartbeat /
+// the scan clock, closes the plugin window, and feeds the watchdog /
 // scan counter once per scan.
 
 extern "C" void plc_run_io_cycle_threaded_drain(void)

@@ -31,6 +31,14 @@ extern unsigned long scan_counter;
 extern char *ext_strucpp_program_md5;
 
 
+#define NS_PER_MS 1000000LL
+
+/**
+ * @brief Current CLOCK_MONOTONIC time in nanoseconds.
+ * @return nanoseconds since an arbitrary fixed point
+ */
+int64_t monotonic_ns(void);
+
 /**
  * @brief Normalize a timespec structure
  *
