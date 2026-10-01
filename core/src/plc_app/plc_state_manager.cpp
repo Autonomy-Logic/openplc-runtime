@@ -41,6 +41,7 @@ extern "C" {
 #include "plc_state_manager.h"
 #include "plcapp_manager.h"
 #include "scan_cycle_manager.h"
+#include "task_policy.h"
 #include "utils/log.h"
 #include "utils/rt_mutex.h"
 #include "utils/utils.h"
@@ -208,25 +209,26 @@ static void *plc_task_thread(void *arg)
 
     pthread_setname_np(pthread_self(), ctx->name);
 
-    /* 99 is reserved for the dispatcher, which has to be strictly above every
-     * worker for its tick never to be delayed by a busy one. A worker allowed to
-     * reach 99 would only TIE it, and SCHED_FIFO does not time-slice between equal
-     * priorities: a task that never blocks (an unbounded loop in IEC code) would
-     * then keep the dispatcher off that CPU entirely, along with anything else
-     * trying to bring the PLC down. */
-    int rt = ctx->priority;
-    if (rt < 1)  rt = 1;
-    if (rt > 98) rt = 98;
+    /* IEC 0 (highest) -> FIFO 49; always below the dispatcher and watchdog. */
+    bool clamped = false;
+    int  rt      = plc_task_fifo_priority(ctx->priority, &clamped);
+    if (clamped)
+    {
+        log_warn("[task %s] IEC priority %d outside %d..%d, clamped", ctx->name, ctx->priority,
+                 PLC_IEC_PRIORITY_MIN, PLC_IEC_PRIORITY_MAX);
+    }
     sched_param sp{};
     sp.sched_priority = rt;
-    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0)
+    int sp_rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+    if (sp_rc != 0)
     {
         log_warn("[task %s] SCHED_FIFO(%d) failed: %s — running default scheduling",
-                 ctx->name, rt, strerror(errno));
+                 ctx->name, rt, strerror(sp_rc));
     }
     else
     {
-        log_info("[task %s] SCHED_FIFO priority %d", ctx->name, rt);
+        log_info("[task %s] SCHED_FIFO priority %d (IEC priority %d)", ctx->name, rt,
+                 ctx->priority);
     }
 
     if (ctx->cpu_affinity_mask != 0)
@@ -830,14 +832,15 @@ void *plc_cycle_thread(void *arg)
      * worker still running when re-due is an overrun and is simply not
      * re-released that tick. A faulted worker (alive==0) is skipped forever.
      *
-     * Run at SCHED_FIFO 99 — above every worker — so the tick is never delayed
-     * by a busy worker on a shared CPU.
+     * Runs at PLC_FIFO_DISPATCHER: above every worker, below the watchdog.
      * --------------------------------------------------------------------- */
     {
+        pthread_setname_np(pthread_self(), "plc_dispatch");
         sched_param dsp{};
-        dsp.sched_priority = 99;
-        if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &dsp) != 0)
-            log_warn("dispatcher SCHED_FIFO(99) failed: %s", strerror(errno));
+        dsp.sched_priority = PLC_FIFO_DISPATCHER;
+        int rc             = pthread_setschedparam(pthread_self(), SCHED_FIFO, &dsp);
+        if (rc != 0)
+            log_warn("dispatcher SCHED_FIFO(%d) failed: %s", PLC_FIFO_DISPATCHER, strerror(rc));
     }
 
     /* Completion-signal condvar shares the CLOCK_MONOTONIC timeline with the

@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "../plc_state_manager.h"
+#include "../task_policy.h"
 #include "log.h"
 #include "utils.h"
 #include "watchdog.h"
@@ -19,13 +26,21 @@ atomic_long plc_heartbeat;
  * from plc_state_manager.h, where it is derived from the same constant the
  * transition worker waits on, so this can never fire while the runtime still
  * considers the transition to be progressing normally. */
-#define WATCHDOG_TICK_S      2
-#define TRANSITION_STUCK_S   (PLC_TRANSITION_STUCK_TIMEOUT_MS / 1000)
+#define WATCHDOG_TICK_S 2
+#define TRANSITION_STUCK_S (PLC_TRANSITION_STUCK_TIMEOUT_MS / 1000)
 
 void *watchdog_thread(void *arg)
 {
     (void)arg;
-    long last = atomic_load(&plc_heartbeat);
+    pthread_setname_np(pthread_self(), "plc_watchdog");
+
+    struct sched_param sp = {.sched_priority = PLC_FIFO_WATCHDOG};
+    int rc                = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+    if (rc != 0)
+        log_warn("Watchdog: SCHED_FIFO(%d) failed: %s", PLC_FIFO_WATCHDOG, strerror(rc));
+    else
+        log_info("Watchdog: SCHED_FIFO priority %d", PLC_FIFO_WATCHDOG);
+    long last               = atomic_load(&plc_heartbeat);
     int transitioning_ticks = 0;
 
     while (1)
