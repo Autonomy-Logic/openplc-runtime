@@ -53,6 +53,7 @@ int main(int argc, char *argv[])
 {
     bool print_debug = false;
     bool safe_mode   = false;
+    bool after_fault = false;
 
     // Check for command line arguments
     for (int i = 1; i < argc; i++)
@@ -68,6 +69,10 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "--safe-mode") == 0)
         {
             safe_mode = true;
+        }
+        else if (strcmp(argv[i], "--fault") == 0)
+        {
+            after_fault = true;
         }
     }
 
@@ -201,6 +206,11 @@ int main(int argc, char *argv[])
     {
         log_info("Runtime started in SAFE MODE - PLC program will not be loaded");
         log_info("Upload a corrected program to recover");
+        if (after_fault)
+        {
+            log_error("Previous run ended in an unrecoverable watchdog fault");
+            plc_force_error_state();
+        }
     }
     // Same gate as any other start, but note what it can and cannot see. A VPP
     // plugin that owns a physical mode switch is initialised as part of loading

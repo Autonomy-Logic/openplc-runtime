@@ -30,6 +30,21 @@ extern "C"
  * plugins polling the image from their own threads can send them. */
 #define PLC_OUTPUTS_OFF_SETTLE_MS 500
 
+/* How long an aborted task, or an idle one that was woken, may take to exit
+ * before the runtime gives up and exits with PLC_EXIT_WATCHDOG_FAULT. */
+#define PLC_TASK_ABORT_TIMEOUT_MS 2000
+
+/* Fixed allowance for the stop teardown (plugin stop, unload) on top of the
+ * task grace. Past the whole budget the watchdog exits the process. */
+#define PLC_STOP_TEARDOWN_ALLOWANCE_MS 30000
+
+/* A dispatcher with no tick for max(10 base ticks, this) is stalled. */
+#define PLC_DISPATCHER_STALL_MIN_MS 1000
+
+/* Process exit code for an unrecoverable watchdog fault. The webserver
+ * (webserver/runtimemanager.py) restarts the runtime in safe mode on it. */
+#define PLC_EXIT_WATCHDOG_FAULT 42
+
 /* IEC TASK priority range accepted by the runtime. 0 is the highest. */
 #define PLC_IEC_PRIORITY_MIN 0
 #define PLC_IEC_PRIORITY_MAX 48

@@ -46,6 +46,7 @@ extern "C" {
 #include "utils/log.h"
 #include "utils/rt_mutex.h"
 #include "utils/utils.h"
+#include "utils/watchdog.h"
 
 /* Writers serialise on state_mutex; readers load the atomic without locking. */
 static std::atomic<PLCState> plc_state{PLC_STATE_STOPPED};
@@ -56,7 +57,6 @@ struct timespec  timer_start;
 pthread_t        plc_thread;
 PluginManager   *plc_program = NULL;
 
-extern std::atomic<long>  plc_heartbeat;
 extern plugin_driver_t   *plugin_driver;
 
 /* -----------------------------------------------------------------------
@@ -158,6 +158,9 @@ static volatile sig_atomic_t plc_crash_signal        = 0;
 
 /* Set when a task had to be aborted; the stop then lands ERROR, not STOPPED. */
 static std::atomic<bool> g_task_fault{false};
+
+/* Longest task interval of the loaded program, for the stop budget. */
+static std::atomic<int64_t> g_longest_interval_ns{0};
 
 /* The SIGUSR1 wake handler is installed once at process init in
  * plc_main.c (handle_sigusr1). Every task thread relies on EINTR from
@@ -438,35 +441,57 @@ static void reap_task_threads(void)
         pthread_kill(plc_tasks[i].thread, SIGUSR1);
     }
 
+    const int64_t t_reap = mono_ns();
     for (size_t i = 0; i < plc_task_count; ++i)
     {
         PlcTaskCtx   *c        = &plc_tasks[i];
         const int64_t deadline = c->release_ns.load(std::memory_order_acquire) +
                                  PLC_TASK_STUCK_PERIODS * c->interval_ns;
         timespec      poll     = {0, 1000000L};
+        const int64_t abort_ns = (int64_t)PLC_TASK_ABORT_TIMEOUT_MS * 1000000LL;
+        const int64_t idle_end = (deadline > t_reap ? deadline : t_reap) + abort_ns;
         /* Idle workers were posted and only need time to return; abort only an in-flight scan. */
         auto in_scan = [c]() {
             return c->released.load(std::memory_order_relaxed) !=
                    c->completed.load(std::memory_order_acquire);
         };
-        while (!c->exited.load(std::memory_order_acquire) && (!in_scan() || mono_ns() < deadline))
+        while (!c->exited.load(std::memory_order_acquire))
+        {
+            const int64_t now = mono_ns();
+            if (in_scan() ? now >= deadline : now >= idle_end)
+                break;
             nanosleep(&poll, nullptr);
+        }
         if (c->exited.load(std::memory_order_acquire))
             continue;
 
-        log_error("[task %s] scan still running %d periods (%lld ms) after its release: aborting it",
-                  c->name, PLC_TASK_STUCK_PERIODS,
-                  (long long)(PLC_TASK_STUCK_PERIODS * c->interval_ns / 1000000));
+        if (in_scan())
+            log_error("[task %s] scan still running %d periods (%lld ms) after its release: "
+                      "aborting it",
+                      c->name, PLC_TASK_STUCK_PERIODS,
+                      (long long)(PLC_TASK_STUCK_PERIODS * c->interval_ns / 1000000));
+        else
+            log_error("[task %s] did not exit within %d ms of being woken", c->name,
+                      PLC_TASK_ABORT_TIMEOUT_MS);
         g_task_fault.store(true, std::memory_order_release);
-        int64_t next_signal = 0;
+        const int64_t give_up     = mono_ns() + abort_ns;
+        int64_t       next_signal = 0;
         while (!c->exited.load(std::memory_order_acquire))
         {
-            if (mono_ns() >= next_signal)
+            const int64_t now = mono_ns();
+            if (now >= give_up)
+            {
+                char reason[96];
+                std::snprintf(reason, sizeof reason, "task %s did not exit after the abort",
+                              c->name);
+                watchdog_fatal_exit(reason);
+            }
+            if (now >= next_signal)
             {
                 int rc = pthread_kill(c->thread, PLC_TASK_ABORT_SIGNAL);
                 if (rc != 0)
                     log_error("[task %s] abort signal failed: %s", c->name, strerror(rc));
-                next_signal = mono_ns() + PLC_TASK_ABORT_RESEND_NS;
+                next_signal = now + PLC_TASK_ABORT_RESEND_NS;
             }
             nanosleep(&poll, nullptr);
         }
@@ -515,6 +540,7 @@ void *plc_cycle_thread(void *arg)
     bootstrap_crash_sig     = 0;
     bootstrap_holding_mutex = 0;
     g_task_fault.store(false, std::memory_order_release);
+    watchdog_dispatcher_stopped();
 
     /* Per-task trackers are initialised below, once we know the task list
      * and each task's interval. */
@@ -781,6 +807,13 @@ void *plc_cycle_thread(void *arg)
         }
     }
 
+    {
+        int64_t longest = 0;
+        for (size_t i = 0; i < plc_task_count; ++i)
+            if (plc_tasks[i].interval_ns > longest) longest = plc_tasks[i].interval_ns;
+        g_longest_interval_ns.store(longest, std::memory_order_release);
+    }
+
     /* Pick the fastest task: smallest interval, tie-break by priority,
      * then by declaration order (which is the iteration order above). */
     {
@@ -929,6 +962,7 @@ void *plc_cycle_thread(void *arg)
 
     log_info("GCD master-tick dispatcher running (base tick %llu ns)",
              (unsigned long long)base_ns);
+    watchdog_dispatcher_started((int64_t)base_ns);
 
     uint64_t master_tick      = 0;
     bool     cycle_end_pending = false;   /* a frame's cycle_end not yet fired */
@@ -942,8 +976,7 @@ void *plc_cycle_thread(void *arg)
         /* ---- Phase B: the tick (runs at the absolute deadline) ---- */
         const int64_t master_time = (int64_t)master_tick * (int64_t)base_ns;
 
-        /* Always: feed the global watchdog. */
-        plc_heartbeat.store((long)time(nullptr), std::memory_order_relaxed);
+        watchdog_feed();
 
         /* Which tasks are due this tick? */
         bool any_due = false;
@@ -1109,6 +1142,7 @@ void *plc_cycle_thread(void *arg)
         pthread_mutex_unlock(&done_mutex);
     }
 
+    watchdog_dispatcher_stopped();
     reap_task_threads();
     plc_outputs_off();
 
@@ -1304,6 +1338,12 @@ extern "C" int unload_plc_program(PluginManager *pm)
 extern "C" PLCState plc_get_state(void)
 {
     return plc_state.load(std::memory_order_acquire);
+}
+
+extern "C" int64_t plc_stop_budget_ms(void)
+{
+    return PLC_TASK_STUCK_PERIODS * g_longest_interval_ns.load(std::memory_order_acquire) / 1000000 +
+           PLC_OUTPUTS_OFF_SETTLE_MS + PLC_STOP_TEARDOWN_ALLOWANCE_MS;
 }
 
 extern "C" bool plc_state_is_transitioning(void)

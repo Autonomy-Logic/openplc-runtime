@@ -215,6 +215,14 @@ void plc_publish_final_state(PLCState final_state);
  */
 bool plc_publish_running_if_claimed(void);
 
+/**
+ * @brief Longest a stop may take before the watchdog exits the process.
+ *
+ * PLC_TASK_STUCK_PERIODS times the longest task interval of the loaded program,
+ * plus the outputs-off settle time and PLC_STOP_TEARDOWN_ALLOWANCE_MS.
+ */
+int64_t plc_stop_budget_ms(void);
+
 /** @brief True while a transition is in flight (either direction). */
 bool plc_state_is_transitioning(void);
 
