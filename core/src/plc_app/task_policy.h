@@ -26,6 +26,10 @@ extern "C"
  * the grace each task gets to finish its scan when the PLC stops. */
 #define PLC_TASK_STUCK_PERIODS 10
 
+/* How long zeroed outputs are held on stop before plugins are stopped, so
+ * plugins polling the image from their own threads can send them. */
+#define PLC_OUTPUTS_OFF_SETTLE_MS 500
+
 /* IEC TASK priority range accepted by the runtime. 0 is the highest. */
 #define PLC_IEC_PRIORITY_MIN 0
 #define PLC_IEC_PRIORITY_MAX 48

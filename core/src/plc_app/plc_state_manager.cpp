@@ -490,6 +490,23 @@ static void reap_task_threads(void)
     pthread_mutex_unlock(&plc_tasks_lock);
 }
 
+/* Zeroes every output and runs one last I/O frame, then holds it so threaded plugins send it. */
+static void plc_outputs_off(void)
+{
+    image_lock();
+    image_tables_zero_outputs();
+    image_unlock();
+    if (plugin_driver)
+    {
+        plugin_driver_cycle_start(plugin_driver);
+        plugin_driver_cycle_end(plugin_driver);
+    }
+    timespec settle = {PLC_OUTPUTS_OFF_SETTLE_MS / 1000,
+                       (long)(PLC_OUTPUTS_OFF_SETTLE_MS % 1000) * 1000000L};
+    nanosleep(&settle, nullptr);
+    log_info("Outputs forced to 0");
+}
+
 void *plc_cycle_thread(void *arg)
 {
     PluginManager *pm = (PluginManager *)arg;
@@ -628,7 +645,10 @@ void *plc_cycle_thread(void *arg)
          * they aren't orphaned (which would UAF on the next load). The state is
          * already ERROR, so each worker exits after its current scan. */
         if (plc_tasks && plc_task_count)
+        {
             reap_task_threads();
+            plc_outputs_off();
+        }
         return NULL;
     }
 
@@ -1090,6 +1110,7 @@ void *plc_cycle_thread(void *arg)
     }
 
     reap_task_threads();
+    plc_outputs_off();
 
     signal(SIGFPE,  SIG_DFL);
     signal(SIGSEGV, SIG_DFL);

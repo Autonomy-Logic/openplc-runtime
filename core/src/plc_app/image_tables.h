@@ -153,6 +153,15 @@ extern "C"
      * --------------------------------------------------------------------- */
     void image_tables_clear_null_pointers(void);
 
+    /**
+     * @brief Write 0 to every output image slot (%QX, %QB, %QW, %QD, %QL).
+     *
+     * Used on every stop so plugins push de-energised outputs to the hardware
+     * before they are stopped. Program storage is not touched. Caller must hold
+     * the image-tables mutex.
+     */
+    void image_tables_zero_outputs(void);
+
     /* -------------------------------------------------------------------------
      * Image-tables mutex accessor. Returns a pointer to the runtime-owned
      * recursive PI mutex that protects the image tables. The runtime locks

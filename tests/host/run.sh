@@ -31,6 +31,7 @@ TESTS=(
   "tests/host/test_plc_retain_file_store.cpp:core/src/plc_app/plc_retain_file_store.cpp"
   "tests/host/test_rt_mutex.cpp:"
   "tests/host/test_task_policy.cpp:core/src/plc_app/task_policy.c"
+  "tests/host/test_image_outputs.cpp:core/src/plc_app/image_tables.cpp:core/src/plc_app/located_globals.c"
 )
 
 failures=0
