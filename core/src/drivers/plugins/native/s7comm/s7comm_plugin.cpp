@@ -35,6 +35,8 @@ extern "C" {
 #include "plugin_logger.h"
 #include "plugin_types.h"
 #include "s7comm_plugin.h"
+
+#include "../plugin_image_sizes.h"
 #include "s7comm_config.h"
 }
 
@@ -338,7 +340,32 @@ extern "C" int init(void *args)
     plugin_logger_init(&g_logger, "S7COMM", args);
     plugin_logger_info(&g_logger, "Initializing S7Comm plugin...");
 
-    plugin_logger_info(&g_logger, "Buffer size: %d", g_runtime_args.buffer_size);
+    /* What this plugin was actually told, not the deprecated single figure.
+     * On a per-table run `buffer_size` is the SMALLEST of the fourteen and
+     * says nothing useful about the areas this server serves. Only the
+     * non-empty tables, because fourteen figures of which most are one reads
+     * as noise. Nothing parses this line. */
+    {
+        char sizes[192];
+        int at = 0;
+        for (int id = 0; id < IMAGE_TABLE_COUNT && at < (int)sizeof(sizes) - 1; ++id)
+        {
+            const uint32_t n = plugin_image_table_capacity((image_table_id_t)id);
+            if (n <= 1)
+                continue;
+            const int wrote =
+                snprintf(sizes + at, sizeof(sizes) - (size_t)at, "%s%d:%u", at ? " " : "", id, n);
+            if (wrote < 0 || wrote >= (int)sizeof(sizes) - at)
+                break;
+            at += wrote;
+        }
+        if (!plugin_image_sizes_known())
+            plugin_logger_info(&g_logger, "Image sizes: not delivered (square run)");
+        else if (at == 0)
+            plugin_logger_info(&g_logger, "Image sizes: every table at the minimum");
+        else
+            plugin_logger_info(&g_logger, "Image sizes by table id: %s", sizes);
+    }
 
     g_initialized = true;
     return 0;
@@ -728,6 +755,72 @@ static int get_type_size(s7comm_buffer_type_t type)
  * =============================================================================
  */
 
+/* s7comm_buffer_type_t -> the image table that stores it.
+ *
+ * A THIRD order for the same fourteen tables. This enum groups each width's
+ * memory beside its input and output, matching journal_buffer_type_t;
+ * image_table_id_t puts every memory table at the end -- and this enum starts
+ * at BUFFER_TYPE_NONE, so it is offset again. For one table, int_memory:
+ * BUFFER_TYPE_INT_MEMORY is 8, JOURNAL_INT_MEMORY is 7, IMAGE_TABLE_INT_MEMORY
+ * is 10. Three different numbers for one table is the whole argument, and a
+ * cast between any two reads and writes under another table's bounds. Written
+ * out rather than computed. */
+static image_table_id_t s7_image_table(s7comm_buffer_type_t type)
+{
+    switch (type)
+    {
+    case BUFFER_TYPE_BOOL_INPUT:
+        return IMAGE_TABLE_BOOL_INPUT;
+    case BUFFER_TYPE_BOOL_OUTPUT:
+        return IMAGE_TABLE_BOOL_OUTPUT;
+    case BUFFER_TYPE_BOOL_MEMORY:
+        return IMAGE_TABLE_BOOL_MEMORY;
+    case BUFFER_TYPE_BYTE_INPUT:
+        return IMAGE_TABLE_BYTE_INPUT;
+    case BUFFER_TYPE_BYTE_OUTPUT:
+        return IMAGE_TABLE_BYTE_OUTPUT;
+    case BUFFER_TYPE_INT_INPUT:
+        return IMAGE_TABLE_INT_INPUT;
+    case BUFFER_TYPE_INT_OUTPUT:
+        return IMAGE_TABLE_INT_OUTPUT;
+    case BUFFER_TYPE_INT_MEMORY:
+        return IMAGE_TABLE_INT_MEMORY;
+    case BUFFER_TYPE_DINT_INPUT:
+        return IMAGE_TABLE_DINT_INPUT;
+    case BUFFER_TYPE_DINT_OUTPUT:
+        return IMAGE_TABLE_DINT_OUTPUT;
+    case BUFFER_TYPE_DINT_MEMORY:
+        return IMAGE_TABLE_DINT_MEMORY;
+    case BUFFER_TYPE_LINT_INPUT:
+        return IMAGE_TABLE_LINT_INPUT;
+    case BUFFER_TYPE_LINT_OUTPUT:
+        return IMAGE_TABLE_LINT_OUTPUT;
+    case BUFFER_TYPE_LINT_MEMORY:
+        return IMAGE_TABLE_LINT_MEMORY;
+    /* An unmapped block. IMAGE_TABLE_COUNT is not a table, so
+     * plugin_image_table_capacity() answers 0 and every access is refused --
+     * which is what an unconfigured block should do. */
+    case BUFFER_TYPE_NONE:
+        break;
+    }
+    return IMAGE_TABLE_COUNT;
+}
+
+/* How far the table behind `type` reaches, as a signed count so the clamps
+ * below can subtract a start offset without wrapping. */
+static int s7_table_reach(s7comm_buffer_type_t type)
+{
+    /* Falls back to the single figure when the sizes were never delivered.
+     * Without it, a runtime that does not call set_image_sizes -- an older one
+     * loading this plugin -- leaves every table at zero and every read and
+     * write is clamped to nothing, so the server answers zeros for everything
+     * with no error anywhere. On a square run buffer_size IS the length every
+     * table has. */
+    if (!plugin_image_sizes_known())
+        return g_runtime_args.buffer_size;
+    return (int)plugin_image_table_capacity(s7_image_table(type));
+}
+
 /**
  * @brief Read OpenPLC bool buffer to destination (mutex must be held)
  */
@@ -753,7 +846,7 @@ static void read_openplc_bool_to_buffer(uint8_t *dest, int size, s7comm_buffer_t
         return;
     }
 
-    int max_bytes = g_runtime_args.buffer_size - start_buffer;
+    int max_bytes = s7_table_reach(type) - start_buffer;
     if (max_bytes > size) max_bytes = size;
 
     for (int byte_idx = 0; byte_idx < max_bytes; byte_idx++) {
@@ -792,7 +885,7 @@ static void read_openplc_int_to_buffer(uint8_t *dest, int size, s7comm_buffer_ty
 
     uint16_t *s7_words = (uint16_t *)dest;
     int num_words = size / 2;
-    int max_words = g_runtime_args.buffer_size - start_buffer;
+    int max_words      = s7_table_reach(type) - start_buffer;
     if (max_words > num_words) max_words = num_words;
 
     for (int i = 0; i < max_words; i++) {
@@ -826,7 +919,7 @@ static void read_openplc_dint_to_buffer(uint8_t *dest, int size, s7comm_buffer_t
 
     uint32_t *s7_dwords = (uint32_t *)dest;
     int num_dwords = size / 4;
-    int max_dwords = g_runtime_args.buffer_size - start_buffer;
+    int max_dwords      = s7_table_reach(type) - start_buffer;
     if (max_dwords > num_dwords) max_dwords = num_dwords;
 
     for (int i = 0; i < max_dwords; i++) {
@@ -860,7 +953,7 @@ static void read_openplc_lint_to_buffer(uint8_t *dest, int size, s7comm_buffer_t
 
     uint64_t *s7_lwords = (uint64_t *)dest;
     int num_lwords = size / 8;
-    int max_lwords = g_runtime_args.buffer_size - start_buffer;
+    int max_lwords      = s7_table_reach(type) - start_buffer;
     if (max_lwords > num_lwords) max_lwords = num_lwords;
 
     for (int i = 0; i < max_lwords; i++) {
@@ -922,7 +1015,7 @@ static void write_bool_to_openplc_journal(uint8_t *src, int size, s7comm_buffer_
     int journal_type = map_to_journal_type(type);
     if (journal_type < 0) return;
 
-    int max_bytes = g_runtime_args.buffer_size - start_buffer;
+    int max_bytes = s7_table_reach(type) - start_buffer;
     if (max_bytes > size) max_bytes = size;
 
     for (int byte_idx = 0; byte_idx < max_bytes; byte_idx++) {
@@ -945,7 +1038,7 @@ static void write_int_to_openplc_journal(uint8_t *src, int size, s7comm_buffer_t
 
     uint16_t *s7_words = (uint16_t *)src;
     int num_words = size / 2;
-    int max_words = g_runtime_args.buffer_size - start_buffer;
+    int max_words      = s7_table_reach(type) - start_buffer;
     if (max_words > num_words) max_words = num_words;
 
     for (int i = 0; i < max_words; i++) {
@@ -964,7 +1057,7 @@ static void write_dint_to_openplc_journal(uint8_t *src, int size, s7comm_buffer_
 
     uint32_t *s7_dwords = (uint32_t *)src;
     int num_dwords = size / 4;
-    int max_dwords = g_runtime_args.buffer_size - start_buffer;
+    int max_dwords      = s7_table_reach(type) - start_buffer;
     if (max_dwords > num_dwords) max_dwords = num_dwords;
 
     for (int i = 0; i < max_dwords; i++) {
@@ -983,7 +1076,7 @@ static void write_lint_to_openplc_journal(uint8_t *src, int size, s7comm_buffer_
 
     uint64_t *s7_lwords = (uint64_t *)src;
     int num_lwords = size / 8;
-    int max_lwords = g_runtime_args.buffer_size - start_buffer;
+    int max_lwords      = s7_table_reach(type) - start_buffer;
     if (max_lwords > num_lwords) max_lwords = num_lwords;
 
     for (int i = 0; i < max_lwords; i++) {
@@ -1059,26 +1152,40 @@ static int s7comm_rw_area_callback(void *usrPtr, int Sender, int Operation, PS7T
     s7comm_buffer_type_t type;
     int start_buffer;
     int size = PTag->Size;
+    int extent;
 
-    /* Determine mapping based on S7 protocol area code */
+    /*
+     * An area this server does not publish, or a request reaching past the one
+     * it does, is REFUSED rather than answered.
+     *
+     * Both used to `return 0`, which accepts the operation: snap7 then sent the
+     * untouched buffer, so a client reading DB99 on a server with two blocks got
+     * a well-formed response full of zeros, and a read of 64 bytes from a
+     * 6-byte block got 6 real values followed by 58 invented ones. A plausible
+     * zero is the answer a client cannot tell from a real one. The bare-metal
+     * server already refuses both (find_area returns NULL, and the extent is
+     * checked against size_bytes); this brings the plugin in line.
+     */
     if (PTag->Area == S7AreaDB) {
-        /* Data block - look up configuration */
         s7comm_db_runtime_t *db = find_db_runtime(PTag->DBNumber);
         if (db == NULL) {
-            /* DB not configured - return zeros for read, ignore write */
-            return 0;
+            return -1;
         }
+        extent = db->size_bytes;
         type = db->type;
         start_buffer = db->start_buffer + (PTag->Start / get_type_size(type));
     } else {
-        /* System area (PE, PA, MK) */
         s7comm_area_runtime_t *area = find_area_runtime(PTag->Area);
         if (area == NULL) {
-            /* Area not configured - return zeros for read, ignore write */
-            return 0;
+            return -1;
         }
+        extent = area->size_bytes;
         type = area->type;
         start_buffer = area->start_buffer + (PTag->Start / get_type_size(type));
+    }
+
+    if (PTag->Start < 0 || size < 0 || PTag->Start + size > extent) {
+        return -1;
     }
 
     if (Operation == OperationRead) {
