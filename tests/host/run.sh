@@ -29,6 +29,9 @@ trap 'rm -rf "$OUT"' EXIT
 # test source : extra sources it links
 TESTS=(
   "tests/host/test_plc_retain_file_store.cpp:core/src/plc_app/plc_retain_file_store.cpp"
+  "tests/host/test_rt_mutex.cpp:"
+  "tests/host/test_task_policy.cpp:core/src/plc_app/task_policy.c"
+  "tests/host/test_image_outputs.cpp:core/src/plc_app/image_tables.cpp:core/src/plc_app/located_globals.c"
 )
 
 failures=0
@@ -38,8 +41,20 @@ for entry in "${TESTS[@]}"; do
   name=$(basename "$test_src" .cpp)
 
   printf '\n=== %s ===\n' "$name"
+  # C sources are compiled as C, not C++.
+  objs=()
+  for dep in ${deps//:/ }; do
+    if [[ "$dep" == *.c ]]; then
+      obj="$OUT/$(basename "$dep" .c).o"
+      # shellcheck disable=SC2086
+      ${CC:-cc} -std=gnu11 -Wall -Wextra -g $INCLUDES -c "$dep" -o "$obj" || { objs=(); break; }
+      objs+=("$obj")
+    else
+      objs+=("$dep")
+    fi
+  done
   # shellcheck disable=SC2086
-  if ! $CXX $CXXFLAGS $INCLUDES "$test_src" ${deps//:/ } -o "$OUT/$name" -lpthread; then
+  if ! $CXX $CXXFLAGS $INCLUDES "$test_src" ${objs[@]+"${objs[@]}"} -o "$OUT/$name" -lpthread; then
     echo "  FAIL  $name did not compile"
     failures=$((failures + 1))
     continue

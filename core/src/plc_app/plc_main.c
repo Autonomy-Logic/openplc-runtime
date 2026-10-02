@@ -5,6 +5,7 @@
 #include <Python.h>
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -20,6 +21,7 @@
 #include "plc_state_manager.h"
 #include "plc_switch.h"
 #include "plcapp_manager.h"
+#include "task_policy.h"
 #include "unix_socket.h"
 #include "utils/log.h"
 #include "utils/utils.h"
@@ -53,6 +55,7 @@ int main(int argc, char *argv[])
 {
     bool print_debug = false;
     bool safe_mode   = false;
+    bool after_fault = false;
 
     // Check for command line arguments
     for (int i = 1; i < argc; i++)
@@ -68,6 +71,10 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "--safe-mode") == 0)
         {
             safe_mode = true;
+        }
+        else if (strcmp(argv[i], "--fault") == 0)
+        {
+            after_fault = true;
         }
     }
 
@@ -123,6 +130,19 @@ int main(int argc, char *argv[])
     // No need to force STOPPED here: plc_state is statically initialised to it,
     // and plc_set_state() is now the body of a claimed transition rather than a
     // setter -- calling it with nothing loaded would just log a failed unload.
+
+    if (access(PLC_WATCHDOG_FAULT_MARKER, F_OK) == 0)
+    {
+        if (unlink(PLC_WATCHDOG_FAULT_MARKER) != 0)
+            log_warn("Could not remove %s: %s", PLC_WATCHDOG_FAULT_MARKER, strerror(errno));
+        safe_mode   = true;
+        after_fault = true;
+    }
+    if (after_fault && !safe_mode)
+    {
+        log_warn("--fault is only honoured together with --safe-mode; ignoring it");
+        after_fault = false;
+    }
 
     // Initialize watchdog
     if (watchdog_init() != 0)
@@ -201,6 +221,11 @@ int main(int argc, char *argv[])
     {
         log_info("Runtime started in SAFE MODE - PLC program will not be loaded");
         log_info("Upload a corrected program to recover");
+        if (after_fault)
+        {
+            log_error("Previous run ended in an unrecoverable watchdog fault");
+            plc_force_error_state();
+        }
     }
     // Same gate as any other start, but note what it can and cannot see. A VPP
     // plugin that owns a physical mode switch is initialised as part of loading
