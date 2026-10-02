@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /*
  * debug_handler.c — STruC++ hierarchical debugger PDU handler.
  *

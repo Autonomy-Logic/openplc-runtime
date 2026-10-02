@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Persistent-storage (retain) settings for the built-in file store.
 
 WHO OWNS THESE SETTINGS

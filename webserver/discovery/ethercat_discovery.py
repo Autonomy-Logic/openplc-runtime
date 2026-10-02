@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """EtherCAT discovery helpers.
 
 Validation utilities for EtherCAT configuration and interface names.

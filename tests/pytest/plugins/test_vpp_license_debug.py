@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Tests for the webserver-level VPP license debug FCs (0x48/0x49/0x4A).
 
 Covers the raw-PDU responses the editor's modbus-pdu.ts parsers expect, the raw

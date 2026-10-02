@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // Package selfupdate replaces the bootloader with a newer version of itself.
 //
 // A container cannot replace itself: removing it kills the process doing the
@@ -29,6 +32,7 @@ import (
 	"time"
 
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimespec"
 )
 
 // Environment the parent sets on the child. Their presence is what puts the
@@ -260,8 +264,10 @@ func replacementSpec(parent *dockerapi.ContainerInspect, newImage string) map[st
 		"Image": newImage,
 		"Env":   env,
 		"HostConfig": map[string]any{
-			"Binds":         parent.HostConfig.Binds,
-			"NetworkMode":   parent.HostConfig.NetworkMode,
+			"Binds":       parent.HostConfig.Binds,
+			"NetworkMode": parent.HostConfig.NetworkMode,
+			// Set, never inherited: a pre-RTOP-292 parent would pass the bug on.
+			"UTSMode":       runtimespec.UTSModeHost,
 			"Privileged":    parent.HostConfig.Privileged,
 			"RestartPolicy": map[string]any{"Name": restart},
 		},
@@ -286,6 +292,7 @@ func defaultSpec(newImage string) map[string]any {
 				"/var/lib/openplc-runtime:/var/lib/openplc-runtime:ro",
 			},
 			"NetworkMode":   "host",
+			"UTSMode":       runtimespec.UTSModeHost,
 			"RestartPolicy": map[string]any{"Name": "always"},
 		},
 	}

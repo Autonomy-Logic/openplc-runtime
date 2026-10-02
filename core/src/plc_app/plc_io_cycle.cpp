@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // plc_io_cycle.cpp — per-cycle I/O work, split into pre/post halves
 //                    around the fastest IEC task's body.
 //

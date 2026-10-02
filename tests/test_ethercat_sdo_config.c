@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file test_ethercat_sdo_config.c
  * @brief Unit tests for SDO value parsing in ecat_config_parse()

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Tests for VPP device-license delivery via apply_vpp_plugin_conf.
 
 A licensed VPP's activated blob rides in the upload as conf/<plugin>.license and

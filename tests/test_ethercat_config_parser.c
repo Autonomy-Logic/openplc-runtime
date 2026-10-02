@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file test_ethercat_config_parser.c
  * @brief Unit tests for ecat_config_parse_all() — JSON config ingestion.

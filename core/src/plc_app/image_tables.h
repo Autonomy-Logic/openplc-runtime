@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 #ifndef IMAGE_TABLES_H
 #define IMAGE_TABLES_H
 
@@ -5,7 +8,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "../lib/iec_types.h"
+#include "../lib/plc_image_types.h"
 #include "plcapp_manager.h"
 
 #ifdef __cplusplus

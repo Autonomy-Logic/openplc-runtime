@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # tests/test_discrete_inputs.py
 import simple_modbus
 

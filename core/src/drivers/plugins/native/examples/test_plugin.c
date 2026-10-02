@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file test_plugin.c
  * @brief Example native plugin demonstrating proper logging usage
@@ -15,7 +18,7 @@
 #include "../plugin_logger.h"
 
 /* Include IEC types */
-#include "../../../../lib/iec_types.h"
+#include "../../../../lib/plc_image_types.h"
 
 /* Include the plugin types (runtime args, logging function types) */
 #include "../../../plugin_types.h"

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /*
  * test_scan_cycle_tracker.c — unit tests for the per-task scan-cycle
  * tracker introduced alongside the multi-task refactor.

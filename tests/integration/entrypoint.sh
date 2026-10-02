@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # Start the inner Docker daemon, then hand over to the command.
 #
 # The daemon has to be up before anything else runs, and "up" means the socket

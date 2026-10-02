@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file plc_retain_file_store.cpp
  * @brief The runtime's own retain backend. See plc_retain_file_store.h.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 package runtimespec
 
 import (
@@ -164,6 +167,11 @@ func TestContainerSpecCarriesTheParityFlags(t *testing.T) {
 	if host["NetworkMode"] != "host" {
 		t.Errorf("NetworkMode must be host for EtherCAT and UDP discovery, got %v",
 			host["NetworkMode"])
+	}
+	// NetworkMode host is not a substitute: it resolves once, at create time.
+	if host["UTSMode"] != "host" {
+		t.Errorf("UTSMode must be host so discovery reports the device hostname, got %v",
+			host["UTSMode"])
 	}
 	binds := host["Binds"].([]any)
 	var sawDev bool

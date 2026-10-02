@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """UDP network discovery responder.
 
 Listens on UDP port 33333 for the magic string ``OPENPLC_DISCOVER_V1``

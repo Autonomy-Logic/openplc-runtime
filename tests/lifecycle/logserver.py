@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Minimal stand-in for the webserver's log server.
 
 plc_main's log_init() connects to /run/runtime/log_runtime.socket; with nothing
