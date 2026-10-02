@@ -295,6 +295,12 @@ class OpenPLCDiscreteInputsDataBlock(ModbusSparseDataBlock):
         """Get discrete input values from OpenPLC bool_input using SafeBufferAccess"""
         address = address - 1  # Modbus addresses are 0-based
 
+        # Fora da imagem: excecao 02, nunca zero nem silencio. O bloco segmentado
+        # ja fazia isto no getValues; estes quatro caminhos respondiam um zero
+        # plausivel, ou aceitavam a escrita e a descartavam.
+        if address < 0 or address + count > self.num_inputs:
+            return ExcCodes.ILLEGAL_ADDRESS
+
         if not self.safe_buffer_access.is_valid:
             if logger:
                 logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
@@ -356,6 +362,12 @@ class OpenPLCInputRegistersDataBlock(ModbusSparseDataBlock):
     def getValues(self, address, count=1):
         """Get input register values from OpenPLC int_input using SafeBufferAccess"""
         address = address - 1  # Modbus addresses are 0-based
+
+        # Fora da imagem: excecao 02, nunca zero nem silencio. O bloco segmentado
+        # ja fazia isto no getValues; estes quatro caminhos respondiam um zero
+        # plausivel, ou aceitavam a escrita e a descartavam.
+        if address < 0 or address + count > self.num_registers:
+            return ExcCodes.ILLEGAL_ADDRESS
 
         if not self.safe_buffer_access.is_valid:
             if logger:
@@ -586,6 +598,12 @@ class OpenPLCSegmentedCoilsDataBlock(ModbusSparseDataBlock):
         thread-safe, so no mutex is needed for write operations.
         """
         address = address - 1  # Modbus addresses are 1-based
+
+        # Fora da imagem: excecao 02, nunca zero nem silencio. O bloco segmentado
+        # ja fazia isto no getValues; estes quatro caminhos respondiam um zero
+        # plausivel, ou aceitavam a escrita e a descartavam.
+        if address < 0 or address + len(values) > self.total_bits:
+            return ExcCodes.ILLEGAL_ADDRESS
 
         if not self.safe_buffer_access.is_valid:
             if logger:
@@ -843,6 +861,12 @@ class OpenPLCSegmentedHoldingRegistersDataBlock(ModbusSparseDataBlock):
         Simple QW/MW writes don't strictly need the mutex, but we keep it for RMW safety.
         """
         address = address - 1  # Modbus addresses are 1-based
+
+        # Fora da imagem: excecao 02, nunca zero nem silencio. O bloco segmentado
+        # ja fazia isto no getValues; estes quatro caminhos respondiam um zero
+        # plausivel, ou aceitavam a escrita e a descartavam.
+        if address < 0 or address + len(values) > self.total_registers:
+            return ExcCodes.ILLEGAL_ADDRESS
 
         if not self.safe_buffer_access.is_valid:
             if logger:
