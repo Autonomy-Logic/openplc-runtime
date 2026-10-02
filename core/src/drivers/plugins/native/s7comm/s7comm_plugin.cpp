@@ -1152,26 +1152,40 @@ static int s7comm_rw_area_callback(void *usrPtr, int Sender, int Operation, PS7T
     s7comm_buffer_type_t type;
     int start_buffer;
     int size = PTag->Size;
+    int extent;
 
-    /* Determine mapping based on S7 protocol area code */
+    /*
+     * An area this server does not publish, or a request reaching past the one
+     * it does, is REFUSED rather than answered.
+     *
+     * Both used to `return 0`, which accepts the operation: snap7 then sent the
+     * untouched buffer, so a client reading DB99 on a server with two blocks got
+     * a well-formed response full of zeros, and a read of 64 bytes from a
+     * 6-byte block got 6 real values followed by 58 invented ones. A plausible
+     * zero is the answer a client cannot tell from a real one. The bare-metal
+     * server already refuses both (find_area returns NULL, and the extent is
+     * checked against size_bytes); this brings the plugin in line.
+     */
     if (PTag->Area == S7AreaDB) {
-        /* Data block - look up configuration */
         s7comm_db_runtime_t *db = find_db_runtime(PTag->DBNumber);
         if (db == NULL) {
-            /* DB not configured - return zeros for read, ignore write */
-            return 0;
+            return -1;
         }
+        extent = db->size_bytes;
         type = db->type;
         start_buffer = db->start_buffer + (PTag->Start / get_type_size(type));
     } else {
-        /* System area (PE, PA, MK) */
         s7comm_area_runtime_t *area = find_area_runtime(PTag->Area);
         if (area == NULL) {
-            /* Area not configured - return zeros for read, ignore write */
-            return 0;
+            return -1;
         }
+        extent = area->size_bytes;
         type = area->type;
         start_buffer = area->start_buffer + (PTag->Start / get_type_size(type));
+    }
+
+    if (PTag->Start < 0 || size < 0 || PTag->Start + size > extent) {
+        return -1;
     }
 
     if (Operation == OperationRead) {
