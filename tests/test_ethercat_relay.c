@@ -496,6 +496,6 @@ void test_relay_priority_is_capped_below_the_dispatcher(void)
     stop_loop();
     if (atomic_load(&fifo_attempts) == 0)
         TEST_IGNORE_MESSAGE("SCHED_FIFO was granted; the requested priority is not observable");
-    TEST_ASSERT_EQUAL_INT(98, atomic_load(&fifo_priority_seen));
+    TEST_ASSERT_EQUAL_INT(97, atomic_load(&fifo_priority_seen));
     TEST_ASSERT_EQUAL_INT(1, atomic_load(&fifo_attempts)); /* only after the link is up */
 }

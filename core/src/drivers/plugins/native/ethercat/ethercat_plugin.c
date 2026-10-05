@@ -41,8 +41,8 @@
 
 /* Used when the bus configuration gives no task_priority; EtherDOG's own default is 90. */
 #define DEFAULT_RELAY_PRIORITY 90
-/* plc_state_manager reserves 99 for the dispatcher; workers stay at or below 98. */
-#define MAX_RELAY_PRIORITY 98
+/* Below the runtime's dispatcher (PLC_FIFO_DISPATCHER, 98) and watchdog (99), task_policy.h. */
+#define MAX_RELAY_PRIORITY 97
 #define RECV_TIMEOUT_MS 100
 #define SILENCE_RECONNECT_MS 1000
 #define RECONNECT_BACKOFF_MS 1000
