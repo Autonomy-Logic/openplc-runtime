@@ -21,6 +21,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -51,8 +52,45 @@ NPCAP_REASON = (
 )
 
 
+class EtherDogErrorKind(Enum):
+    """Why EtherDOG is unavailable, as told to API clients."""
+
+    NOT_INSTALLED = "not_installed"
+    CANNOT_START = "cannot_start"
+    NPCAP_MISSING = "npcap_missing"
+    MISSING_LIBRARY = "missing_library"
+    REPEATED_EXITS = "repeated_exits"
+    UNREACHABLE = "unreachable"
+
+
+PUBLIC_MESSAGES: dict[EtherDogErrorKind, str] = {
+    EtherDogErrorKind.NOT_INSTALLED: "EtherDOG is not installed",
+    EtherDogErrorKind.CANNOT_START: "EtherDOG cannot be started",
+    EtherDogErrorKind.NPCAP_MISSING: NPCAP_REASON,
+    EtherDogErrorKind.MISSING_LIBRARY: "EtherDOG cannot load a required library",
+    EtherDogErrorKind.REPEATED_EXITS: "EtherDOG stopped after exiting repeatedly",
+    EtherDogErrorKind.UNREACHABLE: "EtherDOG is not reachable",
+}
+DEFAULT_PUBLIC_MESSAGE = "The EtherCAT master is unavailable"
+
+
 class EtherDogUnavailable(RuntimeError):
-    """EtherDOG is not installed, not running, or refused the request."""
+    """EtherDOG is not installed, not running, or refused the request.
+
+    The message carries the detail for the server log; ``public_message`` is what a client sees.
+    """
+
+    def __init__(self, detail: str, kind: EtherDogErrorKind | None = None) -> None:
+        super().__init__(detail)
+        self.kind = kind
+
+    @property
+    def public_message(self) -> str:
+        return (
+            PUBLIC_MESSAGES.get(self.kind, DEFAULT_PUBLIC_MESSAGE)
+            if self.kind
+            else DEFAULT_PUBLIC_MESSAGE
+        )
 
 
 @dataclass
@@ -106,7 +144,11 @@ class EtherDogManager:
         self._running = False
         self._exit_times: list[float] = []
         self._disabled_reason: str | None = None
+        self._disabled_kind: EtherDogErrorKind | None = None
         self._monitor: threading.Thread | None = None
+        # Serialises start, spawn and stop; separate from _lock, which apply_busconfig holds.
+        self._lifecycle = threading.Lock()
+        self._stopping = threading.Event()
 
     # --- process lifecycle -------------------------------------------------------------
 
@@ -121,19 +163,35 @@ class EtherDogManager:
 
     def start(self) -> None:
         """Start EtherDOG (if installed) and keep it running. Never raises: without EtherDOG
-        the runtime still runs, only EtherCAT is unavailable."""
-        if not self.installed:
-            self._disable(f"EtherDOG is not installed at {self.paths.binary}")
-            return
-        self._disabled_reason = None
-        self._exit_times.clear()
-        self._running = True
-        self._monitor = threading.Thread(target=self._supervise, daemon=True)
-        self._monitor.start()
+        the runtime still runs, only EtherCAT is unavailable. A no-op while already supervised."""
+        with self._lifecycle:
+            monitor = self._monitor
+            if monitor is not None and monitor.is_alive():
+                if self._running:
+                    return
+                # A supervisor that just disabled EtherDOG or was stopped is returning
+                monitor.join(timeout=LEFTOVER_KILL_TIMEOUT_S)
+                if monitor.is_alive():
+                    return
+            if not self.installed:
+                self._disable(
+                    f"EtherDOG is not installed at {self.paths.binary}",
+                    EtherDogErrorKind.NOT_INSTALLED,
+                )
+                return
+            self._disabled_reason = None
+            self._disabled_kind = None
+            self._exit_times.clear()
+            self._stopping.clear()
+            self._running = True
+            self._monitor = threading.Thread(target=self._supervise, daemon=True)
+            self._monitor.start()
 
     def stop(self) -> None:
+        self._stopping.set()
         self._running = False
-        proc = self._process
+        with self._lifecycle:
+            proc = self._process
         if proc is not None and proc.poll() is None:
             try:
                 self.command({"command": "shutdown"}, timeout=5.0)
@@ -147,10 +205,14 @@ class EtherDogManager:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     logger.error("EtherDOG (pid %d) did not exit after SIGKILL", proc.pid)
+        monitor = self._monitor
+        if monitor is not None and monitor is not threading.current_thread():
+            monitor.join(timeout=LEFTOVER_KILL_TIMEOUT_S + READY_TIMEOUT_S)
 
-    def _disable(self, reason: str) -> None:
+    def _disable(self, reason: str, kind: EtherDogErrorKind | None = None) -> None:
         self._running = False
         self._disabled_reason = reason
+        self._disabled_kind = kind
         logger.warning("%s. EtherCAT is disabled; the runtime continues without it.", reason)
         try:
             _write_private(self.paths.session_file, json.dumps({"disabled": reason}) + "\n")
@@ -187,19 +249,23 @@ class EtherDogManager:
         ]
         self._output.clear()
         self._ready = False
-        try:
-            self._write_session()
-            self._process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-        except OSError as e:
-            self._process = None
-            self._disable(f"EtherDOG cannot be started: {e}")
-            return False
+        with self._lifecycle:
+            # A stop() during the leftover cleanup or a restart must not leave a new process
+            if self._stopping.is_set():
+                return False
+            try:
+                self._write_session()
+                self._process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+            except OSError as e:
+                self._process = None
+                self._disable(f"EtherDOG cannot be started: {e}", EtherDogErrorKind.CANNOT_START)
+                return False
         self._pump = threading.Thread(target=self._pump_logs, args=(self._process,), daemon=True)
         self._pump.start()
         if self._wait_ready(timeout=READY_TIMEOUT_S):
@@ -242,7 +308,7 @@ class EtherDogManager:
 
     def _supervise(self) -> None:
         self._kill_leftovers()
-        if not self._spawn():
+        if self._stopping.is_set() or not self._spawn():
             return
         while self._running:
             proc = self._process
@@ -263,12 +329,13 @@ class EtherDogManager:
             if reason is not None:
                 for line in output[-5:]:
                     logger.error("[ETHERDOG] %s", line)
-                self._disable(reason)
+                self._disable(reason, _fatal_exit_kind(reason))
                 return
             if self._record_exit():
                 self._disable(
                     f"EtherDOG exited {MAX_RAPID_EXITS} times within {RAPID_EXIT_WINDOW_S:.0f} s "
-                    f"(last exit code {code})"
+                    f"(last exit code {code})",
+                    EtherDogErrorKind.REPEATED_EXITS,
                 )
                 return
             logger.warning("EtherDOG exited (code %s); restarting", code)
@@ -280,9 +347,9 @@ class EtherDogManager:
     def command(self, request: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:
         """Send one command and return EtherDOG's JSON reply."""
         if self._disabled_reason is not None:
-            raise EtherDogUnavailable(self._disabled_reason)
+            raise EtherDogUnavailable(self._disabled_reason, self._disabled_kind)
         if not self.installed:
-            raise EtherDogUnavailable("EtherDOG is not installed")
+            raise EtherDogUnavailable("EtherDOG is not installed", EtherDogErrorKind.NOT_INSTALLED)
         try:
             with _connect(self.paths.control, timeout) as sock:
                 sock.settimeout(timeout)
@@ -295,7 +362,9 @@ class EtherDogManager:
                 sock.sendall(json.dumps(request).encode() + b"\n")
                 line = reader.readline()
         except (OSError, ValueError) as e:
-            raise EtherDogUnavailable(f"EtherDOG unreachable: {e}") from e
+            raise EtherDogUnavailable(
+                f"EtherDOG unreachable: {e}", EtherDogErrorKind.UNREACHABLE
+            ) from e
         if not line:
             raise EtherDogUnavailable("EtherDOG closed the connection")
         try:
@@ -305,11 +374,15 @@ class EtherDogManager:
         return result if isinstance(result, dict) else {"error": "invalid reply from EtherDOG"}
 
     def plugin_style_command(self, request: dict[str, Any], timeout: float) -> dict[str, Any]:
-        """Same contract as RuntimeManager.send_plugin_command: errors come back as {"error"}."""
+        """Same contract as RuntimeManager.send_plugin_command: errors come back as {"error"}.
+
+        The error is a fixed message per failure kind; the detail (paths, OS errors) is logged.
+        """
         try:
             return self.command(request, timeout=timeout)
         except EtherDogUnavailable as e:
-            return {"error": str(e)}
+            logger.warning("EtherDOG command %s failed: %s", request.get("command"), e)
+            return {"error": e.public_message}
 
     # --- bus configuration -----------------------------------------------------------------
 
@@ -338,6 +411,14 @@ class EtherDogManager:
         if not self._running and self.installed:
             logger.info("Retrying EtherDOG for the new program")
             self.start()
+
+
+def _fatal_exit_kind(reason: str) -> EtherDogErrorKind | None:
+    if reason == NPCAP_REASON:
+        return EtherDogErrorKind.NPCAP_MISSING
+    if "required library" in reason:
+        return EtherDogErrorKind.MISSING_LIBRARY
+    return None
 
 
 def _fatal_exit_reason(code: int, output: list[str]) -> str | None:

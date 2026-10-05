@@ -7,6 +7,7 @@
  */
 
 #include "ethercat_iomap.h"
+#include "etherdog_link.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -138,6 +139,45 @@ static int parse_hex16(const cJSON *item, uint16_t *out)
     return 0;
 }
 
+static bool same_location(const iec_location_t *a, const iec_location_t *b)
+{
+    return a->direction == b->direction && a->size == b->size && a->byte_index == b->byte_index &&
+           a->bit_index == b->bit_index;
+}
+
+/* An entry may not repeat a key of its master, nor a location used anywhere in the mapping. */
+static int check_duplicates(const ecat_iomap_t *map, const ecat_iomap_master_t *mm,
+                            const ecat_iomap_entry_t *me, const char *path, char *err,
+                            size_t err_size)
+{
+    for (int k = 0; k < mm->entry_count; k++) {
+        const ecat_iomap_entry_t *o = &mm->entries[k];
+        if (o->slave == me->slave && o->index == me->index && o->subindex == me->subindex) {
+            snprintf(err, err_size,
+                     "%s: master '%s': process data entry (slave %d, 0x%04X:%u) is mapped twice: "
+                     "%s and %s",
+                     path, mm->name, me->slave, me->index, me->subindex, o->iec_location,
+                     me->iec_location);
+            return -1;
+        }
+    }
+    for (int mi = 0; mi < map->master_count; mi++) {
+        const ecat_iomap_master_t *om = &map->masters[mi];
+        for (int k = 0; k < om->entry_count; k++) {
+            const ecat_iomap_entry_t *o = &om->entries[k];
+            if (same_location(&o->loc, &me->loc)) {
+                snprintf(err, err_size,
+                         "%s: %s is mapped twice: master '%s' slave %d 0x%04X:%u and master '%s' "
+                         "slave %d 0x%04X:%u",
+                         path, me->iec_location, om->name, o->slave, o->index, o->subindex,
+                         mm->name, me->slave, me->index, me->subindex);
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
 int ecat_iomap_load(const char *path, ecat_iomap_t *map, char *err, size_t err_size)
 {
     memset(map, 0, sizeof(*map));
@@ -215,6 +255,8 @@ int ecat_iomap_load(const char *path, ecat_iomap_t *map, char *err, size_t err_s
                          path, me->iec_location, me->slave, me->index, me->subindex);
                 goto done;
             }
+            if (check_duplicates(map, mm, me, path, err, err_size) != 0)
+                goto done;
             mm->entry_count++;
         }
     }
@@ -265,10 +307,13 @@ static const cJSON *find_layout_master(const cJSON *layout, const char *name)
     return NULL;
 }
 
-static const cJSON *find_layout_entry(const cJSON *lm, const ecat_iomap_entry_t *me)
+/* The layout entry for @p me; *matches counts every entry with its key. */
+static const cJSON *find_layout_entry(const cJSON *lm, const ecat_iomap_entry_t *me, int *matches)
 {
     const cJSON *entries = cJSON_GetObjectItemCaseSensitive(lm, "entries");
+    const cJSON *found = NULL;
     const cJSON *e;
+    *matches = 0;
     cJSON_ArrayForEach(e, entries)
     {
         const cJSON *slave = cJSON_GetObjectItemCaseSensitive(e, "slave");
@@ -276,10 +321,23 @@ static const cJSON *find_layout_entry(const cJSON *lm, const ecat_iomap_entry_t 
         const cJSON *sub = cJSON_GetObjectItemCaseSensitive(e, "subindex");
         uint16_t idx = 0;
         if (cJSON_IsNumber(slave) && slave->valueint == me->slave && parse_hex16(index, &idx) == 0 &&
-            idx == me->index && cJSON_IsNumber(sub) && sub->valueint == me->subindex)
-            return e;
+            idx == me->index && cJSON_IsNumber(sub) && sub->valueint == me->subindex) {
+            if (found == NULL)
+                found = e;
+            (*matches)++;
+        }
     }
-    return NULL;
+    return found;
+}
+
+/* A process image size from the layout: a number from 0 to what one data frame carries. */
+static int read_image_bytes(const cJSON *lm, const char *field, uint32_t *out)
+{
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(lm, field);
+    if (!cJSON_IsNumber(v) || v->valuedouble < 0 || v->valuedouble > EDL_MAX_PAYLOAD)
+        return -1;
+    *out = (uint32_t)v->valuedouble;
+    return 0;
 }
 
 int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime_args_t *args,
@@ -298,7 +356,7 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
         const cJSON *ready = cJSON_GetObjectItemCaseSensitive(lm, "ready");
         if (!cJSON_IsNumber(idx) || idx->valueint < 0 || idx->valueint >= ECAT_IOMAP_MAX_MASTERS) {
             snprintf(err, err_size, "master '%s': invalid index in layout", mm->name);
-            return -1;
+            return ECAT_IOMAP_CONFIG_ERROR;
         }
         if (!cJSON_IsTrue(ready)) {
             snprintf(out->not_ready[out->not_ready_count++], ECAT_IOMAP_NAME_LEN, "%s", mm->name);
@@ -309,22 +367,34 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
         if (bm->active) {
             snprintf(err, err_size, "master '%s': layout index %d is bound twice", mm->name,
                      idx->valueint);
-            return -1;
+            return ECAT_IOMAP_CONFIG_ERROR;
         }
         bm->active = true;
-        bm->output_bytes =
-            (uint32_t)cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(lm, "output_bytes"));
-        bm->input_bytes =
-            (uint32_t)cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(lm, "input_bytes"));
+        if (read_image_bytes(lm, "output_bytes", &bm->output_bytes) != 0 ||
+            read_image_bytes(lm, "input_bytes", &bm->input_bytes) != 0) {
+            snprintf(err, err_size,
+                     "master '%s': the layout's process image size is missing or larger than the "
+                     "%d bytes a data frame carries",
+                     mm->name, EDL_MAX_PAYLOAD);
+            return ECAT_IOMAP_CONFIG_ERROR;
+        }
 
         for (int ei = 0; ei < mm->entry_count; ei++) {
             const ecat_iomap_entry_t *me = &mm->entries[ei];
-            const cJSON *le = find_layout_entry(lm, me);
+            int matches = 0;
+            const cJSON *le = find_layout_entry(lm, me, &matches);
             if (le == NULL) {
                 snprintf(err, err_size,
                          "%s (master '%s', slave %d, 0x%04X:%u) has no matching process data entry",
                          me->iec_location, mm->name, me->slave, me->index, me->subindex);
-                return -1;
+                return ECAT_IOMAP_CONFIG_ERROR;
+            }
+            if (matches > 1) {
+                snprintf(err, err_size,
+                         "%s (master '%s'): the layout lists slave %d, 0x%04X:%u in %d PDOs, so the "
+                         "mapping cannot tell which one",
+                         me->iec_location, mm->name, me->slave, me->index, me->subindex, matches);
+                return ECAT_IOMAP_CONFIG_ERROR;
             }
             const cJSON *dir = cJSON_GetObjectItemCaseSensitive(le, "direction");
             int bit_offset = (int)cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(le, "bit_offset"));
@@ -334,23 +404,23 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
                 snprintf(err, err_size, "%s (slave %d, 0x%04X:%u) is %s data but mapped to %s",
                          me->iec_location, me->slave, me->index, me->subindex,
                          is_output ? "output" : "input", me->loc.direction == IEC_DIR_OUTPUT ? "%Q" : "%I");
-                return -1;
+                return ECAT_IOMAP_CONFIG_ERROR;
             }
             if (bit_length != iec_size_bits(me->loc.size)) {
                 snprintf(err, err_size, "%s (slave %d, 0x%04X:%u) is %d bits wide but the location holds %d",
                          me->iec_location, me->slave, me->index, me->subindex, bit_length,
                          iec_size_bits(me->loc.size));
-                return -1;
+                return ECAT_IOMAP_CONFIG_ERROR;
             }
             uint32_t region_bits = 8u * (is_output ? bm->output_bytes : bm->input_bytes);
             if (bit_offset < 0 || (uint32_t)(bit_offset + bit_length) > region_bits) {
                 snprintf(err, err_size, "%s: layout offset out of range", me->iec_location);
-                return -1;
+                return ECAT_IOMAP_CONFIG_ERROR;
             }
             if (me->loc.byte_index < 0 || me->loc.byte_index >= args->buffer_size) {
                 snprintf(err, err_size, "%s exceeds the image table size (%d)", me->iec_location,
                          args->buffer_size);
-                return -1;
+                return ECAT_IOMAP_CONFIG_ERROR;
             }
 
             ecat_xfer_t x = {
@@ -365,7 +435,7 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
             if (*count >= ECAT_IOMAP_MAX_ENTRIES) {
                 snprintf(err, err_size, "master '%s' has more than %d %s entries", mm->name,
                          ECAT_IOMAP_MAX_ENTRIES, is_output ? "output" : "input");
-                return -1;
+                return ECAT_IOMAP_CONFIG_ERROR;
             }
             if (is_output) {
                 if (x.plc_ptr == NULL)
@@ -451,6 +521,8 @@ void ecat_iomap_publish_inputs(const ecat_bound_master_t *m, const uint8_t *payl
 
 void ecat_iomap_collect_outputs(const ecat_bound_master_t *m, uint8_t *payload, size_t len)
 {
+    if (len > EDL_MAX_PAYLOAD)
+        return;
     memset(payload, 0, len);
     if (len < m->output_bytes)
         return;

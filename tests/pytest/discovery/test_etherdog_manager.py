@@ -311,3 +311,95 @@ def test_interface_names_accept_linux_and_npcap_devices() -> None:
     assert not _validate_interface_name(r"\Device\NPF_{x}; rm -rf /")[0]
     assert not _validate_interface_name("a" * 16)[0]
     assert not _validate_interface_name("eth0;reboot")[0]
+
+
+# --- errors returned to API clients carry no internal detail -------------------------------
+
+
+def test_missing_binary_error_hides_the_path(run_dir: Path) -> None:
+    manager = EtherDogManager(binary=str(run_dir / "secret" / "etherdog"), run_dir=run_dir)
+    manager.start()
+    error = manager.plugin_style_command({"command": "status"}, 1.0)["error"]
+    assert (
+        error == etherdog_manager.PUBLIC_MESSAGES[etherdog_manager.EtherDogErrorKind.NOT_INSTALLED]
+    )
+    assert "secret" not in error
+    assert "secret" in manager.disabled_reason  # the detail stays for the log
+
+
+def test_unstartable_binary_error_hides_the_os_error(run_dir: Path) -> None:
+    binary = run_dir / "etherdog-bin"
+    binary.write_text("")  # present but not executable
+    manager = EtherDogManager(binary=str(binary), run_dir=run_dir)
+    manager.start()
+    assert _wait_for(lambda: manager.disabled_reason is not None)
+    error = manager.plugin_style_command({"command": "status"}, 1.0)["error"]
+    assert error == "EtherDOG cannot be started"
+    assert "Errno" not in error and str(run_dir) not in error
+
+
+def test_unreachable_error_hides_the_socket_error(run_dir: Path) -> None:
+    manager = _manager(run_dir)  # installed, nothing listening
+    error = manager.plugin_style_command({"command": "status"}, 1.0)["error"]
+    assert error == "EtherDOG is not reachable"
+
+
+def test_unknown_failure_gets_the_default_message() -> None:
+    assert (
+        EtherDogUnavailable("anything internal").public_message
+        == etherdog_manager.DEFAULT_PUBLIC_MESSAGE
+    )
+
+
+def test_npcap_reason_is_shown_as_is(run_dir: Path, monkeypatch) -> None:
+    monkeypatch.setattr(etherdog_manager, "IS_WINDOWS", True)
+    manager = _fake_binary(
+        run_dir, "echo 'wpcap.dll: cannot open shared object file' >&2; exit 127"
+    )
+    manager.start()
+    assert _wait_for(lambda: manager.disabled_reason is not None)
+    error = manager.plugin_style_command({"command": "status"}, 1.0)["error"]
+    assert error == etherdog_manager.NPCAP_REASON
+
+
+# --- supervisor lifecycle -------------------------------------------------------------------
+
+
+def test_second_start_does_not_start_a_second_supervisor(run_dir: Path, monkeypatch) -> None:
+    monkeypatch.setattr(etherdog_manager, "READY_TIMEOUT_S", 0.2)
+    manager = _fake_binary(run_dir, "exec sleep 30")
+    manager.start()
+    try:
+        assert _wait_for(lambda: _launches(run_dir) == 1)
+        first = manager._monitor
+        manager.start()
+        assert manager._monitor is first
+        time.sleep(0.5)
+        assert _launches(run_dir) == 1
+    finally:
+        manager._running = False
+        if manager._process is not None:
+            manager._process.kill()
+
+
+def test_stop_during_leftover_cleanup_spawns_nothing(run_dir: Path, monkeypatch) -> None:
+    cleanup_started = threading.Event()
+    release_cleanup = threading.Event()
+
+    def slow_cleanup(self: EtherDogManager) -> None:
+        cleanup_started.set()
+        release_cleanup.wait(5)
+
+    monkeypatch.setattr(EtherDogManager, "_kill_leftovers", slow_cleanup)
+    manager = _fake_binary(run_dir, "exec sleep 30")
+    manager.start()
+    assert cleanup_started.wait(5)
+    stopper = threading.Thread(target=manager.stop)
+    stopper.start()
+    time.sleep(0.2)
+    release_cleanup.set()
+    stopper.join(10)
+    assert not stopper.is_alive()
+    time.sleep(0.5)
+    assert _launches(run_dir) == 0
+    assert manager._process is None

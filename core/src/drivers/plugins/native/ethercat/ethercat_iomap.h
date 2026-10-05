@@ -27,6 +27,9 @@
 /** Highest byte index a location may use; the runtime's journal indexes are 16-bit. */
 #define ECAT_IOMAP_MAX_BYTE_INDEX 65535
 
+/* ecat_iomap_bind result: the mapping cannot bind to this layout, so retrying cannot help. */
+#define ECAT_IOMAP_CONFIG_ERROR (-2)
+
 typedef enum { IEC_SIZE_BIT, IEC_SIZE_BYTE, IEC_SIZE_WORD, IEC_SIZE_DWORD, IEC_SIZE_LWORD } iec_size_t;
 typedef enum { IEC_DIR_INPUT, IEC_DIR_OUTPUT } iec_dir_t;
 
@@ -104,6 +107,10 @@ int ecat_iomap_load(const char *path, ecat_iomap_t *map, char *err, size_t err_s
  * others are bound.
  *
  * @return 0 on success, -1 on failure (including when no mapped master is operational).
+ */
+/**
+ * Join the mapping with EtherDOG's layout. Returns 0, -1 when a mapped master is missing or not
+ * operational yet, or ECAT_IOMAP_CONFIG_ERROR when the mapping cannot bind to this layout.
  */
 int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime_args_t *args,
                     ecat_bound_map_t *out, char *err, size_t err_size);

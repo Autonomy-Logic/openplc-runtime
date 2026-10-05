@@ -164,7 +164,7 @@ void test_bind_fails_on_missing_entry(void)
     char err[256] = "";
     int rc = bind_mapping("{\"slave\":2,\"index\":\"0x6000\",\"subindex\":1,\"iec_location\":\"%IX0.0\"}",
                           err, sizeof(err));
-    TEST_ASSERT_EQUAL_INT(-1, rc);
+    TEST_ASSERT_EQUAL_INT(ECAT_IOMAP_CONFIG_ERROR, rc);
     TEST_ASSERT_NOT_NULL(strstr(err, "no matching process data entry"));
 }
 
@@ -173,7 +173,7 @@ void test_bind_fails_on_direction_mismatch(void)
     char err[256] = "";
     int rc = bind_mapping("{\"slave\":1,\"index\":\"0x6000\",\"subindex\":1,\"iec_location\":\"%QX0.0\"}",
                           err, sizeof(err));
-    TEST_ASSERT_EQUAL_INT(-1, rc);
+    TEST_ASSERT_EQUAL_INT(ECAT_IOMAP_CONFIG_ERROR, rc);
     TEST_ASSERT_NOT_NULL(strstr(err, "input data"));
 }
 
@@ -182,7 +182,7 @@ void test_bind_fails_on_width_mismatch(void)
     char err[256] = "";
     int rc = bind_mapping("{\"slave\":1,\"index\":\"0x6010\",\"subindex\":1,\"iec_location\":\"%IB0\"}",
                           err, sizeof(err));
-    TEST_ASSERT_EQUAL_INT(-1, rc);
+    TEST_ASSERT_EQUAL_INT(ECAT_IOMAP_CONFIG_ERROR, rc);
     TEST_ASSERT_NOT_NULL(strstr(err, "16 bits"));
 }
 
@@ -309,8 +309,8 @@ static void write_mapping_with(int count)
     TEST_ASSERT_NOT_NULL(fp);
     fprintf(fp, "{\"version\":1,\"masters\":[{\"name\":\"m0\",\"entries\":[");
     for (int i = 0; i < count; i++)
-        fprintf(fp, "%s{\"slave\":1,\"index\":\"0x6000\",\"subindex\":%d,\"iec_location\":\"%%IW%d\"}",
-                i ? "," : "", i % 256, i);
+        fprintf(fp, "%s{\"slave\":%d,\"index\":\"0x6000\",\"subindex\":%d,\"iec_location\":\"%%IW%d\"}",
+                i ? "," : "", 1 + i / 256, i % 256, i);
     fprintf(fp, "]}]}");
     fclose(fp);
 }
@@ -325,4 +325,108 @@ void test_load_accepts_the_entry_limit_and_rejects_one_more(void)
     write_mapping_with(ECAT_IOMAP_MAX_ENTRIES + 1);
     TEST_ASSERT_EQUAL_INT(-1, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)));
     TEST_ASSERT_NOT_NULL(strstr(err, "more than 2048 entries"));
+}
+
+/* --- review: image sizes and duplicates ----------------------------------------------------- */
+
+static int bind_layout(const char *layout_text, const char *entries, char *err, size_t err_size)
+{
+    write_mapping(entries);
+    TEST_ASSERT_EQUAL_INT(0, ecat_iomap_load(TMPFILE, &map, err, err_size));
+    cJSON *layout = cJSON_Parse(layout_text);
+    TEST_ASSERT_NOT_NULL(layout);
+    int rc = ecat_iomap_bind(&map, layout, &args, &bound, err, err_size);
+    cJSON_Delete(layout);
+    return rc;
+}
+
+#define ONE_INPUT "{\"slave\":1,\"index\":\"0x6000\",\"subindex\":1,\"iec_location\":\"%IX0.0\"}"
+#define LAYOUT_SIZES(out, in)                                                                   \
+    "{\"masters\":[{\"index\":0,\"name\":\"m0\",\"ready\":true," out in "\"entries\":["          \
+    "{\"slave\":1,\"pdo\":\"0x1a00\",\"index\":\"0x6000\",\"subindex\":1,\"direction\":\"input\","  \
+    "\"bit_offset\":0,\"bit_length\":1}]}]}"
+
+void test_bind_rejects_an_image_larger_than_a_data_frame(void)
+{
+    char err[256] = "";
+    int rc = bind_layout(LAYOUT_SIZES("\"output_bytes\":4097,", "\"input_bytes\":1,"), ONE_INPUT, err,
+                         sizeof(err));
+    TEST_ASSERT_EQUAL_INT(ECAT_IOMAP_CONFIG_ERROR, rc);
+    TEST_ASSERT_NOT_NULL(strstr(err, "4096 bytes"));
+    rc = bind_layout(LAYOUT_SIZES("\"output_bytes\":0,", "\"input_bytes\":8192,"), ONE_INPUT, err,
+                     sizeof(err));
+    TEST_ASSERT_EQUAL_INT(ECAT_IOMAP_CONFIG_ERROR, rc);
+}
+
+void test_bind_rejects_a_missing_image_size(void)
+{
+    char err[256] = "";
+    int rc = bind_layout(LAYOUT_SIZES("", "\"input_bytes\":1,"), ONE_INPUT, err, sizeof(err));
+    TEST_ASSERT_EQUAL_INT(ECAT_IOMAP_CONFIG_ERROR, rc);
+}
+
+void test_bind_accepts_an_image_of_exactly_one_data_frame(void)
+{
+    char err[256] = "";
+    int rc = bind_layout(LAYOUT_SIZES("\"output_bytes\":4096,", "\"input_bytes\":4096,"), ONE_INPUT,
+                         err, sizeof(err));
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, rc, err);
+}
+
+void test_collect_outputs_refuses_a_length_beyond_a_data_frame(void)
+{
+    uint8_t payload[8] = { 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA };
+    ecat_bound_master_t m;
+    memset(&m, 0, sizeof(m));
+    ecat_iomap_collect_outputs(&m, payload, 8192);
+    TEST_ASSERT_EQUAL_HEX8(0xAA, payload[0]);
+}
+
+void test_load_rejects_a_process_data_entry_mapped_twice(void)
+{
+    char err[256] = "";
+    write_mapping("{\"slave\":1,\"index\":\"0x7000\",\"subindex\":1,\"iec_location\":\"%QX0.0\"},"
+                  "{\"slave\":1,\"index\":\"0x7000\",\"subindex\":1,\"iec_location\":\"%QX1.0\"}");
+    TEST_ASSERT_EQUAL_INT(-1, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)));
+    TEST_ASSERT_NOT_NULL(strstr(err, "mapped twice: %QX0.0 and %QX1.0"));
+}
+
+void test_load_rejects_a_location_mapped_twice(void)
+{
+    char err[256] = "";
+    write_mapping("{\"slave\":1,\"index\":\"0x7000\",\"subindex\":1,\"iec_location\":\"%QX0.0\"},"
+                  "{\"slave\":1,\"index\":\"0x7010\",\"subindex\":1,\"iec_location\":\"%qx0.0\"}");
+    TEST_ASSERT_EQUAL_INT(-1, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)));
+    TEST_ASSERT_NOT_NULL(strstr(err, "is mapped twice"));
+}
+
+void test_load_rejects_a_location_mapped_twice_across_masters(void)
+{
+    char err[256] = "";
+    FILE *fp = fopen(TMPFILE, "w");
+    fputs("{\"version\":1,\"masters\":["
+          "{\"name\":\"m0\",\"entries\":[{\"slave\":1,\"index\":\"0x6000\",\"subindex\":1,"
+          "\"iec_location\":\"%IW2\"}]},"
+          "{\"name\":\"m1\",\"entries\":[{\"slave\":1,\"index\":\"0x6000\",\"subindex\":1,"
+          "\"iec_location\":\"%IW2\"}]}]}",
+          fp);
+    fclose(fp);
+    TEST_ASSERT_EQUAL_INT(-1, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)));
+    TEST_ASSERT_NOT_NULL(strstr(err, "master 'm0'"));
+    TEST_ASSERT_NOT_NULL(strstr(err, "master 'm1'"));
+}
+
+void test_bind_rejects_an_entry_the_layout_lists_in_two_pdos(void)
+{
+    char err[256] = "";
+    int rc = bind_layout(
+        "{\"masters\":[{\"index\":0,\"name\":\"m0\",\"ready\":true,\"output_bytes\":0,"
+        "\"input_bytes\":2,\"entries\":["
+        "{\"slave\":1,\"pdo\":\"0x1a00\",\"index\":\"0x6000\",\"subindex\":1,\"direction\":\"input\","
+        "\"bit_offset\":0,\"bit_length\":1},"
+        "{\"slave\":1,\"pdo\":\"0x1a01\",\"index\":\"0x6000\",\"subindex\":1,\"direction\":\"input\","
+        "\"bit_offset\":8,\"bit_length\":1}]}]}",
+        ONE_INPUT, err, sizeof(err));
+    TEST_ASSERT_EQUAL_INT(ECAT_IOMAP_CONFIG_ERROR, rc);
+    TEST_ASSERT_NOT_NULL(strstr(err, "in 2 PDOs"));
 }

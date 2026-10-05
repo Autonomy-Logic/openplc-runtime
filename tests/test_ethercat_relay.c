@@ -40,7 +40,24 @@ static const char *LAYOUT =
     "{\"slave\":1,\"pdo\":\"0x1a00\",\"index\":\"0x6000\",\"subindex\":1,\"direction\":\"input\","
     "\"bit_offset\":0,\"bit_length\":1,\"data_type\":\"BOOL\",\"name\":\"In1\"}]}]}";
 
+/* m0 mapped, m1 running in EtherDOG but absent from the mapping. */
+static const char *LAYOUT_TWO =
+    "{\"status\":\"success\",\"masters\":["
+    "{\"index\":0,\"name\":\"m0\",\"state\":\"OPERATIONAL\",\"ready\":true,\"output_bytes\":1,"
+    "\"input_bytes\":1,\"entries\":[{\"slave\":1,\"pdo\":\"0x1a00\",\"index\":\"0x6000\","
+    "\"subindex\":1,\"direction\":\"input\",\"bit_offset\":0,\"bit_length\":1,\"data_type\":\"BOOL\","
+    "\"name\":\"In1\"}]},"
+    "{\"index\":1,\"name\":\"m1\",\"state\":\"OPERATIONAL\",\"ready\":true,\"output_bytes\":1,"
+    "\"input_bytes\":1,\"entries\":[]}]}";
+
 static char ctl_path[108], data_path[108], session_path[128], mapping_path[128];
+
+/* Fake EtherDOG knobs, reset in setUp. */
+static const char *layout_reply;
+static atomic_int feed_master;        /* master index the input frames carry */
+static atomic_int feed_interval_us;   /* time between valid frames */
+static atomic_int junk_per_frame;     /* malformed datagrams sent after each valid frame */
+static atomic_int configure_priority; /* task_priority in the configure reply */
 
 /* --- fake EtherDOG ----------------------------------------------------------------------- */
 
@@ -63,12 +80,17 @@ static void handle(int fd, const char *line)
         reply(fd, "{\"status\":\"success\",\"name\":\"EtherDOG\"}");
     } else if (strstr(line, "\"configure\"")) {
         atomic_fetch_add(&n_configure, 1);
-        reply(fd, "{\"status\":\"success\",\"masters\":[{\"index\":0,\"name\":\"m0\",\"task_priority\":50}]}");
+        char text[160];
+        snprintf(text, sizeof(text),
+                 "{\"status\":\"success\",\"masters\":[{\"index\":0,\"name\":\"m0\","
+                 "\"task_priority\":%d}]}",
+                 atomic_load(&configure_priority));
+        reply(fd, text);
     } else if (strstr(line, "\"start\"")) {
         atomic_fetch_add(&n_start, 1);
         reply(fd, "{\"status\":\"success\",\"started\":1,\"total\":1}");
     } else if (strstr(line, "\"layout\"")) {
-        reply(fd, LAYOUT);
+        reply(fd, layout_reply);
     } else if (strstr(line, "\"open_data\"")) {
         const char *ep = strstr(line, "unix:");
         memset(&client_addr, 0, sizeof(client_addr));
@@ -81,8 +103,10 @@ static void handle(int fd, const char *line)
         char text[256];
         snprintf(text, sizeof(text),
                  "{\"status\":\"success\",\"masters\":[{\"index\":0,\"endpoint\":\"unix:%s\","
+                 "\"session\":\"%016llx\"},{\"index\":1,\"endpoint\":\"unix:%s\","
                  "\"session\":\"%016llx\"}]}",
-                 data_path, (unsigned long long)SESSION_ID);
+                 data_path, (unsigned long long)SESSION_ID, data_path,
+                 (unsigned long long)SESSION_ID);
         reply(fd, text);
     } else if (strstr(line, "\"close_data\"")) {
         atomic_store(&feeding, false);
@@ -136,7 +160,7 @@ static void put_le(uint8_t *p, uint64_t v, int n)
         p[i] = (uint8_t)(v >> (8 * i));
 }
 
-/* One input frame every 5 ms while feeding: bit 0 set. */
+/* One input frame per feed_interval_us while feeding: bit 0 set. */
 static void *feed_inputs(void *arg)
 {
     (void)arg;
@@ -147,7 +171,7 @@ static void *feed_inputs(void *arg)
             memcpy(f, "EDOG", 4);
             f[4] = 1;
             f[5] = 2;
-            f[6] = 0;
+            f[6] = (uint8_t)atomic_load(&feed_master);
             f[7] = EDL_FLAG_VALID | EDL_FLAG_WKC_OK;
             put_le(f + 8, SESSION_ID, 8);
             put_le(f + 16, ++seq, 4);
@@ -155,8 +179,13 @@ static void *feed_inputs(void *arg)
             put_le(f + 22, 1, 2);
             f[EDL_FRAME_HEADER] = 0x01;
             sendto(data_fd, f, sizeof(f), 0, (struct sockaddr *)&client_addr, sizeof(client_addr));
+            for (int j = atomic_load(&junk_per_frame); j > 0; j--) {
+                const uint8_t junk[4] = { 'J', 'U', 'N', 'K' };
+                sendto(data_fd, junk, sizeof(junk), 0, (struct sockaddr *)&client_addr,
+                       sizeof(client_addr));
+            }
         }
-        usleep(5000);
+        usleep((useconds_t)atomic_load(&feed_interval_us));
     }
     return NULL;
 }
@@ -168,6 +197,14 @@ static IEC_BOOL bool_vals[BUF][8];
 static IEC_BOOL *bool_ptrs[BUF][8];
 static plugin_runtime_args_t args;
 static atomic_int input_bit_writes;
+static atomic_int n_plc_stop;
+static char plc_stop_reason[600];
+
+static void fake_request_plc_stop(const char *reason)
+{
+    snprintf(plc_stop_reason, sizeof(plc_stop_reason), "%s", reason);
+    atomic_fetch_add(&n_plc_stop, 1);
+}
 static char warnings[4096];
 static pthread_mutex_t warn_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -251,6 +288,13 @@ void setUp(void)
     atomic_store(&n_start, 0);
     atomic_store(&n_stop, 0);
     atomic_store(&input_bit_writes, 0);
+    atomic_store(&n_plc_stop, 0);
+    plc_stop_reason[0] = '\0';
+    layout_reply = LAYOUT;
+    atomic_store(&feed_master, 0);
+    atomic_store(&feed_interval_us, 5000);
+    atomic_store(&junk_per_frame, 0);
+    atomic_store(&configure_priority, 50);
     warnings[0] = '\0';
     pthread_create(&ctl_thread, NULL, serve_control, NULL);
     pthread_create(&feed_thread, NULL, feed_inputs, NULL);
@@ -273,6 +317,7 @@ void setUp(void)
     args.log_debug = log_quiet;
     args.log_warn = log_warn;
     args.log_error = log_warn;
+    args.request_plc_stop = fake_request_plc_stop;
     snprintf(args.plugin_specific_config_file_path, sizeof(args.plugin_specific_config_file_path),
              "%s", mapping_path);
 }
@@ -318,7 +363,7 @@ void test_relay_reconnects_and_warns_when_etherdog_goes_quiet(void)
 
     stop_loop();
     pthread_mutex_lock(&warn_lock);
-    TEST_ASSERT_NOT_NULL(strstr(warnings, "link to EtherDOG lost"));
+    TEST_ASSERT_NOT_NULL(strstr(warnings, "master 0 sent no data for 1 s"));
     pthread_mutex_unlock(&warn_lock);
 }
 
@@ -360,4 +405,97 @@ void test_start_before_etherdog_is_ready_retries_until_it_is(void)
     TEST_ASSERT_TRUE(wait_for(&input_bit_writes, 3, 2000));
     stop_loop();
     TEST_ASSERT_EQUAL_INT(1, atomic_load(&n_stop));
+}
+
+static void write_mapping_entry(const char *index)
+{
+    FILE *fp = fopen(mapping_path, "w");
+    fprintf(fp, "{\"version\":1,\"masters\":[{\"name\":\"m0\",\"entries\":[{\"slave\":1,"
+                "\"index\":\"%s\",\"subindex\":1,\"iec_location\":\"%%IX0.0\"}]}]}",
+            index);
+    fclose(fp);
+}
+
+void test_a_mapping_that_cannot_bind_stops_the_bus_and_the_plc_once(void)
+{
+    write_mapping_entry("0x6999"); /* not in the layout */
+    TEST_ASSERT_EQUAL_INT(0, init(&args));
+    TEST_ASSERT_EQUAL_INT(0, start_loop());
+    TEST_ASSERT_TRUE(wait_for(&n_plc_stop, 1, 3000));
+    TEST_ASSERT_NOT_NULL(strstr(plc_stop_reason, "0x6999"));
+    TEST_ASSERT_TRUE(wait_for(&n_stop, 1, 2000));
+
+    usleep(2500 * 1000); /* longer than the reconnect backoff: no retry may follow */
+    TEST_ASSERT_EQUAL_INT(1, atomic_load(&n_start));
+    TEST_ASSERT_EQUAL_INT(1, atomic_load(&n_plc_stop));
+    stop_loop();
+}
+
+void test_malformed_datagrams_do_not_count_as_silence(void)
+{
+    atomic_store(&feed_interval_us, 200 * 1000);
+    atomic_store(&junk_per_frame, 20);
+    TEST_ASSERT_EQUAL_INT(0, init(&args));
+    TEST_ASSERT_EQUAL_INT(0, start_loop());
+    TEST_ASSERT_TRUE(wait_for(&input_bit_writes, 1, 2000));
+
+    usleep(2000 * 1000);
+    TEST_ASSERT_EQUAL_INT(1, atomic_load(&n_start));
+    stop_loop();
+    pthread_mutex_lock(&warn_lock);
+    TEST_ASSERT_NULL(strstr(warnings, "no data for 1 s"));
+    pthread_mutex_unlock(&warn_lock);
+}
+
+void test_an_unmapped_master_does_not_hide_a_silent_mapped_one(void)
+{
+    layout_reply = LAYOUT_TWO;
+    TEST_ASSERT_EQUAL_INT(0, init(&args));
+    TEST_ASSERT_EQUAL_INT(0, start_loop());
+    TEST_ASSERT_TRUE(wait_for(&input_bit_writes, 1, 2000));
+
+    atomic_store(&feed_master, 1); /* only the unmapped master keeps sending */
+    TEST_ASSERT_TRUE(wait_for(&n_start, 2, 4000));
+    stop_loop();
+    pthread_mutex_lock(&warn_lock);
+    TEST_ASSERT_NOT_NULL(strstr(warnings, "master 0 sent no data for 1 s"));
+    pthread_mutex_unlock(&warn_lock);
+}
+
+static atomic_int fifo_attempts;
+static atomic_int fifo_priority_seen;
+
+static void log_watch(const char *fmt, ...)
+{
+    char line[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    const char *p = strstr(line, "SCHED_FIFO(");
+    if (p != NULL) {
+        atomic_fetch_add(&fifo_attempts, 1);
+        atomic_store(&fifo_priority_seen, atoi(p + strlen("SCHED_FIFO(")));
+    }
+    pthread_mutex_lock(&warn_lock);
+    strncat(warnings, line, sizeof(warnings) - strlen(warnings) - 2);
+    strcat(warnings, "\n");
+    pthread_mutex_unlock(&warn_lock);
+}
+
+void test_relay_priority_is_capped_below_the_dispatcher(void)
+{
+    /* Unprivileged, SCHED_FIFO is refused and the warning names the priority it asked for. */
+    atomic_store(&configure_priority, 99);
+    atomic_store(&fifo_attempts, 0);
+    atomic_store(&fifo_priority_seen, 0);
+    args.log_warn = log_watch;
+    TEST_ASSERT_EQUAL_INT(0, init(&args));
+    TEST_ASSERT_EQUAL_INT(0, start_loop());
+    TEST_ASSERT_TRUE(wait_for(&input_bit_writes, 1, 2000));
+    stop_loop();
+    if (atomic_load(&fifo_attempts) == 0)
+        TEST_IGNORE_MESSAGE("SCHED_FIFO was granted; the requested priority is not observable");
+    TEST_ASSERT_EQUAL_INT(98, atomic_load(&fifo_priority_seen));
+    TEST_ASSERT_EQUAL_INT(1, atomic_load(&fifo_attempts)); /* only after the link is up */
 }

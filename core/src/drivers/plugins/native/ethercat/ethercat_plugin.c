@@ -36,8 +36,13 @@
 #include "plugin_logger.h"
 #include "plugin_types.h"
 
+/* link_up result: the program's configuration cannot run on this bus, so retrying cannot help. */
+#define LINK_CONFIG_ERROR (-3)
+
 /* Used when the bus configuration gives no task_priority; EtherDOG's own default is 90. */
 #define DEFAULT_RELAY_PRIORITY 90
+/* plc_state_manager reserves 99 for the dispatcher; workers stay at or below 98. */
+#define MAX_RELAY_PRIORITY 98
 #define RECV_TIMEOUT_MS 100
 #define SILENCE_RECONNECT_MS 1000
 #define RECONNECT_BACKOFF_MS 1000
@@ -102,7 +107,7 @@ static int configure_bus(const edl_session_t *session, char *err, size_t err_siz
         if (strstr(e->valuestring, "running") == NULL) {
             snprintf(err, err_size, "EtherDOG rejected the bus configuration: %.300s",
                      e->valuestring);
-            rc = -1;
+            rc = LINK_CONFIG_ERROR;
         }
     } else if (cJSON_IsArray(masters)) {
         int priority = 0;
@@ -113,7 +118,9 @@ static int configure_bus(const edl_session_t *session, char *err, size_t err_siz
             if (cJSON_IsNumber(p) && p->valueint > priority)
                 priority = p->valueint;
         }
-        g_relay_priority = priority >= 1 && priority <= 99 ? priority : DEFAULT_RELAY_PRIORITY;
+        g_relay_priority = priority < 1                    ? DEFAULT_RELAY_PRIORITY
+                           : priority > MAX_RELAY_PRIORITY ? MAX_RELAY_PRIORITY
+                                                           : priority;
     }
     cJSON_Delete(root);
     free(resp);
@@ -149,8 +156,10 @@ static int link_up(char *err, size_t err_size)
 
     char *resp = NULL;
     cJSON *layout = NULL;
-    if (configure_bus(&session, err, err_size) != 0)
+    int rc = configure_bus(&session, err, err_size);
+    if (rc != 0)
         goto fail;
+    rc = -1;
     if (call_json(&g_link, "start", &resp, START_TIMEOUT_MS) != 0) {
         snprintf(err, err_size, "no reply from EtherDOG to 'start'");
         goto fail;
@@ -171,8 +180,11 @@ static int link_up(char *err, size_t err_size)
         snprintf(err, err_size, "EtherDOG layout reply is not JSON");
         goto fail;
     }
-    if (ecat_iomap_bind(&g_map, layout, &g_args, &g_bound, err, err_size) != 0)
+    int bind_rc = ecat_iomap_bind(&g_map, layout, &g_args, &g_bound, err, err_size);
+    if (bind_rc != 0) {
+        rc = bind_rc == ECAT_IOMAP_CONFIG_ERROR ? LINK_CONFIG_ERROR : -1;
         goto fail;
+    }
     warn_unmapped_masters(layout);
     for (int i = 0; i < g_bound.not_ready_count; i++)
         plugin_logger_warn(&g_logger,
@@ -204,9 +216,15 @@ static int link_up(char *err, size_t err_size)
 fail:
     cJSON_Delete(layout);
     free(resp);
+    resp = NULL;
+    /* The bus was started for a program that cannot use it: stop it before giving up. */
+    if (rc == LINK_CONFIG_ERROR && g_link.ctl_fd >= 0) {
+        call_json(&g_link, "stop", &resp, 10000);
+        free(resp);
+    }
     edl_close(&g_link);
     g_linked = false;
-    return -1;
+    return rc;
 }
 
 static void link_down(bool stop_bus)
@@ -224,12 +242,22 @@ static void link_down(bool stop_bus)
     g_linked = false;
 }
 
+/* Link setup (JSON parsing, allocation, blocking calls) runs at normal scheduling. */
+static void drop_relay_priority(void)
+{
+    struct sched_param sp = { .sched_priority = 0 };
+    int rc = pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
+    if (rc != 0)
+        plugin_logger_warn(&g_logger, "relay: cannot return to SCHED_OTHER: %s", strerror(rc));
+}
+
 static void apply_relay_priority(void)
 {
     struct sched_param sp = { .sched_priority = g_relay_priority };
-    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0)
+    int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+    if (rc != 0)
         plugin_logger_warn(&g_logger, "relay: SCHED_FIFO(%d) unavailable: %s", g_relay_priority,
-                           strerror(errno));
+                           strerror(rc));
 }
 
 /* Logs a master's bus state change; the program keeps running on the last inputs. */
@@ -251,22 +279,57 @@ static void track_bus_state(int master, uint8_t flags)
     }
 }
 
+static uint64_t now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+/* The first bound master that has sent no valid frame for SILENCE_RECONNECT_MS, or -1. */
+static int silent_master(const uint64_t *last_rx, uint64_t now)
+{
+    for (int i = 0; i < ECAT_IOMAP_MAX_MASTERS; i++)
+        if (g_bound.masters[i].active && now - last_rx[i] >= SILENCE_RECONNECT_MS)
+            return i;
+    return -1;
+}
+
+/* A configuration that cannot bind will not bind on retry: stop the PLC with the reason. */
+static void fail_configuration(const char *err)
+{
+    plugin_logger_error(&g_logger, "EtherCAT configuration error: %s", err);
+    if (g_args.request_plc_stop) {
+        char reason[600];
+        snprintf(reason, sizeof(reason), "EtherCAT configuration error: %s", err);
+        g_args.request_plc_stop(reason);
+    }
+}
+
 static void *relay_thread(void *arg)
 {
     (void)arg;
     pthread_setname_np(pthread_self(), "ecat-relay");
-    apply_relay_priority();
+    bool realtime = false;
 
     uint8_t frame[EDL_FRAME_HEADER + EDL_MAX_PAYLOAD];
     uint8_t outputs[EDL_MAX_PAYLOAD];
-    int silent_ms = 0;
+    uint64_t last_rx[ECAT_IOMAP_MAX_MASTERS] = { 0 };
     char err[512];
     char last_err[512] = "";
     bool reported = false;
 
     while (atomic_load(&g_running)) {
         if (!g_linked) {
+            if (realtime) {
+                drop_relay_priority();
+                realtime = false;
+            }
             int rc = link_up(err, sizeof(err));
+            if (rc == LINK_CONFIG_ERROR) {
+                fail_configuration(err);
+                break;
+            }
             if (rc != 0) {
                 /* Each distinct reason once */
                 if (strcmp(err, last_err) != 0) {
@@ -283,8 +346,11 @@ static void *relay_thread(void *arg)
             last_err[0] = '\0';
             plugin_logger_info(&g_logger, "EtherDOG link %s", reported ? "restored" : "up");
             reported = false;
-            silent_ms = 0;
+            uint64_t now = now_ms();
+            for (int i = 0; i < ECAT_IOMAP_MAX_MASTERS; i++)
+                last_rx[i] = now;
             apply_relay_priority();
+            realtime = true;
         }
 
         int master = 0;
@@ -293,23 +359,27 @@ static void *relay_thread(void *arg)
         size_t len = 0;
         int rc = edl_recv_inputs(&g_link, frame, sizeof(frame), RECV_TIMEOUT_MS, &master, &flags,
                                  &payload, &len);
-        if (rc <= 0) {
-            silent_ms += RECV_TIMEOUT_MS;
-            if (rc < 0 || silent_ms >= SILENCE_RECONNECT_MS) {
+        const ecat_bound_master_t *m = rc > 0 ? &g_bound.masters[master] : NULL;
+        if (m != NULL && m->active)
+            last_rx[master] = now_ms();
+
+        int silent = rc < 0 ? -1 : silent_master(last_rx, now_ms());
+        if (rc < 0 || silent >= 0) {
+            if (rc < 0)
                 plugin_logger_warn(&g_logger,
-                                   "EtherCAT link to EtherDOG lost (%s); inputs keep their last "
+                                   "EtherCAT link to EtherDOG lost (socket error); inputs keep "
+                                   "their last values, reconnecting");
+            else
+                plugin_logger_warn(&g_logger,
+                                   "EtherCAT master %d sent no data for 1 s; inputs keep their last "
                                    "values, reconnecting",
-                                   rc < 0 ? "socket error" : "no data for 1 s");
-                link_down(false);
-                reported = true;
-            }
+                                   silent);
+            link_down(false);
+            reported = true;
             continue;
         }
-        silent_ms = 0;
-
-        const ecat_bound_master_t *m = &g_bound.masters[master];
-        if (!m->active)
-            continue; /* unmapped (warned at link up); EtherDOG holds its outputs at zero */
+        if (m == NULL || !m->active)
+            continue; /* no frame, or unmapped (warned at link up); EtherDOG holds its outputs at zero */
         track_bus_state(master, flags);
 
         if (flags & EDL_FLAG_VALID)
@@ -378,8 +448,9 @@ int start_loop(void)
 
     /* The relay brings the link up and retries until EtherDOG is ready */
     atomic_store(&g_running, true);
-    if (pthread_create(&g_relay, NULL, relay_thread, NULL) != 0) {
-        plugin_logger_error(&g_logger, "cannot create relay thread: %s", strerror(errno));
+    int rc = pthread_create(&g_relay, NULL, relay_thread, NULL);
+    if (rc != 0) {
+        plugin_logger_error(&g_logger, "cannot create relay thread: %s", strerror(rc));
         atomic_store(&g_running, false);
         return -1;
     }

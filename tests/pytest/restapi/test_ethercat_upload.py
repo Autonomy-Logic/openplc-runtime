@@ -144,3 +144,15 @@ def test_upload_with_the_plc_stopped_sends_no_stop(
 
     assert result["UploadFileFail"] == ""
     assert runtime.calls == []
+
+
+def test_a_second_upload_is_refused_while_one_is_in_progress(busconfig_calls) -> None:
+    from webserver import app as app_module
+
+    assert app_module._upload_lock.acquire(blocking=False)
+    try:
+        result = _upload(_program_zip({"program.st": "PROGRAM p END_PROGRAM"}))
+    finally:
+        app_module._upload_lock.release()
+    assert result["UploadFileFail"] == "Another upload is in progress, please wait"
+    assert busconfig_calls == []

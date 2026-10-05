@@ -369,7 +369,24 @@ def _upload_has_legacy_ethercat(zip_file, valid_files) -> bool:
         return legacy_ethercat_config_in_use(conf)
 
 
+# One upload at a time: from the busy check until the compile thread starts, an upload replaces
+# core/generated and the EtherCAT bus configuration.
+_upload_lock = threading.Lock()
+
+
 def handle_upload_file(data: dict) -> dict:
+    if not _upload_lock.acquire(blocking=False):
+        return {
+            "UploadFileFail": "Another upload is in progress, please wait",
+            "CompilationStatus": build_state.status.name,
+        }
+    try:
+        return _handle_upload_file(data)
+    finally:
+        _upload_lock.release()
+
+
+def _handle_upload_file(data: dict) -> dict:
     if build_state.status == BuildStatus.COMPILING:
         return {
             "UploadFileFail": "Runtime is compiling another program, please wait",

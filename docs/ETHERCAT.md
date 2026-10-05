@@ -57,9 +57,14 @@ So the runtime exchanges data with EtherDOG once per bus cycle. On an SLM-RP4 wi
 
 ## Failure behaviour
 
-- **EtherDOG exits:** the webserver restarts it with backoff and loads the busconfig again. The plugin notices the silence within 1 s and reconnects without restarting `plc_main`. Meanwhile inputs keep their last values.
+- **EtherDOG exits:** the webserver restarts it with backoff and loads the busconfig again. The plugin notices within 1 s that a mapped master has sent no data, and reconnects without restarting `plc_main`. Meanwhile inputs keep their last values.
 - **The client goes quiet for 100 ms:** EtherDOG drives the outputs to zero.
-- **A mapping entry has no matching PDO entry, or the direction or width differs:** the plugin fails to start and names the entry.
+- **The mapping cannot bind to the bus:** the plugin stops the bus and the PLC, and the error names the entry. Causes:
+  - an entry has no matching PDO entry, or its direction or width differs;
+  - one process data entry, or one IEC location, is mapped twice;
+  - the layout lists the same entry in more than one PDO;
+  - a process image is larger than the 4096 bytes a data frame carries;
+  - EtherDOG rejects the bus configuration.
 
 ## Building EtherDOG
 
