@@ -694,6 +694,21 @@ void image_tables_fill_null_pointers(void)
     log_info("[image_tables] filled %d NULL slots with backing buffers", filled);
 }
 
+void image_tables_zero_outputs(void)
+{
+    for (int i = 0; i < BUFFER_SIZE; ++i)
+    {
+        for (int b = 0; b < 8; ++b)
+        {
+            if (bool_output[i][b]) *bool_output[i][b] = 0;
+        }
+        if (byte_output[i]) *byte_output[i] = 0;
+        if (int_output[i])  *int_output[i]  = 0;
+        if (dint_output[i]) *dint_output[i] = 0;
+        if (lint_output[i]) *lint_output[i] = 0;
+    }
+}
+
 void image_tables_clear_null_pointers(void)
 {
     // Threaded process-image state: free the dirty-diff snapshot. (The mutexes

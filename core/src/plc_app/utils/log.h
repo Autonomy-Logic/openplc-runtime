@@ -65,6 +65,17 @@ void log_warn(const char *fmt, ...);
  */
 void log_error(const char *fmt, ...);
 
+/**
+ * @brief Log an error without ever blocking on a lock.
+ *
+ * For fatal paths where the thread holding the log mutex may be dead. Always
+ * written to stderr; sent to the log socket only if the mutex is free and the
+ * socket accepts it without blocking.
+ *
+ * @param[in]  msg  The message, no format expansion
+ */
+void log_emergency(const char *msg);
+
 #ifdef __cplusplus
 }
 #endif

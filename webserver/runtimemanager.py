@@ -31,6 +31,10 @@ if not HAS_PSUTIL:
 MAX_RAPID_CRASHES = 3
 RAPID_CRASH_WINDOW = 30  # seconds
 
+# plc_main exit code for an unrecoverable watchdog fault (PLC_EXIT_WATCHDOG_FAULT in
+# core/src/plc_app/task_policy.h). Restart straight into safe mode, reporting ERROR.
+RUNTIME_EXIT_WATCHDOG_FAULT = 42
+
 # How long to let the runtime shut down gracefully after SIGTERM before killing
 # it. Has to exceed the worst-case graceful stop: the runtime waits for a state
 # change already in flight to land (a boot start with plugin bring-up is ~4 s on
@@ -178,8 +182,8 @@ class RuntimeManager:
                 return True
         return False
 
-    def _start_runtime_process(self, safe_mode=False):
-        """Start the runtime process, optionally in safe mode."""
+    def _start_runtime_process(self, safe_mode: bool = False, after_fault: bool = False) -> None:
+        """Start the runtime process, optionally in safe mode after a watchdog fault."""
         self._safe_start_log_server()
         try:
             cmd = [self.runtime_path]
@@ -187,6 +191,8 @@ class RuntimeManager:
                 cmd.append("--print-debug")
             if safe_mode:
                 cmd.append("--safe-mode")
+                if after_fault:
+                    cmd.append("--fault")
             self.process = subprocess.Popen(cmd)
         except (OSError, subprocess.SubprocessError) as e:
             logger.error("Failed to start PLC runtime process: %s", e)
@@ -203,6 +209,50 @@ class RuntimeManager:
             self._crash_times.append(now)
             return len(self._crash_times) >= MAX_RAPID_CRASHES
 
+    def _runtime_exit_code(self) -> int | None:
+        """Exit code of the runtime process, when it was started by us and has exited."""
+        if isinstance(self.process, subprocess.Popen):
+            return self.process.poll()
+        return None
+
+    def _handle_runtime_exit(self) -> None:
+        """Restart a runtime that exited: safe mode on a watchdog fault or repeated crashes."""
+        exit_code = self._runtime_exit_code()
+        self._safe_stop_log_server()
+        self._safe_close_runtime_socket()
+
+        if exit_code == RUNTIME_EXIT_WATCHDOG_FAULT:
+            logger.error(
+                "PLC runtime exited after an unrecoverable watchdog fault (code %d). "
+                "Restarting in SAFE MODE - PLC program will NOT be loaded. "
+                "Upload a corrected program to recover.",
+                exit_code,
+            )
+            with self._crash_lock:
+                self._safe_mode = True
+            self._start_runtime_process(safe_mode=True, after_fault=True)
+            return
+
+        logger.warning("PLC runtime process died unexpectedly (exit code %s)", exit_code)
+        if self._record_crash_and_check_safe_mode():
+            with self._crash_lock:
+                if not self._safe_mode:
+                    logger.error(
+                        "PLC program caused %d crashes within %d seconds. "
+                        "Restarting runtime in SAFE MODE - "
+                        "PLC program will NOT be loaded. "
+                        "Upload a corrected program to recover.",
+                        MAX_RAPID_CRASHES,
+                        RAPID_CRASH_WINDOW,
+                    )
+                    self._safe_mode = True
+            self._start_runtime_process(safe_mode=True)
+        else:
+            with self._crash_lock:
+                stay_safe = self._safe_mode
+            logger.warning("Restarting PLC runtime%s...", " in SAFE MODE" if stay_safe else "")
+            self._start_runtime_process(safe_mode=stay_safe)
+
     def _monitor(self):
         """
         Monitor the PLC runtime process and restart if it dies.
@@ -210,26 +260,7 @@ class RuntimeManager:
         """
         while self.running:
             if not self.is_runtime_alive():
-                logger.warning("PLC runtime process died unexpectedly")
-                self._safe_stop_log_server()
-                self._safe_close_runtime_socket()
-
-                if self._record_crash_and_check_safe_mode():
-                    with self._crash_lock:
-                        if not self._safe_mode:
-                            logger.error(
-                                "PLC program caused %d crashes within %d seconds. "
-                                "Restarting runtime in SAFE MODE - "
-                                "PLC program will NOT be loaded. "
-                                "Upload a corrected program to recover.",
-                                MAX_RAPID_CRASHES,
-                                RAPID_CRASH_WINDOW,
-                            )
-                            self._safe_mode = True
-                    self._start_runtime_process(safe_mode=True)
-                else:
-                    logger.warning("Restarting PLC runtime...")
-                    self._start_runtime_process(safe_mode=False)
+                self._handle_runtime_exit()
             else:
                 # Make sure log server and socket are connected
                 if not self.log_server.running:
@@ -392,10 +423,10 @@ class RuntimeManager:
 
             # Parse: "PLUGIN_CMD:OK:{json}" or "PLUGIN_CMD:ERROR:{json}"
             if response.startswith("PLUGIN_CMD:OK:"):
-                json_str = response[len("PLUGIN_CMD:OK:"):]
+                json_str = response[len("PLUGIN_CMD:OK:") :]
                 return json.loads(json_str)
             elif response.startswith("PLUGIN_CMD:ERROR:"):
-                json_str = response[len("PLUGIN_CMD:ERROR:"):]
+                json_str = response[len("PLUGIN_CMD:ERROR:") :]
                 return json.loads(json_str)
             else:
                 return {"error": f"Unexpected response: {response[:200]}"}

@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "include/iec_python.h"
+#include "task_policy.h"
 
 // Function pointers for logging - set by python_loader_set_loggers()
 // These are always initialized by symbols_init() before any Python FB code runs
@@ -137,9 +138,33 @@ int create_shm_name(char *buf, size_t size)
     return 0;
 }
 
+static int python_block_loader_unmasked(const char *script_name, const char *script_content,
+                                        char *shm_name, size_t shm_in_size, size_t shm_out_size,
+                                        void **shm_in_ptr, void **shm_out_ptr, pid_t pid);
+
+/* The watchdog abort must not jump out of fork/shm/stdio; it is resent until delivered. */
 int python_block_loader(const char *script_name, const char *script_content, char *shm_name,
                         size_t shm_in_size, size_t shm_out_size, void **shm_in_ptr,
                         void **shm_out_ptr, pid_t pid)
+{
+    sigset_t abort_set, old_set;
+    sigemptyset(&abort_set);
+    sigaddset(&abort_set, PLC_TASK_ABORT_SIGNAL);
+    int mask_rc = pthread_sigmask(SIG_BLOCK, &abort_set, &old_set);
+    if (mask_rc != 0)
+        LOG_ERROR("[Python loader] pthread_sigmask failed: %s", strerror(mask_rc));
+
+    int rc = python_block_loader_unmasked(script_name, script_content, shm_name, shm_in_size,
+                                          shm_out_size, shm_in_ptr, shm_out_ptr, pid);
+
+    if (mask_rc == 0)
+        pthread_sigmask(SIG_SETMASK, &old_set, NULL);
+    return rc;
+}
+
+static int python_block_loader_unmasked(const char *script_name, const char *script_content,
+                                        char *shm_name, size_t shm_in_size, size_t shm_out_size,
+                                        void **shm_in_ptr, void **shm_out_ptr, pid_t pid)
 {
     char shm_in_name[256];
     char shm_out_name[256];
@@ -272,6 +297,12 @@ int python_block_loader(const char *script_name, const char *script_content, cha
         dup2(pipefd[1], STDOUT_FILENO);
         dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[1]);
+
+        // The abort mask set by python_block_loader must not leak into the Python process.
+        sigset_t abort_set;
+        sigemptyset(&abort_set);
+        sigaddset(&abort_set, PLC_TASK_ABORT_SIGNAL);
+        sigprocmask(SIG_UNBLOCK, &abort_set, NULL);
 
         // Execute Python with unbuffered output
         execlp("python3", "python3", "-u", script_name, (char *)NULL);
