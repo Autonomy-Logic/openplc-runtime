@@ -284,11 +284,17 @@ void log_emergency(const char *msg)
     {
         char escaped[LOG_MESSAGE_SIZE / 2];
         size_t e = 0;
-        for (const char *p = msg; *p && e + 2 < sizeof(escaped); ++p)
+        for (const char *p = msg; *p && e + 7 < sizeof(escaped); ++p)
         {
-            if (*p == '"' || *p == '\\')
+            unsigned char c = (unsigned char)*p;
+            if (c < 0x20)
+            {
+                e += (size_t)snprintf(escaped + e, sizeof(escaped) - e, "\\u%04x", c);
+                continue;
+            }
+            if (c == '"' || c == '\\')
                 escaped[e++] = '\\';
-            escaped[e++] = *p;
+            escaped[e++] = (char)c;
         }
         escaped[e] = '\0';
 

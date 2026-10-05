@@ -36,6 +36,13 @@ extern "C"
     void watchdog_dispatcher_stopped(void);
 
     /**
+     * @brief Name the operation in progress, reported by watchdog_fatal_exit() and
+     *        written into the fault marker. NULL clears it.
+     * @param context string with static storage duration, or NULL
+     */
+    void watchdog_set_fault_context(const char *context);
+
+    /**
      * @brief Last resort when the runtime cannot recover in-process.
      *
      * Logs reason without blocking on any lock and terminates the process with

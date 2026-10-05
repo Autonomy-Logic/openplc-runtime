@@ -248,8 +248,10 @@ class RuntimeManager:
                     self._safe_mode = True
             self._start_runtime_process(safe_mode=True)
         else:
-            logger.warning("Restarting PLC runtime...")
-            self._start_runtime_process(safe_mode=False)
+            with self._crash_lock:
+                stay_safe = self._safe_mode
+            logger.warning("Restarting PLC runtime%s...", " in SAFE MODE" if stay_safe else "")
+            self._start_runtime_process(safe_mode=stay_safe)
 
     def _monitor(self):
         """

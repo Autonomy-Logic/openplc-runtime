@@ -57,6 +57,23 @@ def test_other_exit_restarts_normally(manager: rm.RuntimeManager) -> None:
     assert manager._safe_mode is False
 
 
+def test_safe_mode_sticks_after_a_later_crash(manager: rm.RuntimeManager) -> None:
+    manager.process = _ExitedProcess(rm.RUNTIME_EXIT_WATCHDOG_FAULT)
+    manager._handle_runtime_exit()
+    manager.process = _ExitedProcess(-9)
+    manager._handle_runtime_exit()
+    manager._start_runtime_process.assert_called_with(safe_mode=True)
+
+
+def test_upload_clears_safe_mode(manager: rm.RuntimeManager) -> None:
+    manager.process = _ExitedProcess(rm.RUNTIME_EXIT_WATCHDOG_FAULT)
+    manager._handle_runtime_exit()
+    manager.reset_crash_tracking()
+    manager.process = _ExitedProcess(1)
+    manager._handle_runtime_exit()
+    manager._start_runtime_process.assert_called_with(safe_mode=False)
+
+
 def test_rapid_crashes_still_enter_safe_mode_without_fault_flag(manager: rm.RuntimeManager) -> None:
     for _ in range(rm.MAX_RAPID_CRASHES):
         manager.process = _ExitedProcess(-11)

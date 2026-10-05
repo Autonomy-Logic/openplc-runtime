@@ -24,6 +24,7 @@
 /* CLOCK_MONOTONIC ms of the last dispatcher tick; 0 while no dispatcher runs. */
 static atomic_llong g_dispatch_beat_ms;
 static atomic_llong g_dispatch_stall_ms;
+static const char *_Atomic g_fault_context;
 
 #define WATCHDOG_TICK_MS 100
 
@@ -51,11 +52,17 @@ void watchdog_dispatcher_stopped(void)
     atomic_store_explicit(&g_dispatch_beat_ms, 0, memory_order_relaxed);
 }
 
+void watchdog_set_fault_context(const char *context)
+{
+    atomic_store(&g_fault_context, context);
+}
+
 void watchdog_fatal_exit(const char *reason)
 {
+    const char *context = atomic_load(&g_fault_context);
     char msg[512];
-    snprintf(msg, sizeof(msg), "Watchdog: %s. Exiting with code %d for a safe-mode restart", reason,
-             PLC_EXIT_WATCHDOG_FAULT);
+    snprintf(msg, sizeof(msg), "Watchdog: %s%s%s. Exiting with code %d for a safe-mode restart",
+             reason, context ? " during " : "", context ? context : "", PLC_EXIT_WATCHDOG_FAULT);
     log_emergency(msg);
     int fd = open(PLC_WATCHDOG_FAULT_MARKER, O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd >= 0)
@@ -124,6 +131,11 @@ void *watchdog_thread(void *arg)
 
         if (state == PLC_STATE_RUNNING)
         {
+            const int64_t first_since = plc_first_scan_pending_since_ns();
+            if (first_since != 0 &&
+                monotonic_ns() - first_since > (int64_t)PLC_FIRST_SCAN_TIMEOUT_MS * NS_PER_MS)
+                plc_request_first_scan_trip();
+
             const int64_t beat  = atomic_load_explicit(&g_dispatch_beat_ms, memory_order_relaxed);
             const int64_t stall = atomic_load_explicit(&g_dispatch_stall_ms, memory_order_relaxed);
             if (beat != 0 && now - beat > stall)

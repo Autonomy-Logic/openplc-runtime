@@ -150,9 +150,6 @@ static volatile sig_atomic_t bootstrap_crash_sig     = 0;
 static volatile sig_atomic_t bootstrap_holding_mutex = 0;
 static volatile sig_atomic_t plc_crash_signal        = 0;
 
-/* Signal the teardown sends to a task still in its scan after its grace. */
-#define PLC_TASK_ABORT_SIGNAL SIGUSR2
-
 /* Interval between abort signals while waiting for an aborted task to exit. */
 #define PLC_TASK_ABORT_RESEND_NS 100000000LL
 
@@ -164,6 +161,10 @@ static std::atomic<bool> g_task_fault{false};
 
 /* Longest task interval of the loaded program, for the stop budget. */
 static std::atomic<int64_t> g_longest_interval_ns{0};
+
+/* Oldest in-flight first scan (release ns, 0 = none), and the watchdog's trip request for it. */
+static std::atomic<int64_t> g_first_scan_since_ns{0};
+static std::atomic<bool>    g_first_scan_trip{false};
 
 /* The SIGUSR1 wake handler is installed once at process init in
  * plc_main.c (handle_sigusr1). Every task thread relies on EINTR from
@@ -424,6 +425,20 @@ static int64_t task_stuck_limit_ns(const PlcTaskCtx *c)
     return PLC_TASK_STUCK_PERIODS * c->interval_ns;
 }
 
+static bool task_first_scan_done(const PlcTaskCtx *c)
+{
+    return c->completed.load(std::memory_order_acquire) > 0;
+}
+
+/* How long the current scan may run after its release before the teardown aborts it. */
+static int64_t task_scan_limit_ns(const PlcTaskCtx *c)
+{
+    const int64_t first_ns = PLC_FIRST_SCAN_TIMEOUT_MS * NS_PER_MS;
+    if (!task_first_scan_done(c) && first_ns > task_stuck_limit_ns(c))
+        return first_ns;
+    return task_stuck_limit_ns(c);
+}
+
 /* Waits for the worker to return. An in-flight scan may run until scan_deadline; an idle
  * worker (already woken) until idle_deadline. Returns true when it exited. */
 static bool wait_task_exit(const PlcTaskCtx *c, int64_t scan_deadline, int64_t idle_deadline)
@@ -443,9 +458,8 @@ static bool wait_task_exit(const PlcTaskCtx *c, int64_t scan_deadline, int64_t i
 static void abort_task(PlcTaskCtx *c)
 {
     if (task_in_scan(c))
-        log_error("[task %s] scan still running %d periods (%lld ms) after its release: "
-                  "aborting it",
-                  c->name, PLC_TASK_STUCK_PERIODS, (long long)(task_stuck_limit_ns(c) / NS_PER_MS));
+        log_error("[task %s] scan still running %lld ms after its release: aborting it", c->name,
+                  (long long)(task_scan_limit_ns(c) / NS_PER_MS));
     else
         log_error("[task %s] did not exit within %d ms of being woken", c->name,
                   PLC_TASK_ABORT_TIMEOUT_MS);
@@ -490,7 +504,7 @@ static void reap_task_threads(void)
     {
         PlcTaskCtx   *c = &plc_tasks[i];
         const int64_t scan_deadline =
-            c->release_ns.load(std::memory_order_acquire) + task_stuck_limit_ns(c);
+            c->release_ns.load(std::memory_order_acquire) + task_scan_limit_ns(c);
         const int64_t idle_deadline = (scan_deadline > t_reap ? scan_deadline : t_reap) +
                                       PLC_TASK_ABORT_TIMEOUT_MS * NS_PER_MS;
         if (!wait_task_exit(c, scan_deadline, idle_deadline))
@@ -519,6 +533,8 @@ static void reap_task_threads(void)
 static void plc_outputs_off(void)
 {
     image_lock();
+    /* Pending writes were drained by image_lock; reject later ones so none re-energise %Q. */
+    journal_cleanup();
     image_tables_zero_outputs();
     image_unlock();
     if (plugin_driver)
@@ -540,6 +556,8 @@ void *plc_cycle_thread(void *arg)
     bootstrap_crash_sig     = 0;
     bootstrap_holding_mutex = 0;
     g_task_fault.store(false, std::memory_order_release);
+    g_first_scan_since_ns.store(0, std::memory_order_release);
+    g_first_scan_trip.store(false, std::memory_order_release);
     watchdog_dispatcher_stopped();
 
     /* Per-task trackers are initialised below, once we know the task list
@@ -971,6 +989,21 @@ void *plc_cycle_thread(void *arg)
 
         watchdog_feed();
 
+        {
+            int64_t oldest = 0;
+            for (size_t i = 0; i < plc_task_count; ++i)
+            {
+                PlcTaskCtx *c = &plc_tasks[i];
+                if (c->alive.load(std::memory_order_acquire) && task_in_scan(c) &&
+                    !task_first_scan_done(c))
+                {
+                    const int64_t rel = c->release_ns.load(std::memory_order_acquire);
+                    if (oldest == 0 || rel < oldest) oldest = rel;
+                }
+            }
+            g_first_scan_since_ns.store(oldest, std::memory_order_release);
+        }
+
         /* Which tasks are due this tick? */
         bool any_due = false;
         for (size_t i = 0; i < plc_task_count; ++i)
@@ -1044,9 +1077,12 @@ void *plc_cycle_thread(void *arg)
                      * task simply runs at a lower effective rate; the others are
                      * unaffected. Rate-limit the log. */
                     /* Ticks, not wall time: replayed ticks after a late dispatcher are missed deadlines too. */
-                    long st = c->stuck_ticks.fetch_add(1, std::memory_order_relaxed) + 1;
-                    if (st >= PLC_TASK_STUCK_PERIODS && stuck_idx == SIZE_MAX)
-                        stuck_idx = i;
+                    if (task_first_scan_done(c))
+                    {
+                        long st = c->stuck_ticks.fetch_add(1, std::memory_order_relaxed) + 1;
+                        if (st >= PLC_TASK_STUCK_PERIODS && stuck_idx == SIZE_MAX)
+                            stuck_idx = i;
+                    }
                     long oc = c->overrun_count.fetch_add(1, std::memory_order_relaxed) + 1;
                     if (oc == 1 || (oc % 50) == 0)
                         log_warn("[task %s] scan overrun #%ld: body exceeds its "
@@ -1061,12 +1097,33 @@ void *plc_cycle_thread(void *arg)
             if (released_any) cycle_end_pending = true;
             ++scan_counter;
 
+            bool first_scan_trip = false;
+            if (stuck_idx == SIZE_MAX && g_first_scan_trip.exchange(false, std::memory_order_acq_rel))
+            {
+                for (size_t i = 0; i < plc_task_count; ++i)
+                {
+                    PlcTaskCtx *c = &plc_tasks[i];
+                    if (!c->alive.load(std::memory_order_acquire) || !task_in_scan(c) ||
+                        task_first_scan_done(c))
+                        continue;
+                    if (stuck_idx == SIZE_MAX ||
+                        c->release_ns.load(std::memory_order_acquire) <
+                            plc_tasks[stuck_idx].release_ns.load(std::memory_order_acquire))
+                        stuck_idx = i;
+                }
+                first_scan_trip = (stuck_idx != SIZE_MAX);
+            }
+
             if (stuck_idx != SIZE_MAX)
             {
                 PlcTaskCtx *c = &plc_tasks[stuck_idx];
-                log_error("[task %s] stuck in one scan for %d periods (%lld ms): stopping the PLC",
-                          c->name, PLC_TASK_STUCK_PERIODS,
-                          (long long)(task_stuck_limit_ns(c) / NS_PER_MS));
+                if (first_scan_trip)
+                    log_error("[task %s] first scan still running after %d ms: stopping the PLC",
+                              c->name, PLC_FIRST_SCAN_TIMEOUT_MS);
+                else
+                    log_error("[task %s] stuck in one scan for %d periods (%lld ms): stopping the PLC",
+                              c->name, PLC_TASK_STUCK_PERIODS,
+                              (long long)(task_stuck_limit_ns(c) / NS_PER_MS));
                 g_task_fault.store(true, std::memory_order_release);
                 /* Claim now so no command lands mid-drain; the teardown runs after the reap. */
                 fault_stop_claimed = plc_claim_transition(PLC_STATE_STOPPED);
@@ -1137,6 +1194,7 @@ void *plc_cycle_thread(void *arg)
     }
 
     watchdog_dispatcher_stopped();
+    g_first_scan_since_ns.store(0, std::memory_order_release);
     reap_task_threads();
     plc_outputs_off();
 
@@ -1354,9 +1412,56 @@ extern "C" PLCState plc_get_state(void)
 
 extern "C" int64_t plc_stop_budget_ms(void)
 {
-    return PLC_TASK_STUCK_PERIODS * g_longest_interval_ns.load(std::memory_order_acquire) /
-               NS_PER_MS +
-           PLC_OUTPUTS_OFF_SETTLE_MS + PLC_STOP_TEARDOWN_ALLOWANCE_MS;
+    int64_t grace_ms =
+        PLC_TASK_STUCK_PERIODS * g_longest_interval_ns.load(std::memory_order_acquire) / NS_PER_MS;
+    if (grace_ms < PLC_FIRST_SCAN_TIMEOUT_MS)
+        grace_ms = PLC_FIRST_SCAN_TIMEOUT_MS;
+    return grace_ms + PLC_OUTPUTS_OFF_SETTLE_MS + PLC_STOP_TEARDOWN_ALLOWANCE_MS;
+}
+
+extern "C" bool plc_outputs_off_without_program(void)
+{
+    if (!plugin_driver)
+    {
+        log_warn("No plugin driver: outputs cannot be driven off");
+        return false;
+    }
+    if (plugin_driver_update_config(plugin_driver, "./plugins.conf") != 0 ||
+        plugin_driver_append_config(plugin_driver, "./vpp_plugins.conf") != 0)
+    {
+        log_error("[PLUGIN]: Could not load the plugin configuration to drive outputs off");
+        return false;
+    }
+    if (plugin_driver_init(plugin_driver) != 0)
+    {
+        plugin_driver_cleanup_init(plugin_driver);
+        log_error("[PLUGIN]: Plugin init failed: outputs cannot be driven off");
+        return false;
+    }
+
+    pthread_mutex_t *itm = image_tables_mutex();
+    pthread_mutex_lock(itm);
+    image_tables_fill_null_pointers();
+    pthread_mutex_unlock(itm);
+
+    plugin_driver_start(plugin_driver);
+    plc_outputs_off();
+    plugin_driver_stop(plugin_driver);
+
+    pthread_mutex_lock(itm);
+    image_tables_clear_null_pointers();
+    pthread_mutex_unlock(itm);
+    return true;
+}
+
+extern "C" int64_t plc_first_scan_pending_since_ns(void)
+{
+    return g_first_scan_since_ns.load(std::memory_order_acquire);
+}
+
+extern "C" void plc_request_first_scan_trip(void)
+{
+    g_first_scan_trip.store(true, std::memory_order_release);
 }
 
 extern "C" bool plc_state_is_transitioning(void)

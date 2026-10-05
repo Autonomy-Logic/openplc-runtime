@@ -131,8 +131,18 @@ int main(int argc, char *argv[])
     // and plc_set_state() is now the body of a claimed transition rather than a
     // setter -- calling it with nothing loaded would just log a failed unload.
 
+    bool skip_outputs_off = false;
     if (access(PLC_WATCHDOG_FAULT_MARKER, F_OK) == 0)
     {
+        char reason[512] = {0};
+        FILE *marker     = fopen(PLC_WATCHDOG_FAULT_MARKER, "r");
+        if (marker)
+        {
+            size_t n  = fread(reason, 1, sizeof(reason) - 1, marker);
+            reason[n] = '\0';
+            fclose(marker);
+        }
+        skip_outputs_off = strstr(reason, PLC_FAULT_CONTEXT_BOOT_OUTPUTS_OFF) != NULL;
         if (unlink(PLC_WATCHDOG_FAULT_MARKER) != 0)
             log_warn("Could not remove %s: %s", PLC_WATCHDOG_FAULT_MARKER, strerror(errno));
         safe_mode   = true;
@@ -196,6 +206,31 @@ int main(int argc, char *argv[])
         }
     }
 
+    // Before the socket exists, so no command can claim a transition underneath.
+    if (safe_mode)
+    {
+        log_info("Runtime started in SAFE MODE - PLC program will not be loaded");
+        log_info("Upload a corrected program to recover");
+        if (after_fault)
+        {
+            log_error("Previous run ended in an unrecoverable watchdog fault");
+            plc_force_error_state();
+            if (skip_outputs_off)
+            {
+                log_error("Outputs not driven off: the previous attempt did not complete");
+            }
+            else if (plc_claim_transition(PLC_STATE_STOPPED))
+            {
+                // Bounded by the watchdog's stop budget; the context breaks a restart loop.
+                watchdog_set_fault_context(PLC_FAULT_CONTEXT_BOOT_OUTPUTS_OFF);
+                if (!plc_outputs_off_without_program())
+                    log_error("Outputs could not be driven off after the watchdog fault");
+                watchdog_set_fault_context(NULL);
+                plc_publish_final_state(PLC_STATE_ERROR);
+            }
+        }
+    }
+
     // Start the command socket only now that the plugin driver is fully built.
     // Everything the socket can ask for -- START, STOP, PLUGIN_CMD, STATS --
     // reaches into the driver, so serving commands before this point was serving
@@ -217,16 +252,6 @@ int main(int argc, char *argv[])
     // finishes, causing two concurrent load_plc_program() calls — and two
     // dispatcher threads. plc_begin_transition() also makes the start
     // asynchronous, which is fine: the main thread just sleeps below.
-    if (safe_mode)
-    {
-        log_info("Runtime started in SAFE MODE - PLC program will not be loaded");
-        log_info("Upload a corrected program to recover");
-        if (after_fault)
-        {
-            log_error("Previous run ended in an unrecoverable watchdog fault");
-            plc_force_error_state();
-        }
-    }
     // Same gate as any other start, but note what it can and cannot see. A VPP
     // plugin that owns a physical mode switch is initialised as part of loading
     // the program — inside the start transition below — so at this point the
@@ -237,12 +262,12 @@ int main(int argc, char *argv[])
     // reconciliation stops the PLC as soon as the start lands. Safe, but the gate
     // only bites here for a switch position already known at this point (e.g. one
     // reported by a plugin the runtime loaded independently of the program).
-    else if (!plc_switch_allows_run())
+    if (!safe_mode && !plc_switch_allows_run())
     {
         log_info("Hardware mode switch is in STOP - PLC left stopped");
         log_info("Move the switch to RUN to start the PLC");
     }
-    else if (!plc_begin_transition(PLC_STATE_RUNNING))
+    else if (!safe_mode && !plc_begin_transition(PLC_STATE_RUNNING))
     {
         log_error("Failed to initiate PLC start");
     }

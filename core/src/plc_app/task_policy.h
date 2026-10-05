@@ -4,6 +4,7 @@
 #ifndef TASK_POLICY_H
 #define TASK_POLICY_H
 
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -25,6 +26,10 @@ extern "C"
 /* A task still in one scan after this many of its own periods is stuck. Also
  * the grace each task gets to finish its scan when the PLC stops. */
 #define PLC_TASK_STUCK_PERIODS 10
+
+/* A task's first scan is exempt from the stuck count; the main watchdog trips it only
+ * past this bound, so a hung initialisation is not permanent. */
+#define PLC_FIRST_SCAN_TIMEOUT_MS 10000
 
 /* How long zeroed outputs are held on stop before plugins are stopped, so
  * plugins polling the image from their own threads can send them. */
@@ -48,6 +53,14 @@ extern "C"
 /* Written before the watchdog exit and consumed at the next boot, which then
  * starts in safe mode reporting ERROR even when the exit code was not seen. */
 #define PLC_WATCHDOG_FAULT_MARKER "/run/runtime/watchdog_fault"
+
+/* Fault context written into the marker when the safe-mode boot's outputs-off
+ * itself hangs; the next boot then skips it instead of looping. */
+#define PLC_FAULT_CONTEXT_BOOT_OUTPUTS_OFF "safe-mode boot outputs-off"
+
+/* Signal the teardown sends to a task still in its scan after its grace. Runtime
+ * code reached from IEC bodies blocks it around fork/allocation-heavy sections. */
+#define PLC_TASK_ABORT_SIGNAL SIGUSR2
 
 /* IEC TASK priority range accepted by the runtime. 0 is the highest. */
 #define PLC_IEC_PRIORITY_MIN 0

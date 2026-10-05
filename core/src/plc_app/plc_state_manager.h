@@ -223,6 +223,32 @@ bool plc_publish_running_if_claimed(void);
  */
 int64_t plc_stop_budget_ms(void);
 
+/**
+ * @brief Drive every output to 0 with no program loaded.
+ *
+ * Used on the safe-mode boot after a watchdog exit: loads and starts the configured
+ * plugins (including VPP board plugins), runs the same outputs-off sequence as a
+ * stop, then stops the plugins again. The caller must hold a claimed stop.
+ *
+ * @return true when the plugins were brought up and the zeroed outputs were pushed
+ */
+bool plc_outputs_off_without_program(void);
+
+/**
+ * @brief CLOCK_MONOTONIC release time (ns) of the oldest first scan still running, or 0.
+ *
+ * Read by the watchdog to bound first scans, which the dispatcher does not count.
+ */
+int64_t plc_first_scan_pending_since_ns(void);
+
+/**
+ * @brief Ask the dispatcher to trip on the oldest first scan still running.
+ *
+ * Called by the watchdog when that scan exceeds PLC_FIRST_SCAN_TIMEOUT_MS. The
+ * dispatcher then stops the PLC exactly as for a stuck task.
+ */
+void plc_request_first_scan_trip(void);
+
 /** @brief True while a transition is in flight (either direction). */
 bool plc_state_is_transitioning(void);
 

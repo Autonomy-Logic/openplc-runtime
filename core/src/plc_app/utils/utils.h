@@ -22,7 +22,7 @@ extern "C" {
  * compute_base_tick_from_config). Default 20 ms before computation. */
 extern uint64_t base_tick_ns;
 
-/* Scan counter — incremented once per scan cycle by plc_run_io_cycle_threaded_post.
+/* Scan counter — incremented by the dispatcher on every task-bearing tick.
  * Reported in DEBUG_GET / DEBUG_GET_LIST responses so the editor can
  * detect cycle boundaries. */
 extern unsigned long scan_counter;
