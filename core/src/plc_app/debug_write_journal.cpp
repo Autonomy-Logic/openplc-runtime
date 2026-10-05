@@ -31,6 +31,7 @@
 
 #include "image_tables.h"  /* ext_strucpp_debug_set / _write / _locate */
 #include "journal_buffer.h" /* journal_write_* / journal_force_set/clear  */
+#include "utils/rt_mutex.h"
 
 extern "C" {
 #include "utils/log.h"
@@ -60,6 +61,11 @@ DbgwEntry           g_dbgw[DBGW_MAX_ENTRIES];
 std::atomic<size_t> g_dbgw_count{0};
 pthread_mutex_t     g_dbgw_lock = PTHREAD_MUTEX_INITIALIZER;
 bool                g_overflow_logged = false;
+
+__attribute__((constructor)) void dbgw_lock_init_pi(void)
+{
+    rt_mutex_upgrade_static(&g_dbgw_lock, "g_dbgw_lock");
+}
 
 /* LocatedArea (strucpp_abi.hpp): Input=0, Output=1, Memory=2.
  * LocatedSize: Bit=0, Byte=1, Word=2, DWord=3, LWord=4. */
