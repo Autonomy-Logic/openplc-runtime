@@ -10,6 +10,7 @@ plugins.conf
 
 # Per-plugin JSON configs are program-specific (populated on program upload)
 core/src/drivers/plugins/python/modbus_slave/modbus_slave_config.json
+core/src/drivers/plugins/python/modbus_slave/modbus_slave.json
 core/src/drivers/plugins/python/modbus_master/modbus_master.json
 core/src/drivers/plugins/python/opcua/opcua.json
 core/src/drivers/plugins/native/s7comm/s7comm_config.json
@@ -40,3 +41,6 @@ core/src/drivers/plugins/native/ethercat/libs/soem/cmake/CYGWIN.cmake
 *.o
 *.so
 .DS_Store
+
+# Written by the upload: the last project's ST, not the repository's.
+core/src/program.st
