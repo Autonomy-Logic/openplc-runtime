@@ -34,11 +34,14 @@
  *
  *     enabled=1
  *     path=/var/lib/openplc-runtime/retain.bin
- *     flush_seconds=5
+ *     flush_seconds=10
  *
- * `flush_seconds` bounds how much retained state a power cut costs, against how
- * hard the storage is worked. It is a real trade and it belongs to whoever
- * installs the machine, which is why it is configuration and not a constant.
+ * Nothing is written while nothing changes. A change after a quiet period is
+ * committed at once; changes that follow within `flush_seconds` are held and
+ * committed, latest values only, when that period ends. So a setpoint is kept
+ * straight away and `flush_seconds` bounds how hard a value that keeps changing
+ * works the storage — and how much of such a value a power cut can cost. It
+ * belongs to whoever installs the machine, which is why it is configuration.
  */
 
 #ifndef PLC_RETAIN_FILE_STORE_H

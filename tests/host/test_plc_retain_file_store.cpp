@@ -51,6 +51,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
+#include <thread>
 #include <string>
 
 #include <sys/stat.h>
@@ -393,6 +395,45 @@ static void case_unchanged_blob_is_not_rewritten()
           "an unchanged blob should not republish the file (write-and-rename changes the inode)");
 }
 
+/* The last `n` bytes of the store file: the blob, which the header precedes. */
+static bool stored_tail_is(const uint8_t *want, size_t n)
+{
+    FILE *f = fopen(g_store_path.c_str(), "rb");
+    if (!f) return false;
+    uint8_t got[16] = {0};
+    fseek(f, -(long)n, SEEK_END);
+    const size_t r = fread(got, 1, n, f);
+    fclose(f);
+    return r == n && memcmp(got, want, n) == 0;
+}
+
+static void case_change_saved_at_once_then_held()
+{
+    g_case = "a change is saved at once; the next within the period waits for it to end";
+    reset();
+    write_conf(2);
+    plc_retain_file_store_start(g_conf_path.c_str());
+    uint8_t out[512];
+    uint16_t got = 0;
+    plc_retain_file_store_load(MD5_A, PLC_RETAIN_PROGRAM_ID_LEN, out, sizeof(out), &got);
+
+    const uint8_t a[] = {1, 1, 1, 1};
+    const uint8_t b[] = {2, 2, 2, 2};
+
+    plc_retain_file_store_save(a, sizeof(a));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    CHECK(stored_tail_is(a, sizeof(a)), "the first change should be on disk within a moment, not a period");
+
+    plc_retain_file_store_save(b, sizeof(b));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    CHECK(stored_tail_is(a, sizeof(a)), "a second change inside the period should be held");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    CHECK(stored_tail_is(b, sizeof(b)), "the held change should be saved when the period ends");
+
+    plc_retain_file_store_stop();
+}
+
 int main()
 {
     char tmpl[] = "/tmp/retain-store-test-XXXXXX";
@@ -413,6 +454,7 @@ int main()
     case_empty_store_is_not_an_error();
     case_wrong_identity_length_is_refused();
     case_unchanged_blob_is_not_rewritten();
+    case_change_saved_at_once_then_held();
 
     reset();
     rmdir(g_dir.c_str());

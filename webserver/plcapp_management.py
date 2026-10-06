@@ -30,8 +30,8 @@ from webserver.vpp_license_debug import derive_license_path, is_inside_root
 logger, _ = get_logger("runtime", use_buffer=True)
 
 
-MAX_FILE_SIZE: Final[int] = 10 * 1024 * 1024   # 10 MB per file
-MAX_TOTAL_SIZE: Final[int] = 50 * 1024 * 1024  # 50 MB total
+MAX_FILE_SIZE: Final[int] = 25 * 1024 * 1024   # 25 MB per file (a large program's debug map passes 10 MB)
+MAX_TOTAL_SIZE: Final[int] = 100 * 1024 * 1024  # 100 MB total (debug map + debug table source)
 DISALLOWED_EXT = (".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr")
 
 class BuildStatus(Enum):
@@ -81,25 +81,29 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
 
             # Check for path traversal or absolute paths
             if filename.startswith("/") or ".." in filename or ":" in filename:
-                # logger.warning("Dangerous path: %s", filename)
+                build_state.log(f"[ERROR] Unsafe path in program file: {filename}\n")
                 safe = False
 
             # Check uncompressed size
             if uncompressed_size > MAX_FILE_SIZE:
                 logger.warning("File too large: %s (%d bytes)",
                                 filename, uncompressed_size)
+                build_state.log(
+                    f"[ERROR] {filename} is {uncompressed_size} bytes; "
+                    f"the limit per file is {MAX_FILE_SIZE} bytes.\n")
                 safe = False
 
             # Check compression ratio (ZIP bomb detection)
             if compressed_size > 0 and uncompressed_size / compressed_size > 1000:
-                # logger.warning("Suspicious compression ratio in %s",
-                            #    filename)
+                build_state.log(
+                    f"[ERROR] {filename} compresses more than 1000:1; refused.\n")
                 safe = False
 
             # Check disallowed extensions
             if ext in DISALLOWED_EXT:
                 logger.warning("Disallowed extension: %s",
                                 filename)
+                build_state.log(f"[ERROR] File type not allowed: {filename}\n")
                 safe = False
 
             total_size += uncompressed_size
@@ -107,8 +111,9 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
 
         # Check total size
         if total_size > MAX_TOTAL_SIZE:
-            # logger.warning("Total uncompressed size too large: %d bytes", 
-            #                total_size)
+            build_state.log(
+                f"[ERROR] The program files total {total_size} bytes; "
+                f"the limit is {MAX_TOTAL_SIZE} bytes.\n")
             safe = False
 
         if safe:

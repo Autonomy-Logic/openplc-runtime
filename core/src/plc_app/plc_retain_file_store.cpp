@@ -11,6 +11,7 @@
 #include "plc_retain.h"  // PLC_RETAIN_PROGRAM_ID_LEN — one definition for both sides
 
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -55,7 +56,15 @@ bool                 g_dirty = false;
 std::string          g_program_md5;
 
 std::string       g_path;
-int               g_flush_seconds = 5;
+int               g_flush_seconds = 10;
+
+/* When the last commit happened, and whether one has happened since start. A
+ * change after a quiet period is committed at once; changes that follow within
+ * g_flush_seconds are held and committed, latest values only, when that period
+ * ends. So a setpoint is on disk straight away, and a value that keeps changing
+ * costs at most one write per period. Touched by the flusher thread only. */
+std::chrono::steady_clock::time_point g_last_commit;
+bool                                  g_committed_once = false;
 std::atomic<bool> g_enabled{false};
 std::atomic<bool> g_running{false};
 std::thread       g_flusher;
@@ -77,7 +86,7 @@ void read_config(const char *config_path)
 {
     g_enabled.store(false);
     g_path.clear();
-    g_flush_seconds = 5;
+    g_flush_seconds = 10;
 
     FILE *f = fopen(config_path, "r");
     if (!f) return;
@@ -207,13 +216,16 @@ void discard_stored()
 
 void flush_loop()
 {
+    g_committed_once = false;
     while (g_running.load())
     {
-        for (int i = 0; i < g_flush_seconds && g_running.load(); i++)
-        {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
+        /* A tenth of a second: how long a change after a quiet period waits,
+         * and how promptly a stop is noticed. */
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
         if (!g_running.load()) break;
+
+        const auto now = std::chrono::steady_clock::now();
+        if (g_committed_once && now - g_last_commit < std::chrono::seconds(g_flush_seconds)) continue;
 
         std::vector<uint8_t> snapshot;
         std::string          snapshot_id;
@@ -228,7 +240,12 @@ void flush_loop()
             snapshot_id = g_program_md5;
             g_dirty     = false;
         }
-        if (!snapshot.empty()) commit(snapshot.data(), (uint16_t)snapshot.size(), snapshot_id);
+        if (!snapshot.empty())
+        {
+            commit(snapshot.data(), (uint16_t)snapshot.size(), snapshot_id);
+            g_last_commit    = std::chrono::steady_clock::now();
+            g_committed_once = true;
+        }
     }
 }
 
@@ -242,7 +259,8 @@ bool plc_retain_file_store_start(const char *config_path)
 
     g_running.store(true);
     g_flusher = std::thread(flush_loop);
-    log_info("Retain: built-in file store enabled — %s, flushing every %ds",
+    log_info("Retain: built-in file store enabled — %s, a change is saved at once, "
+             "then at most every %ds while values keep changing",
              g_path.c_str(), g_flush_seconds);
     return true;
 }
