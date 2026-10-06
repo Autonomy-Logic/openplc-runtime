@@ -59,7 +59,18 @@ std::atomic<bool>    g_active{false};
  */
 uint8_t retain_write_leaf(uint8_t arr, uint16_t elem, const uint8_t *bytes, uint16_t len)
 {
-    return runtime_external_write(arr, elem, (uint8_t)DBGW_OP_WRITE, bytes, len) == 0 ? 0x7E : 0x82;
+    const int rc = runtime_external_write(arr, elem, (uint8_t)DBGW_OP_WRITE, bytes, len);
+
+    /* Restoring happens once, at program load, before any task is released —
+     * so apply the write now instead of leaving it for the dispatcher's
+     * cycle-end drain. Left queued, scan 1 would run on the initial values and
+     * the restore would then overwrite what scan 1 wrote; and a program with
+     * more retained leaves than the queue holds would lose the rest. */
+    image_lock();
+    debug_write_journal_drain();
+    image_unlock();
+
+    return rc == 0 ? 0x7E : 0x82;
 }
 
 /**

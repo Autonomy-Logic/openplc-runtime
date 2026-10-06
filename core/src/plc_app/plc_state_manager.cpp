@@ -582,18 +582,6 @@ void *plc_cycle_thread(void *arg)
     image_tables_fill_null_pointers();
     pthread_mutex_unlock(itm);
 
-    /* Retained variables. init() decides once whether retain can run here —
-     * does the .so export the entry points, does the program retain anything,
-     * which driver will hold the bytes — and read() asks that driver for what it
-     * has for THIS program, which is also where a driver discards a previous
-     * program's values. Both must follow the located-variable binding above: a
-     * retained variable may also be located, and its image slot has to exist
-     * before anything writes through it. Both are no-ops when retain is not in
-     * play, and read() lands before the first task is released, so a new
-     * program never runs a scan on the old one's state. */
-    plc_retain_init();
-    plc_retain_read();
-
     journal_buffer_ptrs_t journal_ptrs = {
         .bool_input   = bool_input,
         .bool_output  = bool_output,
@@ -620,6 +608,18 @@ void *plc_cycle_thread(void *arg)
     {
         log_info("Journal buffer initialized");
     }
+
+    /* Retained variables. init() decides once whether retain can run here —
+     * does the .so export the entry points, does the program retain anything,
+     * which driver will hold the bytes — and read() asks that driver for what it
+     * has for THIS program, which is also where a driver discards a previous
+     * program's values. Both must follow the located-variable binding and
+     * journal_init() above: a retained variable may also be located, its image
+     * slot has to exist, and its restore goes through the image journal. Both
+     * are no-ops when retain is not in play. read() applies every value before
+     * the first task is released, so scan 1 already sees the retained state. */
+    plc_retain_init();
+    plc_retain_read();
 
     if (plugin_driver)
     {

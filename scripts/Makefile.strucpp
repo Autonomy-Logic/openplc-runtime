@@ -5,11 +5,15 @@
 #
 #   - Per-file compilation rules let `make -j` saturate every core on
 #     the target platform (Pi 4 = 4×, x86 servers = 8–32×).
-#   - `wildcard $(GENERATED_DIR)/*.cpp` discovers however many .cpp
-#     files STruC++ split into. The codegen emits one TU per POU plus
-#     a shared configuration.cpp, so the file set varies per project
-#     — keeping the list out of this file means no Makefile churn
-#     when POUs are added or removed.
+#   - Sources are discovered by searching $(GENERATED_DIR), so the
+#     file set varies per project with no Makefile churn when POUs
+#     are added or removed. The codegen emits one TU per POU plus a
+#     shared configuration.cpp.
+#   - A project can also carry C++ libraries under
+#     $(GENERATED_DIR)/libraries/<name>/, each an ordinary library
+#     folder with its sources under src/. Every such src/ goes on the
+#     include path and its sources are compiled, so a block resolves
+#     `#include <Foo.h>` the same way it does on Arduino.
 #   - `ccache` is picked up automatically when present. Re-running a
 #     build where only one POU's body changed reuses every other .o
 #     from the cache, so incremental builds drop from minutes to a
@@ -79,9 +83,48 @@ CXX_BIN := g++
 # preserve. Verified on an SLM-RP4: with the flag the .so leaves
 # /proc/<pid>/maps on every stop and re-maps fresh on every start; without it,
 # it never leaves -- one build's image stays pinned for the life of the process.
+comma := ,
+
+# Libraries the editor materialised from enabled .stlib archives. Each is an
+# ordinary library folder, so `src/` is its include root; a folder without one
+# is taken as its own root.
+RESOURCE_LIB_DIRS := $(wildcard $(GENERATED_DIR)/libraries/*)
+RESOURCE_LIB_INC  := $(foreach d,$(RESOURCE_LIB_DIRS),$(if $(wildcard $d/src),$d/src,$d))
+
+# A LIBRARY MAY NAME THE DEFINES ITS OWN SOURCES NEED.
+#
+# `defines=A,B,C` in a library's library.properties becomes -DA -DB -DC. The
+# key is ours; arduino-cli ignores keys it does not know, so the same file
+# stays valid as an Arduino library descriptor.
+#
+# WHY IT IS NEEDED, with the case that found it. A vendored C library is very
+# often configured by a header it ships - wolfSSL is the example, and its own
+# documentation says "the WOLFSSL_USER_SETTINGS macro must be defined
+# project-wide", because its wolfcrypt/settings.h reads user_settings.h only
+# when that macro is set. Without it every source compiles with DEFAULT
+# features instead of the ones the library was vendored for. Nothing fails at
+# compile time: the objects are produced, the .so links (a shared object may
+# carry undefined symbols), and the failure arrives when the runtime dlopens
+# the program - `undefined symbol: wolfSSL_CTX_get_cert_store`, naming a
+# function whose absence has no obvious connection to a missing -D.
+#
+# This is the same gap as the .c discovery above, one layer along: the branch
+# taught the build where a vendored library's HEADERS are and then how to
+# compile its SOURCES, and a library that needs a define to configure those
+# sources still could not say so.
+#
+# Only from libraries/, and only as -D: a library cannot inject an include
+# path, a warning flag or an optimisation level into somebody else's build.
+RESOURCE_LIB_DEFS := $(strip $(foreach d,$(RESOURCE_LIB_DIRS),\
+    $(if $(wildcard $d/library.properties),\
+        $(addprefix -D,$(subst $(comma), ,\
+            $(patsubst defines=%,%,\
+                $(filter defines=%,$(shell tr -d '\r' < $d/library.properties))))),)))
+
 CXXFLAGS := -std=c++17 -O1 -pipe -fPIC -Wall -DSTRUCPP_THREADED -fno-gnu-unique -MMD -MP \
             -Wno-unknown-pragmas -Wno-deprecated-declarations \
-            -I $(GENERATED_DIR) -I $(RUNTIME_INC) -I $(PYTHON_INC)
+            -I $(GENERATED_DIR) -I $(RUNTIME_INC) -I $(PYTHON_INC) \
+            $(addprefix -I ,$(RESOURCE_LIB_INC)) $(RESOURCE_LIB_DEFS)
 
 # Python POU stubs (`{external …}` blocks emitted by the editor) call
 # `getpid()`, `create_shm_name()`, `python_block_loader()`. Those
@@ -90,6 +133,23 @@ CXXFLAGS := -std=c++17 -O1 -pipe -fPIC -Wall -DSTRUCPP_THREADED -fno-gnu-unique 
 # the generated TUs so unqualified references resolve. Stubs without
 # any Python POU pay nothing; the header is declarations only.
 GENERATED_CXXFLAGS := $(CXXFLAGS) -include iec_python.h
+
+# And the same for a C source in a vendored library.
+#
+# Mirrored from CXXFLAGS rather than derived from it, deliberately. The C++
+# flags carry -std=c++17, -fno-gnu-unique, -DSTRUCPP_THREADED, the Python
+# include root and a force-include of a C++ header, none of which mean anything
+# to a C compiler - and subtracting them would break quietly the next time one
+# was added. What has to stay in step is the INCLUDE ROOTS, and those are
+# written out here so the next person editing either list can see both.
+#
+# No -std: the existing python_loader.c rule below does not set one either, and
+# a vendored C library that needs a particular dialect says so in its own
+# headers rather than having one imposed on it from here.
+GENERATED_CFLAGS := -O1 -pipe -fPIC -Wall -MMD -MP \
+                    -Wno-unknown-pragmas -Wno-deprecated-declarations \
+                    -I $(GENERATED_DIR) -I $(RUNTIME_INC) \
+                    $(addprefix -I ,$(RESOURCE_LIB_INC)) $(RESOURCE_LIB_DEFS)
 
 # ---------------------------------------------------------------------------
 # Retain capability probe.
@@ -133,11 +193,37 @@ SHIM_HAS_RETAIN := $(strip $(if $(wildcard $(RUNTIME_INC)/iec_retain.hpp),\
 # the probe just measured, so they are already internally consistent.
 SHIM_CXXFLAGS := $(CXXFLAGS) $(if $(SHIM_HAS_RETAIN),-DSTRUCPP_SHIM_HAS_RETAIN,)
 
-# Discover every .cpp emitted into core/generated/. STruC++ splits
-# across configuration.cpp + one pou_<NAME>.cpp per POU, but this
-# Makefile doesn't care — wildcard adapts.
-GEN_CPP := $(wildcard $(GENERATED_DIR)/*.cpp)
-GEN_OBJ := $(patsubst $(GENERATED_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(GEN_CPP))
+# Discover every source under core/generated/, at any depth: the top-level TUs
+# STruC++ emitted, plus whatever each resource library carries below its own
+# root. `sort` makes the order reproducible across filesystems and drops any
+# duplicate.
+#
+# BOTH LANGUAGES, and the .c half was missing. This search found only *.cpp and
+# the only pattern rule was for *.cpp, so every C source inside a vendored
+# resource library compiled to nothing - and a C library is what a library
+# vendors: TLS, compression, codecs and drivers are C almost without exception.
+# AND IT DID NOT FAIL LOUDLY, which is the worst part. A shared object is
+# allowed to carry undefined symbols, so the link SUCCEEDED and printed "Build
+# complete"; the editor reported a clean compile and the failure surfaced later
+# as `dlopen: undefined symbol` when the runtime tried to load the program. The
+# file had not failed to compile — it had never been offered to a compiler, and
+# nothing anywhere said so.
+#
+# This branch is where that gap came from. RESOURCE_LIB_DIRS and
+# RESOURCE_LIB_INC above taught the build where a vendored library's HEADERS
+# are; its sources were never added beside them. A vendored C library therefore
+# got its headers found and its sources ignored - the same feature, half
+# finished.
+GEN_CPP := $(sort $(shell find $(GENERATED_DIR) -name '*.cpp'))
+GEN_C   := $(sort $(shell find $(GENERATED_DIR) -name '*.c'))
+
+# One `sort` over the union as well as over each half: a library that shipped
+# foo.c and foo.cpp side by side would otherwise name $(BUILD_DIR)/foo.o twice.
+# Make still has to choose a rule for it, and chooses the .cpp one because it
+# is written first - deterministic, and a file layout to avoid rather than one
+# to support.
+GEN_OBJ := $(sort $(patsubst $(GENERATED_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(GEN_CPP)) \
+                  $(patsubst $(GENERATED_DIR)/%.c,$(BUILD_DIR)/%.o,$(GEN_C)))
 
 SHIM_OBJ      := $(BUILD_DIR)/runtime_v4_entry.o
 PYTHON_OBJ    := $(if $(wildcard $(PYTHON_LOADER)),$(BUILD_DIR)/python_loader.o,)
@@ -174,9 +260,23 @@ $(LIBPLC): $(GEN_OBJ) $(SHIM_OBJ) $(EXTRA_OBJS) | $(BUILD_DIR)
 
 # Generated TUs from the editor's upload. Force-include iec_python.h
 # so unqualified Python loader symbols in {external} blocks resolve.
+# `$(@D)` because a nested source maps to a nested object: a library source at
+# libraries/foo/src/transport/bar.cpp builds to
+# $(BUILD_DIR)/libraries/foo/src/transport/bar.o.
 $(BUILD_DIR)/%.o: $(GENERATED_DIR)/%.cpp | $(BUILD_DIR)
 	@echo "[INFO] Compiling $<..."
+	@mkdir -p $(@D)
 	$(CXX) $(GENERATED_CXXFLAGS) -c $< -o $@
+
+# The same, for a C source a resource library brought with it. Not the C++
+# compiler with a different flag set: a C library compiled as C++ fails on
+# things that are legal C and not legal C++ - an implicit void* conversion, a
+# variable called `new`, a designated initialiser out of order - and it fails
+# deep inside somebody else's code where it reads as their bug.
+$(BUILD_DIR)/%.o: $(GENERATED_DIR)/%.c | $(BUILD_DIR)
+	@echo "[INFO] Compiling $<..."
+	@mkdir -p $(@D)
+	$(CC) $(GENERATED_CFLAGS) -c $< -o $@
 
 # Static runtime shim — lives in the runtime repo, not in the user
 # upload. Doesn't get the iec_python.h force-include.

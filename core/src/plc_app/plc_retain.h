@@ -115,8 +115,12 @@ void plc_retain_init(void);
  * a machine starting from its defaults is recoverable, one starting from
  * plausible-looking garbage is not.
  *
+ * The values are applied before this returns (not left for the dispatcher's
+ * cycle-end drain), so scan 1 sees them.
+ *
  * Safe and cheap when nothing is retained or no driver claimed the store, and
- * idempotent: call once per program start, after plc_retain_init().
+ * idempotent: call once per program start, after plc_retain_init() and
+ * journal_init(), before any task is released.
  */
 void plc_retain_read(void);
 
