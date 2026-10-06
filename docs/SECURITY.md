@@ -423,7 +423,6 @@ Planned security enhancements:
 - Database encryption at rest
 - Certificate management UI
 - Two-factor authentication
-- Role-based access control
 
 ## Compliance Considerations
 

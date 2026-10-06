@@ -135,10 +135,10 @@ db = SQLAlchemy(app_restapi)
 
 jwt_blacklist = set()
 
-# Role-based access control.  For now there are exactly two roles: ``admin``
-# (may manage every account) and ``user`` (may edit only its own account and
-# cannot create or delete accounts).  Enforcement lives server-side in the
-# endpoints below — the editor UI mirrors it but is never the boundary.
+# RBAC: two roles. ``admin`` manages accounts and retrieves projects.
+# ``user`` operates the PLC (upload, start/stop, debug, status/logs) and
+# edits its own account. Enforcement is server-side; the editor UI mirrors
+# it but is never the boundary.
 ADMIN_ROLE = "admin"
 USER_ROLE = "user"
 ROLES = (ADMIN_ROLE, USER_ROLE)
