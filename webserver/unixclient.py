@@ -43,7 +43,8 @@ class SyncUnixClient:
             self.sock = sock
             logger.debug("Connected to server socket %s", self.socket_path)
         except Exception as e:
-            logger.error("Failed to connect: %s", e)
+            # The caller decides whether a failure is worth reporting (plc_main may still be booting)
+            logger.debug("Failed to connect: %s", e)
             if sock is not None:
                 try:
                     sock.close()

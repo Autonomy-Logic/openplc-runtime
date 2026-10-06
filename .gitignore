@@ -40,3 +40,7 @@ core/src/drivers/plugins/native/ethercat/libs/soem/cmake/CYGWIN.cmake
 *.o
 *.so
 .DS_Store
+
+# EtherDOG (EtherCAT master service) source, fetched or copied in by install.sh
+/etherdog/
+/third_party/

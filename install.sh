@@ -328,27 +328,40 @@ install_deps_apk() {
 # For MSYS2 on Windows
 install_deps_msys2() {
     echo "Installing dependencies via pacman (MSYS2)..."
-    # Update package database (but don't do full system upgrade to avoid breaking frozen bundles)
-    pacman -Sy --noconfirm
-    # Install required packages
     # Note: python-cryptography is installed via pacman because pip cannot build
     # Rust-based packages on MSYS2/Cygwin.
     # Plugin venvs use --system-site-packages to access these pre-built packages.
     # bcrypt is skipped on MSYS2 - the OPC-UA plugin uses PBKDF2 fallback (Python stdlib).
-    pacman -S --noconfirm --needed \
-        base-devel \
-        gcc \
-        make \
-        cmake \
-        pkg-config \
-        python \
-        python-pip \
-        python-setuptools \
-        python-cryptography \
-        git \
-        sqlite3 \
-        msys2-w32api-headers \
+    local pkgs=(
+        base-devel
+        gcc
+        make
+        cmake
+        pkg-config
+        python
+        python-pip
+        python-setuptools
+        python-cryptography
+        git
+        sqlite3
+        msys2-w32api-headers
         msys2-w32api-runtime
+    )
+    # pacman does not support partial upgrades (-Sy then -S): a newer package can land
+    # without the newer libraries it links against. Leave a complete bundle untouched,
+    # otherwise upgrade the whole system together with the install.
+    if ! pacman -T "${pkgs[@]}" >/dev/null; then
+        pacman -Syu --noconfirm --needed "${pkgs[@]}"
+    fi
+    # Repair an install already broken by an earlier partial upgrade
+    if ! cmake --version >/dev/null 2>&1; then
+        echo "cmake does not run, upgrading MSYS2 packages to repair it..."
+        pacman -Syu --noconfirm
+        if ! cmake --version >/dev/null 2>&1; then
+            echo "ERROR: cmake still does not run after upgrading MSYS2 packages" >&2
+            exit 1
+        fi
+    fi
 }
 
 compile_plc() {
@@ -488,11 +501,6 @@ build_native_plugins() {
     # Create plugins output directory
     mkdir -p "$plugins_output_dir"
 
-    # Initialize git submodules (needed by plugins that vendor libraries like SOEM)
-    if [ -f "$OPENPLC_DIR/.gitmodules" ]; then
-        log_info "Initializing git submodules for native plugins..."
-        git -C "$OPENPLC_DIR" submodule update --init --recursive
-    fi
 
     # Find directories with CMakeLists.txt (indicates buildable plugin)
     local plugins_found=0
@@ -582,6 +590,51 @@ build_native_plugins() {
 }
 
 
+# EtherDOG, the EtherCAT master service supervised by the webserver. Its source stays in the install.
+ETHERDOG_REPO="${ETHERDOG_REPO:-https://github.com/Autonomy-Logic/EtherDOG.git}"
+ETHERDOG_REF="${ETHERDOG_REF:-main}"
+
+build_etherdog() {
+    local src="${ETHERDOG_SRC:-}"
+    if [ -z "$src" ] && [ -f "$OPENPLC_DIR/etherdog/CMakeLists.txt" ]; then
+        src="$OPENPLC_DIR/etherdog"
+    fi
+    if [ -z "$src" ]; then
+        src="$OPENPLC_DIR/third_party/etherdog"
+        if [ -d "$src/.git" ]; then
+            log_info "Updating EtherDOG ($ETHERDOG_REF)..."
+            if ! { git -C "$src" fetch --quiet --depth 1 origin "$ETHERDOG_REF" &&
+                   git -C "$src" checkout --quiet --force FETCH_HEAD &&
+                   git -C "$src" submodule update --quiet --init --recursive --depth 1; }; then
+                log_warning "Could not update EtherDOG; building the existing copy."
+            fi
+        elif [ ! -f "$src/CMakeLists.txt" ]; then
+            log_info "Fetching EtherDOG ($ETHERDOG_REF) from $ETHERDOG_REPO..."
+            rm -rf "$src"
+            mkdir -p "$(dirname "$src")"
+            if ! git clone --quiet --depth 1 --branch "$ETHERDOG_REF" --recurse-submodules \
+                    --shallow-submodules "$ETHERDOG_REPO" "$src"; then
+                log_warning "Could not fetch EtherDOG; EtherCAT will be unavailable."
+                return 0
+            fi
+        fi
+    fi
+
+    log_info "Building EtherDOG from $src..."
+    local build_dir="$src/build"
+    if ! cmake -S "$src" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release >/dev/null ||
+       ! cmake --build "$build_dir" -j"$(nproc 2>/dev/null || echo 2)"; then
+        log_warning "EtherDOG build failed; EtherCAT will be unavailable."
+        return 0
+    fi
+
+    local exe="$build_dir/etherdog"
+    [ -f "$exe.exe" ] && exe="$exe.exe"
+    mkdir -p "$OPENPLC_DIR/build"
+    cp "$exe" "$OPENPLC_DIR/build/"
+    log_success "EtherDOG installed to $OPENPLC_DIR/build/$(basename "$exe")"
+}
+
 # Setup runtime directory (needed for both Linux and Docker)
 # On MSYS2, use /run/runtime which maps to the MSYS2 installation directory
 if is_msys2; then
@@ -624,6 +677,9 @@ if compile_plc; then
     # Build native plugins after main compilation
     echo "Building native plugins..."
     build_native_plugins
+
+    echo "Building EtherDOG (EtherCAT master service)..."
+    build_etherdog
 
     # Create installation marker (must be done before starting the service)
     touch "$OPENPLC_DIR/.installed"

@@ -20,6 +20,11 @@ from webserver.logger import get_logger
 logger, _ = get_logger(__name__)
 
 
+
+# Plugins configured by a file whose name is not the plugin name. The EtherCAT client plugin
+# reads the Editor's I/O mapping; the bus half (ethercat_busconfig.json) goes to EtherDOG.
+PLUGIN_CONFIG_ALIASES: dict[str, str] = {"ethercat": "ethercat_iomapping"}
+
 class PluginType(IntEnum):
     """Plugin type enumeration."""
     PYTHON = 0
@@ -317,6 +322,12 @@ class PluginsConfiguration:
         # Get available config files
         config_files = glob.glob(os.path.join(config_dir, "*.json"))
         available_configs = {os.path.splitext(os.path.basename(f))[0]: f for f in config_files}
+        # A plugin whose config file is named differently from the plugin itself.
+        for plugin_name, config_name in PLUGIN_CONFIG_ALIASES.items():
+            if config_name in available_configs:
+                available_configs[plugin_name] = available_configs[config_name]
+            else:
+                available_configs.pop(plugin_name, None)
         
         updates = []
         plugins_updated = 0

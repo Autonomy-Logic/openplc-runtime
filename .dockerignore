@@ -24,3 +24,7 @@ core/src/drivers/plugins/python/modbus_slave/modbus_slave_config.json
 core/src/drivers/plugins/python/modbus_master/modbus_master.json
 core/src/drivers/plugins/python/opcua/opcua.json
 core/src/drivers/plugins/native/s7comm/s7comm_config.json
+
+# EtherDOG build trees (the source itself is copied in for the image build)
+/etherdog/build*/
+/third_party/etherdog/build/

@@ -128,7 +128,7 @@ typedef enum {
 ### Static Journal Buffer
 
 ```c
-#define JOURNAL_MAX_ENTRIES 1024
+#define JOURNAL_MAX_ENTRIES 40960
 
 static journal_entry_t g_entries[JOURNAL_MAX_ENTRIES];
 static size_t g_count = 0;
@@ -441,7 +441,7 @@ Time 200ms: cycle_start - apply journal (seq 0-500)
 
 ### Throughput
 
-- **Maximum writes per cycle**: 1024 (configurable via `JOURNAL_MAX_ENTRIES`)
+- **Maximum writes per cycle**: 40960 (configurable via `JOURNAL_MAX_ENTRIES`); drain cost follows the writes actually made, not the capacity
 - **Emergency flush**: Handles overflow gracefully without data loss
 
 ## Implementation Phases

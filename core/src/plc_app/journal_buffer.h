@@ -49,7 +49,7 @@ extern "C" {
  * triggers an emergency flush. Keep this large enough that overflow only
  * happens under genuine misconfiguration/overload.
  */
-#define JOURNAL_MAX_ENTRIES 4096
+#define JOURNAL_MAX_ENTRIES 40960
 
 /**
  * @brief Buffer type enumeration for journal entries

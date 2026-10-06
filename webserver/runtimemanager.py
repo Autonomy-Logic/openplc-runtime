@@ -41,6 +41,9 @@ RUNTIME_EXIT_WATCHDOG_FAULT = 42
 # an SLM-RP4) and then tears the program and plugins down.
 RUNTIME_SHUTDOWN_TIMEOUT_S = 15
 
+# How long a freshly started runtime gets to open its command socket (a few seconds on an SLM-RP4)
+RUNTIME_SOCKET_WAIT_S = 10.0
+
 
 class RuntimeManager:
     def __init__(self, runtime_path, plc_socket, log_socket, print_debug=False):
@@ -92,13 +95,32 @@ class RuntimeManager:
         except Exception as e:
             logger.error("Failed to start log server (unexpected): %s", e)
 
-    def _safe_connect_runtime_socket(self):
+    def _safe_connect_runtime_socket(self, report: bool = True) -> bool:
         try:
             self.runtime_socket.connect()
         except (FileNotFoundError, OSError, socket.error) as e:
-            logger.error("Failed to connect to runtime socket: %s", e)
+            if report:
+                logger.error("Failed to connect to runtime socket: %s", e)
+            return False
         except Exception as e:
             logger.error("Failed to connect to runtime socket (unexpected): %s", e)
+            return False
+        if not self.runtime_socket.is_connected():
+            if report:
+                logger.error("Failed to connect to runtime socket %s", self.plc_socket)
+            return False
+        return True
+
+    def _connect_runtime_socket_when_ready(self) -> None:
+        """Connect to a runtime that was just started, waiting while it opens its socket."""
+        deadline = time.monotonic() + RUNTIME_SOCKET_WAIT_S
+        while time.monotonic() < deadline:
+            if self._safe_connect_runtime_socket(report=False):
+                return
+            if not self.is_runtime_alive():
+                break
+            time.sleep(0.2)
+        self._safe_connect_runtime_socket()
 
     def _safe_stop_log_server(self):
         try:
@@ -160,8 +182,7 @@ class RuntimeManager:
             except (OSError, subprocess.SubprocessError) as e:
                 logger.error("Failed to start PLC runtime process: %s", e)
                 self.process = None
-            time.sleep(1)  # Give time to start
-            self._safe_connect_runtime_socket()
+            self._connect_runtime_socket_when_ready()
 
         # Start monitor thread
         if not self.monitor_thread.is_alive():
@@ -197,8 +218,7 @@ class RuntimeManager:
         except (OSError, subprocess.SubprocessError) as e:
             logger.error("Failed to start PLC runtime process: %s", e)
             self.process = None
-        time.sleep(1)  # Give time to start
-        self._safe_connect_runtime_socket()
+        self._connect_runtime_socket_when_ready()
 
     def _record_crash_and_check_safe_mode(self):
         """Record a crash timestamp and check if safe mode should be entered."""
