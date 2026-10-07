@@ -1,27 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// Command openplc-bootloader brings up and maintains one local OpenPLC runtime
-// container (RTOP-283).
-//
-// It plays the same role a bootloader plays on an embedded target, and the name
-// is meant literally. A bootloader is the small, rarely-changed program that
-// starts the real firmware, and that stays reachable to flash a new image when
-// the firmware is broken or missing. This does exactly that for the runtime: it
-// starts the runtime container, and when the runtime will not run it remains
-// available so a new version can be installed from the editor. That is the
-// whole reason it exists -- many vendors do not allow SSH, so without something
-// that survives a bad runtime there is no way back onto the device.
-//
-// The analogy holds on the other axis too. A bootloader is kept deliberately
-// dumb and stable because it is the one thing that cannot be recovered by any
-// other means, so it does the minimum: it does not accept programs, control the
-// PLC, or look at PLC state. It is always resident and, in steady state, does
-// nothing at all -- after confirming the runtime came up it blocks on the
-// Docker events stream, with no timers and no polling.
-//
-// Docker is the only dependency. Docker's own restart policy starts this
-// process, so nothing of ours goes into systemd.
+// Command openplc-bootloader brings up and maintains one OpenPLC runtime
+// container, and stays reachable to install a new version. Minimal:
+// blocks on the Docker events stream, no PLC control or state inspection.
 package main
 
 import (
@@ -51,10 +33,8 @@ import (
 // it to every runtime release would produce a long series of identical images.
 var version = "dev"
 
-// DefaultStateDir is the bootloader's own volume -- separate from the runtime's
-// data directory on purpose. "Erase all data" wipes the runtime's volume, and
-// the board's device mounts must survive that; a board that came back with no
-// SPI after a data wipe would be a miserable failure mode.
+// DefaultStateDir is the bootloader's own volume, deliberately separate
+// from the runtime's data dir so "erase all data" leaves hardware mounts.
 const DefaultStateDir = "/var/lib/openplc-bootloader"
 
 func main() {
@@ -79,14 +59,9 @@ func main() {
 
 	log := newLogger(*logLevel)
 
-	// Self-update helper mode.
-	//
-	// A container cannot replace itself, so a bootloader being updated spawns
-	// a one-shot child from the NEW image and that child does the swap from
-	// outside. This is that child: it replaces its parent and exits, and it
-	// must never fall through into ordinary bootloader operation -- two
-	// bootloaders supervising one runtime is exactly the race this design
-	// exists to avoid.
+	// Self-update helper mode. A container cannot replace itself, so the
+	// NEW image spawns this one-shot child to swap from outside. Must
+	// never fall through into normal bootloader operation.
 	if selfupdate.IsChild() {
 		log.Info("running as a self-update helper", "version", version)
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -149,22 +124,13 @@ func run(log *slog.Logger, cfg runConfig) error {
 		CrashWindow: cfg.crashWindow,
 	}, log.With("component", "supervisor"))
 
-	// Authentication reads the runtime's own credentials out of the shared data
-	// directory. Missing or unreadable is not fatal: the control API still
-	// needs to come up so an operator can see WHY, and every authenticated
-	// route refuses cleanly until the files appear.
-	// Re-read on use rather than snapshotted: on a fresh install the runtime
-	// creates .env and restapi.db only once the bootloader has already started
-	// it, and a snapshot from before that made every login fail until the
-	// container was restarted.
+	// Credentials re-read on use: the runtime may create .env and
+	// restapi.db only after the bootloader is already up.
 	creds := runtimeauth.NewProvider(spec.DataDir, log.With("component", "auth"))
 	defer creds.Close()
 
-	// LAN discovery, answered ONLY while in recovery. A device that cannot be
-	// found cannot be repaired, and without this a failed update makes the
-	// device vanish from the editor's list at exactly the wrong moment. The
-	// runtime owns this port the rest of the time; exclusivity holds because
-	// entering recovery stops the runtime first.
+	// LAN discovery, answered ONLY in recovery. Exclusive with the
+	// runtime's own responder because recovery stops the runtime first.
 	responder := discovery.New(discovery.Port, func() discovery.Reply {
 		status := sup.Status()
 		return discovery.Reply{
@@ -245,22 +211,17 @@ func run(log *slog.Logger, cfg runConfig) error {
 	return nil
 }
 
-// bootloaderSelfUpdater adapts the selfupdate package to the API's interface.
-//
-// The repository is left empty so the package's default applies: a bootloader
-// pulling its replacement from somewhere an API caller chose would be a way to
-// run arbitrary images as host root.
+// bootloaderSelfUpdater adapts selfupdate to the API interface. Leaves
+// the repository empty so the package default applies (never from an
+// API caller's input: that would run arbitrary images as host root).
 type bootloaderSelfUpdater struct {
 	docker *dockerapi.Client
 	log    *slog.Logger
 }
 
 func (b bootloaderSelfUpdater) Start(ctx context.Context, version string) error {
-	// The repository is NOT taken from the API request: a bootloader pulling
-	// its replacement from wherever a caller named would be a way to run an
-	// arbitrary image as host root. The env override exists for the
-	// integration harness, which has no route to ghcr.io, and is set at
-	// install time rather than per request.
+	// Repository is NEVER taken from the API request. The env override
+	// exists for the integration harness and is set at install time.
 	return selfupdate.Start(ctx, b.docker, os.Getenv("OPENPLC_BOOTLOADER_REPOSITORY"), version, b.log)
 }
 

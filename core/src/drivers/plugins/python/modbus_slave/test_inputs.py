@@ -4,7 +4,6 @@
 # tests/test_discrete_inputs.py
 import simple_modbus
 
-
 def test_inputs_basic(advanced_sba, runtime_args):  # <-- Fixed: Added runtime_args
     # The advanced_sba fixture has already patched SafeBufferAccess.
     # We must pass the *real* runtime_args object to the block.
@@ -15,7 +14,6 @@ def test_inputs_basic(advanced_sba, runtime_args):  # <-- Fixed: Added runtime_a
 
     values = block.getValues(5, 1)  # modbus address 5 -> index 4
     assert values == [1]
-
 
 def test_inputs_invalid_range_non_blocking(advanced_sba, runtime_args):  # <-- Fixed: Added runtime_args
     # Pass the real runtime_args object

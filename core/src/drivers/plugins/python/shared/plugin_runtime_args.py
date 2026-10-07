@@ -14,7 +14,6 @@ import ctypes
 # Import IEC type definitions
 from .iec_types import IEC_BOOL, IEC_BYTE, IEC_UDINT, IEC_UINT, IEC_ULINT
 
-
 class PluginRuntimeArgs(ctypes.Structure):
     """
     Python ctypes structure matching plugin_runtime_args_t from plugin_driver.h
@@ -46,13 +45,10 @@ class PluginRuntimeArgs(ctypes.Structure):
         # Both are void (*)(void).
         ("image_lock", ctypes.CFUNCTYPE(None)),
         ("image_unlock", ctypes.CFUNCTYPE(None)),
-        # STruC++ debugger variable-access surface. Replaces the
-        # MatIEC-era flat-index API (get_var_list/get_var_size/
-        # get_var_count). Variables are addressed by (arr, elem); the
-        # editor resolves user-selected variables against debug-map.json
-        # and writes the tuples into each plugin's per-plugin config.
+        # STruC++ debugger variable-access surface. Variables addressed
+        # by (arr, elem), resolved by the editor against debug-map.json.
         # debug_set toggles forcing; debug_write does a soft write that
-        # respects existing forces (the next scan cycle can overwrite).
+        # respects existing forces (program can overwrite next scan).
         ("debug_array_count", ctypes.CFUNCTYPE(ctypes.c_uint8)),
         ("debug_elem_count",  ctypes.CFUNCTYPE(ctypes.c_uint16, ctypes.c_uint8)),
         ("debug_size",        ctypes.CFUNCTYPE(ctypes.c_uint16, ctypes.c_uint8, ctypes.c_uint16)),
@@ -85,11 +81,7 @@ class PluginRuntimeArgs(ctypes.Structure):
         ("journal_write_dint", ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint)),
         ("journal_write_lint", ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulonglong)),
         # Async request to stop the whole PLC: void (*)(const char *reason).
-        #
-        # This entry was missing while the C struct had the field, so every
-        # field after it was shifted by one pointer -- `base_tick_ns` was
-        # actually reading the request_plc_stop pointer. Keep this list in
-        # lockstep with plugin_types.h; the offsets are load-bearing.
+        # Keep in lockstep with plugin_types.h: field offsets are load-bearing.
         ("request_plc_stop", ctypes.CFUNCTYPE(None, ctypes.c_char_p)),
         # PLC base tick time in nanoseconds (mirrors C-side base_tick_ns).
         ("base_tick_ns", ctypes.c_ulonglong),

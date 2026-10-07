@@ -450,12 +450,9 @@ func (b *blockingDocker) RemoveImage(context.Context, string, bool) error { retu
 // --- disk pre-check ------------------------------------------------------
 
 func TestATightDiskIsWarnedAboutRatherThanRefused(t *testing.T) {
-	// This used to refuse the update. The measurement is of the bootloader's
-	// filesystem, which is only Docker's on a default install -- so on a
-	// device whose data-root had been moved, a perfectly possible update was
-	// blocked by a figure about the wrong disk. It is a warning now, carried
-	// on the progress the editor polls, and the pull goes ahead: if the
-	// estimate was right, Docker reports ENOSPC in its own words.
+	// The disk measurement is of the bootloader's filesystem, which is
+	// only Docker's on a default install. A tight check is a warning,
+	// not a refusal: if too tight, Docker reports ENOSPC itself.
 	docker := &fakeDocker{inspectSize: 1 << 62} // larger than any real disk
 	sup := &fakeSupervisor{}
 	u, _, _ := newTestUpdater(t, docker, sup)
@@ -539,12 +536,7 @@ func TestHumanBytesReadsLikeAnErrorMessage(t *testing.T) {
 }
 
 func TestAnImageAlreadyPresentSurvivesAFailedPull(t *testing.T) {
-	// A pull can fail for a reason that does not matter: the image is already
-	// here. That covers an air-gapped device with a side-loaded image, a
-	// locally built one, and a registry that is merely unreachable. Refusing
-	// would make a version the device already holds uninstallable -- which is
-	// what happened on the SLM-RP4, where a locally tagged image produced
-	// "pull access denied" and failed an update that was entirely ready.
+	// A failed pull must be forgiven when the image is already present.
 	docker := &fakeDocker{
 		inspectSize: 100,
 		pullErr:     errors.New("pull access denied for openplc-runtime"),
@@ -606,17 +598,8 @@ func TestAFailureAfterTheSwapBeginsDoesEnterRecovery(t *testing.T) {
 }
 
 func TestARefusedUpdateLeavesTheSupervisorReportingReality(t *testing.T) {
-	// BeginUpdate moves the supervisor to "updating" and EndUpdate only
-	// releases the claim, so without restoring state a device that merely
-	// refused a bad version reports itself as mid-update forever. Seen on the
-	// SLM-RP4: a failed pull left the bootloader stuck on "updating" while the
-	// PLC ran happily underneath.
-	//
-	// It restores rather than reconciles. Reconcile re-derives the state by
-	// ACTING on the container: from recovery it would start the runtime that
-	// recovery deliberately stopped and call the device healthy, and with the
-	// container absent it would leave the state on "starting" for good after
-	// the pull failed again.
+	// A refused update must RESTORE the supervisor's prior state (not
+	// Reconcile), otherwise a recovery-state device gets started.
 	docker := &fakeDocker{
 		inspectErr: errors.New("no such image"),
 		pullErr:    errors.New("manifest unknown"),

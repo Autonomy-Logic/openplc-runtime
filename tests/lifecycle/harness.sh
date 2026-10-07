@@ -39,11 +39,9 @@ ls build/libplc_*.so >/dev/null 2>&1 || {
 echo "  program: $(ls build/libplc_*.so)"
 
 echo "### plugins.conf: the shipped set plus the fake VPP"
-# The stock Python entries stay, disabled, because loading them is what
-# initialises the interpreter -- and has_python_plugin && Py_IsInitialized() is
-# the precondition for the Py_FinalizeEx() shutdown crash. A conf with only the
-# native fixture in it quietly makes that whole class untestable.
-# Native plugin lines whose .so is not built are dropped: they only add warnings.
+# Keep the stock Python entries disabled; loading them initialises the
+# interpreter, which is the precondition for the Py_FinalizeEx shutdown
+# crash this suite covers.
 grep -v 'libs7comm_plugin\|libethercat_plugin' plugins_default.conf > plugins.conf
 # name,path,enabled,type,config_json,venv   (type 1 = native)
 printf 'fakevpp,./build/plugins/libfakevpp_plugin.so,1,1,/tmp/fakevpp_config.json,\n' >> plugins.conf

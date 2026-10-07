@@ -11,12 +11,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// reusePort sets SO_REUSEADDR and SO_REUSEPORT on the listening socket.
-//
-// The runtime sets both when it binds the discovery port. Linux shares a UDP
-// port only when every socket involved asked to, so the bootloader has to ask
-// too -- otherwise its lingering socket makes the runtime's bind fail, and the
-// runtime binds once at start-up and never retries.
+// reusePort sets SO_REUSEADDR and SO_REUSEPORT so the port can be shared
+// with the runtime, which also sets both.
 func reusePort(_, _ string, c syscall.RawConn) error {
 	var setErr error
 	err := c.Control(func(fd uintptr) {

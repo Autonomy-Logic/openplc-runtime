@@ -17,44 +17,16 @@ import (
 	"time"
 )
 
-// Tokens are HS256 JWTs in the same shape as the runtime's, but they are NOT
-// the runtime's tokens and neither service will accept the other's.
-//
-// What the two share is the credential database, not a session: the editor
-// keeps the user's credentials after login and signs in to the bootloader
-// separately when it needs to.
-//
-// Separation is enforced by the signing key, not by a claim. Both services
-// read the same JWT_SECRET_KEY from the same .env, so signing with it
-// directly made the two token spaces identical: a 2-hour bootloader token was
-// a valid runtime token, eight times the runtime's own 15-minute TTL, and the
-// runtime's /logout revoked neither. The bootloader therefore signs with a key
-// DERIVED from that secret (see bootloaderKey), which the runtime does not
-// know how to compute. A runtime token fails the signature check here, and a
-// bootloader token fails it there -- with no change required in the runtime,
-// and no reliance on a verifier bothering to check an audience claim.
-//
-// The `aud` claim below is belt and braces: it makes the intent legible in a
-// decoded token and would catch a future signing change that reunified the
-// keys by accident.
-//
-// The rest of the claim set still mirrors flask_jwt_extended's -- "sub",
-// "type", "iat", "nbf", "exp", "jti" -- so the two are recognisable to the
-// same tooling. A hand-rolled implementation rather than a JWT library
-// because HS256 is an HMAC over two base64url segments, and the
-// library-shaped risk here (accepting "alg": "none", or letting the token
-// choose its own algorithm) is precisely what an explicit implementation
-// avoids: the algorithm below is a constant, never read from the header.
+// Bootloader HS256 JWTs. Signed with a key DERIVED from JWT_SECRET_KEY
+// (see bootloaderKey) so the runtime cannot verify these. Hand-rolled:
+// HS256 is a constant, never read from the header.
 
 const (
 	// TokenType is flask_jwt_extended's discriminator. A refresh token
 	// presented as an access token must not be accepted.
 	TokenType = "access"
-	// DefaultTokenTTL is deliberately longer than the runtime's 15-minute
-	// default: a version change involves an image pull that can run for many
-	// minutes on a slow device, and having the caller's token expire midway
-	// through would strand a device mid-update. The bootloader owns its own
-	// sessions, so this does not have to match the runtime's.
+	// DefaultTokenTTL is longer than the runtime's 15 min default so a
+	// slow image pull during an update does not strand the token.
 	DefaultTokenTTL = 2 * time.Hour
 	// clockSkew tolerates a small disagreement between the editor's clock and
 	// the device's, which on an industrial box without NTP is routine.
@@ -66,13 +38,9 @@ const (
 	keyDomain = "openplc-bootloader/token/v1"
 )
 
-// bootloaderKey derives the bootloader's signing key from the runtime's
-// secret.
-//
-// HMAC with a fixed domain string: a one-way function of the shared secret
-// that the runtime never computes, so neither service can verify the other's
-// tokens. Anyone who can read .env can derive it, which is the point -- this
-// separates two token spaces on one device, it is not a secret from the host.
+// bootloaderKey derives the bootloader signing key from the runtime
+// secret via HMAC with a fixed domain string. One-way, so the runtime
+// cannot compute it and cannot verify bootloader tokens.
 func bootloaderKey(secret string) []byte {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(keyDomain))
@@ -106,12 +74,8 @@ type jwtHeader struct {
 	Typ string `json:"typ"`
 }
 
-// IssueToken mints an access token for the given user id.
-//
-// The subject is the user's numeric id rendered as a string, matching the
-// runtime's user_identity_lookup (“return str(user.id)“). A username here
-// would produce a token the runtime accepts structurally but then fails to
-// resolve to a user, which is a confusing way to be broken.
+// IssueToken mints an access token for the given user id. Subject is
+// the user's numeric id as a string, matching user_identity_lookup.
 func IssueToken(secret, userID string, ttl time.Duration) (string, error) {
 	if secret == "" {
 		return "", errors.New("cannot issue a token without a signing secret")
@@ -159,11 +123,8 @@ func VerifyToken(secret, token string) (*Claims, error) {
 	}
 	signingInput := parts[0] + "." + parts[1]
 
-	// The algorithm is NOT taken from the header. Trusting the header is the
-	// classic JWT vulnerability: a token claiming "alg": "none" or "HS256"
-	// against an RSA key gets verified against attacker-chosen rules. Here
-	// HS256 is the only thing that is ever computed, so a header saying
-	// otherwise simply fails the comparison below.
+	// Algorithm is a constant (HS256), never read from the header, so a
+	// token claiming "alg": "none" fails on the signature comparison.
 	expected := sign(secret, signingInput)
 	if subtle.ConstantTimeCompare([]byte(expected), []byte(parts[2])) != 1 {
 		return nil, ErrInvalidToken

@@ -6,7 +6,6 @@
 import math
 from typing import List, Dict, Any
 
-
 def gcd(a: int, b: int) -> int:
     """
     Calculate the Greatest Common Divisor of two numbers using Euclidean algorithm.
@@ -14,7 +13,6 @@ def gcd(a: int, b: int) -> int:
     while b != 0:
         a, b = b, a % b
     return a
-
 
 def calculate_gcd_of_cycle_times(io_points: List[Any]) -> int:
     """
@@ -36,7 +34,6 @@ def calculate_gcd_of_cycle_times(io_points: List[Any]) -> int:
 
     return result
 
-
 def get_batch_read_requests_from_io_points(io_points: List[Any]) -> Dict[int, List[Any]]:
     """
     Groups I/O points by Modbus read function code (1,2,3,4) and creates
@@ -52,7 +49,6 @@ def get_batch_read_requests_from_io_points(io_points: List[Any]) -> Dict[int, Li
             read_requests[fc].append(point)
     return read_requests
 
-
 def get_batch_write_requests_from_io_points(io_points: List[Any]) -> Dict[int, List[Any]]:
     """
     Groups I/O points by Modbus write function code (5,6,15,16) and creates
@@ -67,7 +63,6 @@ def get_batch_write_requests_from_io_points(io_points: List[Any]) -> Dict[int, L
                 write_requests[fc] = []
             write_requests[fc].append(point)
     return write_requests
-
 
 def get_modbus_registers_count_for_iec_size(iec_size: str) -> int:
     """
@@ -91,7 +86,6 @@ def get_modbus_registers_count_for_iec_size(iec_size: str) -> int:
         return 4
     else:
         return 1  # Default fallback
-
 
 def convert_modbus_registers_to_iec_value(registers: List[int], iec_size: str, use_big_endian: bool = False):
     """
@@ -129,7 +123,6 @@ def convert_modbus_registers_to_iec_value(registers: List[int], iec_size: str, u
             return (registers[3] << 48) | (registers[2] << 32) | (registers[1] << 16) | registers[0]
     else:
         raise ValueError(f"Unsupported IEC size for register conversion: {iec_size}")
-
 
 def convert_iec_value_to_modbus_registers(value: int, iec_size: str, use_big_endian: bool = False) -> List[int]:
     """
@@ -174,7 +167,6 @@ def convert_iec_value_to_modbus_registers(value: int, iec_size: str, use_big_end
     else:
         raise ValueError(f"Unsupported IEC size for register conversion: {iec_size}")
 
-
 def parse_modbus_offset(offset_str: str) -> int:
     """
     Parse Modbus offset string supporting decimal and hexadecimal formats.
@@ -206,7 +198,6 @@ def parse_modbus_offset(offset_str: str) -> int:
 
     return address
 
-
 def get_read_count_for_io_point(point: Any) -> int:
     """
     Returns how many Modbus registers/coils a read of `point` asks for.
@@ -221,7 +212,6 @@ def get_read_count_for_io_point(point: Any) -> int:
         registers_per_element = get_modbus_registers_count_for_iec_size(point.iec_location.size)
         return point.length * registers_per_element
     return point.length
-
 
 def get_zero_payload_for_io_point(point: Any) -> List[Any]:
     """

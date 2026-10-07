@@ -27,14 +27,9 @@ def _hex(data: bytes) -> str:
     return " ".join(f"{b:02X}" for b in data)
 
 
-# The real signed 98-byte license blob, copied verbatim from
-# openplc-packages/license-core/test/license-golden-signed.json ("blobHex") --
-# the same vector license_core's host test and the editor/backend unit tests use
-# (anchor 00b18ced -> deviceId 659a3520540f803625ddc34081e893d3, product
-# 29a17c7c2486d355). Using it here means these tests assert the runtime against
-# an artifact produced by ANOTHER implementation, not against bytes this file
-# made up: if the magic or the crc32 range ever drifts on either side, this
-# literal stops validating.
+# Real 98-byte signed license blob from license-core's golden vector.
+# If magic or crc32 range drifts on either side, this literal stops
+# validating.
 _GOLDEN_BLOB_HEX = (
     "4f504c430100659a3520540f803625ddc34081e893d329a17c7c2486d355"
     "fbff79f73b679ce59fa93304507867e82d7b41b93acd98274dc48531299e"
@@ -116,21 +111,17 @@ def test_get_board_id_returns_raw_ascii_anchor(tmp_path, monkeypatch):
 
 
 def test_get_board_id_missing_anchor_is_empty_success(tmp_path, monkeypatch):
-    # No anchor -> LIC_UNSUPPORTED (review 2026-08-20, R2): on this medium 0x48
-    # is ONLY the licensing anchor, and SUCCESS/0 made every anchor-less host
-    # derive the SAME deviceId -- a purchase bound to it never validated.
+    # No anchor -> LIC_UNSUPPORTED: on this medium 0x48 is only the
+    # licensing anchor, and SUCCESS/0 would make every anchor-less host
+    # derive the SAME deviceId, so purchases bound to it never validate.
     monkeypatch.setattr(lic, "ANCHOR_PATH", str(tmp_path / "nope"))
     assert lic.handle_license_command("48") == "48 85"
 
 
 def test_write_refuses_path_traversal(tmp_path, monkeypatch):
-    # A forged vpp_plugins.conf whose config_path escapes the runtime root must
-    # NOT let 0x49 write outside it (defense-in-depth; mirrors apply_vpp_plugin_conf).
-    #
-    # The blob is the VALID golden one on purpose: with blob validation in front
-    # of the path resolution, an invalid blob would be refused before the guard
-    # was ever reached, and this test could no longer tell a working guard from a
-    # missing one.
+    # 0x49 must refuse a config_path that escapes the runtime root even
+    # with a valid blob (blob validation runs first, so an invalid blob
+    # would never reach the path guard).
     cwd = tmp_path / "runtime"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
@@ -193,22 +184,6 @@ def test_write_without_installed_plugin_is_unsupported(tmp_path, monkeypatch):
     # Valid blob, so UNSUPPORTED can only come from the missing plugin config.
     cmd = _hex(bytes([0x49, 0x00, 0x62]) + _golden_blob())
     assert lic.handle_license_command(cmd) == "49 85"  # LIC_UNSUPPORTED
-
-
-# --------------------------------------------------------------------------
-# Blob integrity, both directions
-#
-# 0x4A used to test the LENGTH only. A 98-byte file that does not verify -- an
-# SD card cloned from another Pi, corrupted flash, a torn write -- answered
-# `4A 7E`, which the editor reads as "magic + crc32 verified", so it reported
-# "Licensed" and returned BEFORE asking the backend for a fresh license. The one
-# automatic repair path never ran precisely because the editor trusted the blob,
-# while license_core refused it and the plugin dropped to demo. The same file on
-# an ESP32 answers 0x83/0x84 and the editor recovers automatically.
-#
-# 0x49 wrote whatever it was handed, so 98 bytes of junk destroyed a valid
-# license and answered SUCCESS.
-# --------------------------------------------------------------------------
 
 
 def test_read_reports_corrupt_when_the_crc_does_not_verify(tmp_path, monkeypatch):
@@ -354,15 +329,6 @@ def test_read_maps_an_unreadable_license_to_io_error(tmp_path, monkeypatch):
     assert lic.handle_license_command("4A") == "4A 82"  # IO_ERROR
 
 
-# --------------------------------------------------------------------------
-# Anchor normalization (0x48)
-#
-# The C is canonical: rpi_plugin.c is the side that decides whether the license
-# verifies. Byte-for-byte parity with the real C source is pinned separately, by
-# test_vpp_anchor_cross_language.py; these are the wire-level consequences.
-# --------------------------------------------------------------------------
-
-
 def test_anchor_keeps_a_trailing_tab(tmp_path, monkeypatch):
     """TAB is NOT in the C's strip list, so it must not be in ours either.
 
@@ -497,16 +463,6 @@ def test_a_single_candidate_does_not_warn(tmp_path, monkeypatch):
         lic.logger.removeHandler(handler)
 
     assert [r for r in records if r.levelno >= logging.WARNING] == []
-
-
-# --------------------------------------------------------------------------
-# Containment guard (is_inside_root)
-#
-# The pre-existing traversal test above uses a sibling that shares NO string
-# prefix with the root, so the old buggy `startswith(root)` check rejected it
-# too -- it could not tell the fixed guard from the broken one. These pin the
-# two cases that actually distinguish them.
-# --------------------------------------------------------------------------
 
 
 def test_rejects_sibling_that_shares_the_root_as_a_string_prefix(tmp_path):

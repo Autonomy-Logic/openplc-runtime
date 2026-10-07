@@ -1,29 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-/*
- * debug_write_journal.h — serialized external variable write/force path.
- *
- * The editor debugger and the OPC-UA plugin both need to write or force PLC
- * variables addressed by the strucpp debug (arr, elem) namespace. Doing that
- * straight from their own threads (the unix-socket thread, the OPC-UA asyncio
- * thread) pokes the IECVar concurrently with the IEC task workers — a data
- * race (OpenPLC bug #3) and the mechanism behind the OPC-UA global-corruption
- * bug.
- *
- * This journal makes every external write/force an ENQUEUE from any thread
- * (runtime_external_write), drained exactly once per cycle by the dispatcher
- * at the no-task-running window. Because the dispatcher is the only consumer
- * and it drains while no worker is mid-scan (and, for v4, while it owns the
- * image double-buffer), the application is race-free without per-variable
- * locking. The queue is mutex-protected (low rate — external writes are
- * exceptional), and the drain has a lock-free skip-if-empty fast path so an
- * idle cycle pays nothing.
- *
- * Routing of located variables (through the image journal + forced-slot
- * bitmap) is layered on top of this; globals/program-internal leaves apply
- * straight to the IECVar via the strucpp debug exports.
- */
+/* Serialized external write/force path. Writers ENQUEUE from any
+ * thread via runtime_external_write; the dispatcher drains at the
+ * no-task-running window, so IECVars are never touched concurrently. */
 #ifndef DEBUG_WRITE_JOURNAL_H
 #define DEBUG_WRITE_JOURNAL_H
 
@@ -40,13 +20,10 @@ typedef enum {
     DBGW_OP_UNFORCE = 2  /* unforce — release a pinned variable                */
 } debug_write_op_t;
 
-/*
- * Enqueue an external write/force/unforce of the debug leaf (arr, elem).
- * Safe to call from any thread (debugger socket thread, OPC-UA plugin
- * thread). `bytes`/`len` carry the value payload for WRITE/FORCE (ignored
- * for UNFORCE). Returns 0 on success, -1 if the queue is full (dropped +
- * logged). The write is applied at the next dispatcher drain.
- */
+/* Enqueue an external write/force/unforce of debug leaf (arr, elem).
+ * Thread-safe. bytes/len are the payload for WRITE/FORCE (ignored for
+ * UNFORCE). Returns 0, or -1 if full (dropped + logged). Applied at
+ * the next dispatcher drain. */
 int runtime_external_write(uint8_t arr, uint16_t elem, uint8_t op,
                            const uint8_t *bytes, uint16_t len);
 

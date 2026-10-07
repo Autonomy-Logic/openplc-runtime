@@ -4,10 +4,9 @@
 """
 OPC-UA ↔ PLC synchronization — request-driven.
 
-Replaces the old unconditional bidirectional poll (which read every
-writable node every cycle and wrote it back to the PLC — OpenPLC
-bug #2: OPC-UA fighting the program for readwrite variables). The
-model is now:
+Replaces the old unconditional bidirectional poll, which read every
+writable node every cycle and wrote it back to the PLC — making the
+server fight the program for readwrite variables. The model is now:
 
   - READS (client → server): a per-node value_callback returns the
     LIVE PLC value via args.debug_read at read time. No staleness, no
@@ -74,12 +73,10 @@ except ImportError:
         map_plc_to_opcua_type,
     )
 
-
 # Address tuple type alias for clarity.
 Addr = Tuple[int, int]
 
 _VALUE_ATTR = ua.AttributeIds.Value
-
 
 class SynchronizationManager:
     """Request-driven OPC-UA ↔ PLC value bridge (see module docstring)."""
@@ -188,14 +185,10 @@ class SynchronizationManager:
                      "falling back to push-only sync")
             return
 
-        # A value_setter is installed on EVERY node — not only readwrite
-        # ones. Reason: write_attribute_value() clears value_callback when no
-        # setter is present (its else-branch), so our subscription push to a
-        # readonly node would otherwise kill that node's live-read callback.
-        # The setter forwards to the PLC only for readwrite nodes; on readonly
-        # nodes it is a no-op (client writes are already denied upstream by the
-        # PreWrite permission callback), but it keeps value_callback alive
-        # across pushes.
+        # Install value_setter on EVERY node. write_attribute_value()
+        # clears value_callback when no setter is present, so a push
+        # to a readonly node would kill its live-read. Readonly setter
+        # is a no-op; PreWrite already denies client writes.
         for (arr, elem), node in self.variable_nodes.items():
             nodeid = node.node.nodeid
             try:
@@ -250,12 +243,9 @@ class SynchronizationManager:
 
         def callback(nodeid: Any, attr: Any) -> ua.DataValue:
             try:
-                # A read that did not reach the PLC is reported as BAD, not as
-                # a default stamped Good. Substituting a default and calling it
-                # Good gives the client no way to tell "the string is empty"
-                # from "this server cannot read strings" -- which is exactly
-                # how STRING reads went unnoticed: every one of them returned
-                # '' with a Good status while the PLC held a value.
+                # A failed read is reported BAD, not a default stamped Good:
+                # the client must be able to distinguish "value is empty"
+                # from "server cannot read it".
                 failed = False
                 if length > 0:
                     values = []
@@ -351,33 +341,9 @@ class SynchronizationManager:
             plc_value = int(tv_sec) * 1_000_000_000 + int(tv_nsec)
         ok = debug_write_value(self.args, addr[0], addr[1], datatype, plc_value)
         if not ok:
-            # KNOWN LIMITATION: the client is still told Good.
-            #
-            # asyncua's value_setter returns None -- there is no channel for a
-            # per-value StatusCode -- and `write_attribute_value` calls it
-            # unguarded before `return ua.StatusCode()`. Raising here would
-            # propagate out of the Write service, which has no try/except
-            # around its per-value loop, and fault the WHOLE request including
-            # the values that did write. A coarse fault is worse than a log for
-            # a multi-value write, so this stays a log until asyncua grows a
-            # way to report one value as bad.
-            #
-            # What still reaches here is NARROWER than a refused write, and it
-            # is worth being exact because the gap is silent.
-            #
-            # `plugin_debug_write` (plugin_driver.c) answers 0x7E as soon as the
-            # write is QUEUED, and `apply_global` (debug_write_journal.cpp)
-            # discards whatever `strucpp_debug_write` returns when the journal
-            # is later applied. So an out-of-bounds leaf, a CONSTANT/read-only
-            # leaf and an over-cap payload are all reported Good to the client
-            # AND never logged: the write is simply dropped at apply time with
-            # nobody watching.
-            #
-            # Only three things still produce False: no program loaded (0x81),
-            # the journal queue being full (0x82), and a Python-side encode
-            # failure. Closing the rest needs the applied status carried back
-            # out of the journal, which is a change to the journal contract
-            # rather than to this plugin -- DOPE-647.
+            # KNOWN LIMITATION: client is still told Good. asyncua's
+            # value_setter has no per-value StatusCode channel; raising
+            # would fault the whole multi-value Write.
             log_error(f"debug_write({addr[0]}, {addr[1]}) failed")
 
     # -----------------------------------------------------------------
@@ -490,18 +456,9 @@ class SynchronizationManager:
     async def _push_array_node(
         self, node: VariableNode, base_arr: int, base_elem: int
     ) -> None:
-        # An element that did not read is reported BAD for the whole array,
-        # exactly as the read callback reports a failed scalar. Substituting a
-        # default and pushing it Good is the bug this plugin was fixed for --
-        # the subscriber cannot tell "the element is 0" from "this element
-        # could not be read", and an array kept its own copy of that mistake
-        # one function away from the callback that lost it.
-        #
-        # The status is per-DataValue, not per-element, so one bad element
-        # marks the push: OPC-UA has no way to say "element 3 is stale" on a
-        # plain array value. The scalar path above does not need this -- its
-        # caller skips the push entirely when the read fails, leaving the
-        # client's last good value in place.
+        # Any element that failed to read marks the whole array BAD —
+        # OPC-UA has no per-element status on a plain array value, and
+        # pushing default-filled Good would hide the failure.
         length = node.array_length or 0
         values = []
         failed = False

@@ -50,12 +50,10 @@ try:
 except ImportError:
     from opcua_logging import log_debug, log_error, log_info, log_warn
 
-
 # ioctl constants for network interface enumeration (Linux)
 _SIOCGIFCONF = 0x8912  # ioctl request code to get interface configuration
 _SIZEOF_IFREQ = 40  # sizeof(struct ifreq) on 64-bit Linux
 _MAX_INTERFACES = 128  # Maximum number of network interfaces to query
-
 
 def get_local_ip_addresses() -> Set[str]:
     """
@@ -133,7 +131,6 @@ def get_local_ip_addresses() -> Set[str]:
         log_warn(f"Error getting local IP addresses: {e}")
 
     return ip_addresses
-
 
 def generate_certificate_with_sans(
     cert_path: Path,
@@ -288,7 +285,6 @@ def generate_certificate_with_sans(
         log_error(f"Failed to generate certificate: {e}")
         return False
 
-
 class OpenPLCRoleRuleset(PermissionRuleset):
     """
     Custom permission ruleset for OpenPLC OPC-UA server.
@@ -365,7 +361,6 @@ class OpenPLCRoleRuleset(PermissionRuleset):
         if action_type_id in self._permission_dict.get(user.role, set()):
             return True
         return False
-
 
 class OpcuaSecurityManager:
     """Manages OPC-UA security configuration and certificates."""

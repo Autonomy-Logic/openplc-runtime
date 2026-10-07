@@ -26,19 +26,10 @@
 /* Default RUN: no plugin implementing the interface means no gating. */
 static atomic_int switch_position = PLC_SWITCH_RUN;
 
-/**
- * Set when the switch moves, cleared when someone acts on it.
- *
- * Exists because state-change requests are dropped while a transition is in
- * flight: a flip during a start or stop is refused, and without a record of it
- * the switch and the PLC end up disagreeing with nobody retrying. Only the fact
- * of movement is kept, never a queue of requests -- `switch_position` above
- * already holds where the switch came to rest, which is the only position that
- * matters once the dust settles.
- *
- * Deliberately platform-agnostic: every VPP that owns a switch reports through
- * plc_set_switch_position(), so no plugin needs to know reconciliation exists.
- */
+/* Set when the switch moves, cleared when someone acts on it. State
+ * requests are dropped during a transition, so without this bit a
+ * flip during start/stop would never be retried. Only the fact of
+ * movement is kept; switch_position holds where it came to rest. */
 static atomic_bool switch_moved = false;
 
 void plc_set_switch_position(plc_switch_t position)

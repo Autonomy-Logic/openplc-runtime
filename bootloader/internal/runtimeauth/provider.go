@@ -11,19 +11,9 @@ import (
 	"sync"
 )
 
-// Provider serves the runtime's credentials, reloading them when they change.
-//
-// Loading once at start-up was wrong in the case that matters most: on a fresh
-// install the bootloader starts BEFORE the runtime has ever run, so neither
-// `.env` nor `restapi.db` exists yet. Every authenticated route then answered
-// 503 until someone restarted the bootloader container -- while
-// /capabilities answered happily, so the editor offered "Change runtime
-// version" and the login behind it failed. The same staleness applies whenever
-// the runtime regenerates its secrets.
-//
-// So the files are re-examined on use. A stat of each per request is cheap
-// next to the PBKDF2 verification it precedes, and it means the bootloader
-// becomes usable the moment the runtime has written them, with no restart.
+// Provider serves the runtime's credentials, re-examined on use so the
+// bootloader becomes usable the moment the runtime first writes .env and
+// restapi.db (which may happen after the bootloader has started).
 type Provider struct {
 	dataDir string
 	log     *slog.Logger

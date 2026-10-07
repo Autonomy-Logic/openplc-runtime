@@ -1,22 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// strucpp_abi.hpp — runtime-side mirror of the strucpp ABI we walk.
-//
-// The runtime executable is built ONCE; the .so it loads at runtime
-// carries the actual strucpp runtime headers (shipped with the user
-// program upload, used by scripts/compile.sh to build the .so). The
-// runtime itself does NOT vendor strucpp headers — only this minimal
-// set of layout-compatible mirror declarations.
-//
-// CONTRACT: every type below MUST match the layout strucpp's vendored
-// headers expose. The .so's vtables, struct offsets, and enum values
-// are all assumed identical. ABI consistency between the runtime and
-// the strucpp version a user .so was built against is maintained as
-// part of the development cycle — not enforced here. When strucpp's
-// ABI version bumps in a breaking way, update this file.
-//
-// Mirrored from strucpp v0.4.5 (iec_located.hpp + iec_std_lib.hpp).
+// Runtime-side mirror of the strucpp ABI the loaded .so exposes.
+// Every type below MUST match that layout: vtables, struct offsets,
+// enum values. Mirrored from strucpp v0.4.5; update on an ABI bump.
 
 #ifndef OPENPLC_STRUCPP_ABI_HPP
 #define OPENPLC_STRUCPP_ABI_HPP
@@ -53,23 +40,6 @@ struct LocatedVar {
     void       *pointer;
 };
 
-// ---------------------------------------------------------------------------
-// ProgramBase (mirror of strucpp::ProgramBase, iec_std_lib.hpp)
-//
-// Polymorphic base. The runtime calls ->run() through a pointer; the
-// vtable resolves into the .so's address space (where the actual
-// derived class lives). Any extra virtual methods strucpp adds AFTER
-// run() are fine — the runtime only calls run() so it doesn't need
-// them in the mirror, but we keep them to preserve the vtable slot
-// indices.
-//
-// strucpp v0.4.5 ProgramBase virtuals, in order:
-//   0: ~ProgramBase()
-//   1: run()
-//   2: getRetainVars() const
-//   3: getRetainCount() const
-// ---------------------------------------------------------------------------
-
 struct RetainVarInfo;  // opaque; we never dereference
 
 struct ProgramBase {
@@ -77,13 +47,9 @@ struct ProgramBase {
     virtual void run() = 0;
     virtual const RetainVarInfo *getRetainVars() const { return nullptr; }
     virtual size_t getRetainCount() const { return 0; }
-    // RESERVED vtable slots 4,5 (formerly sync_in / sync_out). The shared-global
-    // model moved from runtime-orchestrated per-task copy-in/out to per-global
-    // mutexes owned by strucpp's GlobalVar<V>, so the runtime no longer calls
-    // these and current strucpp no longer overrides them. They are KEPT as
-    // no-op base slots — never renumber the vtable, or every program built
-    // against an older ABI would mis-dispatch run()/located_range() on a newer
-    // runtime (and vice versa).
+    // RESERVED vtable slots 4,5 (formerly sync_in/sync_out). Kept as
+    // no-op base slots: renumbering the vtable would mis-dispatch
+    // run()/located_range() across ABI versions in either direction.
     virtual void sync_in() {}
     virtual void sync_out() {}
     virtual void located_range(uint32_t *offset, uint32_t *count) const {
@@ -114,19 +80,6 @@ struct ResourceInstance {
     TaskInstance *tasks;
     size_t        task_count;
 };
-
-// ---------------------------------------------------------------------------
-// ConfigurationInstance (mirror of strucpp::ConfigurationInstance,
-// iec_std_lib.hpp)
-//
-// Polymorphic. The runtime obtains a ConfigurationInstance* via the
-// shim's strucpp_get_config() and walks resources/tasks/programs by
-// virtual dispatch. vtable slots, in order:
-//   0: ~ConfigurationInstance()
-//   1: get_name() const
-//   2: get_resources()
-//   3: get_resource_count() const
-// ---------------------------------------------------------------------------
 
 struct ConfigurationInstance {
     virtual ~ConfigurationInstance() = default;

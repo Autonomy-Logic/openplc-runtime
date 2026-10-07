@@ -28,7 +28,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from asyncua import Server, ua
 
-
 class TestOpcuaServer:
     """
     Standalone test server for subscription verification.
@@ -264,7 +263,6 @@ class TestOpcuaServer:
         finally:
             await self.stop()
 
-
 async def main():
     """Main entry point."""
     print("=" * 60)
@@ -278,7 +276,6 @@ async def main():
     except KeyboardInterrupt:
         print("\nShutdown requested...")
         await server.stop()
-
 
 if __name__ == "__main__":
     try:

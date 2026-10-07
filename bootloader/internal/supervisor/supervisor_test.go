@@ -35,8 +35,9 @@ type fakeDocker struct {
 	// image so existing tests keep describing a matching container.
 	configImage string
 
-	// privateUTS models a pre-RTOP-292 container. Defaults off, so every other
-	// test still describes a container to leave alone.
+	// privateUTS models an older container with a private UTS namespace.
+	// Defaults off so every other test still describes a container
+	// the supervisor should leave alone.
 	privateUTS bool
 
 	// neverReportsUTS models an engine that accepts UTSMode and never echoes
@@ -388,11 +389,8 @@ func TestRecoveryStopsTheRuntimeSoDiscoveryStaysExclusive(t *testing.T) {
 }
 
 func TestASuccessfulRestartDoesNotEraseTheCrashHistory(t *testing.T) {
-	// The common crash-loop shape is: die, come back up fine, die again -- a
-	// program that faults on load lets the webserver start before it takes the
-	// process down. If a healthy start cleared the count, the evidence would be
-	// zeroed between every crash, the threshold could never be reached, and the
-	// supervisor would restart forever instead of handing the device over.
+	// Classic crash loop: die, healthy, die. A healthy start must not
+	// reset the window or the threshold could never be reached.
 	docker := &fakeDocker{exists: true, running: true, health: "healthy", startMakesHealthy: true, imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 	ctx := context.Background()
@@ -550,8 +548,8 @@ func TestStartTimeoutIsReportedRatherThanHanging(t *testing.T) {
 }
 
 func TestRunEntersRecoveryWhenTheRuntimeCannotStart(t *testing.T) {
-	// Recovery must be reachable precisely when the runtime will not come up:
-	// that is the case RTOP-283 exists for.
+	// Recovery must be reachable precisely when the runtime will not
+	// come up — the whole reason the bootloader exists.
 	docker := &fakeDocker{startErr: errors.New("no such image"), imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{err: errors.New("down")})
 
@@ -567,10 +565,8 @@ func TestRunEntersRecoveryWhenTheRuntimeCannotStart(t *testing.T) {
 // --- image acquisition ---------------------------------------------------
 
 func TestAFreshInstallPullsTheRuntimeImage(t *testing.T) {
-	// The bootloader is what fetches the runtime on a new device: install.sh
-	// writes the spec and starts the bootloader without pulling anything.
-	// Without this the very first boot goes straight to recovery with
-	// "No such image", which is what the integration suite caught.
+	// install.sh starts the bootloader without pulling, so the first
+	// boot would go straight to recovery without this pull.
 	docker := &fakeDocker{startMakesHealthy: true, imagePresent: false}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 
@@ -617,11 +613,8 @@ func TestAFailedImagePullIsReportedWithTheImageName(t *testing.T) {
 }
 
 func TestTheDownloadIsVisibleInTheStatusWhileItRuns(t *testing.T) {
-	// On a slow device this pull runs for minutes. The difference between
-	// "downloading 50%" and an apparently hung device is whether the editor
-	// has anything to show, so the reason has to be updated DURING the pull,
-	// not merely at the end. Captured from inside the progress callback,
-	// because by the time Reconcile returns the state is already healthy.
+	// Reason must be updated DURING the pull, not at the end. Captured
+	// from inside onPullProgress because Reconcile returns healthy.
 	docker := &fakeDocker{startMakesHealthy: true, imagePresent: false}
 	sup := newTestSupervisor(docker, &fakeProbe{})
 	docker.onPullProgress = func() { docker.observed = sup.Status() }
@@ -642,11 +635,8 @@ func TestTheDownloadIsVisibleInTheStatusWhileItRuns(t *testing.T) {
 }
 
 func TestAContainerOnTheWrongImageIsRecreated(t *testing.T) {
-	// The bug the integration suite caught. A container keeps the image
-	// reference it was created from for life, so after a version change the
-	// existing container is the OLD version. Reconcile used to see "exists but
-	// stopped" and simply start it again -- so the update reported success
-	// while the device carried on running the version it started with.
+	// A container keeps its image for life; after a version change
+	// Reconcile must recreate, not just restart.
 	docker := &fakeDocker{
 		exists: true, running: false, imagePresent: true, startMakesHealthy: true,
 		// fakeSpec serves "test:1"; this container was built from something else.
@@ -665,7 +655,8 @@ func TestAContainerOnTheWrongImageIsRecreated(t *testing.T) {
 	}
 }
 
-// RTOP-292: the image checks see nothing wrong, so a pinned board keeps it.
+// Image checks see nothing wrong with a private-UTS container, so the
+// supervisor has to recreate it on its own.
 func TestAContainerWithAPrivateUTSNamespaceIsRecreated(t *testing.T) {
 	docker := &fakeDocker{
 		exists: true, running: true, health: "healthy", imagePresent: true,
@@ -768,15 +759,9 @@ func TestAContainerOnTheRightImageIsStillAdopted(t *testing.T) {
 
 // A crash after a stop that did nothing must still count as a crash.
 //
-// The leak this pins: enterRecovery and Stop suppress crash accounting for the
-// exit they are about to cause, but a container that has ALREADY exited never
-// emits a `die` event -- and the daemon answers the stop with 304/404. The
-// suppression therefore outlived the stop and was spent on the next genuine
-// crash instead, which the supervisor then read as "stopped as expected" and
-// did not restart. The PLC stayed down while Status() still said healthy.
-//
-// The crash-loop path always ends in that state: the third die is what calls
-// enterRecovery, so by then the container is already gone.
+// Pins: a stop against an already-exited container (no die event, 304
+// from the daemon) must not leave the expectStop counter armed to
+// suppress the NEXT genuine crash.
 func TestAStopThatDidNothingDoesNotSuppressTheNextCrash(t *testing.T) {
 	docker := &fakeDocker{
 		exists: true, running: true, health: "healthy",

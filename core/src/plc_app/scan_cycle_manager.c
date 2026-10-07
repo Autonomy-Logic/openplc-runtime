@@ -12,17 +12,14 @@
 #include "scan_cycle_manager.h"
 #include "utils/utils.h"
 
-// Use CLOCK_MONOTONIC everywhere to match the clock used by sleep_until()
-// (clock_nanosleep with CLOCK_MONOTONIC). Using CLOCK_MONOTONIC_RAW here
-// would cause progressive drift against the sleep clock due to NTP slew
-// adjustments, eventually leading to false overrun detection after ~30-60
-// minutes of continuous operation.
+// CLOCK_MONOTONIC matches clock_nanosleep's clock in sleep_until().
+// CLOCK_MONOTONIC_RAW would drift against the sleep clock through NTP
+// slew and cause false overruns after ~30-60 minutes.
 #define OPENPLC_CLOCK CLOCK_MONOTONIC
 
-// Target wall-clock window for the time-based EWMA averages, in microseconds.
-// Matches the editor's 2 s polling cadence so the displayed avg stays stable
-// between polls and tracks recent drift rather than freezing as a Welford
-// historical mean would after ~10^7 cycles.
+// EWMA window (us) for time-based averages. Matches the editor's 2 s poll
+// so the displayed avg tracks recent drift and does not freeze like a
+// Welford historical mean would after ~10^7 cycles.
 #define EWMA_TARGET_WINDOW_US 2000000
 
 static uint64_t ts_now_us(void)
@@ -192,13 +189,9 @@ int format_timing_stats_response(char *buffer, size_t buffer_size)
     if (n < 0) return 0;
     offset += (size_t)n;
 
-    /* Hold plc_tasks_reader_lock for the whole iteration. the TRANSITIONING state
-     * gates new commands but does not bracket an in-flight STATS call —
-     * a plugin-initiated STOP can fire while we're mid-loop, the bootstrap
-     * thread joins task threads and frees plc_tasks[], and we'd then read
-     * freed memory (or worse, lock a destroyed tracker mutex). The lock
-     * makes the alloc/free critical section in plc_cycle_thread mutually
-     * exclusive with the iteration here. */
+    /* Hold plc_tasks_reader_lock for the whole iteration: a plugin STOP
+     * can fire mid-loop and free plc_tasks[]. The lock makes the alloc/
+     * free critical section in plc_cycle_thread mutually exclusive. */
     plc_tasks_reader_lock();
     for (size_t i = 0; i < plc_task_count; ++i)
     {

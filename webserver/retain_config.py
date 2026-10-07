@@ -48,11 +48,8 @@ RETAIN_CONF_PATH = RUNTIME_ROOT / "retain.conf"
 DEFAULT_RETAIN_PATH = str(PERSISTENT_DATA_DIR / "retain.bin")
 DEFAULT_FLUSH_SECONDS = 5
 
-# Bounds on the flush period.  The floor is not arbitrary: the runtime hands the
-# blob over every scan cycle, and a sub-second flush would write through at
-# something close to scan rate, which is exactly what the buffering exists to
-# avoid.  The ceiling keeps "enabled" from meaning "saved once an hour", which
-# would look like retention and behave like none.
+# Flush-period bounds: floor avoids writing at scan rate (defeats the
+# buffering); ceiling keeps "enabled" from meaning "once an hour".
 MIN_FLUSH_SECONDS = 1
 MAX_FLUSH_SECONDS = 3600
 

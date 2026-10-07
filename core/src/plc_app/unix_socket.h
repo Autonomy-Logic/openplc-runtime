@@ -20,10 +20,10 @@ void *unix_socket_thread(void *arg);
 // Setter for the plugin driver (called by plc_main after driver creation)
 void unix_socket_set_plugin_driver(void *driver);
 
-// Spawn a detached worker thread that transitions the PLC to `target`.
-// Shared with plugin_driver so a plugin's request_plc_stop callback goes
-// through the same transition-guarded path as an external STOP command
-// (same overlap protection: plc_claim_transition refuses while TRANSITIONING).
+// Spawn a detached worker that transitions the PLC to `target`. Shared
+// with plugin_driver so plugin-initiated requests take the same
+// transition-guarded path as a socket STOP (plc_claim_transition
+// refuses while TRANSITIONING).
 bool plc_begin_transition(PLCState target);
 
 /**

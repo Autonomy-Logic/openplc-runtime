@@ -1,20 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-/*
- * debug_handler_mocks.h — controllable fakes for the strucpp debugger ABI.
- *
- * The runtime resolves these function pointers from the loaded program .so
- * at start time (image_tables.cpp:symbols_init). For tests, we install
- * fakes whose behavior can be programmed per-test via the `mock_debug_*`
- * setters: array layout, per-element bytes, write capture, and forced
- * "out of range" returns from the .so side so we can verify the runtime
- * gate doesn't depend on cooperation from the .so.
- *
- * Tests opt into the fakes via mock_debug_install() (typically in setUp).
- * mock_debug_reset() returns the table to a canonical empty state without
- * tearing down the function pointers, so each test sees a fresh slate.
- */
+/* Fakes for the strucpp debugger ABI. install() replaces the
+ * ext_strucpp_debug_* pointers, reset() clears the fake table.
+ * Per-test setters program layout, bytes, writes and OOB returns. */
 
 #ifndef TESTS_SUPPORT_DEBUG_HANDLER_MOCKS_H
 #define TESTS_SUPPORT_DEBUG_HANDLER_MOCKS_H
@@ -72,10 +61,8 @@ const mock_debug_set_capture_t *mock_debug_last_set(void);
 /* Override the return value of the next debug_set() / debug_write() call. */
 void mock_debug_program_set_status(uint8_t status);
 
-/* Install (or clear) the program MD5 string. NULL clears the pointer
- * entirely so tests can assert the "not loaded" branch. The
- * `terminated` flag controls whether a trailing null byte is written —
- * tests that exercise the unbounded-read mitigation set this to false.*/
+/* Install (NULL clears) the program MD5 string. `terminated` controls
+ * whether a trailing NUL is written. */
 void mock_debug_set_md5(const char *md5_chars, size_t len, bool terminated);
 
 #ifdef __cplusplus

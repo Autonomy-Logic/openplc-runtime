@@ -48,11 +48,9 @@ RtMutex              g_lock;
 std::vector<uint8_t> g_pending;
 bool                 g_dirty = false;
 
-/* The running program's identity, taken from the last load() and committed
- * alongside the blob by every save(). Held rather than written at load time so
- * a read never mutates storage, and so identity and bytes always reach the disk
- * as one unit — a file whose header says "program A" is guaranteed to contain
- * program A's values. Empty until the first load(). */
+/* Program identity from the last load(); committed alongside the blob by
+ * every save() so identity and bytes reach disk as one unit. Empty until
+ * the first load() so a read never mutates storage. */
 std::string          g_program_md5;
 
 std::string       g_path;
@@ -111,27 +109,15 @@ void read_config(const char *config_path)
     g_enabled.store(enabled);
 }
 
-/**
- * Publish the blob.
- *
- * Write-and-rename, so a power loss mid-write leaves the PREVIOUS good blob
- * rather than a half-written one. The runtime's crc would catch a torn write
- * and fall back to initial values anyway, but losing the previous values as
- * well would be gratuitous.
- */
+/* Publish the blob via write-and-rename, so a power loss mid-write keeps
+ * the PREVIOUS good blob instead of a half-written one. */
 void commit(const uint8_t *buf, uint16_t len, const std::string &program_id)
 {
     const std::string tmp = g_path + ".tmp";
 
-    /* File layout: [PROGRAM_ID_LEN bytes of md5 hex][blob].
-     *
-     * The identity goes in the same file as the bytes, and the same
-     * write-and-rename publishes both, so the two can never disagree — a
-     * separate sidecar could be updated and then lost, leaving one program's
-     * values labelled with another's. A file that predates this header, or a
-     * torn one shorter than the header, simply fails the identity check on the
-     * next load and is discarded, which is the correct outcome for bytes whose
-     * owner cannot be established. */
+    /* File layout: [PROGRAM_ID_LEN bytes of md5 hex][blob]. Identity and
+     * bytes publish together in one rename, so they cannot disagree. A
+     * file shorter than the header fails identity check on load. */
 
     FILE *f = fopen(tmp.c_str(), "wb");
     if (!f)
@@ -169,12 +155,9 @@ void commit(const uint8_t *buf, uint16_t len, const std::string &program_id)
         return;
     }
 
-    /* fsync the DIRECTORY too. fsync on the file commits its contents; the
-     * rename that publishes them is a directory operation, and on ext4 it can
-     * still be lost to a power cut after the data is safely on disk. Without
-     * this the store can come back holding the previous blob even though the
-     * new one was written — the failure that looks like retain silently
-     * skipping an interval. */
+    /* fsync the DIRECTORY too: on ext4 the publishing rename can be lost
+     * to a power cut even after the file contents are on disk. Without
+     * this the store can come back holding the previous blob. */
     std::vector<char> dircopy(g_path.begin(), g_path.end());
     dircopy.push_back('\0');
     const int dirfd = open(dirname(dircopy.data()), O_RDONLY | O_DIRECTORY);
@@ -185,13 +168,9 @@ void commit(const uint8_t *buf, uint16_t len, const std::string &program_id)
     }
 }
 
-/** Remove the stored file and forget the buffered blob.
- *
- * Not gated on `enabled`: what is being discarded belongs to a PREVIOUS
- * program, and may have been written while the store was configured
- * differently. The identity is deliberately NOT cleared — the caller has just
- * set it to the program now running, and the next save has to label its bytes.
- */
+/* Remove the stored file and forget the buffered blob. Not gated on
+ * `enabled` — the bytes belong to a PREVIOUS program. Identity is NOT
+ * cleared: caller has just set it to the program now running. */
 void discard_stored()
 {
     {

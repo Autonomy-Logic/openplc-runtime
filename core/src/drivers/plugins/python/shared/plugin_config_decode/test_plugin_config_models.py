@@ -197,7 +197,6 @@ def test_modbus_io_point_config_from_dict():
         
     return True
 
-
 def test_modbus_config_error_handling():
     """Test ModbusMasterConfig error handling with invalid files or data."""
     print("\n--- Testing ModbusMasterConfig Error Handling ---")

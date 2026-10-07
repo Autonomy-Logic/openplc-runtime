@@ -2,23 +2,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Autonomy®
 
-# OpenPLC Runtime installer -- container edition (RTOP-283).
-#
-# Two ways in, one script:
-#
-#   curl -fsSL https://runtime.getedge.me | sudo bash      no checkout needed
-#   sudo ./install.sh                                      from a clone; execs this
-#
-# Compiles nothing: it ensures a container engine, writes the bootloader's
-# spec, and starts the bootloader, which pulls the runtime image and brings it
-# up. Docker is the only dependency this path adds, and nothing of ours goes
-# into systemd -- Docker's restart policy starts the bootloader at boot.
-#
-# --native keeps the source build, for MSYS2 and targets that cannot host a
-# container engine. It needs the repository on disk, so the piped one-liner
-# cannot reach it.
-#
-# --uninstall removes what this script created and puts back what it displaced.
+# OpenPLC Runtime container installer. Writes the bootloader spec and
+# starts the bootloader (which pulls the runtime image). --native keeps
+# the source build. --uninstall reverses the install.
 set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -34,12 +20,8 @@ BOOTLOADER_REPOSITORY="${BOOTLOADER_REPOSITORY:-ghcr.io/autonomy-logic/openplc-r
 RUNTIME_VERSION="${RUNTIME_VERSION:-}"
 BOOTLOADER_VERSION="${BOOTLOADER_VERSION:-latest}"
 
-# Two directories, deliberately separate.
-#
-# The runtime's holds what a version change must preserve: .env, restapi.db,
-# retain.bin, vpp/ licences, the stored project. The bootloader's holds the
-# container spec, including this board's device mounts -- separate because
-# "erase all data" wipes the runtime's directory.
+# Runtime data (version-preserving) and bootloader state (survives data
+# wipe) are deliberately in separate directories.
 RUNTIME_DATA_DIR="${RUNTIME_DATA_DIR:-/var/lib/openplc-runtime}"
 BOOTLOADER_STATE_DIR="${BOOTLOADER_STATE_DIR:-/var/lib/openplc-bootloader}"
 
@@ -56,10 +38,8 @@ declare -a EXTRA_ENV=()
 # which accumulates across installs and is what --uninstall reads.
 declare -a DISPLACED_THIS_RUN=()
 
-# Where this script lives, for the self-elevation path below.
-# Where the piped one-liner fetches this script. runtime.getedge.me serves it
-# verbatim from the release branch; the raw GitHub URL works identically, and
-# OPENPLC_INSTALLER_URL overrides both, for a fork or an internal mirror.
+# Source for the piped one-liner. OPENPLC_INSTALLER_URL overrides for
+# forks or internal mirrors.
 INSTALLER_URL="${OPENPLC_INSTALLER_URL:-https://runtime.getedge.me}"
 INSTALLER_URL_FALLBACK="https://raw.githubusercontent.com/Autonomy-Logic/openplc-runtime/main/scripts/install-docker.sh"
 
@@ -69,10 +49,8 @@ KEEP_IMAGES=false
 PURGE_DATA=false
 REPO_ROOT=""
 
-# systemd units that run a pre-container OpenPLC. Two of them are real and in
-# the field: openplc.service is the v3 runtime, openplc-runtime.service is a v4
-# source install. Both bind 8443, so leaving one running means the container
-# starts and then fails to serve, with nothing obviously wrong on either side.
+# systemd units that bind 8443 from a pre-container install; left
+# running they block the container from serving.
 LEGACY_UNITS=(openplc-runtime.service openplc.service openplc_v3.service openplc-v3.service)
 
 # What we stopped, so --uninstall can put it back. Kept in the bootloader's
@@ -193,10 +171,8 @@ detect_engine() {
 install_engine() {
     log_info "Docker not found; installing it"
 
-    # Docker's own convenience script rather than distro packages: it covers
-    # every distro this runtime targets and always installs a version new
-    # enough for the API the bootloader uses. Distro packages vary wildly --
-    # Debian bookworm's docker.io is old enough to matter.
+    # Docker's own installer, not distro packages: covers every distro
+    # and always installs a version new enough for the bootloader's API.
     if ! command -v curl >/dev/null 2>&1; then
         log_error "curl is required to install Docker. Install curl, or install"
         log_error "Docker yourself and re-run this script."
@@ -267,13 +243,8 @@ unit_exists() {
         [ -n "$(systemctl list-unit-files --no-legend "$1" 2>/dev/null)" ]
 }
 
-# stop_legacy_runtimes clears the way for the container.
-#
-# A source or v3 install binds 8443 from systemd. Left running, the runtime
-# container cannot bind it, while the editor still reaches the old one on that
-# port.
-#
-# Units are stopped and disabled, never deleted: uninstall puts them back.
+# stop_legacy_runtimes frees 8443 by stopping any systemd units from a
+# source or v3 install. Disabled (not deleted) so --uninstall restores.
 stop_legacy_runtimes() {
     have_systemd || return 0
 
@@ -424,14 +395,9 @@ do_uninstall() {
         log_warning "Docker is not available; skipping container and image removal."
     fi
 
-    # Data before restoring the old runtime: restarting it first would have it
-    # recreate this directory, and the delete would then take files the restored
-    # runtime had written.
-    #
-    # Kept by default, because it is not exclusively ours: a native install reads
-    # and writes the same path (webserver/config.py resolves it on native Linux),
-    # so deleting it would destroy the data of the runtime this uninstall
-    # restores.
+    # Purge data BEFORE restoring the old runtime, so it does not
+    # recreate the directory first. Kept by default because a native
+    # install shares the same path.
     if [ "$PURGE_DATA" = true ] && [ -f "$(disabled_units_file)" ]; then
         log_warning "Not deleting $RUNTIME_DATA_DIR: a systemd runtime is being"
         log_warning "restored and shares that directory. Remove it by hand if you"
@@ -484,11 +450,8 @@ resolve_runtime_version() {
     fi
 }
 
-# resolve_latest_to_a_version turns "latest" into the version it points at.
-#
-# Recording "latest" would leave the device following the tag on every
-# reconcile. The version is read from the image (RUNTIME_VERSION, baked in by
-# the release build), so this needs nothing beyond the registry.
+# resolve_latest_to_a_version pins "latest" to the baked RUNTIME_VERSION
+# so the device does not follow the moving tag on every reconcile.
 resolve_latest_to_a_version() {
     [ "$RUNTIME_VERSION" = latest ] || return 0
 
@@ -498,10 +461,8 @@ resolve_latest_to_a_version() {
         "$image" 2>/dev/null || true)"
 
     if printf '%s' "$baked" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+'; then
-        # The daemon holds this image only as ":latest". Pin the spec to a name
-        # it does not have and the bootloader sees the container as stale, then
-        # has to reach the registry to resolve the new tag -- inside the window
-        # where the device has no runtime, and impossibly if it is offline.
+        # Tag the local :latest with the baked version so the bootloader
+        # can resolve it offline (the daemon only holds :latest otherwise).
         if ! docker tag "$image" "$RUNTIME_REPOSITORY:$baked" 2>/dev/null; then
             log_warning "Could not tag $image as $baked; the device will follow the 'latest' tag."
             return 0
@@ -561,15 +522,9 @@ write_spec() {
 
 # --- bootloader ----------------------------------------------------------
 
-# Both images are pulled before anything on the device is disturbed. With the
-# pull inside start_bootloader, a device that could not reach the registry had
-# already had its systemd runtime disabled by the time the download failed,
-# leaving it with no PLC.
-# pull_image fetches one image, deliberately not quiet: the runtime image is
-# a few hundred megabytes, and with no output the installer looks hung.
-#
-# Returns 0 when the image is available afterwards, by pull or because a copy
-# was already here (air-gapped, or side-loaded with `docker load`).
+# pull_image fetches an image, returning 0 when it is available
+# afterwards (pulled or already local). Called BEFORE anything on the
+# device is disturbed, so a failed pull leaves it unchanged.
 pull_image() {
     local image="$1" what="$2"
 
@@ -608,7 +563,7 @@ start_bootloader() {
     # The runtime data directory is read-only here: the bootloader authenticates
     # against the runtime's accounts and must not modify one.
 
-    # --uts=host so recovery-mode discovery names the DEVICE (RTOP-292).
+    # --uts=host so recovery-mode discovery names the DEVICE, not the container.
     docker run -d \
         --name "$BOOTLOADER_CONTAINER" \
         --restart always \

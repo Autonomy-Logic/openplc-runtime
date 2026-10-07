@@ -12,12 +12,9 @@ import (
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimeauth"
 )
 
-// The routes that can change what this device runs are admin-only.
-//
-// The runtime treats `user` as a restricted role, but the bootloader checked
-// only the signature: any runtime account could change the runtime version or
-// self-update the bootloader -- and a self-update starts a container with the
-// Docker socket bound, which is host root.
+// Routes that change what the device runs are admin-only. Self-update
+// starts a container with the Docker socket bound (host root), so a
+// signature-only check is not enough.
 func TestARestrictedAccountCannotChangeWhatTheDeviceRuns(t *testing.T) {
 	cases := []struct {
 		name, method, path, body string

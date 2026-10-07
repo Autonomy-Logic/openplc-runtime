@@ -14,13 +14,9 @@ import (
 	_ "modernc.org/sqlite" // pure-Go SQLite driver: no cgo, cross-compiles
 )
 
-// The runtime's users table, from webserver/restapi.py::User.
-//
-// Read-only, and opened read-only. The bootloader authenticates against these
-// accounts but must never create, modify or promote one -- user management
-// stays entirely in the runtime, including the first-user bootstrap. A bootloader
-// that could write here would be a second, less-reviewed path to an admin
-// account on the device.
+// Users table from the runtime (webserver/restapi.py::User), opened
+// read-only. User management (including first-user bootstrap) stays in
+// the runtime; the bootloader never writes.
 const (
 	usersTable  = "users"
 	openTimeout = 5 * 1000 // busy_timeout, milliseconds
@@ -31,24 +27,13 @@ const (
 // unauthenticated caller which usernames exist.
 var ErrNoSuchUser = errors.New("no such user")
 
-// ErrNoUsers means the runtime has never had an account created.
-//
-// The bootloader refuses every command in that state, deliberately. First-user
-// bootstrap is a sensitive flow and it lives in the runtime alone; duplicating
-// it here would mean two places that can mint the first admin on a device.
-// The practical consequence is narrow: it only bites if the very first runtime
-// start fails before anyone has logged in, and install.sh runs with shell
-// access anyway.
+// ErrNoUsers means no account has been created. Bootloader refuses every
+// command in that state so it cannot mint a first admin.
 var ErrNoUsers = errors.New("no users have been created yet")
 
-// ErrNoDatabase means there is no account database to read.
-//
-// A nil UserStore is a legitimate state, not a programming error: on a device
-// whose runtime has never started there is no restapi.db yet, and the
-// bootloader must still come up so an operator can find out why. Every method
-// below tolerates a nil receiver, because a typed nil assigned to an interface
-// is NOT nil at the call site -- without these guards the first request on
-// such a device would panic the bootloader into a restart loop.
+// ErrNoDatabase: the runtime has never started so restapi.db is absent.
+// A nil UserStore is a legitimate state; every method tolerates a nil
+// receiver (typed nil in an interface is not nil at the call site).
 var ErrNoDatabase = errors.New("the runtime account database is not available")
 
 // User is the subset of an account the bootloader needs.
@@ -64,13 +49,9 @@ type UserStore struct {
 	db *sql.DB
 }
 
-// OpenUserStore opens the runtime database read-only.
-//
-// mode=ro is what makes a read-only bind mount work: SQLite would otherwise
-// want to create a rollback journal beside the file and fail on the mount
-// rather than on the query. immutable is NOT set -- the runtime writes to this
-// database while we read it, and immutable would tell SQLite the file can
-// never change, which would serve stale pages after a password change.
+// OpenUserStore opens the runtime database read-only. mode=ro so SQLite
+// does not try to create a rollback journal. immutable is NOT set since
+// the runtime writes while we read (password change).
 func OpenUserStore(dbPath string) (*UserStore, error) {
 	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(%d)",
 		url.PathEscape(dbPath), openTimeout)
@@ -93,11 +74,8 @@ func (s *UserStore) Close() error {
 	return s.db.Close()
 }
 
-// CountUsers reports how many accounts exist.
-//
-// Used to answer "is this device bootstrapped". A missing table counts as
-// zero rather than an error: a runtime that has never started leaves the file
-// present but empty, and that is the no-users case, not a broken database.
+// CountUsers reports how many accounts exist. A missing table counts as
+// zero: a never-started runtime leaves the file empty, not broken.
 func (s *UserStore) CountUsers(ctx context.Context) (int, error) {
 	if s == nil || s.db == nil {
 		return 0, ErrNoDatabase
@@ -145,12 +123,9 @@ func (s *UserStore) FindUser(ctx context.Context, username string) (*User, error
 	return &user, nil
 }
 
-// Authenticate verifies a username and password, returning the account.
-//
-// Both a missing user and a bad password come back as ErrNoSuchUser so the
-// caller cannot accidentally answer differently for the two. The password is
-// still hashed for an unknown user -- see below -- so the two paths cost
-// roughly the same time.
+// Authenticate verifies username and password. Both missing user and
+// bad password return ErrNoSuchUser; the dummy hash below equalises
+// timing so an unknown username does not return faster.
 func (s *UserStore) Authenticate(ctx context.Context, username, password, pepper string) (*User, error) {
 	if s == nil || s.db == nil {
 		return nil, ErrNoDatabase
@@ -178,12 +153,8 @@ func (s *UserStore) Authenticate(ctx context.Context, username, password, pepper
 	return user, nil
 }
 
-// RoleByID reports the role of the account a token was issued for.
-//
-// Read at request time rather than carried in the token. The token has no role
-// claim, and adding one would mean a role change only took effect when the
-// token expired -- a demoted account would keep administrative access to the
-// component that can pull and run any image on the device.
+// RoleByID reads the account role at request time (not from the token)
+// so a demotion takes effect immediately, not at token expiry.
 func (s *UserStore) RoleByID(ctx context.Context, userID string) (string, error) {
 	if s == nil || s.db == nil {
 		return "", ErrNoDatabase

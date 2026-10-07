@@ -27,13 +27,9 @@ typedef struct
 int parse_plugin_config(const char *config_file, plugin_config_t *configs, int max_configs);
 
 /**
- * Parse a plugin config that came from an upload (vpp_plugins.conf).
- *
- * As above, plus absolute (and Windows drive-prefixed) paths are rejected: the
- * `path` field of this file is chosen by whoever produced the upload and is fed
- * to dlopen, so it must stay inside the runtime tree. Mirrors the Python-side
- * containment in webserver/plcapp_management.py so neither side is the only
- * thing standing between an upload and dlopen.
+ * @brief Parse a plugin config from an upload (vpp_plugins.conf). Rejects
+ *        `..` traversal AND absolute/Windows-drive-prefixed paths so the
+ *        dlopen target stays inside the runtime tree.
  */
 int parse_plugin_config_contained(const char *config_file, plugin_config_t *configs,
                                   int max_configs);

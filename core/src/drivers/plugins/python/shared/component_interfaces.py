@@ -12,7 +12,6 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Tuple, Any, Optional
 import ctypes
 
-
 class IBufferType:
     """Interface for buffer type definitions"""
 
@@ -46,7 +45,6 @@ class IBufferType:
         """Corresponding ctypes class"""
         pass
 
-
 class IMutexManager:
     """Interface for mutex management operations"""
 
@@ -64,7 +62,6 @@ class IMutexManager:
     def with_mutex(self, operation: callable) -> Any:
         """Execute operation within mutex context. Returns operation result."""
         pass
-
 
 class IBufferValidator:
     """Interface for buffer validation operations"""
@@ -90,7 +87,6 @@ class IBufferValidator:
         """Comprehensive parameter validation. Returns (is_valid, error_message)"""
         pass
 
-
 class IBufferAccessor:
     """Interface for generic buffer access operations"""
 
@@ -111,7 +107,6 @@ class IBufferAccessor:
         """Get the buffer pointer for a given type. Returns None if invalid."""
         pass
 
-
 class IBatchProcessor:
     """Interface for batch operations"""
 
@@ -131,7 +126,6 @@ class IBatchProcessor:
         """Process mixed read/write operations. Returns (results_dict, error_message)"""
         pass
 
-
 class IConfigHandler:
     """Interface for configuration file operations"""
 
@@ -144,7 +138,6 @@ class IConfigHandler:
     def get_config_as_map(self) -> Tuple[Dict, str]:
         """Parse config file as key-value map. Returns (config_dict, error_message)"""
         pass
-
 
 class ISafeBufferAccess:
     """Main interface that maintains API compatibility"""

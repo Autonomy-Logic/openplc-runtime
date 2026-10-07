@@ -69,15 +69,10 @@ bool plc_retain_file_store_active(void);
 /** @brief The configured path, for logging. Empty when disabled. */
 const char *plc_retain_file_store_path(void);
 
-/* The three hooks, shaped exactly like the plugin ones (plugin_driver.h) so
- * plc_retain.cpp routes to either through one uniform driver record and never
- * learns which kind of store it got. 0 on success.
- *
- * `load` is handed the running program's identity and decides for itself
- * whether the bytes on disk still belong to it — a file labelled with a
- * different program is removed and reported empty. See the plugin contract in
- * plugin_driver.h; this store is one implementation of it, not a special case
- * beside it. */
+/* Hooks shaped like the plugin ones in plugin_driver.h; plc_retain.cpp
+ * routes through one uniform driver record. 0 on success. `load` is
+ * given the running program's identity and discards a file labelled
+ * for a different program. */
 int plc_retain_file_store_save(const uint8_t *blob, uint16_t len);
 int plc_retain_file_store_load(const char *program_md5, uint16_t md5_len, uint8_t *out,
                                uint16_t cap, uint16_t *out_len);

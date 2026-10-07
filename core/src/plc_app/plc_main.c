@@ -41,11 +41,9 @@ void handle_shutdown_signal(int sig)
     keep_running = 0;
 }
 
-/* Process-wide no-op SIGUSR1 handler. The wake mechanism is EINTR
- * delivery to a specific thread via pthread_kill(target, SIGUSR1) — the
- * handler body itself does nothing. Installed exactly once at startup
- * (instead of being re-installed by every thread that wants to be
- * woken) so that handlers can never clobber each other. */
+/* No-op SIGUSR1 handler. Wake mechanism is pthread_kill delivering
+ * EINTR to a target thread; the body does nothing. Installed once so
+ * concurrent callers cannot overwrite each other's handler. */
 static void handle_sigusr1(int sig)
 {
     (void)sig;
@@ -96,16 +94,9 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // Handle SIGINT and SIGTERM for graceful shutdown.
-    //
-    // SIGTERM matters as much as SIGINT and was missing: RuntimeManager stops the
-    // runtime with process.terminate() (SIGTERM) and only escalates to
-    // process.kill() after a 5 s wait, and systemd's default KillSignal is also
-    // SIGTERM. With no handler installed the default disposition applied, so every
-    // supervisor-initiated stop killed the process outright -- the PLC program was
-    // never unloaded, plugins never stopped, the journal never flushed, and the
-    // program .so never dlclose'd. The escalation to SIGKILL is the backstop for a
-    // shutdown that hangs, not the normal path.
+    // Handle SIGINT and SIGTERM: RuntimeManager and systemd both send
+    // SIGTERM for a graceful stop; without a handler the default
+    // disposition kills the process and skips program unload.
     struct sigaction sa;
     sa.sa_handler = handle_shutdown_signal;
     sigemptyset(&sa.sa_mask);
@@ -113,14 +104,8 @@ int main(int argc, char *argv[])
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    // Install the process-wide SIGUSR1 wake handler exactly once. Task
-    // threads (plc_state_manager.cpp) and EtherCAT bus threads
-    // (ethercat_plugin.c) both rely on EINTR-from-pthread_kill to break
-    // out of clock_nanosleep on stop. Previously each of those callers
-    // re-installed sigaction(SIGUSR1, …) on its own — last writer wins,
-    // and any future divergence between handlers (e.g. one logs, the
-    // other resets state) would silently lose half the time depending
-    // on thread spawn order. One install, here, eliminates the race.
+    // Install the process-wide SIGUSR1 wake handler exactly once; task
+    // and bus threads use pthread_kill to EINTR out of clock_nanosleep.
     struct sigaction wake_sa;
     wake_sa.sa_handler = handle_sigusr1;
     sigemptyset(&wake_sa.sa_mask);
@@ -161,20 +146,10 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // Initialize plugin driver system BEFORE loading the PLC program.
-    // plc_set_state(RUNNING) triggers load_plc_program() which uses the plugin
-    // driver to update config and re-init plugins, and plc_cycle_thread() calls
-    // plugin_driver_start() after image tables are populated.
-    //
-    // This block runs BEFORE the command socket exists, deliberately. A START
-    // accepted while it is still executing runs load_plc_program() ->
-    // plugin_driver_init() on the transition worker at the same time as this
-    // thread is inside plugin_driver_load_config()/plugin_driver_init(), and
-    // rebuilding a plugin slot dlcloses the .so -- so a plugin sleeping in its
-    // own init() on the other thread returns into an unmapped page. Observed as a
-    // SIGSEGV in the main thread at an address inside the plugin that had just
-    // been unloaded. Transition arbitration cannot help here: there is only one
-    // transition, racing driver setup rather than another transition.
+    // Initialize the plugin driver BEFORE loading the PLC program.
+    // Must also run before the command socket exists: a concurrent START
+    // would race load_config()/init() and could dlclose a .so a plugin
+    // is still sleeping in.
     plugin_driver = plugin_driver_create();
     if (plugin_driver)
     {
@@ -191,14 +166,9 @@ int main(int argc, char *argv[])
             log_error("[PLUGIN]: Failed to load plugin configuration");
         }
 
-        // Release the Python GIL if Python was initialized during plugin loading.
-        // This prevents a deadlock where the main thread holds the GIL forever
-        // while sleeping, blocking other threads (like the unix socket thread)
-        // from using Python when handling commands like START.
-        //
-        // Through the driver rather than PyEval_SaveThread() directly: the driver
-        // has to restore this exact thread state before Py_FinalizeEx() at
-        // shutdown, and the state was previously discarded here.
+        // Release the GIL through the driver (not PyEval_SaveThread
+        // directly) so plugin_driver_destroy can restore this exact
+        // thread state before Py_FinalizeEx at shutdown.
         if (Py_IsInitialized())
         {
             plugin_driver_release_gil();
@@ -231,37 +201,18 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Start the command socket only now that the plugin driver is fully built.
-    // Everything the socket can ask for -- START, STOP, PLUGIN_CMD, STATS --
-    // reaches into the driver, so serving commands before this point was serving
-    // them against a half-configured one. The webserver already tolerates the
-    // socket appearing a moment later: it connects, retries, and polls.
+    // Start the socket only now that the driver is fully built: every
+    // socket command reaches into the driver.
     if (setup_unix_socket() != 0)
     {
         log_error("Failed to set up UNIX socket");
         return -1;
     }
 
-    // Start PLC (skip in safe mode to allow program upload without loading the
-    // faulty program that may have caused repeated crashes).
-    //
-    // Use plc_begin_transition() rather than plc_set_state() directly so the
-    // auto-start is arbitrated by plc_claim_transition() like any
-    // socket-originated START command. This prevents a race where the socket
-    // listener (started just above) accepts a START before the auto-start
-    // finishes, causing two concurrent load_plc_program() calls — and two
-    // dispatcher threads. plc_begin_transition() also makes the start
-    // asynchronous, which is fine: the main thread just sleeps below.
-    // Same gate as any other start, but note what it can and cannot see. A VPP
-    // plugin that owns a physical mode switch is initialised as part of loading
-    // the program — inside the start transition below — so at this point the
-    // switch has usually NOT been reported yet and the gate reads the default
-    // (RUN). A device powered up with the switch in STOP therefore does start,
-    // and is then corrected: the plugin reports STOP during init, that request is
-    // dropped because a transition is in flight, and the switch-movement
-    // reconciliation stops the PLC as soon as the start lands. Safe, but the gate
-    // only bites here for a switch position already known at this point (e.g. one
-    // reported by a plugin the runtime loaded independently of the program).
+    // Auto-start (skipped in safe mode). The switch gate below reads
+    // the default (RUN) when no plugin has reported yet — a VPP that
+    // owns the switch is initialised DURING the start transition, so
+    // a device in STOP will start and movement-reconciliation stops it.
     if (!safe_mode && !plc_switch_allows_run())
     {
         log_info("Hardware mode switch is in STOP - PLC left stopped");
@@ -280,13 +231,8 @@ int main(int argc, char *argv[])
 
     log_info("Shutting down...");
 
-    // Stop the program BEFORE destroying the driver, not after.
-    //
-    // plc_state_manager_cleanup() tears the program down, and its teardown calls
-    // plugin_driver_stop(plugin_driver) -- so destroying the driver first left that
-    // call reading freed memory, and the cycle thread could still be running plugin
-    // cycle hooks through the same pointer while it wound down. The order here is
-    // the dependency order: no program, then no driver.
+    // Order matters: program (which calls plugin_driver_stop) must
+    // tear down BEFORE the driver is destroyed.
     plc_state_manager_cleanup();
 
     if (plugin_driver)

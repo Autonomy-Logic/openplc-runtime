@@ -8,12 +8,8 @@ import (
 	"time"
 )
 
-// Defaults mirror webserver/runtimemanager.py's MAX_RAPID_CRASHES /
-// RAPID_CRASH_WINDOW one layer up. That module already does this for
-// plc_main: restart it, count crashes in a window, and stop restarting when
-// the fault is clearly not transient. The bootloader applies the same shape to
-// the container, so the two layers behave predictably alike and neither
-// masks the other's failure.
+// Defaults mirror the runtime's own MAX_RAPID_CRASHES/RAPID_CRASH_WINDOW
+// so container-level and process-level crash accounting behave alike.
 const (
 	DefaultMaxCrashes   = 3
 	DefaultCrashWindow  = 5 * time.Minute
@@ -24,14 +20,9 @@ const (
 	MaxRestartDelay = 30 * time.Second
 )
 
-// crashWindow counts unexpected container exits inside a sliding window.
-//
-// Only UNEXPECTED exits belong here. A runtime that exits because we asked it
-// to -- an update handshake, a stop we issued -- is not evidence of a fault,
-// and counting those would make the first update look like a crash-loop and
-// drop a perfectly healthy device into recovery. Callers gate on
-// Supervisor.expectStop rather than filtering by exit code, because a
-// deliberate stop and a genuine crash can both exit non-zero.
+// crashWindow counts UNEXPECTED container exits inside a sliding
+// window. Callers gate on Supervisor.expectStop rather than exit code
+// since a deliberate stop and a crash can both exit non-zero.
 type crashWindow struct {
 	mu     sync.Mutex
 	times  []time.Time

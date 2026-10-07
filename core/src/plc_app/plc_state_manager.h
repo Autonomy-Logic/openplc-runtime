@@ -30,25 +30,9 @@ typedef atomic_uint_least64_t           plc_atomic_u64_t;
 typedef atomic_int_least64_t            plc_atomic_i64_t;
 #endif
 
-/**
- * Runtime states.
- *
- * The two TRANSITIONING values are APPENDED, never inserted: the first five are
- * wire-visible (FC 0x46 reports them, and plugin_get_plc_state maps them for
- * vendor status indicators), so renumbering would quietly change what boards
- * report.
- *
- * RUNNING means running -- it is published at the moment the dispatcher is about
- * to release the first scan, not when a start is requested. Everything in
- * between is a TRANSITIONING state, and because both compare unequal to
- * PLC_STATE_RUNNING, every loop that gates on RUNNING treats them correctly
- * without modification: a stop's teardown still gets its exit signal, and a
- * half-started PLC cannot scan.
- *
- * The direction is carried (rather than one flat TRANSITIONING) so that any code
- * found to need the target state before it lands can test for the specific
- * direction instead of having to reintroduce a premature RUNNING.
- */
+/* Runtime states. TRANSITIONING values APPEND, never insert: the
+ * first five are wire-visible (FC 0x46). RUNNING is published at
+ * first-scan release, not at request. Both TRANSITIONING != RUNNING. */
 typedef enum
 {
     PLC_STATE_INIT,
@@ -60,18 +44,6 @@ typedef enum
     PLC_STATE_TRANSITIONING_TO_STOP
 } PLCState;
 
-/* -----------------------------------------------------------------------
- * Per-IEC-task execution context.
- *
- * One PlcTaskCtx per task declared in the user's CONFIGURATION. Lives
- * for the duration of a loaded program; freed on stop.
- *
- * Per-thread state — crash_jmp, crash_sig, holding_mutex — must NOT be
- * shared across threads. Each task thread owns its own context
- * exclusively once spawned; the runtime stashes a __thread pointer to
- * the active ctx so the signal handler can siglongjmp to the right
- * recovery point.
- * --------------------------------------------------------------------- */
 typedef struct PlcTaskCtx
 {
     size_t                idx;                /* index into plc_tasks[] */
@@ -83,27 +55,7 @@ typedef struct PlcTaskCtx
     pthread_t             thread;
     char                  name[32];
 
-    /* -------------------------------------------------------------------------
-     * GCD master-tick dispatcher plumbing.
-     *
-     * The dispatcher releases this worker by posting `go`; the worker blocks on
-     * sem_wait(go) between scans. `divisor` = interval_ns / base_tick_ns, so the
-     * worker is due on master tick N iff N % divisor == 0.
-     *
-     * Binary release + overrun detection use released/completed: the dispatcher
-     * bumps `released` and posts only when released == completed (worker idle);
-     * if released > completed at a due tick the worker is still in its previous
-     * scan (overrun) and is NOT re-posted, so activations never queue. The
-     * worker bumps `completed` at the end of each scan.
-     *
-     * `time_at_dispatch` is stamped by the dispatcher at release and applied by
-     * the worker via ext_strucpp_set_current_time() before run() — giving each
-     * task a scan-stable IEC TIME() snapshot (§ scheduler design doc).
-     *
-     * `alive` (1/0): a worker that hits an unrecoverable fault sets this to 0
-     * and returns; the dispatcher then never releases it again (the faulted task
-     * drops out of the schedule while the others keep running).
-     * --------------------------------------------------------------------- */
+    
     sem_t                 go;
     uint64_t              divisor;
     int64_t               time_at_dispatch;
@@ -122,33 +74,18 @@ typedef struct PlcTaskCtx
 
     plc_atomic_u64_t      local_tick;
 
-    /* Per-task scan/cycle/latency tracker. Each task thread updates its
-     * own tracker around its scan body; the STATS handler walks all
-     * trackers to emit per-task entries. Replaces the old single global
-     * plc_timing_stats from scan_cycle_manager.c which only tracked the
-     * fastest task. */
+    /* Per-task scan/cycle/latency tracker. The task thread updates it
+     * around its scan body; STATS walks all trackers for per-task entries. */
     scan_cycle_tracker_t  tracker;
 } PlcTaskCtx;
 
 extern PlcTaskCtx *plc_tasks;
 extern size_t      plc_task_count;
 
-/* Lifecycle lock for plc_tasks / plc_task_count.
- *
- * The plc_cycle_thread owns the array — it allocates after walking the
- * configuration (load) and frees after joining task threads (stop).
- * Concurrently, the unix-socket thread services STATS by iterating the
- * array under format_timing_stats_response. The TRANSITIONING state gates new
- * commands but doesn't bracket an in-flight STATS call: a plugin-initiated
- * stop can fire mid-iteration, free plc_tasks, and the STATS reader
- * dereferences freed memory.
- *
- * Readers (STATS) hold this lock for the duration of the iteration.
- * The writer (plc_cycle_thread) holds it while allocating, while
- * publishing the count, and while freeing. STOP itself doesn't need the
- * lock: task threads exit via plc_state observation; the lock only
- * brackets the array swap. Held briefly enough that adding latency to
- * STATS during a STOP transition is acceptable. */
+/* Lifecycle lock for plc_tasks / plc_task_count. plc_cycle_thread owns
+ * the array; without this lock a plugin STOP could free plc_tasks
+ * while STATS iterates. Readers hold it for the walk; writer holds
+ * it around alloc, publish and free. */
 void plc_tasks_reader_lock(void);
 void plc_tasks_reader_unlock(void);
 

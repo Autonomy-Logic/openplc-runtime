@@ -2,51 +2,27 @@
 // Copyright (c) 2026 Autonomy®
 
 // Package runtimespec decides how the runtime container is run.
+// Every flag below is load-bearing:
 //
-// This is the ONE place those flags exist. The plan settled on a single
-// privilege level rather than a matrix of profiles, because multiple profiles
-// mean multiple ways to be misconfigured and a support matrix nobody can hold
-// in their head. Every flag below is load-bearing:
+//   - Privileged + /dev bind: parity with the host-root install so
+//     SPI_IOC_MESSAGE and GPIO line-handle ioctls reach real devices
+//     and hot-plugged serial adapters appear without mknod.
+//   - NetworkMode host: NICs under their real names for EtherCAT
+//     AF_PACKET and UDP discovery broadcasts.
+//   - UTSMode host: the device's live hostname, so discovery does
+//     not report a container id captured at image build time.
+//   - No CPU limits, ever: Cpus/CpuQuota/CpuPeriod/Memory enable the
+//     cgroup CPU controller, and under CONFIG_RT_GROUP_SCHED a
+//     non-root cgroup starts at rt_runtime_us=0, which makes
+//     sched_setscheduler(SCHED_FIFO) fail. No fields exist for them.
+//   - rtprio/memlock ulimits: redundant under Privileged (CAP_SYS_NICE
+//     bypasses RLIMIT_RTPRIO, CAP_IPC_LOCK bypasses RLIMIT_MEMLOCK),
+//     kept so a de-privileged container still works.
+//   - RestartPolicy "no": the supervisor owns the lifecycle; a Docker
+//     restart would race crash-loop accounting.
 //
-//   - Privileged + /dev bind: exact parity with the current root install.
-//     Verified against the SLM-RP4 HAL, which drives /dev/spidev6.0 through
-//     SPI_IOC_MESSAGE and /dev/gpiochip0 through the GPIO line-handle ioctls.
-//     Binding the host's live devtmpfs also means hot-plugged serial adapters
-//     appear without mknod or device cgroup rules.
-//
-//   - NetworkMode host: every NIC visible under its real name in the host's
-//     own namespace. EtherCAT needs AF_PACKET and SIOCSIFFLAGS on a real
-//     interface, and the UDP discovery responder needs to see broadcasts.
-//     Deliberately NOT the orchestrator's dedicated-NIC mechanism, which moves
-//     a host NIC into a container namespace and removes it from the host.
-//
-//   - UTSMode host: the device's hostname, live, which is what discovery
-//     reports. NetworkMode host alone copies it once at CREATE time, so an
-//     image built in a container ships that container's id (RTOP-292).
-//
-//   - No CPU limits, ever. This is the one trap that survives "just make it
-//     privileged", because it is not a privilege. Setting Cpus/CpuQuota/
-//     CpuPeriod/Memory enables the cgroup CPU controller, and with
-//     CONFIG_RT_GROUP_SCHED a non-root cgroup starts at rt_runtime_us = 0 --
-//     at which point sched_setscheduler(SCHED_FIFO) fails outright and the
-//     runtime silently loses real-time scheduling. There is no field for them
-//     in this package, so they cannot be set by accident. CpusetCpus would be
-//     safe (pinning is not bandwidth throttling) but nothing needs it yet.
-//
-//   - rtprio/memlock ulimits are redundant under Privileged, since
-//     CAP_SYS_NICE bypasses RLIMIT_RTPRIO and CAP_IPC_LOCK bypasses
-//     RLIMIT_MEMLOCK. They stay as documented intent, and they are what saves
-//     the deployment if anyone ever de-privileges the container.
-//
-//   - RestartPolicy "no": the supervisor owns the lifecycle. Letting Docker
-//     also restart it would race the crash-loop accounting and hide exactly
-//     the signal recovery mode depends on.
-//
-// Board-specific additions come from a JSON file in the bootloader's own volume,
-// written by install.sh. That file may only ADD binds and environment; it can
-// never remove privilege, change the network mode, or introduce a CPU limit.
-// Validation is strict because the file is the one operator-supplied input to
-// a component that runs as host root.
+// Board-specific JSON additions may only ADD binds and environment;
+// they cannot remove privilege, change network mode, or add CPU limits.
 package runtimespec
 
 import (
@@ -93,14 +69,9 @@ type CreatePayload struct {
 type Config struct {
 	// Repository is the image repository, without a tag.
 	Repository string `json:"repository"`
-	// Version is the tag currently desired. The bootloader rewrites this when an
-	// update succeeds, which is what makes the choice survive a reboot.
-	//
-	// Read and written from different goroutines -- the updater writes it, the
-	// API and discovery replies read it, and the supervisor's event loop reads
-	// it through ImageRef -- so it goes through Version()/SetVersion() and
-	// the mutex below. Touching the field directly is a data race; the tests
-	// only passed under -race because nothing in them read it concurrently.
+	// Version is the tag currently desired. Writes come from the updater,
+	// reads from the API, discovery and supervisor, so only touch through
+	// Version()/SetVersion()+mu below -- direct access is a data race.
 	Version string `json:"version"`
 	// DataDir is the host path holding the runtime's persistent data. Bound
 	// into the container at the same path so the runtime's own defaults apply
@@ -130,10 +101,9 @@ const (
 	UTSModeHost = "host"
 )
 
-// forbiddenBindTargets are host paths that must never be handed to the runtime
-// container. The docker socket is the important one: mounting it would give
-// the runtime's HTTP API control of every container on the host, which is
-// precisely the privilege the bootloader exists to keep away from it.
+// Host paths the runtime container must never mount. The docker socket
+// is the one that matters: mounting it would hand the runtime's HTTP API
+// control of every container on the host.
 var forbiddenBindSources = []string{
 	"/var/run/docker.sock",
 	"/run/docker.sock",
@@ -273,11 +243,8 @@ func (c *Config) ImageRef() string {
 	return c.Repository + ":" + c.DesiredVersion()
 }
 
-// DesiredVersion reports the tag currently desired.
-//
-// Every read outside (de)serialisation goes through here. The Version field
-// stays exported because encoding/json needs it to be, but reading it
-// directly from a goroutine other than the one that wrote it is a data race.
+// DesiredVersion returns the current desired tag under the mutex. The
+// Version field stays exported for encoding/json; direct access races.
 func (c *Config) DesiredVersion() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -309,32 +276,9 @@ func (c *Config) ContainerSpec(imageRef string) any {
 	binds = append(binds, c.ExtraBinds...)
 
 	env := []string{
-		// OPENPLC_UPDATE_POLICY and OPENPLC_BOOTLOADER_PORT used to be set
-		// here for /api/capabilities to echo back. The runtime side of that
-		// was removed as dead weight -- the editor learns both facts from the
-		// bootloader answering at all -- so setting them told nobody
-		// anything. Passing environment a runtime does not read is how a
-		// reader ends up believing a feature exists.
-		// Point the runtime's persistent data at the bind mount.
-		//
-		// This is load-bearing and NOT redundant with the bind. The runtime
-		// resolves its own data directory by DETECTION, not by what is
-		// mounted: webserver/config.py::get_persistent_data_dir() returns
-		// /var/run/runtime whenever is_running_in_container() is true. Without
-		// this override the runtime writes a fresh .env and restapi.db inside
-		// the container and never touches the mounted ones -- so users,
-		// credentials, the stored project, retained variables and any VPP
-		// licenses would all be discarded on every single version swap, which
-		// is precisely what persisting them outside the container is for.
-		//
-		// Confirmed on hardware before this line existed: the container held
-		// its own .env under /var/run/runtime while the mounted restapi.db,
-		// project_snapshot/ and retain.bin sat unused beside it.
-		//
-		// Only the PERSISTENT dir is redirected. RUNTIME_DIR keeps its default
-		// so the command and log sockets stay container-internal, which is
-		// correct -- they are ephemeral and both endpoints live in the same
-		// container.
+		// Override the runtime's auto-detected persistent dir so it writes
+		// to the bind mount instead of /var/run/runtime inside the
+		// container. RUNTIME_DIR keeps its default (sockets are ephemeral).
 		"OPENPLC_PERSISTENT_DATA_DIR=" + c.DataDir,
 	}
 	env = append(env, c.ExtraEnv...)

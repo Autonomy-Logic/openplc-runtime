@@ -45,10 +45,7 @@ def assert_block_zeroed(block, size):
     assert block.getValues(0, size) == [0] * size
 
 
-# -----------------------------------------------------------------------
-# Fake SafeBufferAccess used to observe locking behavior.
-# We patch simple_modbus.SafeBufferAccess to return this object inside blocks
-# -----------------------------------------------------------------------
+# Fake SafeBufferAccess that observes locking behaviour.
 class ObservingSafeBufferAccess:
     """
     Test double for SafeBufferAccess that matches the REAL method signatures used
@@ -131,7 +128,6 @@ class ObservingSafeBufferAccess:
         if index < 0 or index >= len(self.args.analog_output):
             return (0, "Invalid buffer index")
         return (int(self.args.analog_output[index]) & 0xFFFF, "Success")
-
 
 
 # -----------------------------------------------------------------------

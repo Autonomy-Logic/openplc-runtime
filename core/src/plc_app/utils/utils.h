@@ -30,7 +30,6 @@ extern unsigned long scan_counter;
 /* Project MD5 string (resolved from the .so at load time). */
 extern char *ext_strucpp_program_md5;
 
-
 #define NS_PER_MS 1000000LL
 
 /**

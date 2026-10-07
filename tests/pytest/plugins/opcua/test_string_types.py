@@ -125,10 +125,8 @@ class TestCap:
         assert len(enc) == 1 + DEBUG_STRING_CAP * 2
 
     def test_wstring_drops_a_trailing_odd_byte(self):
-        # An odd length is malformed, and the encoder answers by dropping the
-        # trailing byte rather than refusing the value. Named for what it does:
-        # it used to be called "rejects_an_odd_byte_count" while asserting a
-        # successful one-unit encode, so the name argued against the assertion.
+        # Odd length is malformed; the encoder drops the trailing byte
+        # instead of refusing the value.
         enc = _encode_string("WSTRING", b"abc")
         assert enc[0] == 1 and len(enc) == 3
 

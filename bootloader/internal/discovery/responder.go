@@ -1,23 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// Package discovery answers the editor's LAN discovery probe while the runtime
-// is not running.
-//
-// The runtime has its own responder (webserver/discovery/network_discovery.py)
-// and normally owns this port. The bootloader's exists for one situation: the
-// runtime is down, so nothing is answering, and a device that cannot be found
-// cannot be repaired. Without this, a failed update makes a device vanish from
-// the editor's list at exactly the moment somebody needs to reach it.
-//
-// It runs ONLY in recovery mode, which is what keeps the two responders from
-// ever competing. Recovery is defined as "the runtime container is stopped" --
-// the supervisor stops it before entering that state -- so exclusivity holds
-// by construction rather than by coordination. Two services answering the same
-// broadcast would give the editor two different answers for one device.
-//
-// The protocol is the runtime's, byte for byte: a fixed magic string in, one
-// JSON datagram back, unicast to the sender.
+// Package discovery answers the editor's LAN discovery probe while
+// the runtime is down. Runs ONLY in recovery mode (the supervisor
+// stops the runtime first), so it never races the runtime's own
+// responder. Protocol is byte-for-byte the runtime's: fixed magic in,
+// one JSON datagram back, unicast to the sender.
 package discovery
 
 import (
@@ -51,13 +39,8 @@ const (
 	perIPRateLimit = 100 * time.Millisecond
 )
 
-// Reply is what a probing editor receives.
-//
-// service says "openplc-bootloader", not "openplc-runtime". Being honest here
-// costs an older editor the ability to see a device in recovery -- but an
-// older editor could not have done anything about it either, and the
-// alternative is a client that thinks it is talking to a working runtime and
-// then fails against every endpoint it tries.
+// Reply is what a probing editor receives. service says
+// "openplc-bootloader" so a client cannot mistake it for a working runtime.
 type Reply struct {
 	Service         string `json:"service"`
 	ProtocolVersion int    `json:"protocol_version"`
@@ -109,12 +92,9 @@ func New(port int, provider ReplyProvider, log *slog.Logger) *Responder {
 	}
 }
 
-// Enable starts answering probes. Safe to call when already enabled.
-//
-// A bind failure is logged and swallowed. Discovery is a convenience: losing
-// it must not stop the bootloader serving its control API, which is the
-// primary way in. The most likely cause is the runtime still holding the port,
-// and in that case the device is findable anyway.
+// Enable starts answering probes; idempotent. A bind failure is logged
+// and swallowed: discovery is a convenience, losing it must not stop the
+// control API from serving.
 func (r *Responder) Enable() {
 	r.mu.Lock()
 	if r.conn != nil {
@@ -122,11 +102,9 @@ func (r *Responder) Enable() {
 		return
 	}
 	var conn *net.UDPConn
-	// SO_REUSEADDR and SO_REUSEPORT, matching how the runtime binds the same
-	// port. Linux shares a UDP port only when EVERY socket asked to, so
-	// without these a lingering bootloader socket makes the runtime's own bind
-	// fail -- and the runtime does not retry. The release now happens before
-	// the runtime starts; this is the safety net for a race in between.
+	// SO_REUSEADDR/REUSEPORT must match the runtime; Linux shares a UDP
+	// port only when every socket asked to, otherwise a lingering socket
+	// here blocks the runtime's bind.
 	listener := net.ListenConfig{Control: reusePort}
 	generic, err := listener.ListenPacket(
 		context.Background(), "udp", ":"+strconv.Itoa(r.port))

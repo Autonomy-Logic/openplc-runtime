@@ -2,31 +2,16 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Autonomy®
 
-# Integration harness for the RTOP-283 bootloader.
-#
-# Runs a Debian container with its own Docker daemon (see Dockerfile.testhost),
-# stands up a registry inside it, and seeds that registry with runtime images.
-# The bootloader then does real pulls over a real registry, so the update path
-# -- including progress streaming and layer reuse -- is exercised rather than
-# stubbed.
-#
-# What this harness cannot cover, and what the device round is for: hardware.
-# There is no /dev/spidev6.0 or /dev/gpiochip0 here, so VPP plugin behaviour
-# and real SCHED_FIFO latency must be validated on an SLM-RP4.
-#
-# Usage:
-#   ./harness.sh up            # build and start the test host
-#   ./harness.sh seed          # load images and fill the inner registry
-#   ./harness.sh test [filter] # run the suite against it
-#   ./harness.sh shell         # interactive shell on the test host
-#   ./harness.sh down          # tear everything down
+# Bootloader integration harness. Runs a Debian container with its own
+# Docker daemon and inner registry so the bootloader does real pulls.
+# Usage: ./harness.sh {up|seed|test [filter]|shell|down}
 set -euo pipefail
 
 HOST_CONTAINER=openplc-testhost
 HOST_IMAGE=openplc-testhost:latest
 
-# The device's hostname. Set explicitly: on Docker's container-id default a
-# correct reply and the RTOP-292 bug both look like hex.
+# The device's hostname. Set explicitly: on Docker's container-id default
+# a correct reply and a UTS-namespace leak both look like hex.
 DEVICE_HOSTNAME="${DEVICE_HOSTNAME:-slm-rp4-testhost}"
 DOCKER_VOLUME=openplc-testhost-docker
 REGISTRY=localhost:5000
@@ -35,17 +20,8 @@ REGISTRY=localhost:5000
 STUB_REPO="$REGISTRY/openplc-stub"
 REAL_REPO="$REGISTRY/openplc-runtime"
 
-# Base for the end-to-end case against a real runtime.
-#
-# A published image by default, so this harness reproduces anywhere. It used to
-# default to a tag that existed only on the author's machine, which meant the
-# reported pass count could not be reproduced by anyone else -- and quietly
-# meant the repository's own Dockerfile was never exercised.
-#
-# REAL_BASE=build builds from the repository Dockerfile instead. Slower by
-# minutes (it is a full source install), and the only setting that covers the
-# Dockerfile itself -- which is where `./install.sh` silently switching to the
-# container path broke the release build.
+# Default to a published image so the harness reproduces anywhere.
+# REAL_BASE=build runs the full source install from the Dockerfile.
 REAL_BASE="${REAL_BASE:-ghcr.io/autonomy-logic/openplc-runtime:v4.2.3}"
 
 # The tag the inner registry serves. Exported so the suite reads it once.
@@ -74,13 +50,9 @@ cmd_up() {
     docker volume create "$DOCKER_VOLUME" >/dev/null
 
     log "starting the test host"
-    # Privileged because it runs a Docker daemon. The repo is mounted
-    # read-only so image builds inside can use it as a build context without
-    # any risk of a test writing to the working tree.
-    # The runtime and bootloader run with --network host INSIDE this
-    # container, so publishing here is what lets a browser on the developer's
-    # machine reach them -- which is how the editor and web UI get tested
-    # against a real device without one on the desk.
+    # Privileged for the inner Docker daemon. Repo mounted read-only.
+    # Ports published so a browser on the dev machine can reach the
+    # host-networked runtime and bootloader inside.
     docker run -d --name "$HOST_CONTAINER" --privileged \
         --hostname "$DEVICE_HOSTNAME" \
         -p 8443:8443 -p 8445:8445 \
@@ -116,14 +88,9 @@ transfer() {
     docker save "$image" | inner_stdin docker load >/dev/null
 }
 
-# build_into_host builds an image from this repo and loads it into the inner
-# daemon, ALWAYS fresh -- these are the artefacts under test, so a stale copy
-# would quietly test the previous commit.
-#
-# buildx with `--output type=docker` rather than `docker build` + `docker save`:
-# Docker 29 exports a buildx-built image as an OCI layout, and the inner
-# daemon rejects that with "does not contain a manifest.json". This output type
-# writes the legacy docker-archive both daemons agree on.
+# build_into_host builds an image from this repo and loads it into the
+# inner daemon, always fresh. buildx with --output type=docker emits
+# the legacy archive both daemons accept.
 build_into_host() {
     local image="$1" context="$2" dockerfile="$3"
     shift 3

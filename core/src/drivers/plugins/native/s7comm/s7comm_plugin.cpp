@@ -618,15 +618,6 @@ static void s7comm_event_callback(void *usrPtr, PSrvEvent PEvent, int Size)
     }
 }
 
-/*
- * =============================================================================
- * On-Demand Data Synchronization (via RWArea Callback)
- *
- * S7 client READs: Acquire OpenPLC mutex, copy to S7 buffer, release mutex
- * S7 client WRITEs: Use journal writes (thread-safe, no mutex needed)
- * =============================================================================
- */
-
 /**
  * @brief Map s7comm buffer type to journal buffer type
  *
@@ -719,14 +710,6 @@ static int get_type_size(s7comm_buffer_type_t type)
             return 1;
     }
 }
-
-/*
- * =============================================================================
- * Read Functions: OpenPLC -> S7 Buffer (for S7 client READs)
- * These functions copy data from OpenPLC image tables to the S7 buffer.
- * Called with OpenPLC mutex held.
- * =============================================================================
- */
 
 /**
  * @brief Read OpenPLC bool buffer to destination (mutex must be held)
@@ -905,14 +888,6 @@ static void read_openplc_to_buffer(uint8_t *dest, int size, s7comm_buffer_type_t
             break;
     }
 }
-
-/*
- * =============================================================================
- * Write Functions: S7 Buffer -> OpenPLC via Journal (for S7 client WRITEs)
- * These functions write data from S7 buffer to OpenPLC via journal.
- * No mutex needed - journal writes are thread-safe.
- * =============================================================================
- */
 
 /**
  * @brief Write bool buffer to OpenPLC via journal

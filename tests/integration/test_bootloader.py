@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Autonomy®
 
-"""End-to-end tests for the RTOP-283 bootloader, run inside the test host.
+"""End-to-end tests for the openplc-bootloader, run inside the test host.
 
 These drive the real thing: a real Docker daemon, a real registry, real image
 pulls with real progress streaming, and the bootloader binary that ships. The
@@ -47,11 +47,8 @@ STATE_DIR = "/var/lib/openplc-bootloader"
 DATA_DIR = "/var/lib/openplc-runtime"
 BOOTLOADER_URL = "https://127.0.0.1:8445"
 
-# From the shared auth vector (bootloader/internal/runtimeauth/runtimeauth_test.go
-# and tests/pytest/restapi/test_bootloader_auth_vector.py). Reusing it here
-# means the data directory can be seeded with a genuine werkzeug hash without
-# werkzeug being installed in the test host -- and it cross-checks the vector
-# in a real integration setting rather than only in unit tests.
+# Shared auth vector (also used by the Go and Python unit tests). Lets
+# this harness seed a werkzeug hash without werkzeug installed.
 PEPPER = "a" * 64
 JWT_SECRET = "b" * 64
 USERNAME = "operator"
@@ -200,8 +197,8 @@ def start_bootloader(extra_args: list[str] | None = None) -> None:
     args = [
         "docker", "run", "-d", "--name", BOOTLOADER_NAME,
         "--restart", "always", "--network", "host",
-        # Mirrors install.sh, kept in step by hand. --uts=host is what makes
-        # the recovery-mode reply name the device (RTOP-292).
+        # Mirrors install.sh, kept in step by hand. --uts=host is what
+        # makes the recovery-mode reply name the device, not the container.
         "--uts=host",
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-v", f"{STATE_DIR}:{STATE_DIR}",
@@ -211,13 +208,8 @@ def start_bootloader(extra_args: list[str] | None = None) -> None:
     args += extra_args or ["-log-level=debug"]
     sh(*args)
 
-    # Wait for THIS bootloader to answer before returning.
-    #
-    # Without it a case starts polling while nothing is listening on 8445 yet,
-    # and the failures read as "ConnectionRefused" or -- worse -- as progress
-    # belonging to a different case, because a poll can land on a bootloader
-    # that has not been replaced yet. Confirming a fresh, responsive process
-    # removes both by construction.
+    # Wait for THIS bootloader to answer before returning so polls do
+    # not land on a previous instance.
     def responsive() -> bool:
         state = container_state(BOOTLOADER_NAME)
         if not state.get("State", {}).get("Running"):
@@ -425,8 +417,9 @@ def test_bootstrap_creates_and_supervises_the_runtime():
         raise Failure("the runtime must be privileged for hardware parity")
     if host["NetworkMode"] != "host":
         raise Failure(f"want host networking, got {host['NetworkMode']}")
-    # RTOP-292: without this, discovery reports a container id. The flag only;
-    # the stub is FROM scratch, so what it SEES is checked on the real image.
+    # Without --uts=host, discovery reports a container id. Only the
+    # flag is checked here; what the runtime SEES is covered by the
+    # real-image test, since the stub is FROM scratch.
     if host["UTSMode"] != "host":
         raise Failure(f"want the host UTS namespace, got {host['UTSMode']!r}")
     if host["RestartPolicy"]["Name"] != "no":
@@ -839,7 +832,7 @@ def _bake_pre_fix_runtime_container(image: str, *, running: bool) -> str:
 
 @case
 def test_a_runtime_container_with_a_private_uts_namespace_is_replaced():
-    """The field-upgrade path for RTOP-292.
+    """Field-upgrade path for a runtime with a private UTS namespace.
 
     Both states ship: a normal pre-fix install leaves it RUNNING, an SLM-RP4
     image leaves it STOPPED and never started, which skips the graceful stop
@@ -882,8 +875,8 @@ def test_a_runtime_container_with_a_private_uts_namespace_is_replaced():
 
 @case
 def test_recovery_mode_discovery_reports_the_device_hostname():
-    """The bootloader answers discovery when the runtime is down, and that
-    reply has to name the board too (RTOP-292)."""
+    """The bootloader answers discovery when the runtime is down, and
+    that reply has to name the board, not the container."""
     reset(version="v1.0.0", extra_env=["STUB_FAIL=exit"])
     wait_for("recovery mode", lambda: bootloader_state() == "recovery", timeout=120)
 
@@ -946,11 +939,9 @@ def test_the_real_runtime_image_comes_up_under_the_bootloader():
     if not served.get("runtimeVersion"):
         raise Failure(f"the real runtime must report a version, got {served}")
 
-    # The data-directory bug, checked against the real runtime rather than a
-    # field the stub invents. config.py resolves the persistent directory by
-    # container detection, so without the env override the runtime writes a
-    # fresh .env inside the container and ignores the mounted one -- losing
-    # users, the stored project, retain data and licences on every swap.
+    # Verify OPENPLC_PERSISTENT_DATA_DIR is set: without it the runtime
+    # defaults the persistent dir inside the container and ignores the
+    # mount, discarding users and licences on every swap.
     env = container_state(RUNTIME_NAME)["Config"]["Env"]
     if f"OPENPLC_PERSISTENT_DATA_DIR={DATA_DIR}" not in env:
         raise Failure(f"the runtime was not pointed at the mounted data dir: {env}")
@@ -964,8 +955,9 @@ def test_the_real_runtime_image_comes_up_under_the_bootloader():
     if not os.path.exists(os.path.join(DATA_DIR, ".env")):
         raise Failure("the real runtime did not write .env into the mounted data dir")
 
-    # RTOP-292, at the syscall the responder actually calls. Asserted here
-    # rather than on the stub because this image has a userland to ask.
+    # Assert UTS passthrough at the syscall the responder actually
+    # calls. Done on the real image rather than the stub, which has
+    # no userland to ask.
     seen = sh("docker", "exec", RUNTIME_NAME, "hostname").strip()
     if seen != device_hostname():
         raise Failure(

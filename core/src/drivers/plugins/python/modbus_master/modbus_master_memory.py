@@ -39,7 +39,6 @@ except ImportError:
         get_modbus_registers_count_for_iec_size,
     )
 
-
 def get_sba_access_details(iec_addr, is_write_op: bool = False) -> Optional[BufferAccessDetails]:
     """
     Maps IECAddress to SafeBufferAccess method parameters.
@@ -148,16 +147,6 @@ def get_sba_access_details(iec_addr, is_write_op: bool = False) -> Optional[Buff
         print(f"(FAIL) Error in get_sba_access_details: {e}")
         return None
 
-
-# =============================================================================
-# OPTIMIZED FUNCTIONS FOR MINIMAL MUTEX HOLD TIME
-# =============================================================================
-# These functions separate data conversion from buffer access to minimize
-# the time the mutex is held. Use these instead of the legacy functions
-# when mutex hold time is critical.
-# =============================================================================
-
-
 def convert_modbus_data_to_iec_values(  # pylint: disable=too-many-locals
     iec_addr, modbus_data: list, length: int
 ) -> Tuple[Optional[List], Optional[BufferAccessDetails]]:
@@ -243,7 +232,6 @@ def convert_modbus_data_to_iec_values(  # pylint: disable=too-many-locals
         print(f"(FAIL) Error in convert_modbus_data_to_iec_values: {e}")
         return None, None
 
-
 def write_preconverted_iec_values(
     sba, converted_values: List[Tuple], details: BufferAccessDetails
 ) -> bool:
@@ -326,7 +314,6 @@ def write_preconverted_iec_values(
     except Exception as e:
         print(f"(FAIL) Error in write_preconverted_iec_values: {e}")
         return False
-
 
 def read_raw_iec_values(  # pylint: disable=too-many-locals
     sba, iec_addr, length: int
@@ -435,7 +422,6 @@ def read_raw_iec_values(  # pylint: disable=too-many-locals
         print(f"(FAIL) Error in read_raw_iec_values: {e}")
         return None, None, None
 
-
 def convert_raw_iec_to_modbus(
     raw_values: List, details: BufferAccessDetails, iec_size: str
 ) -> Optional[List]:
@@ -485,15 +471,6 @@ def convert_raw_iec_to_modbus(
     except Exception as e:
         print(f"(FAIL) Error in convert_raw_iec_to_modbus: {e}")
         return None
-
-
-# =============================================================================
-# LEGACY FUNCTIONS (kept for backward compatibility)
-# =============================================================================
-# These functions perform conversion inside the mutex-protected section.
-# For new code, prefer using the optimized functions above.
-# =============================================================================
-
 
 def update_iec_buffer_from_modbus_data(  # pylint: disable=too-many-locals
     sba, iec_addr, modbus_data: list, length: int
@@ -646,7 +623,6 @@ def update_iec_buffer_from_modbus_data(  # pylint: disable=too-many-locals
 
     except Exception as e:
         print(f"(FAIL) Error updating IEC buffer: {e}")
-
 
 def read_data_for_modbus_write(  # pylint: disable=too-many-locals
     sba, iec_addr, length: int

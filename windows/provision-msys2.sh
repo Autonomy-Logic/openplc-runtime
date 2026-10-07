@@ -2,12 +2,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Autonomy®
 
-# OpenPLC Runtime - MSYS2 Provisioning Script
-# This script is run inside MSYS2 to install all required packages and dependencies
-# for the OpenPLC Runtime Windows distribution.
-#
-# This script simply calls the main install.sh script which handles all
-# MSYS2-specific installation and configuration.
+# MSYS2 provisioning script run from the Windows installer build.
+# Delegates to install.sh --native for all package setup.
 
 set -e
 
@@ -21,10 +17,8 @@ OPENPLC_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo "OpenPLC Directory: $OPENPLC_DIR"
 
-# Run the main install script. --native explicitly: install.sh defaults to a
-# Docker install, which cannot work here and would compile nothing. It forces
-# native on MSYS2 anyway, but this script exists to build a Windows payload and
-# should say so rather than depend on that detection.
+# --native explicit: install.sh defaults to Docker, which cannot work
+# on MSYS2 and would compile nothing. Native is forced here anyway.
 cd "$OPENPLC_DIR"
 ./install.sh --native
 

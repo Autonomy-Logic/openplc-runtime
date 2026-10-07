@@ -2,18 +2,10 @@
 // Copyright (c) 2026 Autonomy®
 
 // Package api is the bootloader's control API on port 8445.
-//
-// Deliberately small. This is the interface to the component that recovers a
-// device, so its surface is the shortest list that does the job: say what
-// state you are in, show me the runtime's logs, restart it, change its
-// version, wipe its data. It accepts no programs and does not control the PLC
-// -- those belong to the runtime, and a bootloader that could do them would be
-// a second, less-reviewed path to the same capability.
-//
-// Every route except login and capabilities requires a token from the
-// runtime's own account set. Capabilities is unauthenticated for the same
-// reason the runtime's is: a client has to be able to tell what it is talking
-// to before it has credentials.
+// Surface is intentionally small: state, runtime logs, restart,
+// version change, wipe. No program upload, no PLC control — those
+// belong to the runtime. Every route except login and capabilities
+// requires a token from the runtime's own account set.
 package api
 
 import (
@@ -65,34 +57,23 @@ type Updater interface {
 	Progress() updater.Progress
 }
 
-// SelfUpdater replaces the bootloader with a newer version of itself.
-//
-// Start returns once the helper that performs the swap is running: this
-// process is about to be stopped by it, so there is no completion to report
-// and nothing to poll -- the client reconnects and reads the new version from
-// capabilities.
+// SelfUpdater replaces the bootloader with a newer version. Start returns
+// once the helper is running; this process is about to be stopped by it,
+// so the client reconnects and reads the new version from capabilities.
 type SelfUpdater interface {
 	Start(ctx context.Context, version string) error
 }
 
-// HostReporter answers for the machine the runtime runs on.
-//
-// The bootloader is the right place for this. It exists on every device that
-// can be updated from an editor, including one running a runtime far older
-// than these endpoints -- so a Runtime Status screen fed from here is
-// populated regardless of which runtime version is installed, which is not
-// true of anything served by the runtime itself.
+// HostReporter answers for the machine the runtime runs on. Lives in the
+// bootloader so the Runtime Status screen is populated independent of
+// which runtime version (or none) is installed.
 type HostReporter interface {
 	SystemInfo(ctx context.Context) (*dockerapi.Info, error)
 }
 
-// Authenticator resolves credentials against the runtime's account set, and
-// serves the signing secret behind the tokens it issues.
-//
-// Secrets() is read per request rather than snapshotted at start-up: on a
-// fresh install the runtime writes .env and restapi.db AFTER the bootloader is
-// already running, and a snapshot taken before that left every authenticated
-// route answering 503 until the container was restarted.
+// Authenticator resolves credentials against the runtime's accounts and
+// serves the token signing secret. Secrets() is read per request so a
+// first-install .env written after start-up does not leave routes at 503.
 type Authenticator interface {
 	Authenticate(ctx context.Context, username, password, pepper string) (*runtimeauth.User, error)
 	CountUsers(ctx context.Context) (int, error)
@@ -219,12 +200,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 // --- middleware ----------------------------------------------------------
 
-// authenticated wraps a handler with bearer-token verification.
-//
-// It also enforces the no-users rule: with no accounts on the device the
-// bootloader accepts nothing at all. First-user bootstrap is a sensitive flow
-// that lives in the runtime alone, and a bootloader that could mint the first
-// admin would be a second path to owning the device.
+// authenticated wraps a handler with bearer-token verification. With no
+// accounts on the device, every authenticated route is refused:
+// first-user bootstrap belongs to the runtime, never here.
 func (s *Server) authenticated(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		count, err := s.cfg.Users.CountUsers(r.Context())
@@ -277,18 +255,9 @@ func subjectFrom(ctx context.Context) string {
 // device. Matched against the runtime's own value (webserver/restapi.py).
 const RoleAdmin = "admin"
 
-// adminOnly restricts a route to administrators.
-//
-// Applied to the routes that can change what this device runs. Without it any
-// runtime account -- including one the runtime itself treats as restricted --
-// could change the runtime version or self-update the bootloader, and a
-// self-update starts a container with the Docker socket bound, which is host
-// root. The runtime distinguishes these roles; the component that can replace
-// the runtime must not be the one that ignores the distinction.
-//
-// The role is read from the database per request. The token carries none, and
-// a role claim would mean a demotion did not take effect until the token
-// expired.
+// adminOnly restricts a route to administrators. Role is read from the DB
+// per request (not from a token claim) so a demotion takes effect
+// immediately rather than at token expiry.
 func (s *Server) adminOnly(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
 	return s.authenticated(func(w http.ResponseWriter, r *http.Request) {
 		subject := subjectFrom(r.Context())
@@ -326,20 +295,8 @@ func bearerToken(r *http.Request) (string, bool) {
 
 // --- handlers ------------------------------------------------------------
 
-// handleDeviceInfo reports the machine the runtime runs on.
-//
-// Sourced from the Docker daemon, which runs on the host and answers for it.
-// The obvious alternative -- have the runtime report on itself -- is what this
-// replaces: that endpoint exists only in runtimes new enough to have it, so
-// every device in the field today answered it with a catch-all body and the
-// screen had nothing to show. The bootloader is present wherever an update is
-// possible at all, which makes it the one source that is always there.
-//
-// Deliberately only facts that VARY between devices. "This runtime runs in a
-// container" and "this device updates itself" were both here at one point and
-// are neither: a client reaching this handler at all has already learned them
-// from the bootloader answering, so reporting them again was a field that
-// could only ever hold one value.
+// handleDeviceInfo reports the machine the runtime runs on. Sourced from
+// the Docker daemon. Only facts that VARY between devices are reported.
 func (s *Server) handleDeviceInfo(w http.ResponseWriter, r *http.Request) {
 	payload := map[string]any{
 		"bootloaderVersion": s.cfg.Version,
@@ -583,16 +540,9 @@ func (s *Server) handleUpdateProgress(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.cfg.Updater.Progress())
 }
 
-// handleSelfUpdate replaces the bootloader itself.
-//
-// Separate from the runtime update on purpose: they change different things
-// and fail differently. A bootloader that will not come back costs the ability
-// to manage the device; a runtime that will not come back stops the plant. The
-// runtime container is untouched here, so a PLC keeps running throughout.
-//
-// There is no progress to poll. This process is replaced as part of the
-// operation, so the client's connection ends with it -- reconnecting and
-// reading /capabilities is how you learn the outcome.
+// handleSelfUpdate replaces the bootloader itself. The runtime container
+// is untouched so a running PLC survives. No progress endpoint: this
+// process ends; reconnect and read /capabilities for the outcome.
 func (s *Server) handleSelfUpdate(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.SelfUpdater == nil {
 		writeError(w, http.StatusNotImplemented, "this bootloader cannot update itself")

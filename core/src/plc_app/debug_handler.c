@@ -1,19 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-/*
- * debug_handler.c — STruC++ hierarchical debugger PDU handler.
- *
- * The Modbus-style function codes (0x41-0x45) are kept for wire compatibility
- * with the editor and the Arduino runtime. The payload format uses
- * (array_idx: u8, elem_idx: u16) addressing — the editor's debug-map.json
- * carries the path → (arr, elem) mapping.
- *
- * Mirrors the dispatch logic in resources/sources/StrucppBaremetal/ModbusSlave.cpp
- * from the editor repo. Linux supports larger PDUs than RTU/Arduino; the cap
- * here is the runtime-side MAX_DEBUG_FRAME, not the conservative 1400-byte
- * limit the Arduino sketch uses.
- */
+/* STruC++ debugger PDU handler. Codes 0x41-0x45 are Modbus-style for
+ * editor/Arduino wire compatibility. Addressing is (arr:u8, elem:u16);
+ * the editor's debug-map.json carries path→(arr, elem). */
 
 #include <string.h>
 
@@ -55,11 +45,9 @@ static inline bool debug_symbols_ready(void)
            ext_strucpp_debug_read        != NULL;
 }
 
-/* Defense-in-depth bounds check on the array index that arrived over the
- * wire. The editor's STruC++ codegen validates `arr` inside its debug
- * thunks, but a malformed .so could OOB-read its internal table.  Runtime
- * gate first: reject `arr >= array_count` here so the .so only sees
- * indices it claimed to support. */
+/* Defense-in-depth bounds check on the wire `arr` index. The .so's own
+ * thunks validate, but a malformed .so could OOB-read. Reject here so
+ * the .so only sees indices it claimed to support. */
 static inline bool debug_arr_in_range(uint8_t arr)
 {
     return arr < ext_strucpp_debug_array_count();
@@ -154,10 +142,9 @@ static void debugSetTrace(uint8_t *frame, size_t *frame_len, size_t length)
         return;
     }
 
-    /* Do NOT poke the IECVar from this socket thread — that races the IEC task
-     * workers (OpenPLC bug #3). Enqueue the force/unforce; the dispatcher
-     * applies it at the no-task-running window (race-free, ~1 scan later). The
-     * editor polls continuously, so the small latency is invisible. */
+    /* Enqueue, do NOT poke the IECVar: a socket-thread write races IEC
+     * task workers. The dispatcher applies at the no-task-running window
+     * (~1 scan later). */
     uint8_t op = (force != 0) ? (uint8_t)DBGW_OP_FORCE : (uint8_t)DBGW_OP_UNFORCE;
     const uint8_t *vp = (force != 0) ? val_ptr : NULL;
     uint16_t       vl = (force != 0) ? val_len : 0;
@@ -320,23 +307,10 @@ static void debugGetTraceList(uint8_t *frame, size_t *frame_len, size_t length)
     *frame_len = HDR + response_sz;
 }
 
-/* FC 0x45 — DEBUG_GET_MD5
- *
- * The trailer carries a runtime-driven endianness sentinel, not an echo of
- * what the editor sent.  The variable-data path is pure memcpy on both
- * sides (the strucpp dispatcher does no byte-order adaptation), so wire
- * bytes for force / read are always in target-native order.  To let the
- * editor know what "native" means here, this handler writes the literal
- * value 0xDEAD via a native uint16_t store; the two bytes that land in the
- * frame reflect the target's byte order:
- *
- *     LE target  →  trailer = [0xAD, 0xDE]
- *     BE target  →  trailer = [0xDE, 0xAD]
- *
- * The editor uses that to decide whether to byte-swap variable data at its
- * end.  The probe bytes in the request are ignored — the trailer is a
- * sentinel, not an echo.
- */
+/* FC 0x45 — DEBUG_GET_MD5. Trailer is an endianness sentinel: a
+ * native uint16_t store of 0xDEAD so wire bytes reveal target byte
+ * order to the editor (LE → [0xAD,0xDE], BE → [0xDE,0xAD]). The
+ * variable-data path is memcpy in target-native order. */
 static void debugGetMd5(uint8_t *frame, size_t *frame_len, size_t length)
 {
     if (length < 3 || ext_strucpp_program_md5 == NULL)
