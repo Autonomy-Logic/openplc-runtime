@@ -10,21 +10,9 @@ import (
 	"time"
 )
 
-// Login throttling.
-//
-// Every attempt, including one for a username that does not exist, runs a full
-// 600k-iteration PBKDF2 -- deliberately, so response timing does not enumerate
-// accounts. That makes the endpoint expensive by design, and this component
-// runs on the host network with no CPU limit, beside a PLC whose real-time
-// headroom must not be eaten. A loop of login POSTs from any host on the LAN
-// was therefore both a brute-force path to Docker-socket access and a cheap
-// denial of service against the scan cycle.
-//
-// Two independent limits, because they address different things: a global
-// concurrency cap bounds the CPU an attacker can command at any instant, and
-// per-source backoff makes sustained guessing impractical. Neither replaces
-// the other -- one attacker with two connections defeats a cap alone, and a
-// distributed source set defeats backoff alone.
+// Login throttling. Every attempt runs 600k PBKDF2 iterations (timing-safe
+// against enumeration), so the endpoint needs both a global concurrency cap
+// and per-source backoff to resist brute force and DoS.
 const (
 	// maxConcurrentVerifications is small on purpose. Two verifications in
 	// flight is more than a legitimate operator ever needs, and it leaves the
@@ -142,12 +130,8 @@ func (t *loginThrottle) recordSuccess(source string) {
 	delete(t.sources, source)
 }
 
-// requestSource identifies the caller for backoff purposes.
-//
-// The remote address only. There is no proxy in front of this: it is reached
-// directly on the LAN, or through the orchestrator agent on the same host, so
-// an X-Forwarded-For here would be attacker-controlled and trusting it would
-// hand out a way to reset someone else's backoff.
+// requestSource identifies the caller by remote address only. No proxy
+// sits in front, so X-Forwarded-For would be attacker-controlled.
 func requestSource(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

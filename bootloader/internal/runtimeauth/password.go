@@ -15,14 +15,9 @@ import (
 	"strings"
 )
 
-// Werkzeug's generate_password_hash writes
-//
-//	pbkdf2:sha256:<iterations>$<salt>$<hex digest>
-//
-// with the salt used as raw bytes of the ASCII string, not decoded. The runtime
-// pins iterations at 600000 (User.derivation_method) but the count is read from
-// the stored hash rather than assumed, so a future change on the Python side
-// keeps verifying instead of silently rejecting every password.
+// Werkzeug format: pbkdf2:sha256:<iters>$<salt>$<hex digest>. Salt is
+// used as raw ASCII bytes, not decoded. Iterations are read from the
+// hash so a future Python-side change keeps verifying.
 const (
 	pbkdf2Prefix = "pbkdf2:"
 	// maxIterations bounds work from a malformed or hostile hash: 600k is the
@@ -36,12 +31,8 @@ const (
 // runtime hashes differently" instead of "wrong password".
 var ErrUnsupportedHash = errors.New("unsupported password hash format")
 
-// VerifyPassword checks password against a Werkzeug PBKDF2 hash.
-//
-// The pepper is appended before hashing, exactly as User.set_password does
-// (“password = password + PEPPER“). Getting the order wrong would fail every
-// login while looking entirely reasonable, which is why the shared test vector
-// exists.
+// VerifyPassword checks password against a Werkzeug PBKDF2 hash. Pepper
+// is appended before hashing, matching User.set_password.
 func VerifyPassword(storedHash, password, pepper string) (bool, error) {
 	if !strings.HasPrefix(storedHash, pbkdf2Prefix) {
 		return false, fmt.Errorf("%w: %q", ErrUnsupportedHash, firstField(storedHash))

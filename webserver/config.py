@@ -107,11 +107,9 @@ RUNTIME_DIR = get_runtime_dir()
 PERSISTENT_DATA_DIR = get_persistent_data_dir()
 ENV_PATH = PERSISTENT_DATA_DIR / ".env"
 DB_PATH = PERSISTENT_DATA_DIR / "restapi.db"
-# VPP configs and license blobs live outside build/ so install.sh's wipe of
-# build/ cannot delete a purchased license. The runtime writes this path into
-# vpp_plugins.conf.config_path; the C loader passes it verbatim to the .so.
-# Created lazily (not at import) so a permission failure here does not crash
-# the import.
+# VPP configs and license blobs live outside build/ so install.sh's wipe
+# does not delete a purchased license. The runtime writes this path into
+# vpp_plugins.conf.config_path; the C loader passes it to the .so verbatim.
 VPP_DATA_DIR = PERSISTENT_DATA_DIR / "vpp"
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 

@@ -23,14 +23,10 @@ import (
 	"strings"
 )
 
-// Secrets are the two values the runtime generates once, in
-// webserver/config.py::generate_env_file, and never rotates: changing either
-// invalidates every stored password hash, which is why that function deletes
-// the database when it writes a new .env.
-//
-// The pepper is what the bootloader genuinely needs, since it is required to
-// verify a password against a stored hash. The JWT secret is used only to sign
-// the bootloader's own tokens -- the two services do not share sessions.
+// Secrets are the two values generated once by the runtime's
+// generate_env_file and never rotated: changing either invalidates every
+// stored password hash. The bootloader uses the pepper to verify
+// passwords and the JWT secret to sign its OWN tokens (not shared).
 type Secrets struct {
 	// JWTSecret signs and verifies access tokens (HS256).
 	JWTSecret string
@@ -38,12 +34,8 @@ type Secrets struct {
 	Pepper string
 }
 
-// LoadSecrets reads the runtime's .env.
-//
-// A hand-rolled parser rather than a dotenv library: the file is written by
-// generate_env_file with four fixed KEY=VALUE lines and no quoting, expansion
-// or multi-line values, so a dependency would buy nothing in the component
-// that most wants none.
+// LoadSecrets reads the runtime's .env. Hand-rolled parser: the file has
+// four fixed KEY=VALUE lines with no quoting or expansion.
 func LoadSecrets(path string) (*Secrets, error) {
 	file, err := os.Open(path)
 	if err != nil {

@@ -51,13 +51,8 @@ const (
 	perIPRateLimit = 100 * time.Millisecond
 )
 
-// Reply is what a probing editor receives.
-//
-// service says "openplc-bootloader", not "openplc-runtime". Being honest here
-// costs an older editor the ability to see a device in recovery -- but an
-// older editor could not have done anything about it either, and the
-// alternative is a client that thinks it is talking to a working runtime and
-// then fails against every endpoint it tries.
+// Reply is what a probing editor receives. service says
+// "openplc-bootloader" so a client cannot mistake it for a working runtime.
 type Reply struct {
 	Service         string `json:"service"`
 	ProtocolVersion int    `json:"protocol_version"`
@@ -109,12 +104,9 @@ func New(port int, provider ReplyProvider, log *slog.Logger) *Responder {
 	}
 }
 
-// Enable starts answering probes. Safe to call when already enabled.
-//
-// A bind failure is logged and swallowed. Discovery is a convenience: losing
-// it must not stop the bootloader serving its control API, which is the
-// primary way in. The most likely cause is the runtime still holding the port,
-// and in that case the device is findable anyway.
+// Enable starts answering probes; idempotent. A bind failure is logged
+// and swallowed: discovery is a convenience, losing it must not stop the
+// control API from serving.
 func (r *Responder) Enable() {
 	r.mu.Lock()
 	if r.conn != nil {
@@ -122,11 +114,9 @@ func (r *Responder) Enable() {
 		return
 	}
 	var conn *net.UDPConn
-	// SO_REUSEADDR and SO_REUSEPORT, matching how the runtime binds the same
-	// port. Linux shares a UDP port only when EVERY socket asked to, so
-	// without these a lingering bootloader socket makes the runtime's own bind
-	// fail -- and the runtime does not retry. The release now happens before
-	// the runtime starts; this is the safety net for a race in between.
+	// SO_REUSEADDR/REUSEPORT must match the runtime; Linux shares a UDP
+	// port only when every socket asked to, otherwise a lingering socket
+	// here blocks the runtime's bind.
 	listener := net.ListenConfig{Control: reusePort}
 	generic, err := listener.ListenPacket(
 		context.Background(), "udp", ":"+strconv.Itoa(r.port))
