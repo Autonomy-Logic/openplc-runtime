@@ -20,30 +20,8 @@ try:
 except ImportError:
     from opcua_logging import log_info, log_warn, log_error
 
-
 # TIME-related datatypes that use IEC_TIMESPEC structure
 TIME_DATATYPES = frozenset(["TIME", "DATE", "TOD", "DT"])
-
-
-# ---------------------------------------------------------------------------
-# Per-type defaults — TWO tables, deliberately, and only two.
-#
-# There were four, in four files, and they disagreed: `address_space` seeded a
-# WSTRING with `""` while everywhere else used `b""`, which is the wrong Python
-# type for a node this plugin maps to a ByteString. That is what duplication
-# costs — the copies drift, and the one that drifts is the one nobody reads.
-#
-# Two remain because there are genuinely two directions, not because nobody
-# merged them:
-#
-#   default_for_opcua()  what a CLIENT should see      (BOOL -> False)
-#   default_for_plc()    what the PLC side encodes     (BOOL -> 0)
-#
-# A default is a fallback, never an answer. A caller that substitutes one is
-# telling the client something it does not know, so it must also mark the value
-# Bad — see the read callback and `_push_array_node` in synchronization.py.
-# ---------------------------------------------------------------------------
-
 
 def default_for_opcua(datatype: str) -> Any:
     """The OPC-UA-side representation of "nothing to report" for a type."""
@@ -57,7 +35,6 @@ def default_for_opcua(datatype: str) -> Any:
     if t == "WSTRING":
         return b""          # WSTRING is served as a ByteString, so bytes
     return 0
-
 
 def default_for_plc(datatype: str) -> Any:
     """The PLC-side representation, as the write path would encode it."""
@@ -74,7 +51,6 @@ def default_for_plc(datatype: str) -> Any:
     if t in TIME_DATATYPES:
         return (0, 0)
     return 0
-
 
 def map_plc_to_opcua_type(plc_type: str) -> ua.VariantType:
     """Map plc datatype to OPC-UA VariantType."""
@@ -125,7 +101,6 @@ def map_plc_to_opcua_type(plc_type: str) -> ua.VariantType:
     mapped_type = type_mapping.get(plc_type.upper(), ua.VariantType.Variant)
     return mapped_type
 
-
 def timespec_to_milliseconds(tv_sec: int, tv_nsec: int) -> int:
     """
     Convert IEC_TIMESPEC (tv_sec, tv_nsec) to milliseconds.
@@ -138,7 +113,6 @@ def timespec_to_milliseconds(tv_sec: int, tv_nsec: int) -> int:
         Total time in milliseconds
     """
     return (tv_sec * 1000) + (tv_nsec // 1_000_000)
-
 
 def milliseconds_to_timespec(ms: int) -> tuple[int, int]:
     """
@@ -153,7 +127,6 @@ def milliseconds_to_timespec(ms: int) -> tuple[int, int]:
     tv_sec = ms // 1000
     tv_nsec = (ms % 1000) * 1_000_000
     return (tv_sec, tv_nsec)
-
 
 def convert_value_for_opcua(datatype: str, value: Any) -> Any:
     """Convert PLC debug variable value to OPC-UA compatible format."""
@@ -312,7 +285,6 @@ def convert_value_for_opcua(datatype: str, value: Any) -> Any:
         log_warn(f"Failed to convert value {value} to OPC-UA format for {datatype}: {e}")
         return default_for_opcua(datatype)
 
-
 def convert_value_for_plc(datatype: str, value: Any) -> Any:
     """Convert OPC-UA value to PLC debug variable format."""
     # Handle different OPC-UA value types more robustly
@@ -438,7 +410,6 @@ def convert_value_for_plc(datatype: str, value: Any) -> Any:
         # If conversion fails, log and return a safe default
         log_warn(f"Failed to convert value {value} to {datatype}, using default: {e}")
         return default_for_plc(datatype)
-
 
 def infer_var_type(size: int) -> str:
     """

@@ -71,7 +71,6 @@ logger: PluginLogger = None
 slave_threads: List[threading.Thread] = []
 # pylint: enable=invalid-name
 
-
 def queue_zero_fill_on_failure(point: Any, read_results_to_update: List[Any]) -> bool:
     """
     Queue a zeroed payload for a read point whose group asks for it.
@@ -93,7 +92,6 @@ def queue_zero_fill_on_failure(point: Any, read_results_to_update: List[Any]) ->
         (point.iec_location, get_zero_payload_for_io_point(point), point.length)
     )
     return True
-
 
 class ModbusSlaveDevice(threading.Thread):
     """
@@ -459,7 +457,6 @@ class ModbusSlaveDevice(threading.Thread):
     def stop(self):
         self.logger.info(f"[{self.name}] Stop signal received.")
         self._stop_event.set()
-
 
 class ModbusBusHandler(threading.Thread):
     """
@@ -858,10 +855,8 @@ class ModbusBusHandler(threading.Thread):
         self.logger.info(f"[{self.name}] Stop signal received.")
         self._stop_event.set()
 
-
 # Backward-compatible alias: the bus handler used to be RTU-only.
 ModbusRtuBusHandler = ModbusBusHandler
-
 
 def group_rtu_devices_by_bus(devices: List[Any]) -> dict:
     """
@@ -911,7 +906,6 @@ def group_rtu_devices_by_bus(devices: List[Any]) -> dict:
 
     return buses
 
-
 def group_tcp_devices_by_endpoint(devices: List[Any]) -> dict:
     """
     Group TCP devices by (host, port) endpoint.
@@ -957,7 +951,6 @@ def group_tcp_devices_by_endpoint(devices: List[Any]) -> dict:
 
     return endpoints
 
-
 def init(args_capsule):
     """
     Initialize the Modbus Master plugin.
@@ -986,7 +979,6 @@ def init(args_capsule):
         logger.error(f"Error during initialization: {e}")
         traceback.print_exc()
         return False
-
 
 def start_loop():
     """
@@ -1115,7 +1107,6 @@ def start_loop():
         traceback.print_exc()
         return False
 
-
 def stop_loop():
     """
     Stop the main loop and all running device threads.
@@ -1167,7 +1158,6 @@ def stop_loop():
         traceback.print_exc()
         return False
 
-
 def cleanup():
     """
     Clean up resources before plugin unload.
@@ -1199,7 +1189,6 @@ def cleanup():
         logger.error(f"Error during cleanup: {e}")
         traceback.print_exc()
         return False
-
 
 if __name__ == "__main__":
     # Test mode for development purposes.

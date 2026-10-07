@@ -271,14 +271,12 @@ class ModbusMasterConfig(PluginConfigContract):
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(devices={len(self.devices)})"
 
-
 # What a read point does with its IEC buffer while communication is down.
 # The editor exposes this per I/O group ("Keep last value" / "Set to zero");
 # these are the strings it writes into the plugin config.
 ERROR_HANDLING_KEEP_LAST = "keep-last-value"
 ERROR_HANDLING_SET_TO_ZERO = "set-to-zero"
 ERROR_HANDLING_MODES = (ERROR_HANDLING_KEEP_LAST, ERROR_HANDLING_SET_TO_ZERO)
-
 
 class ModbusIoPointConfig:
     """

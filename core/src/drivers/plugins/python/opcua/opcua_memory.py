@@ -42,7 +42,6 @@ except ImportError:
     from opcua_types import VariableMetadata
     from opcua_logging import log_debug, log_error, log_warn
 
-
 # TIME-related datatypes are encoded as 8-byte signed integers in
 # nanoseconds (matching strucpp's TIME_t / DATE_t / TOD_t / DT_t).
 TIME_DATATYPES = frozenset(["TIME", "DATE", "TOD", "DT"])
@@ -74,7 +73,6 @@ STATUS_OK = 0x7E
 STRING_DATATYPES = frozenset(["STRING", "WSTRING"])
 DEBUG_STRING_CAP = 126
 
-
 # Warnings raised from the READ path, which asyncua calls once per variable per
 # client Read. A leaf that is persistently malformed is not a new event every
 # poll -- at a one-second poll and a handful of clients it is a log that scrolls
@@ -82,17 +80,14 @@ DEBUG_STRING_CAP = 126
 # after that; the condition is a property of the program, not of the poll.
 _warned: set = set()
 
-
 def _warn_once(key: str, message: str) -> None:
     if key in _warned:
         return
     _warned.add(key)
     log_warn(f"{message} (further identical warnings suppressed)")
 
-
 def _is_string(datatype: str) -> bool:
     return (datatype or "").upper() in STRING_DATATYPES
-
 
 def _decode_string(datatype: str, buf: Any, n: int) -> Optional[Any]:
     """Decode strucpp's [count][payload] wire form.
@@ -130,7 +125,6 @@ def _decode_string(datatype: str, buf: Any, n: int) -> Optional[Any]:
     # instead of taking down the read.
     return raw.decode("utf-8", errors="replace")
 
-
 def _encode_string(datatype: str, value: Any) -> Optional[bytes]:
     """Encode a Python value into strucpp's [count][payload] wire form."""
     wide = datatype.upper() == "WSTRING"
@@ -166,7 +160,6 @@ def _encode_string(datatype: str, value: Any) -> Optional[bytes]:
         count = len(payload)
     return bytes([count]) + payload
 
-
 def _truncate_utf8(raw: bytes, limit: int) -> bytes:
     """Cut `raw` to at most `limit` bytes without splitting a character.
 
@@ -180,7 +173,6 @@ def _truncate_utf8(raw: bytes, limit: int) -> bytes:
     while end > 0 and (raw[end] & 0xC0) == 0x80:
         end -= 1
     return raw[:end]
-
 
 def _ctype_for(datatype: str) -> Optional[Any]:
     """Map an IEC type name to the ctypes scalar that owns its bytes
@@ -221,7 +213,6 @@ def _ctype_for(datatype: str) -> Optional[Any]:
         return None
     return None
 
-
 def debug_read_value(args: Any, arr: int, elem: int, datatype: str) -> Optional[Any]:
     """Read a single PLC variable through args.debug_read and decode
     it into a Python value matching the IEC datatype.
@@ -254,7 +245,6 @@ def debug_read_value(args: Any, arr: int, elem: int, datatype: str) -> Optional[
     # Reinterpret the leading bytes as the typed scalar.
     typed = ctypes.cast(buf, ctypes.POINTER(ctype)).contents
     return typed.value
-
 
 def debug_write_value(args: Any, arr: int, elem: int, datatype: str, value: Any) -> bool:
     """Soft-write a Python value to a PLC variable through
@@ -293,7 +283,6 @@ def debug_write_value(args: Any, arr: int, elem: int, datatype: str, value: Any)
         log_error(f"debug_write({arr}, {elem}) raised: {e}")
         return False
     return status == STATUS_OK
-
 
 def debug_force_value(args: Any, arr: int, elem: int, datatype: str, value: Any) -> bool:
     """Force-write a value (debug_set with forcing=True). Pins the
@@ -336,7 +325,6 @@ def debug_force_value(args: Any, arr: int, elem: int, datatype: str, value: Any)
         return False
     return status == STATUS_OK
 
-
 def debug_unforce(args: Any, arr: int, elem: int) -> bool:
     """Release a force on a variable (debug_set with forcing=False).
     The bytes/len arguments are ignored by the runtime's unforce path
@@ -354,7 +342,6 @@ def debug_unforce(args: Any, arr: int, elem: int) -> bool:
         log_error(f"debug_set/unforce({arr}, {elem}) raised: {e}")
         return False
     return status == STATUS_OK
-
 
 def initialize_variable_cache(
     args: Any,
@@ -393,7 +380,6 @@ def initialize_variable_cache(
         log_debug(f"Cached size+type metadata for {len(cache)} variables")
     return cache
 
-
 def time_to_timespec(value_ns: int) -> Tuple[int, int]:
     """Split an int64 nanosecond value into (tv_sec, tv_nsec) for
     callers that want to expose TIME-family values as their CODESYS
@@ -405,7 +391,6 @@ def time_to_timespec(value_ns: int) -> Tuple[int, int]:
         sec = value_ns // 1_000_000_000
         nsec = value_ns % 1_000_000_000
     return int(sec), int(nsec)
-
 
 def timespec_to_time(tv_sec: int, tv_nsec: int) -> int:
     """Compose (tv_sec, tv_nsec) back into an int64 nanosecond value."""

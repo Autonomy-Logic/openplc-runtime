@@ -61,22 +61,6 @@ static int journal_add(uint8_t type, uint16_t index, uint8_t bit, uint64_t value
  * =============================================================================
  */
 
-/* ---------------------------------------------------------------------------
- * Forced-slot bitmap.
- *
- * A located variable that the debugger / OPC-UA has FORCED must keep its
- * forced value in the image regardless of what plugins (or the program's own
- * copy_out) write to that slot. journal_force_set() seeds the slot with the
- * forced value and marks it; every subsequent journal write to a forced slot
- * is then DROPPED at apply time, so the force wins 100% of the cycle — the
- * proper "force locks out external writes" semantic. (For globals/internals
- * forcing lives in the IECVar; this bitmap is the located/image leg.)
- *
- * Mutated only from the dispatcher's debug-write drain and read only from
- * apply_entry() — both under image_lock — so no atomics are required.
- * JBUF_FORCE_SIZE mirrors the image BUFFER_SIZE; a runtime guard keeps this
- * safe even if the two ever diverge.
- * --------------------------------------------------------------------------- */
 #define JBUF_FORCE_SIZE 1024
 static uint8_t g_forced[JOURNAL_TYPE_COUNT][JBUF_FORCE_SIZE];
 static int     g_force_count = 0;
@@ -263,27 +247,6 @@ void journal_force_clear(journal_buffer_type_t type, uint16_t index, uint8_t bit
 }
 
 #if JOURNAL_LOCKFREE
-
-/*
- * =============================================================================
- * Lock-free double-buffer-flip implementation (MPSC)
- * =============================================================================
- *
- * Control word layout (32-bit):
- *   bit  31    : active bank index (0 or 1)
- *   bits 0..30 : write count claimed in the active bank this cycle
- *
- * Producer: fetch_add(1) atomically claims (bank, slot). It writes the entry
- * (plain stores) then publishes with a release store on the per-slot flag.
- *
- * Consumer (single, under image mutex): one atomic exchange flips the active
- * bank and resets the count; the returned old value gives the retired bank and
- * its final count. The consumer drains [0, count), acquiring each publish flag
- * (a bounded wait covers a producer caught mid-write at the instant of flip).
- *
- * Only the consumer ever changes the bank bit, and the runtime calls the
- * consumer from a single thread, so read-active-then-exchange is race-free.
- */
 
 #define JOURNAL_NBANKS          2
 #define JOURNAL_BANK_SHIFT      31u

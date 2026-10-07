@@ -32,7 +32,6 @@ from datetime import datetime, timezone
 from typing import Optional
 from .safe_logging_access import SafeLoggingAccess
 
-
 class PluginLogger:
     """
     Thread-safe logger for OpenPLC plugins that routes messages to the

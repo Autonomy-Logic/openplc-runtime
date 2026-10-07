@@ -60,18 +60,6 @@ typedef enum
     PLC_STATE_TRANSITIONING_TO_STOP
 } PLCState;
 
-/* -----------------------------------------------------------------------
- * Per-IEC-task execution context.
- *
- * One PlcTaskCtx per task declared in the user's CONFIGURATION. Lives
- * for the duration of a loaded program; freed on stop.
- *
- * Per-thread state — crash_jmp, crash_sig, holding_mutex — must NOT be
- * shared across threads. Each task thread owns its own context
- * exclusively once spawned; the runtime stashes a __thread pointer to
- * the active ctx so the signal handler can siglongjmp to the right
- * recovery point.
- * --------------------------------------------------------------------- */
 typedef struct PlcTaskCtx
 {
     size_t                idx;                /* index into plc_tasks[] */
@@ -83,27 +71,7 @@ typedef struct PlcTaskCtx
     pthread_t             thread;
     char                  name[32];
 
-    /* -------------------------------------------------------------------------
-     * GCD master-tick dispatcher plumbing.
-     *
-     * The dispatcher releases this worker by posting `go`; the worker blocks on
-     * sem_wait(go) between scans. `divisor` = interval_ns / base_tick_ns, so the
-     * worker is due on master tick N iff N % divisor == 0.
-     *
-     * Binary release + overrun detection use released/completed: the dispatcher
-     * bumps `released` and posts only when released == completed (worker idle);
-     * if released > completed at a due tick the worker is still in its previous
-     * scan (overrun) and is NOT re-posted, so activations never queue. The
-     * worker bumps `completed` at the end of each scan.
-     *
-     * `time_at_dispatch` is stamped by the dispatcher at release and applied by
-     * the worker via ext_strucpp_set_current_time() before run() — giving each
-     * task a scan-stable IEC TIME() snapshot (§ scheduler design doc).
-     *
-     * `alive` (1/0): a worker that hits an unrecoverable fault sets this to 0
-     * and returns; the dispatcher then never releases it again (the faulted task
-     * drops out of the schedule while the others keep running).
-     * --------------------------------------------------------------------- */
+    
     sem_t                 go;
     uint64_t              divisor;
     int64_t               time_at_dispatch;

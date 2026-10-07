@@ -33,7 +33,6 @@ PBKDF2_ITERATIONS = 600000  # OWASP recommendation for SHA256
 PBKDF2_HASH_NAME = "sha256"
 PBKDF2_SALT_LENGTH = 16
 
-
 def _pbkdf2_hash_password(password: str) -> str:
     """
     Hash a password using PBKDF2-HMAC-SHA256.
@@ -54,7 +53,6 @@ def _pbkdf2_hash_password(password: str) -> str:
     salt_b64 = base64.b64encode(salt).decode("ascii")
     hash_b64 = base64.b64encode(hash_bytes).decode("ascii")
     return f"pbkdf2:{PBKDF2_HASH_NAME}:{PBKDF2_ITERATIONS}${salt_b64}${hash_b64}"
-
 
 def _pbkdf2_verify_password(password: str, password_hash: str) -> bool:
     """
@@ -100,7 +98,6 @@ def _pbkdf2_verify_password(password: str, password_hash: str) -> bool:
     except Exception:
         return False
 
-
 def hash_password(password: str) -> str:
     """
     Hash a password using the best available method.
@@ -139,7 +136,6 @@ DEFAULT_MAX_ATTEMPTS = 5
 DEFAULT_LOCKOUT_DURATION_SECONDS = 300  # 5 minutes
 DEFAULT_ATTEMPT_WINDOW_SECONDS = 60  # 1 minute window for counting attempts
 
-
 @dataclass
 class AuthAttemptTracker:
     """Tracks authentication attempts for rate limiting."""
@@ -148,7 +144,6 @@ class AuthAttemptTracker:
     first_attempt_time: float = 0.0
     lockout_until: float = 0.0
 
-
 @dataclass
 class RateLimitConfig:
     """Configuration for rate limiting."""
@@ -156,7 +151,6 @@ class RateLimitConfig:
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     lockout_duration_seconds: float = DEFAULT_LOCKOUT_DURATION_SECONDS
     attempt_window_seconds: float = DEFAULT_ATTEMPT_WINDOW_SECONDS
-
 
 class RateLimiter:
     """
@@ -285,7 +279,6 @@ class RateLimiter:
             del self._trackers[identifier]
 
         return len(expired)
-
 
 class OpenPLCUserManager(UserManager):
     """

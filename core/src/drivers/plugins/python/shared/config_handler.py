@@ -18,7 +18,6 @@ except ImportError:
     # Fall back to absolute imports (when testing standalone)
     from component_interfaces import IConfigHandler
 
-
 class ConfigHandler(IConfigHandler):
     """
     Handles plugin-specific configuration file operations.

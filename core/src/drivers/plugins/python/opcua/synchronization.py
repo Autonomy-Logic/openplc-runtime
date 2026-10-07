@@ -74,12 +74,10 @@ except ImportError:
         map_plc_to_opcua_type,
     )
 
-
 # Address tuple type alias for clarity.
 Addr = Tuple[int, int]
 
 _VALUE_ATTR = ua.AttributeIds.Value
-
 
 class SynchronizationManager:
     """Request-driven OPC-UA ↔ PLC value bridge (see module docstring)."""

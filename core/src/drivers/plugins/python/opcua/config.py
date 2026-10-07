@@ -39,7 +39,6 @@ from shared.plugin_config_decode.opcua_config_model import (
     OPCUA_CONFIG_MIN_FORMAT_VERSION,
 )
 
-
 def load_config(config_path: str) -> Optional[OpcuaConfig]:
     """
     Load OPC UA configuration from JSON file.
@@ -87,7 +86,6 @@ def load_config(config_path: str) -> Optional[OpcuaConfig]:
         log_error(f"Failed to load configuration: {e}")
         return None
 
-
 def load_config_from_dict(raw_config: dict) -> Optional[OpcuaConfig]:
     """
     Load OPC UA configuration from a dictionary.
@@ -116,7 +114,6 @@ def load_config_from_dict(raw_config: dict) -> Optional[OpcuaConfig]:
         log_error(f"Failed to parse configuration: {e}")
         return None
 
-
 def _normalize_config(raw_config: Any) -> dict:
     """
     Normalize configuration to single-server format.
@@ -141,7 +138,6 @@ def _normalize_config(raw_config: Any) -> dict:
 
     # Already in new format
     return raw_config
-
 
 def get_default_config() -> OpcuaConfig:
     """

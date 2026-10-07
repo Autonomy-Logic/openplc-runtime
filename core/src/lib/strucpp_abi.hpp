@@ -53,23 +53,6 @@ struct LocatedVar {
     void       *pointer;
 };
 
-// ---------------------------------------------------------------------------
-// ProgramBase (mirror of strucpp::ProgramBase, iec_std_lib.hpp)
-//
-// Polymorphic base. The runtime calls ->run() through a pointer; the
-// vtable resolves into the .so's address space (where the actual
-// derived class lives). Any extra virtual methods strucpp adds AFTER
-// run() are fine — the runtime only calls run() so it doesn't need
-// them in the mirror, but we keep them to preserve the vtable slot
-// indices.
-//
-// strucpp v0.4.5 ProgramBase virtuals, in order:
-//   0: ~ProgramBase()
-//   1: run()
-//   2: getRetainVars() const
-//   3: getRetainCount() const
-// ---------------------------------------------------------------------------
-
 struct RetainVarInfo;  // opaque; we never dereference
 
 struct ProgramBase {
@@ -114,19 +97,6 @@ struct ResourceInstance {
     TaskInstance *tasks;
     size_t        task_count;
 };
-
-// ---------------------------------------------------------------------------
-// ConfigurationInstance (mirror of strucpp::ConfigurationInstance,
-// iec_std_lib.hpp)
-//
-// Polymorphic. The runtime obtains a ConfigurationInstance* via the
-// shim's strucpp_get_config() and walks resources/tasks/programs by
-// virtual dispatch. vtable slots, in order:
-//   0: ~ConfigurationInstance()
-//   1: get_name() const
-//   2: get_resources()
-//   3: get_resource_count() const
-// ---------------------------------------------------------------------------
 
 struct ConfigurationInstance {
     virtual ~ConfigurationInstance() = default;

@@ -19,7 +19,6 @@ except ImportError:
     from component_interfaces import IBufferValidator
     from buffer_types import get_buffer_types
 
-
 class BufferValidator(IBufferValidator):
     """
     Centralized validation for buffer operations.

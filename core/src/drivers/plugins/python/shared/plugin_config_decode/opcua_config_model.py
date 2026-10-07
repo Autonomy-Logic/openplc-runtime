@@ -51,7 +51,6 @@ VALID_DATATYPES = frozenset([
 # truth for every role consumer (config parse here, user_manager, callbacks).
 VALID_ROLES = frozenset(["viewer", "operator", "engineer"])
 
-
 def normalize_role(role: Any) -> str:
     """Normalize any role value to one of 'viewer' | 'operator' | 'engineer'.
 
@@ -71,7 +70,6 @@ def normalize_role(role: Any) -> str:
     if "user" in r:
         return "viewer"
     return "viewer"
-
 
 @dataclass
 class SecurityProfile:

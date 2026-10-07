@@ -49,7 +49,6 @@ except ImportError:
     from opcua_logging import get_logger, log_debug, log_error, log_info, log_warn
     from server import OpcuaServerManager
 
-
 # Plugin state
 _runtime_args = None
 _buffer_accessor: Optional[SafeBufferAccess] = None
@@ -58,7 +57,6 @@ _server_manager: Optional[OpcuaServerManager] = None
 _server_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
 _loop: Optional[asyncio.AbstractEventLoop] = None
-
 
 class _PermissionDenialFilter(logging.Filter):
     """Quiet asyncua's "Error while processing message" traceback when
@@ -98,11 +96,9 @@ class _PermissionDenialFilter(logging.Filter):
                     return False  # drop the record
         return True
 
-
 def _install_asyncua_log_filter() -> None:
     """Install the permission-denial filter on asyncua's processor logger."""
     logging.getLogger("asyncua.server.uaprocessor").addFilter(_PermissionDenialFilter())
-
 
 def init(args_capsule) -> bool:
     """
@@ -141,7 +137,6 @@ def init(args_capsule) -> bool:
     except Exception as e:
         log_error(f"Initialization error: {e}")
         return False
-
 
 def start_loop() -> bool:
     """
@@ -200,7 +195,6 @@ def start_loop() -> bool:
         log_error(f"Failed to start server: {e}")
         return False
 
-
 def stop_loop() -> bool:
     """
     Stop the OPC UA server.
@@ -255,7 +249,6 @@ def stop_loop() -> bool:
         log_error(f"Error stopping server: {e}")
         return False
 
-
 def cleanup() -> bool:
     """
     Clean up plugin resources.
@@ -287,7 +280,6 @@ def cleanup() -> bool:
         log_error(f"Cleanup error: {e}")
         return False
 
-
 def _cancel_all_tasks(loop):
     """Cancel all running tasks on the event loop.
 
@@ -295,7 +287,6 @@ def _cancel_all_tasks(loop):
     """
     for task in asyncio.all_tasks(loop):
         task.cancel()
-
 
 def _run_server_thread() -> None:
     """
@@ -341,7 +332,6 @@ def _run_server_thread() -> None:
         log_error(f"Server thread error: {e}")
     finally:
         _loop = None
-
 
 # For backwards compatibility, also export as module-level functions
 # that match the old plugin interface

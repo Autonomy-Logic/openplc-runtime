@@ -36,7 +36,6 @@ def test_parse_iec_address_invalid():
     with pytest.raises(ValueError):
         parse_iec_address("%QZ0")  # Invalid type
 
-
 # ---------------------------------------------------------------------
 # TEST ModbusIoPointConfig
 # ---------------------------------------------------------------------
@@ -64,7 +63,6 @@ def test_modbus_io_point_error_handling_defaults_to_keep_last():
     )
     assert point.error_handling == ERROR_HANDLING_KEEP_LAST
 
-
 def test_modbus_io_point_parses_set_to_zero():
     point = ModbusIoPointConfig.from_dict(
         {
@@ -77,7 +75,6 @@ def test_modbus_io_point_parses_set_to_zero():
     )
     assert point.error_handling == ERROR_HANDLING_SET_TO_ZERO
     assert point.to_dict()["error_handling"] == "set-to-zero"
-
 
 def test_modbus_io_point_unknown_error_handling_falls_back():
     # A config from a newer editor must not take the whole device offline over
@@ -93,7 +90,6 @@ def test_modbus_io_point_unknown_error_handling_falls_back():
     )
     assert point.error_handling == ERROR_HANDLING_KEEP_LAST
 
-
 def test_modbus_io_point_missing_field():
     data = {
         "offset": "40001",
@@ -102,7 +98,6 @@ def test_modbus_io_point_missing_field():
     }
     with pytest.raises(ValueError):
         ModbusIoPointConfig.from_dict(data)
-
 
 # ---------------------------------------------------------------------
 # TEST ModbusDeviceConfig
@@ -136,7 +131,6 @@ def test_device_invalid_fc():
     ]
     with pytest.raises(ValueError):
         dev.validate()
-
 
 # ---------------------------------------------------------------------
 # TEST ModbusMasterConfig

@@ -14,7 +14,6 @@ import ctypes
 # Import IEC type definitions
 from .iec_types import IEC_BOOL, IEC_BYTE, IEC_UDINT, IEC_UINT, IEC_ULINT
 
-
 class PluginRuntimeArgs(ctypes.Structure):
     """
     Python ctypes structure matching plugin_runtime_args_t from plugin_driver.h

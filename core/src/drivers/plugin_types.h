@@ -257,13 +257,7 @@ typedef struct
      * symbols are not yet resolved (plugin must guard against zero). */
     unsigned long long base_tick_ns;
 
-    /* ---------------------------------------------------------------------
-     * Run/stop control. Appended at the end of the struct so plugin binaries
-     * compiled against an earlier layout keep their field offsets.
-     *
-     * A plugin that ignores all three behaves exactly as before: the switch
-     * position stays at its RUN default, so every start path is unguarded.
-     * ------------------------------------------------------------------- */
+    
 
     /* Async request to run — see plugin_request_plc_start_func_t. */
     plugin_request_plc_start_func_t request_plc_start;
