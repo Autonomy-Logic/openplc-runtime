@@ -135,10 +135,10 @@ db = SQLAlchemy(app_restapi)
 
 jwt_blacklist = set()
 
-# Role-based access control.  For now there are exactly two roles: ``admin``
-# (may manage every account) and ``user`` (may edit only its own account and
-# cannot create or delete accounts).  Enforcement lives server-side in the
-# endpoints below — the editor UI mirrors it but is never the boundary.
+# RBAC: two roles. ``admin`` manages accounts and retrieves projects.
+# ``user`` operates the PLC (upload, start/stop, debug, status/logs) and
+# edits its own account. Enforcement is server-side; the editor UI mirrors
+# it but is never the boundary.
 ADMIN_ROLE = "admin"
 USER_ROLE = "user"
 ROLES = (ADMIN_ROLE, USER_ROLE)
@@ -261,11 +261,8 @@ def repair_missing_admin() -> bool:
     try:
         db.session.commit()
     except Exception as exc:
-        # The caller runs inside a broad `except Exception: pass` that exists
-        # for the schema setup around it. Reporting here means a failed repair
-        # is not swallowed by that: it only ever gets one chance per boot, and
-        # a device that silently stayed unrepairable is the hardest version of
-        # this problem to diagnose.
+        # Log here: the caller's broad `except Exception: pass` would hide a
+        # repair failure, and the repair only gets one chance per boot.
         db.session.rollback()
         logger.error("Could not promote '%s' to administrator: %s", user.username, exc)
         return False
@@ -510,13 +507,6 @@ def whoami():
     return jsonify(current_user.to_dict()), 200
 
 
-# Unified user update: rename, change password and/or change role in one call.
-# Only the fields present in the body are applied.  Authorization:
-#   - admin may update ANY user (username, password, role);
-#   - a non-admin may update ONLY its own account and may never change its role;
-#   - changing YOUR OWN password requires the current password (blocks a stolen
-#     token / unlocked session from silently resetting the password); an admin
-#     resetting ANOTHER user's password does not need it.
 @restapi_bp.route("/update-user/<int:user_id>", methods=["PUT"])
 @jwt_required()
 def update_user(user_id):
@@ -727,19 +717,8 @@ def get_project_snapshot():
     if record is None or not project_snapshot.blob_path().exists():
         return jsonify({"msg": "No project is stored on this device"}), 404
 
-    # Streamed, not assembled.
-    #
-    # The base64-in-JSON wire format is not negotiable (the agent's proxy
-    # decodes JSON or falls back to text; a binary body does not survive that
-    # trip), but building the response in memory meant holding the archive, its
-    # base64 expansion, and Flask's serialisation of the whole document at once
-    # -- roughly 3.5x the archive, which at the 100 MB cap is far more than the
-    # Pi-class hardware this targets has to spare.
-    #
-    # Encoding straight into the response bounds peak memory by the chunk size
-    # instead of the file size, and the bytes on the wire are identical. The
-    # chunk is a multiple of 3 so each one encodes to complete base64 quads with
-    # no padding until the end.
+    # Stream base64 chunks instead of assembling the full JSON in memory;
+    # chunk is a multiple of 3 so each one encodes to whole base64 quads.
     def stream():
         head = {
             "projectName": record.get("projectName", ""),

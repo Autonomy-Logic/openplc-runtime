@@ -35,10 +35,8 @@ RAPID_CRASH_WINDOW = 30  # seconds
 # core/src/plc_app/task_policy.h). Restart straight into safe mode, reporting ERROR.
 RUNTIME_EXIT_WATCHDOG_FAULT = 42
 
-# How long to let the runtime shut down gracefully after SIGTERM before killing
-# it. Has to exceed the worst-case graceful stop: the runtime waits for a state
-# change already in flight to land (a boot start with plugin bring-up is ~4 s on
-# an SLM-RP4) and then tears the program and plugins down.
+# SIGTERM grace period. Exceeds the worst-case graceful stop: wait for an
+# in-flight state change (boot start with plugins ~4s) plus teardown.
 RUNTIME_SHUTDOWN_TIMEOUT_S = 15
 
 # How long a freshly started runtime gets to open its command socket (a few seconds on an SLM-RP4)
@@ -304,13 +302,9 @@ class RuntimeManager:
         self.monitor_thread.join(timeout=5)
         time.sleep(1)
         if self.process:
-            # SIGTERM now reaches a handler in the runtime, so terminate() starts a
-            # real shutdown: it stops the PLC program, waits out any state change
-            # already in flight (a boot start is ~4 s on an SLM-RP4), stops the
-            # plugins and unloads the program. Wait long enough for that to finish,
-            # or the SIGKILL below would preempt the very cleanup the signal asked
-            # for -- which is what happened for every stop while SIGTERM had no
-            # handler at all. The kill stays as the backstop for a hung teardown.
+            # Wait out the runtime's SIGTERM handler (program stop, state
+            # settle, plugin teardown) before SIGKILL, so the backstop does
+            # not preempt the cleanup the signal asked for.
             if HAS_PSUTIL and isinstance(self.process, psutil.Process):
                 self.process.terminate()
                 try:

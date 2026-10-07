@@ -48,10 +48,8 @@ _LICENSE_FCS = (FC_GET_BOARD_ID, FC_WRITE_LICENSE, FC_READ_LICENSE)
 
 # Status bytes (shared with the Arduino firmware / editor).
 ST_SUCCESS = 0x7E
-# 0x81/0x82 are MB_DEBUG_ERROR_OUT_OF_BOUNDS / MB_DEBUG_ERROR_OUT_OF_MEMORY,
-# which license_store.h:44-49 REUSES for LIC_STORE_TOO_LARGE / LIC_STORE_IO_ERROR.
-# The bare-metal store already answers these two and the editor already parses
-# them (modbus-pdu.ts statusError), so emitting them here adds no ABI.
+# 0x81/0x82 reuse MB_DEBUG_ERROR_OUT_OF_BOUNDS/OUT_OF_MEMORY as
+# LIC_STORE_TOO_LARGE/LIC_STORE_IO_ERROR; already parsed by the editor.
 ST_LIC_TOO_LARGE = 0x81
 ST_LIC_IO_ERROR = 0x82
 ST_LIC_EMPTY = 0x83
@@ -62,21 +60,13 @@ ANCHOR_PATH = "/proc/device-tree/serial-number"
 VPP_CONF = "vpp_plugins.conf"
 LIC_BLOB_SIZE = 98
 
-# Bytes stripped from the END of the raw anchor: NUL, CR, LF and SPACE -- and
-# ONLY those four, because that is the list in rpi_plugin.c:103-107, and the C
-# is canonical (it is the side that decides whether the license verifies).
-# TAB used to be in this list and never was in the C one, while both comments
-# claimed byte-identity: an anchor ending in 0x09 derived a DIFFERENT device_id
-# here than on the .so, so the purchased license silently never worked. Do NOT
-# add bytes "for safety" -- every byte in this set changes the device_id.
-# Parity is pinned by tests/pytest/plugins/test_vpp_anchor_cross_language.py,
-# which executes the real C.
+# End-strip set MUST match rpi_plugin.c (which is canonical for the
+# device_id). Changing this set changes the device_id. Parity is pinned by
+# tests/pytest/plugins/test_vpp_anchor_cross_language.py.
 ANCHOR_STRIP_BYTES = b"\x00\r\n "
-# rpi_plugin.c:99 reads the anchor into `uint8_t anchor[64]`, so the .so never
-# sees more than 64 bytes. Refuse a longer anchor instead of putting bytes on
-# the wire that would derive a device_id the .so cannot reproduce (it would
-# hash the first 64; the editor would hash all of them -> DEVICE_MISMATCH ->
-# demo). Never truncate silently.
+# The .so reads anchor into uint8_t[64]. Refuse a longer anchor rather
+# than silently truncate: the editor would hash all bytes and derive a
+# device_id the .so cannot reproduce (DEVICE_MISMATCH).
 ANCHOR_MAX_BYTES = 64
 
 # Blob layout (contract/firmware/license_blob.h, license-blob.ts): LE u32 magic
@@ -364,19 +354,13 @@ def handle_license_command(command_hex: str) -> Optional[str]:
     if fc == FC_GET_BOARD_ID:
         anchor = _read_anchor()
         if not anchor:
-            # NOT the Arduino convention (review 2026-08-20, R2). On this medium
-            # 0x48 is ONLY the licensing anchor -- SUCCESS with id_len=0 made the
-            # editor hash an EMPTY pre-image, so every anchor-less host (x86 box,
-            # container, unmounted /proc/device-tree) derived the SAME deviceId,
-            # a purchase bound to it never validated on the .so, and the buyer
-            # got a 2-hour demo forever. UNSUPPORTED is the truth: this device
-            # has no hardware anchor to license against.
+            # No hardware anchor on this host. UNSUPPORTED (not SUCCESS/0)
+            # because a zero-length id would make the editor hash an empty
+            # pre-image and every anchor-less host derive the same deviceId.
             return _hex_from_bytes(bytes([fc, ST_LIC_UNSUPPORTED]))
         if len(anchor) > ANCHOR_MAX_BYTES:
-            # REFUSE. The .so only ever reads 64 bytes, so anything longer would
-            # make the editor derive a device_id the verifier cannot reproduce --
-            # the license would be bought against an identity that never
-            # validates. An error byte is recoverable; a wrong device_id is not.
+            # Refuse rather than silently truncate: the .so hashes 64 bytes,
+            # the editor would hash all -> DEVICE_MISMATCH on the purchase.
             logger.error(
                 "Anchor at %s is %d bytes after normalization, over the %d-byte "
                 "ceiling the license verifier reads; refusing 0x48 rather than "
@@ -423,11 +407,8 @@ def handle_license_command(command_hex: str) -> Optional[str]:
         blob = data[3 : 3 + length]
         if len(blob) != length:
             return _hex_from_bytes(bytes([fc, ST_LIC_CORRUPT]))
-        # Validate BEFORE touching the filesystem, with the same function 0x4A
-        # uses: a blob that would read back as EMPTY/CORRUPT must never replace a
-        # license that is already there. The size check that used to live here is
-        # the first check inside validate_license_blob, and answers the same
-        # 0x84.
+        # Validate with the same function 0x4A uses, BEFORE touching the file:
+        # a blob that would read back EMPTY/CORRUPT must not replace a good one.
         bad_status = validate_license_blob(blob)
         if bad_status is not None:
             logger.warning(
