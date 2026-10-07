@@ -57,12 +57,8 @@
 #include "plc_retain.h"
 #include "plc_retain_file_store.h"
 
-// ---------------------------------------------------------------------------
-// The store logs through the runtime's logger, which is not worth linking here.
-// Captured rather than discarded: two cases below assert that the operator is
-// TOLD storage was cleared, because a silent discard of retained values is the
-// failure mode this design is most likely to be blamed for later.
-// ---------------------------------------------------------------------------
+// Capture log calls so test cases can assert the operator is told
+// storage was cleared.
 static std::string g_log;
 
 extern "C" void log_info(const char *fmt, ...)
@@ -87,9 +83,6 @@ extern "C" void log_warn(const char *fmt, ...)
     g_log += '\n';
 }
 
-// ---------------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------------
 static int g_failures = 0;
 static const char *g_case = "";
 
@@ -106,10 +99,8 @@ static std::string g_dir;
 static std::string g_store_path;
 static std::string g_conf_path;
 
-/* Two identities that differ, both the right length. Deliberately NOT
- * NUL-terminated in the calls below — the contract says 32 characters and the
- * length travels separately, and a driver reaching for strlen would pass a test
- * that used terminated strings and fail in production. */
+/* 32-byte identities, deliberately not NUL-terminated: the contract
+ * passes length separately, so a strlen-based driver would fail. */
 static const char MD5_A[PLC_RETAIN_PROGRAM_ID_LEN] = {'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a',
                                                       'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a',
                                                       'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a',

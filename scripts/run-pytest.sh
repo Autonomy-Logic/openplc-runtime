@@ -38,11 +38,8 @@ echo "Installing pytest and local package..."
 pip install pytest
 pip install -e "$PROJECT_ROOT"
 
-# Every plugin's requirements, not just modbus_master's.
-#
-# The plugin suites import their driver modules at collection time, so a
-# missing pymodbus or asyncua is a collection error that stops the whole run
-# instead of skipping those files -- which is exactly what this script did.
+# Every plugin's requirements: suites import drivers at collection
+# time, so a missing dep fails the whole run instead of skipping.
 for req in "$PROJECT_ROOT"/core/src/drivers/plugins/python/*/requirements.txt; do
     echo "Installing $(basename "$(dirname "$req")") requirements..."
     pip install -r "$req"

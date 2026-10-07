@@ -172,12 +172,8 @@ void test_debug_set_unforce_clears_forcing_flag(void)
 
 void test_debug_set_rejects_oob_arr_at_runtime_gate(void)
 {
-    /* Configures the .so as having ONE array. The wire request asks
-     * to set arr=5 — way out of range. Without the runtime gate (the
-     * fix for review issue #17), this would call into the .so's
-     * debug_set with an OOB arr index and rely on the .so to validate.
-     * With the gate, the runtime returns OUT_OF_BOUNDS without ever
-     * dispatching. */
+    /* One array configured; request asks arr=5. Runtime gate returns
+     * OUT_OF_BOUNDS without dispatching to the .so's debug_set. */
     mock_debug_set_arr_count(1);
     mock_debug_set_elem_count(0, 4);
 

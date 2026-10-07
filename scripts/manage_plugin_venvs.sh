@@ -59,19 +59,9 @@ check_python() {
     log_info "Using Python version: $python_version"
 }
 
-# Install a plugin's requirements into its venv.
-#
-# On MSYS2/Cygwin the Python interpreter is the cygwin build
-# (SOABI cpython-3xx-x86_64-cygwin). Rust-backed wheels (cryptography) cannot
-# be compiled there — maturin aborts with "Unsupported platform: x86_64-cygwin".
-# install.sh therefore installs python-cryptography via pacman and the venv is
-# created with --system-site-packages so the pre-built copy is importable.
-#
-# That alone is not enough: even though the system cryptography satisfies the
-# direct requirement, pip's resolver (dragged along by pyopenssl) still selects
-# the newest cryptography release and tries to build its sdist from source,
-# which fails. Pin cryptography to the exact version already present in the
-# system site-packages so pip reuses the pacman build instead of compiling.
+# Install a plugin's requirements. On MSYS2 the cryptography wheel
+# cannot be built, so pin it to the pacman-installed version and reuse
+# the system site-packages copy.
 pip_install_requirements() {
     local venv_path="$1"
     local requirements_file="$2"

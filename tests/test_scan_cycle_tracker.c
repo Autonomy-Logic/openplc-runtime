@@ -116,11 +116,8 @@ void test_init_avg_window_matches_target_for_100ms_cycle(void)
 
 void test_first_start_only_seeds_no_stats_emitted(void)
 {
-    /* The first call to start() lays down anchors but cannot compute
-     * cycle_time or latency (no prior reference). After it returns,
-     * scan_count is 1 but stats aren't meaningful — snapshot returns
-     * true once scan_count > 0, but min fields stay at INT64_MAX
-     * until the second cycle observes something. */
+    /* First start() seeds anchors only; cycle_time has no baseline, so
+     * min fields stay at INT64_MAX until the second cycle. */
     scan_cycle_tracker_init(&tracker, 1000000);
     scan_cycle_tracker_start(&tracker);
 
@@ -224,15 +221,8 @@ void test_no_overrun_when_scan_finishes_within_period(void)
 
 void test_avg_recovers_single_sample_when_avg_window_is_one(void)
 {
-    /* avg_window=1 makes the EWMA collapse to "the latest sample IS
-     * the average". interval_ns = EWMA_TARGET_WINDOW_US * 1000 makes
-     * the calculation interval_us / EWMA_TARGET_WINDOW_US = 1 sample.
-     *
-     * This sidesteps the cold-start ramp the reviewer flagged in #16
-     * — at avg_window=1 there is no ramp.
-     *
-     * 2 s = 2_000_000 us → interval_ns = 2_000_000_000 (2 s cycle).
-     */
+    /* avg_window=1 collapses the EWMA to the latest sample, which
+     * sidesteps the cold-start ramp. 2 s cycle = interval_ns 2e9. */
     scan_cycle_tracker_init(&tracker, 2000000000LL);
     TEST_ASSERT_EQUAL_INT64(1, tracker.avg_window);
 

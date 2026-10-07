@@ -189,17 +189,7 @@ void test_plugin_driver_data_structure_ShouldStorePluginInfo(void)
     }
     driver.plugin_count = config_count;
 
-    // In a complete implementation, you would mock python_plugin_get_symbols here
-    // For example:
-    // python_plugin_get_symbols_ExpectAndReturn(&driver.plugins[0], 0); // Success for py_plugin
-    // python_plugin_get_symbols_ExpectAndReturn(&driver.plugins[2], 0); // Success for
-    // py_plugin_venv
-
-    // For this test, we're just testing the data structure population
-    // In a more complete test, you would mock plugin_driver_load_config entirely
-    // For now, we just test that our mock data was set up correctly
-
-    // Assertions - testing the setup we created (simulating successful config loading)
+    // Assertions on the hand-wired driver (no load_config mock here).
     TEST_ASSERT_EQUAL_INT_MESSAGE(3, driver.plugin_count, "Driver plugin count should be 3");
 
     // Validate plugin 1 (Python)
@@ -218,10 +208,8 @@ void test_plugin_driver_data_structure_ShouldStorePluginInfo(void)
     // No cleanup needed for driver if it's stack allocated
 }
 
-// Test Case 5: Test calling plugins that failed initialization
-// This test focuses on the `plugin_driver_init` function and how it handles
-// plugins where the `init` function (Python or Native) returns an error.
-// plugins where the `init` function (Python or Native) returns an error.
+// Test Case 5: plugin_driver_init must halt and return error when a
+// plugin's init (Python or Native) returns non-zero.
 void test_plugin_driver_Init_WhenPluginInitFails_ShouldHaltAndReturnError(void)
 {
     // This test requires extensive mocking of Python C API and plugin structures.

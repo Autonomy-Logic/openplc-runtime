@@ -72,10 +72,8 @@ const mock_debug_set_capture_t *mock_debug_last_set(void);
 /* Override the return value of the next debug_set() / debug_write() call. */
 void mock_debug_program_set_status(uint8_t status);
 
-/* Install (or clear) the program MD5 string. NULL clears the pointer
- * entirely so tests can assert the "not loaded" branch. The
- * `terminated` flag controls whether a trailing null byte is written —
- * tests that exercise the unbounded-read mitigation set this to false.*/
+/* Install (NULL clears) the program MD5 string. `terminated` controls
+ * whether a trailing NUL is written. */
 void mock_debug_set_md5(const char *md5_chars, size_t len, bool terminated);
 
 #ifdef __cplusplus

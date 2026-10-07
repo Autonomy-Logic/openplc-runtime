@@ -47,11 +47,8 @@ STATE_DIR = "/var/lib/openplc-bootloader"
 DATA_DIR = "/var/lib/openplc-runtime"
 BOOTLOADER_URL = "https://127.0.0.1:8445"
 
-# From the shared auth vector (bootloader/internal/runtimeauth/runtimeauth_test.go
-# and tests/pytest/restapi/test_bootloader_auth_vector.py). Reusing it here
-# means the data directory can be seeded with a genuine werkzeug hash without
-# werkzeug being installed in the test host -- and it cross-checks the vector
-# in a real integration setting rather than only in unit tests.
+# Shared auth vector (also used by the Go and Python unit tests). Lets
+# this harness seed a werkzeug hash without werkzeug installed.
 PEPPER = "a" * 64
 JWT_SECRET = "b" * 64
 USERNAME = "operator"
@@ -211,13 +208,8 @@ def start_bootloader(extra_args: list[str] | None = None) -> None:
     args += extra_args or ["-log-level=debug"]
     sh(*args)
 
-    # Wait for THIS bootloader to answer before returning.
-    #
-    # Without it a case starts polling while nothing is listening on 8445 yet,
-    # and the failures read as "ConnectionRefused" or -- worse -- as progress
-    # belonging to a different case, because a poll can land on a bootloader
-    # that has not been replaced yet. Confirming a fresh, responsive process
-    # removes both by construction.
+    # Wait for THIS bootloader to answer before returning so polls do
+    # not land on a previous instance.
     def responsive() -> bool:
         state = container_state(BOOTLOADER_NAME)
         if not state.get("State", {}).get("Running"):
@@ -946,11 +938,9 @@ def test_the_real_runtime_image_comes_up_under_the_bootloader():
     if not served.get("runtimeVersion"):
         raise Failure(f"the real runtime must report a version, got {served}")
 
-    # The data-directory bug, checked against the real runtime rather than a
-    # field the stub invents. config.py resolves the persistent directory by
-    # container detection, so without the env override the runtime writes a
-    # fresh .env inside the container and ignores the mounted one -- losing
-    # users, the stored project, retain data and licences on every swap.
+    # Verify OPENPLC_PERSISTENT_DATA_DIR is set: without it the runtime
+    # defaults the persistent dir inside the container and ignores the
+    # mount, discarding users and licences on every swap.
     env = container_state(RUNTIME_NAME)["Config"]["Env"]
     if f"OPENPLC_PERSISTENT_DATA_DIR={DATA_DIR}" not in env:
         raise Failure(f"the runtime was not pointed at the mounted data dir: {env}")
