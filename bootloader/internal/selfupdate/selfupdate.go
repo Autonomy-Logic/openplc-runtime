@@ -147,11 +147,8 @@ func Start(ctx context.Context, docker DockerClient, repository, version string,
 	return nil
 }
 
-// Execute is the child's side: replace the parent and exit.
-//
-// Idempotent by design. A parent that is already gone -- because a previous
-// attempt got that far before dying -- is not an error; the goal is that a
-// bootloader on the new image is running when this finishes.
+// Execute replaces the parent and exits. Idempotent: a parent already
+// gone from an interrupted attempt is not an error.
 func Execute(ctx context.Context, docker DockerClient, log *slog.Logger) error {
 	target := os.Getenv(EnvTarget)
 	newImage := os.Getenv(EnvNewImage)
@@ -187,13 +184,8 @@ func Execute(ctx context.Context, docker DockerClient, log *slog.Logger) error {
 	case <-time.After(settleDelay):
 	}
 
-	// Create the replacement FIRST, under a temporary name.
-	//
-	// Removing the parent first meant a rejected create -- an invalid
-	// HostConfig on an older daemon, a full disk, an image pruned between the
-	// pull and the create -- left the device with no bootloader at all, on
-	// hardware this feature exists because it has no SSH. The helper runs with
-	// RestartPolicy: no, so nothing would have come back for it.
+	// Create the replacement under a temporary name BEFORE removing the
+	// parent, so a rejected create leaves the old bootloader intact.
 	staging := target + "-next"
 	// A leftover from an interrupted attempt would take the name.
 	if err := docker.RemoveContainer(ctx, staging, true); err != nil {
@@ -228,12 +220,9 @@ func Execute(ctx context.Context, docker DockerClient, log *slog.Logger) error {
 	return nil
 }
 
-// replacementSpec rebuilds the parent's create payload with the new image.
-//
-// The parent's own environment is carried over except the self-update
-// variables: leaving those in would put the NEW bootloader straight back into
-// child mode on start-up, and it would immediately try to replace itself in a
-// loop.
+// replacementSpec rebuilds the parent's create payload with the new
+// image, dropping the self-update env vars so the new container does
+// not immediately re-enter helper mode.
 func replacementSpec(parent *dockerapi.ContainerInspect, newImage string) map[string]any {
 	env := make([]string, 0, len(parent.Config.Env))
 	for _, entry := range parent.Config.Env {
@@ -298,13 +287,9 @@ func defaultSpec(newImage string) map[string]any {
 	}
 }
 
-// findSelf identifies the container this process is running in.
-//
-// HOSTNAME is the container's short id under Docker's defaults, which is the
-// most direct answer. It can be overridden (--hostname), so a miss falls back
-// to the name install.sh uses -- and a miss on both is reported rather than
-// guessed at, because every caller of this is about to delete whatever it
-// names.
+// findSelf identifies the current container by HOSTNAME, falling back
+// to the conventional name install.sh uses. A miss on both is reported,
+// never guessed: the caller is about to delete whatever this names.
 func findSelf(ctx context.Context, docker DockerClient) (*dockerapi.ContainerInspect, error) {
 	if hostname := os.Getenv("HOSTNAME"); hostname != "" {
 		if found, err := docker.InspectContainer(ctx, hostname); err == nil {

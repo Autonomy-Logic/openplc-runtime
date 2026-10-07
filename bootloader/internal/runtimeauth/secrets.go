@@ -23,10 +23,9 @@ import (
 	"strings"
 )
 
-// Secrets are the two values generated once by the runtime's
-// generate_env_file and never rotated: changing either invalidates every
-// stored password hash. The bootloader uses the pepper to verify
-// passwords and the JWT secret to sign its OWN tokens (not shared).
+// Secrets generated once by generate_env_file and never rotated.
+// Changing either invalidates every stored password hash. Pepper verifies
+// passwords; JWTSecret signs the bootloader's own tokens.
 type Secrets struct {
 	// JWTSecret signs and verifies access tokens (HS256).
 	JWTSecret string

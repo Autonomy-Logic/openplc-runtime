@@ -189,11 +189,9 @@ func TestContainerSpecCarriesTheParityFlags(t *testing.T) {
 }
 
 func TestContainerSpecNeverSetsACPULimit(t *testing.T) {
-	// The one trap that survives "just make it privileged", because it is not
-	// a privilege: any of these enables the cgroup CPU controller, and with
-	// CONFIG_RT_GROUP_SCHED a non-root cgroup starts at rt_runtime_us = 0, so
-	// sched_setscheduler(SCHED_FIFO) fails and the runtime loses real-time
-	// scheduling silently.
+	// Any CPU-limit field activates the cgroup CPU controller; with
+	// CONFIG_RT_GROUP_SCHED that sets rt_runtime_us=0 and
+	// sched_setscheduler(SCHED_FIFO) silently fails.
 	cfg := &Config{Version: "v4.2.1"}
 	cfg.applyDefaults()
 	spec := decodeSpec(t, cfg)
@@ -228,11 +226,9 @@ func TestContainerSpecSetsTheRealTimeUlimits(t *testing.T) {
 }
 
 func TestContainerSpecSetsNoEnvironmentTheRuntimeIgnores(t *testing.T) {
-	// OPENPLC_UPDATE_POLICY and OPENPLC_BOOTLOADER_PORT were set here for
-	// /api/capabilities to echo back. That runtime-side reporting was removed
-	// as dead weight -- a client learns both facts from the bootloader
-	// answering at all -- so these told nobody anything, while reading like a
-	// feature that existed.
+	// Guard against re-adding env vars the runtime does not read. The
+	// previous OPENPLC_UPDATE_POLICY/BOOTLOADER_PORT were removed when
+	// /api/capabilities stopped echoing them.
 	cfg := &Config{
 		Repository:     "ghcr.io/x/runtime",
 		Version:        "v4.2.1",
@@ -326,13 +322,9 @@ func TestSaveLeavesNoTempFileBehind(t *testing.T) {
 }
 
 func TestTheRuntimeIsPointedAtTheMountedDataDirectory(t *testing.T) {
-	// The bind alone is not enough, and this is the bug that proved it on
-	// hardware. The runtime resolves its persistent data directory by
-	// DETECTION -- config.py returns /var/run/runtime whenever it thinks it
-	// is containerized -- so without this override it writes a fresh .env and
-	// restapi.db inside the container and ignores the mounted ones. Every
-	// version swap would then discard users, credentials, the stored project,
-	// retained variables and any VPP licenses.
+	// Env override is required: the runtime detects its data dir and
+	// defaults to /var/run/runtime inside the container, ignoring the
+	// bind mount unless OPENPLC_PERSISTENT_DATA_DIR redirects it.
 	cfg := &Config{Version: "v4.2.1", DataDir: "/var/lib/openplc-runtime"}
 	cfg.applyDefaults()
 	spec := decodeSpec(t, cfg)

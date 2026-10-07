@@ -93,14 +93,9 @@ type CreatePayload struct {
 type Config struct {
 	// Repository is the image repository, without a tag.
 	Repository string `json:"repository"`
-	// Version is the tag currently desired. The bootloader rewrites this when an
-	// update succeeds, which is what makes the choice survive a reboot.
-	//
-	// Read and written from different goroutines -- the updater writes it, the
-	// API and discovery replies read it, and the supervisor's event loop reads
-	// it through ImageRef -- so it goes through Version()/SetVersion() and
-	// the mutex below. Touching the field directly is a data race; the tests
-	// only passed under -race because nothing in them read it concurrently.
+	// Version is the tag currently desired. Writes come from the updater,
+	// reads from the API, discovery and supervisor, so only touch through
+	// Version()/SetVersion()+mu below -- direct access is a data race.
 	Version string `json:"version"`
 	// DataDir is the host path holding the runtime's persistent data. Bound
 	// into the container at the same path so the runtime's own defaults apply
@@ -130,10 +125,9 @@ const (
 	UTSModeHost = "host"
 )
 
-// forbiddenBindTargets are host paths that must never be handed to the runtime
-// container. The docker socket is the important one: mounting it would give
-// the runtime's HTTP API control of every container on the host, which is
-// precisely the privilege the bootloader exists to keep away from it.
+// Host paths the runtime container must never mount. The docker socket
+// is the one that matters: mounting it would hand the runtime's HTTP API
+// control of every container on the host.
 var forbiddenBindSources = []string{
 	"/var/run/docker.sock",
 	"/run/docker.sock",
@@ -273,11 +267,8 @@ func (c *Config) ImageRef() string {
 	return c.Repository + ":" + c.DesiredVersion()
 }
 
-// DesiredVersion reports the tag currently desired.
-//
-// Every read outside (de)serialisation goes through here. The Version field
-// stays exported because encoding/json needs it to be, but reading it
-// directly from a goroutine other than the one that wrote it is a data race.
+// DesiredVersion returns the current desired tag under the mutex. The
+// Version field stays exported for encoding/json; direct access races.
 func (c *Config) DesiredVersion() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -309,32 +300,9 @@ func (c *Config) ContainerSpec(imageRef string) any {
 	binds = append(binds, c.ExtraBinds...)
 
 	env := []string{
-		// OPENPLC_UPDATE_POLICY and OPENPLC_BOOTLOADER_PORT used to be set
-		// here for /api/capabilities to echo back. The runtime side of that
-		// was removed as dead weight -- the editor learns both facts from the
-		// bootloader answering at all -- so setting them told nobody
-		// anything. Passing environment a runtime does not read is how a
-		// reader ends up believing a feature exists.
-		// Point the runtime's persistent data at the bind mount.
-		//
-		// This is load-bearing and NOT redundant with the bind. The runtime
-		// resolves its own data directory by DETECTION, not by what is
-		// mounted: webserver/config.py::get_persistent_data_dir() returns
-		// /var/run/runtime whenever is_running_in_container() is true. Without
-		// this override the runtime writes a fresh .env and restapi.db inside
-		// the container and never touches the mounted ones -- so users,
-		// credentials, the stored project, retained variables and any VPP
-		// licenses would all be discarded on every single version swap, which
-		// is precisely what persisting them outside the container is for.
-		//
-		// Confirmed on hardware before this line existed: the container held
-		// its own .env under /var/run/runtime while the mounted restapi.db,
-		// project_snapshot/ and retain.bin sat unused beside it.
-		//
-		// Only the PERSISTENT dir is redirected. RUNTIME_DIR keeps its default
-		// so the command and log sockets stay container-internal, which is
-		// correct -- they are ephemeral and both endpoints live in the same
-		// container.
+		// Override the runtime's auto-detected persistent dir so it writes
+		// to the bind mount instead of /var/run/runtime inside the
+		// container. RUNTIME_DIR keeps its default (sockets are ephemeral).
 		"OPENPLC_PERSISTENT_DATA_DIR=" + c.DataDir,
 	}
 	env = append(env, c.ExtraEnv...)

@@ -17,11 +17,9 @@ import (
 	"time"
 )
 
-// Bootloader-issued HS256 JWTs. Signed with a key DERIVED from the shared
-// JWT_SECRET_KEY (see bootloaderKey) so the runtime does not accept these
-// and vice versa. `aud` is belt-and-braces for the same separation.
-// Hand-rolled: HS256 is the only algorithm ever computed, never read from
-// the header, avoiding the classic "alg": "none" library trap.
+// Bootloader HS256 JWTs. Signed with a key DERIVED from JWT_SECRET_KEY
+// (see bootloaderKey) so the runtime cannot verify these. Hand-rolled:
+// HS256 is a constant, never read from the header.
 
 const (
 	// TokenType is flask_jwt_extended's discriminator. A refresh token
