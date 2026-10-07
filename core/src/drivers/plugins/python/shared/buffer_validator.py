@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 Buffer Validator for OpenPLC Python Plugin System
 
@@ -15,7 +18,6 @@ except ImportError:
     # Fall back to absolute imports (when testing standalone)
     from component_interfaces import IBufferValidator
     from buffer_types import get_buffer_types
-
 
 class BufferValidator(IBufferValidator):
     """

@@ -1,10 +1,12 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 import pytest
 import threading
 import simple_modbus  # <-- Make sure this import is here
 
 MAX_BITS = 8   # matches OpenPLC bit grouping
 MAX_REGS = 1   # word-aligned registers
-
 
 class AdvancedObservingSBA:
     """
@@ -115,8 +117,6 @@ class AdvancedObservingSBA:
     read_int_input = read_uint16_input
     write_int_output = write_uint16_output
 
-
-
 # ======================================================================
 # Fixtures
 # ======================================================================
@@ -134,7 +134,6 @@ def advanced_sba(runtime_args, monkeypatch): # <-- Added monkeypatch
     monkeypatch.setattr(simple_modbus, "SafeBufferAccess", lambda args: sba)
     
     return sba
-
 
 @pytest.fixture
 def runtime_args():

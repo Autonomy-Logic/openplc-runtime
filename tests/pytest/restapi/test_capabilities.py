@@ -1,7 +1,10 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Behavioural tests for GET /api/version and GET /api/capabilities.
 
 Both endpoints exist so an editor can decide, before login, whether it may
-talk to this runtime at all (DOPE-448). The contract these tests pin down:
+talk to this runtime at all. The contract these tests pin down:
 
   * both are reachable WITHOUT a token, even once users exist — an editor that
     cannot authenticate must still be able to tell why;

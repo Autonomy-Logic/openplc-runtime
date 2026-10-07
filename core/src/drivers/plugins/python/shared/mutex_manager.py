@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 Mutex Manager for OpenPLC Python Plugin System
 
@@ -18,7 +21,6 @@ try:
 except ImportError:
     # Fall back to absolute imports (when testing standalone)
     from component_interfaces import IMutexManager
-
 
 class MutexManager(IMutexManager):
     """

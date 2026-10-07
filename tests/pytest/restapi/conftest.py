@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Pytest fixtures for the REST API user-management endpoints.
 
 ``webserver.config`` has import-time side effects (it resolves a persistent

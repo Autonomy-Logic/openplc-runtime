@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file s7comm_plugin.h
  * @brief S7Comm Plugin for OpenPLC Runtime v4

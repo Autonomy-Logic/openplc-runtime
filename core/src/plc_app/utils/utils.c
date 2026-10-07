@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 // _GNU_SOURCE is required for pthread_setaffinity_np and CPU_SET macros
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
 
 #include "utils.h"
+#include "rt_mutex.h"
 #include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -126,27 +130,16 @@ void lock_memory(void)
 #endif
 }
 
+int64_t monotonic_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
 int init_rt_mutex(pthread_mutex_t *mutex)
 {
-#if HAS_REALTIME_FEATURES
-    pthread_mutexattr_t attr;
-    if (pthread_mutexattr_init(&attr) != 0)
-        return -1;
-    if (pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT) != 0)
-    {
-        pthread_mutexattr_destroy(&attr);
-        return -1;
-    }
-    if (pthread_mutex_init(mutex, &attr) != 0)
-    {
-        pthread_mutexattr_destroy(&attr);
-        return -1;
-    }
-    pthread_mutexattr_destroy(&attr);
-    return 0;
-#else
-    return pthread_mutex_init(mutex, NULL);
-#endif
+    return rt_mutex_init(mutex) == 0 ? 0 : -1;
 }
 
 size_t parse_hex_string(const char *hex_string, uint8_t *data)

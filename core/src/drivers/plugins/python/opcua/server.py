@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 OPC UA Server Manager.
 
@@ -44,7 +47,6 @@ except ImportError:
 
 from shared import SafeBufferAccess
 from shared.plugin_config_decode.opcua_config_model import OpcuaConfig
-
 
 class OpcuaServerManager:
     """

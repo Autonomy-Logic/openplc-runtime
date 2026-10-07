@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 import json
 import os
 import socket
@@ -28,11 +31,16 @@ if not HAS_PSUTIL:
 MAX_RAPID_CRASHES = 3
 RAPID_CRASH_WINDOW = 30  # seconds
 
-# How long to let the runtime shut down gracefully after SIGTERM before killing
-# it. Has to exceed the worst-case graceful stop: the runtime waits for a state
-# change already in flight to land (a boot start with plugin bring-up is ~4 s on
-# an SLM-RP4) and then tears the program and plugins down.
+# plc_main exit code for an unrecoverable watchdog fault (PLC_EXIT_WATCHDOG_FAULT in
+# core/src/plc_app/task_policy.h). Restart straight into safe mode, reporting ERROR.
+RUNTIME_EXIT_WATCHDOG_FAULT = 42
+
+# SIGTERM grace period. Exceeds the worst-case graceful stop: wait for an
+# in-flight state change (boot start with plugins ~4s) plus teardown.
 RUNTIME_SHUTDOWN_TIMEOUT_S = 15
+
+# How long a freshly started runtime gets to open its command socket (a few seconds on an SLM-RP4)
+RUNTIME_SOCKET_WAIT_S = 10.0
 
 
 class RuntimeManager:
@@ -85,13 +93,32 @@ class RuntimeManager:
         except Exception as e:
             logger.error("Failed to start log server (unexpected): %s", e)
 
-    def _safe_connect_runtime_socket(self):
+    def _safe_connect_runtime_socket(self, report: bool = True) -> bool:
         try:
             self.runtime_socket.connect()
         except (FileNotFoundError, OSError, socket.error) as e:
-            logger.error("Failed to connect to runtime socket: %s", e)
+            if report:
+                logger.error("Failed to connect to runtime socket: %s", e)
+            return False
         except Exception as e:
             logger.error("Failed to connect to runtime socket (unexpected): %s", e)
+            return False
+        if not self.runtime_socket.is_connected():
+            if report:
+                logger.error("Failed to connect to runtime socket %s", self.plc_socket)
+            return False
+        return True
+
+    def _connect_runtime_socket_when_ready(self) -> None:
+        """Connect to a runtime that was just started, waiting while it opens its socket."""
+        deadline = time.monotonic() + RUNTIME_SOCKET_WAIT_S
+        while time.monotonic() < deadline:
+            if self._safe_connect_runtime_socket(report=False):
+                return
+            if not self.is_runtime_alive():
+                break
+            time.sleep(0.2)
+        self._safe_connect_runtime_socket()
 
     def _safe_stop_log_server(self):
         try:
@@ -153,8 +180,7 @@ class RuntimeManager:
             except (OSError, subprocess.SubprocessError) as e:
                 logger.error("Failed to start PLC runtime process: %s", e)
                 self.process = None
-            time.sleep(1)  # Give time to start
-            self._safe_connect_runtime_socket()
+            self._connect_runtime_socket_when_ready()
 
         # Start monitor thread
         if not self.monitor_thread.is_alive():
@@ -175,8 +201,8 @@ class RuntimeManager:
                 return True
         return False
 
-    def _start_runtime_process(self, safe_mode=False):
-        """Start the runtime process, optionally in safe mode."""
+    def _start_runtime_process(self, safe_mode: bool = False, after_fault: bool = False) -> None:
+        """Start the runtime process, optionally in safe mode after a watchdog fault."""
         self._safe_start_log_server()
         try:
             cmd = [self.runtime_path]
@@ -184,12 +210,13 @@ class RuntimeManager:
                 cmd.append("--print-debug")
             if safe_mode:
                 cmd.append("--safe-mode")
+                if after_fault:
+                    cmd.append("--fault")
             self.process = subprocess.Popen(cmd)
         except (OSError, subprocess.SubprocessError) as e:
             logger.error("Failed to start PLC runtime process: %s", e)
             self.process = None
-        time.sleep(1)  # Give time to start
-        self._safe_connect_runtime_socket()
+        self._connect_runtime_socket_when_ready()
 
     def _record_crash_and_check_safe_mode(self):
         """Record a crash timestamp and check if safe mode should be entered."""
@@ -200,6 +227,50 @@ class RuntimeManager:
             self._crash_times.append(now)
             return len(self._crash_times) >= MAX_RAPID_CRASHES
 
+    def _runtime_exit_code(self) -> int | None:
+        """Exit code of the runtime process, when it was started by us and has exited."""
+        if isinstance(self.process, subprocess.Popen):
+            return self.process.poll()
+        return None
+
+    def _handle_runtime_exit(self) -> None:
+        """Restart a runtime that exited: safe mode on a watchdog fault or repeated crashes."""
+        exit_code = self._runtime_exit_code()
+        self._safe_stop_log_server()
+        self._safe_close_runtime_socket()
+
+        if exit_code == RUNTIME_EXIT_WATCHDOG_FAULT:
+            logger.error(
+                "PLC runtime exited after an unrecoverable watchdog fault (code %d). "
+                "Restarting in SAFE MODE - PLC program will NOT be loaded. "
+                "Upload a corrected program to recover.",
+                exit_code,
+            )
+            with self._crash_lock:
+                self._safe_mode = True
+            self._start_runtime_process(safe_mode=True, after_fault=True)
+            return
+
+        logger.warning("PLC runtime process died unexpectedly (exit code %s)", exit_code)
+        if self._record_crash_and_check_safe_mode():
+            with self._crash_lock:
+                if not self._safe_mode:
+                    logger.error(
+                        "PLC program caused %d crashes within %d seconds. "
+                        "Restarting runtime in SAFE MODE - "
+                        "PLC program will NOT be loaded. "
+                        "Upload a corrected program to recover.",
+                        MAX_RAPID_CRASHES,
+                        RAPID_CRASH_WINDOW,
+                    )
+                    self._safe_mode = True
+            self._start_runtime_process(safe_mode=True)
+        else:
+            with self._crash_lock:
+                stay_safe = self._safe_mode
+            logger.warning("Restarting PLC runtime%s...", " in SAFE MODE" if stay_safe else "")
+            self._start_runtime_process(safe_mode=stay_safe)
+
     def _monitor(self):
         """
         Monitor the PLC runtime process and restart if it dies.
@@ -207,26 +278,7 @@ class RuntimeManager:
         """
         while self.running:
             if not self.is_runtime_alive():
-                logger.warning("PLC runtime process died unexpectedly")
-                self._safe_stop_log_server()
-                self._safe_close_runtime_socket()
-
-                if self._record_crash_and_check_safe_mode():
-                    with self._crash_lock:
-                        if not self._safe_mode:
-                            logger.error(
-                                "PLC program caused %d crashes within %d seconds. "
-                                "Restarting runtime in SAFE MODE - "
-                                "PLC program will NOT be loaded. "
-                                "Upload a corrected program to recover.",
-                                MAX_RAPID_CRASHES,
-                                RAPID_CRASH_WINDOW,
-                            )
-                            self._safe_mode = True
-                    self._start_runtime_process(safe_mode=True)
-                else:
-                    logger.warning("Restarting PLC runtime...")
-                    self._start_runtime_process(safe_mode=False)
+                self._handle_runtime_exit()
             else:
                 # Make sure log server and socket are connected
                 if not self.log_server.running:
@@ -250,13 +302,9 @@ class RuntimeManager:
         self.monitor_thread.join(timeout=5)
         time.sleep(1)
         if self.process:
-            # SIGTERM now reaches a handler in the runtime, so terminate() starts a
-            # real shutdown: it stops the PLC program, waits out any state change
-            # already in flight (a boot start is ~4 s on an SLM-RP4), stops the
-            # plugins and unloads the program. Wait long enough for that to finish,
-            # or the SIGKILL below would preempt the very cleanup the signal asked
-            # for -- which is what happened for every stop while SIGTERM had no
-            # handler at all. The kill stays as the backstop for a hung teardown.
+            # Wait out the runtime's SIGTERM handler (program stop, state
+            # settle, plugin teardown) before SIGKILL, so the backstop does
+            # not preempt the cleanup the signal asked for.
             if HAS_PSUTIL and isinstance(self.process, psutil.Process):
                 self.process.terminate()
                 try:
@@ -389,10 +437,10 @@ class RuntimeManager:
 
             # Parse: "PLUGIN_CMD:OK:{json}" or "PLUGIN_CMD:ERROR:{json}"
             if response.startswith("PLUGIN_CMD:OK:"):
-                json_str = response[len("PLUGIN_CMD:OK:"):]
+                json_str = response[len("PLUGIN_CMD:OK:") :]
                 return json.loads(json_str)
             elif response.startswith("PLUGIN_CMD:ERROR:"):
-                json_str = response[len("PLUGIN_CMD:ERROR:"):]
+                json_str = response[len("PLUGIN_CMD:ERROR:") :]
                 return json.loads(json_str)
             else:
                 return {"error": f"Unexpected response: {response[:200]}"}

@@ -1,11 +1,9 @@
-// plc_state_manager.cpp
-//
-// Walks the loaded program's ConfigurationInstance via virtual dispatch
-// (Phase 5), spawns one SCHED_FIFO pthread per IEC TASK (Phase 6), and
-// anchors the per-cycle housekeeping window on the fastest task's
-// thread (Phase 7).
-//
-// Linux-only (the runtime targets Linux).
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
+// Walks the loaded program's ConfigurationInstance via virtual dispatch,
+// spawns one SCHED_FIFO pthread per IEC task, and anchors per-cycle
+// housekeeping on the fastest task's thread. Linux-only.
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -26,6 +24,7 @@
 
 extern "C" {
 #include "../drivers/plugin_driver.h"
+#include "unix_socket.h"
 }
 
 // Runtime-side strucpp ABI mirror — see core/src/lib/strucpp_abi.hpp
@@ -38,28 +37,23 @@ extern "C" {
 #include "plc_state_manager.h"
 #include "plcapp_manager.h"
 #include "scan_cycle_manager.h"
+#include "task_policy.h"
 #include "utils/log.h"
+#include "utils/rt_mutex.h"
 #include "utils/utils.h"
+#include "utils/watchdog.h"
 
-static PLCState         plc_state    = PLC_STATE_STOPPED;
-static pthread_mutex_t  state_mutex  = PTHREAD_MUTEX_INITIALIZER;
+/* Writers serialise on state_mutex; readers load the atomic without locking. */
+static std::atomic<PLCState> plc_state{PLC_STATE_STOPPED};
+static_assert(std::atomic<PLCState>::is_always_lock_free, "state reads must not lock");
+static pthread_mutex_t       state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 struct timespec  timer_start;
 pthread_t        plc_thread;
 PluginManager   *plc_program = NULL;
 
-extern std::atomic<long>  plc_heartbeat;
 extern plugin_driver_t   *plugin_driver;
 
-/* -----------------------------------------------------------------------
- * Per-task storage. Allocated when a program loads, freed on stop.
- *
- * plc_tasks_lock serialises lifecycle (alloc/publish/free) against
- * readers (STATS handler in scan_cycle_manager). See plc_state_manager.h
- * for the contract. Read-only once published until the next STOP, so the
- * lock is held only briefly on the writer side and for one iteration on
- * the reader side. Not a recursive lock — callers must not nest.
- * --------------------------------------------------------------------- */
 PlcTaskCtx *plc_tasks      = nullptr;
 size_t      plc_task_count = 0;
 
@@ -75,33 +69,20 @@ extern "C" void plc_tasks_reader_unlock(void)
     pthread_mutex_unlock(&plc_tasks_lock);
 }
 
-/* -----------------------------------------------------------------------
- * Task-completion signalling (for off-hot-path cycle_end).
- *
- * g_tasks_running = number of task scans currently in flight (released by
- * the dispatcher but not yet finished). The dispatcher increments it once
- * per release; every worker decrements it exactly once when it leaves a scan
- * — via ANY exit path (normal completion, C++ exception, hardware-signal
- * recovery) — and the worker that brings it to 0 signals done_cond.
- *
- * The dispatcher waits on done_cond with the next tick's ABSOLUTE
- * CLOCK_MONOTONIC deadline (pthread_cond_timedwait). It therefore wakes on
- * whichever comes first: all-tasks-done (fire cycle_end now, off the
- * task-wake hot path) or the deadline (start the next tick). The condvar's
- * clock is set to CLOCK_MONOTONIC so its deadline shares the dispatcher's
- * timeline. g_tasks_running is reset to 0 at each program load, so a stale
- * count left by a STOP (a worker woken to exit without finishing a scan)
- * never carries into the next run.
- * --------------------------------------------------------------------- */
 static std::atomic<int> g_tasks_running{0};
 static pthread_mutex_t  done_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t   done_cond;   /* initialised once, CLOCK_MONOTONIC */
 static pthread_once_t   done_cond_once = PTHREAD_ONCE_INIT;
 
-/* One-time init of done_cond on the CLOCK_MONOTONIC clock (the default is
- * CLOCK_REALTIME, which would mismatch the dispatcher's monotonic deadline and
- * jump under NTP). Init-once (not per-load) so a crash that skips teardown
- * never leaves a destroyed-then-reinitialised cond. */
+__attribute__((constructor)) static void state_manager_locks_init_pi(void)
+{
+    rt_mutex_upgrade_static(&state_mutex, "state_mutex");
+    rt_mutex_upgrade_static(&plc_tasks_lock, "plc_tasks_lock");
+    rt_mutex_upgrade_static(&done_mutex, "done_mutex");
+}
+
+/* One-time init of done_cond on CLOCK_MONOTONIC (not REALTIME) so it
+ * matches the dispatcher deadline and does not jump under NTP. */
 static void init_done_cond(void)
 {
     pthread_condattr_t cattr;
@@ -125,15 +106,30 @@ static void worker_scan_done(void)
     }
 }
 
-/* The bootstrap thread doesn't run any IEC task body — it does setup,
- * spawns task threads, waits, and joins. We still want crash recovery
- * on it via a separate jmp pair. The active task's ctx is in __thread
- * storage so the signal handler knows which siglongjmp target to use. */
+/* Bootstrap thread runs no IEC task body, but needs its own crash
+ * recovery jmp pair. Active task ctx is __thread so the signal handler
+ * picks the right siglongjmp target. */
 static __thread PlcTaskCtx  *current_task_ctx        = nullptr;
 static sigjmp_buf            bootstrap_crash_jmp;
 static volatile sig_atomic_t bootstrap_crash_sig     = 0;
 static volatile sig_atomic_t bootstrap_holding_mutex = 0;
 static volatile sig_atomic_t plc_crash_signal        = 0;
+
+/* Interval between abort signals while waiting for an aborted task to exit. */
+#define PLC_TASK_ABORT_RESEND_NS 100000000LL
+
+/* Poll interval while waiting for a task thread to return. */
+#define PLC_TASK_EXIT_POLL_NS 1000000L
+
+/* Set when a task had to be aborted; the stop then lands ERROR, not STOPPED. */
+static std::atomic<bool> g_task_fault{false};
+
+/* Longest task interval of the loaded program, for the stop budget. */
+static std::atomic<int64_t> g_longest_interval_ns{0};
+
+/* Oldest in-flight first scan (release ns, 0 = none), and the watchdog's trip request for it. */
+static std::atomic<int64_t> g_first_scan_since_ns{0};
+static std::atomic<bool>    g_first_scan_trip{false};
 
 /* The SIGUSR1 wake handler is installed once at process init in
  * plc_main.c (handle_sigusr1). Every task thread relies on EINTR from
@@ -160,17 +156,20 @@ static void plc_crash_handler(int sig)
     raise(sig);
 }
 
-/* Drop whichever runtime lock this task thread currently holds. Mirrors the
- * signal-handler recovery (the sigsetjmp block below) so a C++ exception
- * thrown mid-scan can't leave the image mutex locked when the thread unwinds
- * and exits. holding_mutex is set only inside the locked window, so at most
- * that lock is released.
- *
- * Shared globals are no longer synced under a single runtime-owned mutex:
- * each shared global carries its own std::mutex inside the .so (strucpp's
- * GlobalVar<V>), taken and released around each access within run(). Those
- * fine-grained locks are always released before run() returns, so there is
- * nothing global for the crash path to unwind here. */
+/* Jumps out of the scan body to the task's recovery point. No-op outside the scan window. */
+static void plc_abort_handler(int sig)
+{
+    PlcTaskCtx *ctx = current_task_ctx;
+    if (ctx && ctx->in_body)
+    {
+        ctx->crash_sig = sig;
+        siglongjmp(ctx->crash_jmp, sig);
+    }
+}
+
+/* Drop the image mutex if this task is in the locked window. Mirrors
+ * the signal-handler recovery below so a C++ exception mid-scan does
+ * not leave it held. Per-global strucpp mutexes self-release. */
 static void plc_task_release_locks(PlcTaskCtx *ctx)
 {
     if (ctx->holding_mutex)
@@ -180,50 +179,40 @@ static void plc_task_release_locks(PlcTaskCtx *ctx)
     }
 }
 
-/* -----------------------------------------------------------------------
- * Per-task thread function.
- *
- * Phase 6 keeps this minimal: SCHED_FIFO priority elevation, optional
- * CPU affinity, per-thread crash recovery, then a clock_nanosleep loop
- * that runs task->programs[]->run() under the process-image protocol.
- * Phase 7 specializes the fastest task by adding housekeeping pre/post.
- * --------------------------------------------------------------------- */
-static void *plc_task_thread(void *arg)
+/* Per-task thread: FIFO priority from the IEC priority, optional affinity, crash and
+ * watchdog-abort recovery, then one scan per release posted by the dispatcher. */
+static void plc_task_body(PlcTaskCtx *ctx)
 {
-    PlcTaskCtx *ctx = static_cast<PlcTaskCtx *>(arg);
     current_task_ctx = ctx;
 
     pthread_setname_np(pthread_self(), ctx->name);
 
-    /* 99 is reserved for the dispatcher, which has to be strictly above every
-     * worker for its tick never to be delayed by a busy one. A worker allowed to
-     * reach 99 would only TIE it, and SCHED_FIFO does not time-slice between equal
-     * priorities: a task that never blocks (an unbounded loop in IEC code) would
-     * then keep the dispatcher off that CPU entirely, along with anything else
-     * trying to bring the PLC down. */
-    int rt = ctx->priority;
-    if (rt < 1)  rt = 1;
-    if (rt > 98) rt = 98;
+    /* IEC 0 (highest) -> FIFO 49; always below the dispatcher and watchdog. */
+    bool clamped = false;
+    int  rt      = plc_task_fifo_priority(ctx->priority, &clamped);
+    if (clamped)
+    {
+        log_warn("[task %s] IEC priority %d outside %d..%d, clamped", ctx->name, ctx->priority,
+                 PLC_IEC_PRIORITY_MIN, PLC_IEC_PRIORITY_MAX);
+    }
     sched_param sp{};
     sp.sched_priority = rt;
-    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0)
+    int sp_rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+    if (sp_rc != 0)
     {
         log_warn("[task %s] SCHED_FIFO(%d) failed: %s — running default scheduling",
-                 ctx->name, rt, strerror(errno));
+                 ctx->name, rt, strerror(sp_rc));
     }
     else
     {
-        log_info("[task %s] SCHED_FIFO priority %d", ctx->name, rt);
+        log_info("[task %s] SCHED_FIFO priority %d (IEC priority %d)", ctx->name, rt,
+                 ctx->priority);
     }
 
     if (ctx->cpu_affinity_mask != 0)
     {
-        // CPU affinity uses `cpu_set_t` / `CPU_ZERO` / `CPU_SETSIZE` /
-        // `pthread_setaffinity_np` — all Linux extensions to `<sched.h>`,
-        // not present on MSYS2/Cygwin/Windows.  Skip silently when
-        // building for a non-Linux host: Windows doesn't expose
-        // SCHED_FIFO either, so any "pin to CPU" guarantee would already
-        // be unachievable there.
+        // CPU affinity is Linux-only (cpu_set_t family). SCHED_FIFO is
+        // also unavailable on Windows, so skip silently off-Linux.
 #if !defined(__CYGWIN__) && !defined(__MSYS__) && defined(__linux__)
         cpu_set_t cs;
         CPU_ZERO(&cs);
@@ -242,32 +231,27 @@ static void *plc_task_thread(void *arg)
 #endif
     }
 
-    /* Per-thread fault recovery for HARDWARE signals (SIGSEGV/SIGFPE), e.g. a
-     * raw integer divide-by-zero in IEC code. The signal handler siglongjmp's
-     * here. Like the C++ exception path below, we isolate per task: release any
-     * held lock, mark this worker dead so the dispatcher stops releasing it, and
-     * exit this thread only. The other task threads keep running. (Bodies run on
-     * private storage, so a fault is contained to this task's data; the shared
-     * image stays protected by the journal + locks.) */
+    /* Recovery point for SIGSEGV/SIGFPE from IEC code and for the watchdog abort
+     * (PLC_TASK_ABORT_SIGNAL): release held locks, mark the task dead, exit this thread. */
     if (sigsetjmp(ctx->crash_jmp, 1) != 0)
     {
+        ctx->in_body = 0;
         plc_task_release_locks(ctx);
         ctx->alive.store(0, std::memory_order_release);
-        /* A hardware fault only fires from a scan body, so this thread held an
-         * in-flight slot — release it (and wake the dispatcher if last) so the
-         * completion count never leaks. */
+        /* Both signals only jump from a scan body, so release the in-flight slot. */
         worker_scan_done();
-        log_error("[task %s] terminated by signal %d — other tasks keep running",
-                  ctx->name, ctx->crash_sig);
-        return nullptr;
+        if (ctx->crash_sig == PLC_TASK_ABORT_SIGNAL)
+            log_error("[task %s] scan aborted by the watchdog", ctx->name);
+        else
+            log_error("[task %s] terminated by signal %d — other tasks keep running",
+                      ctx->name, ctx->crash_sig);
+        return;
     }
 
     auto *task = static_cast<strucpp::TaskInstance *>(ctx->task_handle);
 
-    /* Worker loop. No clock here: the GCD master-tick dispatcher owns all
-     * timing. The worker blocks on its release semaphore between scans, runs
-     * exactly one scan per release, and bumps `completed` so the dispatcher's
-     * binary-release / overrun logic can see it finished. */
+    /* Worker loop. No clock: the GCD dispatcher owns all timing. One
+     * scan per release; `completed` is bumped so overrun logic sees it. */
     while (true)
     {
         /* Block until the dispatcher releases us. sem_wait returns EINTR on a
@@ -277,32 +261,18 @@ static void *plc_task_thread(void *arg)
         while (sem_wait(&ctx->go) != 0 && errno == EINTR) { /* retry */ }
         if (plc_get_state() != PLC_STATE_RUNNING) break;
 
-        /* Apply this task's scan-stable IEC time, stamped by the dispatcher at
-         * release. Runs ON this worker thread so the thread_local
-         * __CURRENT_TIME_NS lands where this task's body (and its FB timers)
-         * read it — TIME() is constant for the whole scan and unaffected by the
-         * dispatcher advancing the master clock for other tasks. */
+        /* Apply the dispatcher-stamped scan-stable IEC time. Must run on
+         * THIS worker thread so the thread_local __CURRENT_TIME_NS is
+         * what the task body and its FB timers read. */
         if (ext_strucpp_set_current_time)
             ext_strucpp_set_current_time(ctx->time_at_dispatch);
 
         scan_cycle_tracker_start(&ctx->tracker);
 
-        /* Process-image model: a short locked window drains located inputs into
-         * the image; the body then runs against the .so storage directly.
-         * Shared globals are NOT copied to private per-task storage — each
-         * global's own mutex (strucpp GlobalVar<V>) serializes concurrent
-         * access inside run(), so task bodies still execute in parallel and only
-         * contend on the specific globals they touch. holding_mutex gates the
-         * crash-handler unlock of the image lock.
-         *
-         * The whole scan body runs under try/catch. On this hosted,
-         * exceptions-enabled build the STruC++ runtime THROWS on an
-         * unrecoverable fault (null IEC reference, array index out of bounds,
-         * bad located address). If that throw escaped this pthread entry
-         * function it would hit std::terminate -> abort the whole process ->
-         * the daemon would bounce every task. Instead we catch it here: this one
-         * task releases its lock, marks itself dead, and terminates; the
-         * dispatcher then stops releasing it and the other tasks keep scanning. */
+        /* Short locked window drains located inputs into the image, then
+         * the body runs against .so storage directly. Shared globals have
+         * their own strucpp mutexes. try/catch here contains strucpp
+         * runtime throws so one task's fault does not abort the process. */
         try
         {
             /* 1. Copy-in located inputs (image_lock drains the journal). */
@@ -320,8 +290,11 @@ static void *plc_task_thread(void *arg)
             /* 2. Run the bodies. Shared-global access self-serializes on each
              *    global's own mutex inside run() (strucpp GlobalVar<V>); no
              *    runtime-owned global lock and no private copy-in/out. */
+            /* The abort may jump only out of IEC code, never out of a runtime lock window. */
+            ctx->in_body = 1;
             for (size_t p = 0; p < task->program_count; ++p)
                 task->programs[p]->run();
+            ctx->in_body = 0;
 
             /* 3. Copy-out: journal changed located outputs (lock-free; applied
              *    to the image on the next drain — the dispatcher's frame top). */
@@ -334,26 +307,27 @@ static void *plc_task_thread(void *arg)
         }
         catch (const std::exception &e)
         {
+            ctx->in_body = 0;
             plc_task_release_locks(ctx);
             ctx->alive.store(0, std::memory_order_release);
             worker_scan_done();   /* release the in-flight slot before exiting */
             log_error("[task %s] terminated by unhandled exception: %s — "
                       "other tasks keep running", ctx->name, e.what());
-            return nullptr;
+            return;
         }
         catch (...)
         {
+            ctx->in_body = 0;
             plc_task_release_locks(ctx);
             ctx->alive.store(0, std::memory_order_release);
             worker_scan_done();   /* release the in-flight slot before exiting */
             log_error("[task %s] terminated by unknown exception — "
                       "other tasks keep running", ctx->name);
-            return nullptr;
+            return;
         }
 
         scan_cycle_tracker_end(&ctx->tracker);
 
-        ctx->heartbeat.store((long)time(nullptr), std::memory_order_relaxed);
         ctx->local_tick.fetch_add(1, std::memory_order_relaxed);
         /* Signal scan completion LAST (release order): the dispatcher reads
          * completed vs released to decide whether this worker is idle (safe to
@@ -367,37 +341,119 @@ static void *plc_task_thread(void *arg)
 
     log_info("[task %s] stopped after %llu scans", ctx->name,
              (unsigned long long)ctx->local_tick.load());
+}
+
+static void *plc_task_thread(void *arg)
+{
+    PlcTaskCtx *ctx = static_cast<PlcTaskCtx *>(arg);
+    plc_task_body(ctx);
+    ctx->exited.store(1, std::memory_order_release);
     return nullptr;
 }
 
-/* Wake every worker, join them, and destroy the task array.
- *
- * Two callers: the normal end of the dispatcher loop, and the early-out below
- * when bring-up finished but this start is no longer the transition in flight.
- * The second one exists so that path tears its workers down instead of leaving
- * them parked on a semaphore nobody will ever post again. */
+static bool task_in_scan(const PlcTaskCtx *c)
+{
+    return c->released.load(std::memory_order_relaxed) !=
+           c->completed.load(std::memory_order_acquire);
+}
+
+static int64_t task_stuck_limit_ns(const PlcTaskCtx *c)
+{
+    return PLC_TASK_STUCK_PERIODS * c->interval_ns;
+}
+
+static bool task_first_scan_done(const PlcTaskCtx *c)
+{
+    return c->completed.load(std::memory_order_acquire) > 0;
+}
+
+/* How long the current scan may run after its release before the teardown aborts it. */
+static int64_t task_scan_limit_ns(const PlcTaskCtx *c)
+{
+    const int64_t first_ns = PLC_FIRST_SCAN_TIMEOUT_MS * NS_PER_MS;
+    if (!task_first_scan_done(c) && first_ns > task_stuck_limit_ns(c))
+        return first_ns;
+    return task_stuck_limit_ns(c);
+}
+
+/* Waits for the worker to return. An in-flight scan may run until scan_deadline; an idle
+ * worker (already woken) until idle_deadline. Returns true when it exited. */
+static bool wait_task_exit(const PlcTaskCtx *c, int64_t scan_deadline, int64_t idle_deadline)
+{
+    const timespec poll = {0, PLC_TASK_EXIT_POLL_NS};
+    while (!c->exited.load(std::memory_order_acquire))
+    {
+        const int64_t now = monotonic_ns();
+        if (task_in_scan(c) ? now >= scan_deadline : now >= idle_deadline)
+            return false;
+        nanosleep(&poll, nullptr);
+    }
+    return true;
+}
+
+/* Signals the worker until it leaves its scan; exits the process if it never does. */
+static void abort_task(PlcTaskCtx *c)
+{
+    if (task_in_scan(c))
+        log_error("[task %s] scan still running %lld ms after its release: aborting it", c->name,
+                  (long long)(task_scan_limit_ns(c) / NS_PER_MS));
+    else
+        log_error("[task %s] did not exit within %d ms of being woken", c->name,
+                  PLC_TASK_ABORT_TIMEOUT_MS);
+    g_task_fault.store(true, std::memory_order_release);
+
+    const timespec poll        = {0, PLC_TASK_EXIT_POLL_NS};
+    const int64_t  give_up     = monotonic_ns() + PLC_TASK_ABORT_TIMEOUT_MS * NS_PER_MS;
+    int64_t        next_signal = 0;
+    while (!c->exited.load(std::memory_order_acquire))
+    {
+        const int64_t now = monotonic_ns();
+        if (now >= give_up)
+        {
+            char reason[WATCHDOG_REASON_LEN];
+            std::snprintf(reason, sizeof reason, "task %s did not exit after the abort", c->name);
+            watchdog_fatal_exit(reason);
+        }
+        if (now >= next_signal)
+        {
+            int rc = pthread_kill(c->thread, PLC_TASK_ABORT_SIGNAL);
+            if (rc != 0)
+                log_error("[task %s] abort signal failed: %s", c->name, strerror(rc));
+            next_signal = now + PLC_TASK_ABORT_RESEND_NS;
+        }
+        nanosleep(&poll, nullptr);
+    }
+}
+
+/* Wakes every worker, lets each in-flight scan run until PLC_TASK_STUCK_PERIODS of its own
+ * periods after its release, aborts the ones still running, then joins and frees the array. */
 static void reap_task_threads(void)
 {
     log_info("Stopping %zu PLC task thread(s)", plc_task_count);
-    /* Wake every worker: post its release semaphore (breaks sem_wait) and
-     * SIGUSR1 (breaks a syscall). A worker mid-scan finishes, loops to
-     * sem_wait, consumes the post, observes state != RUNNING, and exits. */
     for (size_t i = 0; i < plc_task_count; ++i)
     {
         sem_post(&plc_tasks[i].go);
         pthread_kill(plc_tasks[i].thread, SIGUSR1);
     }
+
+    const int64_t t_reap = monotonic_ns();
+    for (size_t i = 0; i < plc_task_count; ++i)
+    {
+        PlcTaskCtx   *c = &plc_tasks[i];
+        const int64_t scan_deadline =
+            c->release_ns.load(std::memory_order_acquire) + task_scan_limit_ns(c);
+        const int64_t idle_deadline = (scan_deadline > t_reap ? scan_deadline : t_reap) +
+                                      PLC_TASK_ABORT_TIMEOUT_MS * NS_PER_MS;
+        if (!wait_task_exit(c, scan_deadline, idle_deadline))
+            abort_task(c);
+    }
+
     for (size_t i = 0; i < plc_task_count; ++i)
     {
         pthread_join(plc_tasks[i].thread, nullptr);
     }
 
-    /* Take plc_tasks_lock for the tracker-cleanup + free. A STATS reader
-     * that started iterating before STOP arrived will block briefly
-     * waiting for this critical section, then exit because plc_task_count
-     * is observed as 0. Without the lock, the reader could be midway
-     * through scan_cycle_tracker_snapshot when we pthread_mutex_destroy
-     * the tracker's own mutex below — undefined behaviour. */
+    /* Under plc_tasks_lock so a STATS reader never sees a destroyed tracker. */
     pthread_mutex_lock(&plc_tasks_lock);
     for (size_t i = 0; i < plc_task_count; ++i)
     {
@@ -410,6 +466,25 @@ static void reap_task_threads(void)
     pthread_mutex_unlock(&plc_tasks_lock);
 }
 
+/* Zeroes every output and runs one last I/O frame, then holds it so threaded plugins send it. */
+static void plc_outputs_off(void)
+{
+    image_lock();
+    /* Pending writes were drained by image_lock; reject later ones so none re-energise %Q. */
+    journal_cleanup();
+    image_tables_zero_outputs();
+    image_unlock();
+    if (plugin_driver)
+    {
+        plugin_driver_cycle_start(plugin_driver);
+        plugin_driver_cycle_end(plugin_driver);
+    }
+    timespec settle = {PLC_OUTPUTS_OFF_SETTLE_MS / 1000,
+                       (long)((PLC_OUTPUTS_OFF_SETTLE_MS % 1000) * NS_PER_MS)};
+    nanosleep(&settle, nullptr);
+    log_info("Outputs forced to 0");
+}
+
 void *plc_cycle_thread(void *arg)
 {
     PluginManager *pm = (PluginManager *)arg;
@@ -417,6 +492,10 @@ void *plc_cycle_thread(void *arg)
     plc_crash_signal        = 0;
     bootstrap_crash_sig     = 0;
     bootstrap_holding_mutex = 0;
+    g_task_fault.store(false, std::memory_order_release);
+    g_first_scan_since_ns.store(0, std::memory_order_release);
+    g_first_scan_trip.store(false, std::memory_order_release);
+    watchdog_dispatcher_stopped();
 
     /* Per-task trackers are initialised below, once we know the task list
      * and each task's interval. */
@@ -440,15 +519,9 @@ void *plc_cycle_thread(void *arg)
     image_tables_fill_null_pointers();
     pthread_mutex_unlock(itm);
 
-    /* Retained variables. init() decides once whether retain can run here —
-     * does the .so export the entry points, does the program retain anything,
-     * which driver will hold the bytes — and read() asks that driver for what it
-     * has for THIS program, which is also where a driver discards a previous
-     * program's values. Both must follow the located-variable binding above: a
-     * retained variable may also be located, and its image slot has to exist
-     * before anything writes through it. Both are no-ops when retain is not in
-     * play, and read() lands before the first task is released, so a new
-     * program never runs a scan on the old one's state. */
+    /* Retained variables. init() decides capability; read() loads values
+     * for THIS program and discards a prior program's bytes. Must run
+     * after located-variable binding so image slots exist. */
     plc_retain_init();
     plc_retain_read();
 
@@ -495,22 +568,22 @@ void *plc_cycle_thread(void *arg)
     sigaction(SIGFPE,  &crash_sa, NULL);
     sigaction(SIGSEGV, &crash_sa, NULL);
 
+    struct sigaction abort_sa;
+    std::memset(&abort_sa, 0, sizeof(abort_sa));
+    abort_sa.sa_handler = plc_abort_handler;
+    sigemptyset(&abort_sa.sa_mask);
+    if (sigaction(PLC_TASK_ABORT_SIGNAL, &abort_sa, NULL) != 0)
+        log_error("Failed to install the task abort handler: %s", strerror(errno));
+
     /* SIGUSR1 wake handler is installed once at process init (plc_main.c).
      * No per-thread re-installation here — the bootstrap thread inherits
      * the handler from the process. */
 
     log_info("Starting main loop");
 
-    /* NOT where RUNNING is published. The state stays TRANSITIONING_TO_RUN until
-     * the task threads exist and the dispatcher is about to release the first
-     * scan -- see the publish below the "Spawned N PLC task thread(s)" log. Two
-     * writes used to happen before this point (here, and in plc_set_state before
-     * this thread was even created), and both claimed RUNNING while nothing was
-     * scanning yet. The one here was also a deadlock: a stop landing in the
-     * window before this thread was first scheduled wrote STOPPED and joined us,
-     * and this line put RUNNING back -- after which no loop below would ever
-     * exit, so the join never returned and the runtime refused every command for
-     * the rest of the process's life. */
+    /* State stays TRANSITIONING_TO_RUN until the task threads exist and
+     * the dispatcher is about to release the first scan. RUNNING is
+     * published below after "Spawned N PLC task thread(s)". */
 
     clock_gettime(CLOCK_MONOTONIC, &timer_start);
 
@@ -535,38 +608,17 @@ void *plc_cycle_thread(void *arg)
         pthread_mutex_unlock(&state_mutex);
         log_info("PLC State: ERROR");
 
-        /* If the crash happened in the dispatcher loop (after workers were
-         * spawned), the workers are still alive — wake, join, and free them so
-         * they aren't orphaned (which would UAF on the next load). The state is
-         * already ERROR, so each worker exits after its current scan. */
+        /* Workers spawned before a dispatcher crash are still alive: reap them (aborting any
+         * still scanning) so they are not orphaned, then drive outputs off. */
         if (plc_tasks && plc_task_count)
         {
-            for (size_t i = 0; i < plc_task_count; ++i)
-            {
-                sem_post(&plc_tasks[i].go);
-                pthread_kill(plc_tasks[i].thread, SIGUSR1);
-            }
-            for (size_t i = 0; i < plc_task_count; ++i)
-                pthread_join(plc_tasks[i].thread, nullptr);
-            pthread_mutex_lock(&plc_tasks_lock);
-            for (size_t i = 0; i < plc_task_count; ++i)
-            {
-                scan_cycle_tracker_cleanup(&plc_tasks[i].tracker);
-                sem_destroy(&plc_tasks[i].go);
-            }
-            std::free(plc_tasks);
-            plc_tasks      = nullptr;
-            plc_task_count = 0;
-            pthread_mutex_unlock(&plc_tasks_lock);
+            reap_task_threads();
+            plc_outputs_off();
         }
         return NULL;
     }
 
-    /* Walk the configuration via virtual dispatch and discover the GCD
-     * base tick + flat task list. Phase 5 keeps a single-thread cycle
-     * that runs every task in round-robin (each task runs every
-     * interval/base ticks). Phase 6 will replace this with one thread per
-     * task on SCHED_FIFO. */
+    /* Walk the configuration via virtual dispatch: GCD base tick and flat task list. */
     auto *cfg = static_cast<strucpp::ConfigurationInstance *>(strucpp_config_handle());
     if (!cfg)
     {
@@ -610,11 +662,9 @@ void *plc_cycle_thread(void *arg)
     log_info("PLC base tick: %llu ns across %zu task(s)",
              (unsigned long long)base_ns, total_tasks);
 
-    /* Sub-millisecond base tick warning. Whole-millisecond task intervals
-     * always yield a GCD >= 1 ms; a base tick below that means fractional/sub-ms
-     * intervals that are near-coprime, so the dispatcher must wake faster than
-     * 1 kHz. We do NOT clamp (that would break the per-task time grid); we run
-     * at the true GCD and rely on overrun detection if it can't keep up. */
+    /* Sub-millisecond base tick means fractional/sub-ms task intervals
+     * near-coprime. Do NOT clamp (breaks the per-task time grid); run at
+     * the true GCD and rely on overrun detection. */
     if (base_ns < 1000000ULL)
     {
         log_warn("PLC base tick is %llu ns (< 1 ms): dispatcher runs at %llu Hz. "
@@ -643,7 +693,6 @@ void *plc_cycle_thread(void *arg)
 
     {
         size_t flat_idx = 0;
-        long   now_t    = (long)time(nullptr);
         for (size_t r = 0; r < cfg->get_resource_count(); ++r)
         {
             for (size_t t = 0; t < resources[r].task_count; ++t)
@@ -664,7 +713,6 @@ void *plc_cycle_thread(void *arg)
                 {
                     std::snprintf(ctx->name, sizeof ctx->name, "plc-task-%zu", flat_idx);
                 }
-                ctx->heartbeat.store(now_t, std::memory_order_relaxed);
                 ctx->local_tick.store(0,    std::memory_order_relaxed);
 
                 /* Dispatcher plumbing. divisor = interval / base_tick (exact;
@@ -679,6 +727,10 @@ void *plc_cycle_thread(void *arg)
                 ctx->released.store(0,      std::memory_order_relaxed);
                 ctx->completed.store(0,     std::memory_order_relaxed);
                 ctx->overrun_count.store(0, std::memory_order_relaxed);
+                ctx->stuck_ticks.store(0,   std::memory_order_relaxed);
+                ctx->exited.store(0,        std::memory_order_relaxed);
+                ctx->release_ns.store(0,    std::memory_order_relaxed);
+                ctx->in_body = 0;
 
                 if (scan_cycle_tracker_init(&ctx->tracker, ctx->interval_ns) != 0)
                 {
@@ -687,6 +739,13 @@ void *plc_cycle_thread(void *arg)
                 ++flat_idx;
             }
         }
+    }
+
+    {
+        int64_t longest = 0;
+        for (size_t i = 0; i < plc_task_count; ++i)
+            if (plc_tasks[i].interval_ns > longest) longest = plc_tasks[i].interval_ns;
+        g_longest_interval_ns.store(longest, std::memory_order_release);
     }
 
     /* Pick the fastest task: smallest interval, tie-break by priority,
@@ -705,7 +764,7 @@ void *plc_cycle_thread(void *arg)
         }
         plc_tasks[fastest_idx].is_fastest_task = true;
         /* Housekeeping no longer rides a real task — the GCD master-tick
-         * dispatcher owns time/cycle hooks/heartbeat. is_fastest_task is kept
+         * dispatcher owns time/cycle hooks/watchdog feed. is_fastest_task is kept
          * only as a STATS hint (the fastest task is the tightest schedule). */
         log_info("PLC: fastest task is %s (interval=%lld ns, priority=%d)",
                  plc_tasks[fastest_idx].name,
@@ -713,23 +772,10 @@ void *plc_cycle_thread(void *arg)
                  plc_tasks[fastest_idx].priority);
     }
 
-    /* Spawn task threads.
-     *
-     * Failure mode: if pthread_create succeeds for tasks 0..i-1 and then
-     * fails for task i, the previously-spawned threads are running at
-     * SCHED_FIFO 99 holding image_tables_mutex and reading from
-     * plc_tasks[].  Returning here without cleanup leaves them orphaned
-     * — the next load_plc_program reallocates plc_tasks and the old
-     * threads dereference freed memory. We must:
-     *
-     *   1) flip plc_state to ERROR so the surviving task threads exit
-     *      their `while (state == RUNNING)` loop on their next iteration;
-     *   2) SIGUSR1 each surviving thread to break it out of its
-     *      clock_nanosleep without waiting up to interval_ns;
-     *   3) join all spawned threads before freeing the array.
-     *
-     * After this rollback, plc_tasks is nullptr and plc_task_count is 0,
-     * so STATS / next-cycle teardown can run without UAF. */
+    /* Spawn task threads. On partial failure (pthread_create succeeds
+     * for 0..i-1, fails at i): flip state to ERROR, post every
+     * surviving thread's release so it wakes, join them, free the
+     * array. Leaves plc_tasks nullptr and count 0 so STATS is UAF-safe. */
     size_t spawned = 0;
     for (; spawned < plc_task_count; ++spawned)
     {
@@ -773,24 +819,10 @@ void *plc_cycle_thread(void *arg)
     }
     log_info("Spawned %zu PLC task thread(s)", plc_task_count);
 
-    /* RUNNING, at last, and this is the earliest point it is true: the workers
-     * exist and the very next thing that happens is the dispatcher releasing the
-     * first scan. Nothing observes RUNNING too early as a result -- the workers
-     * are parked in sem_wait and are only ever posted from the loop below, and
-     * the loop itself needs RUNNING visible to run at all.
-     *
-     * This is also what ends the transition claimed by plc_claim_transition, so
-     * every path out of this thread from here on must land a final state: the
-     * crash recovery above publishes ERROR, and the stop path publishes STOPPED
-     * once teardown joins.
-     *
-     * Conditional, because ending a transition is only ours to do while it is
-     * still the one in flight. Two paths get here otherwise: the watchdog forced
-     * ERROR because this start exceeded its bound, and plc_state_manager_cleanup
-     * published TRANSITIONING_TO_STOP on shutdown and is now blocked joining this
-     * very thread. Publishing RUNNING in either case erases a state someone else
-     * landed, and in the second it hangs the process -- the dispatcher loop below
-     * would never see a non-RUNNING state and the join would never return. */
+    /* Publish RUNNING only while OUR start is still the claimed
+     * transition. Erasing a watchdog-ERROR or shutdown-TRANSITIONING_TO_STOP
+     * would hang the join below. The crash and stop paths each publish
+     * their own final state (ERROR / STOPPED). */
     if (!plc_publish_running_if_claimed())
     {
         log_warn("PLC bring-up finished but the start is no longer the transition in "
@@ -802,29 +834,14 @@ void *plc_cycle_thread(void *arg)
         return NULL;
     }
 
-    /* ---------------------------------------------------------------------
-     * GCD master-tick dispatcher.
-     *
-     * This thread is the single time authority. It wakes every base_ns on an
-     * absolute deadline anchored at one t0, and on each tick:
-     *   - bumps the global heartbeat (every tick, so the watchdog sees us);
-     *   - computes the due set (task due iff masterTick % divisor == 0);
-     *   - on a task-bearing tick: drains the journal (committing the previous
-     *     frame's outputs), fires cycle_end (prev frame) then cycle_start (new
-     *     frame), stamps each due+alive task's dispatch time and releases it
-     *     (binary — never queues a second activation), bumps scan_counter.
-     * It NEVER waits for a worker body (a long body would stall the clock); a
-     * worker still running when re-due is an overrun and is simply not
-     * re-released that tick. A faulted worker (alive==0) is skipped forever.
-     *
-     * Run at SCHED_FIFO 99 — above every worker — so the tick is never delayed
-     * by a busy worker on a shared CPU.
-     * --------------------------------------------------------------------- */
+    
     {
+        pthread_setname_np(pthread_self(), "plc_dispatch");
         sched_param dsp{};
-        dsp.sched_priority = 99;
-        if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &dsp) != 0)
-            log_warn("dispatcher SCHED_FIFO(99) failed: %s", strerror(errno));
+        dsp.sched_priority = PLC_FIFO_DISPATCHER;
+        int rc             = pthread_setschedparam(pthread_self(), SCHED_FIFO, &dsp);
+        if (rc != 0)
+            log_warn("dispatcher SCHED_FIFO(%d) failed: %s", PLC_FIFO_DISPATCHER, strerror(rc));
     }
 
     /* Completion-signal condvar shares the CLOCK_MONOTONIC timeline with the
@@ -836,9 +853,12 @@ void *plc_cycle_thread(void *arg)
 
     log_info("GCD master-tick dispatcher running (base tick %llu ns)",
              (unsigned long long)base_ns);
+    watchdog_dispatcher_started((int64_t)base_ns);
 
     uint64_t master_tick      = 0;
     bool     cycle_end_pending = false;   /* a frame's cycle_end not yet fired */
+    size_t   stuck_idx         = SIZE_MAX;
+    bool     fault_stop_claimed = false;
     timespec next_tick;
     clock_gettime(CLOCK_MONOTONIC, &next_tick);
 
@@ -847,8 +867,22 @@ void *plc_cycle_thread(void *arg)
         /* ---- Phase B: the tick (runs at the absolute deadline) ---- */
         const int64_t master_time = (int64_t)master_tick * (int64_t)base_ns;
 
-        /* Always: feed the global watchdog. */
-        plc_heartbeat.store((long)time(nullptr), std::memory_order_relaxed);
+        watchdog_feed();
+
+        {
+            int64_t oldest = 0;
+            for (size_t i = 0; i < plc_task_count; ++i)
+            {
+                PlcTaskCtx *c = &plc_tasks[i];
+                if (c->alive.load(std::memory_order_acquire) && task_in_scan(c) &&
+                    !task_first_scan_done(c))
+                {
+                    const int64_t rel = c->release_ns.load(std::memory_order_acquire);
+                    if (oldest == 0 || rel < oldest) oldest = rel;
+                }
+            }
+            g_first_scan_since_ns.store(oldest, std::memory_order_release);
+        }
 
         /* Which tasks are due this tick? */
         bool any_due = false;
@@ -865,11 +899,9 @@ void *plc_cycle_thread(void *arg)
 
         if (any_due)
         {
-            /* Worst case: the previous frame's tasks didn't all finish before
-             * this tick (overrun), so its cycle_end was never retired in Phase A
-             * below. Fire it now — drain to commit those outputs, then cycle_end
-             * — before opening the new frame with cycle_start. This is the only
-             * path where cycle_end lands on the task-wake hot path. */
+            /* Overrun: previous frame's cycle_end not yet retired. Fire
+             * it before opening the new frame. Only path where cycle_end
+             * lands on the task-wake hot path. */
             if (cycle_end_pending)
             {
                 image_lock();
@@ -879,13 +911,9 @@ void *plc_cycle_thread(void *arg)
             }
             if (plugin_driver) plugin_driver_cycle_start(plugin_driver);
 
-            /* Config-scope shared globals: prime the canonical storage from the
-             * freshly-read input image before releasing this frame's tasks. Only
-             * when quiescent (g_tasks_running == 0): if a previous frame's task
-             * is still overrunning it is accessing the canonical storage under
-             * its own per-global mutex, so a raw copy here would race — skip the
-             * refresh for this frame (bounded staleness under overrun, matching
-             * the "sync only on the guarded no-overrun path" contract). */
+            /* Prime config-scope shared globals from the input image.
+             * Guarded by quiescence (no overrunning task is in run())
+             * to avoid racing a per-global mutex. */
             if (g_tasks_running.load(std::memory_order_acquire) == 0)
             {
                 image_lock();
@@ -908,6 +936,8 @@ void *plc_cycle_thread(void *arg)
                      * and release. The fetch_add must happen-before sem_post so
                      * the worker's matching worker_scan_done() can never drive
                      * g_tasks_running negative. */
+                    c->stuck_ticks.store(0, std::memory_order_relaxed);
+                    c->release_ns.store(monotonic_ns(), std::memory_order_release);
                     c->time_at_dispatch = master_time;
                     c->released.store(r + 1, std::memory_order_relaxed);
                     g_tasks_running.fetch_add(1, std::memory_order_acq_rel);
@@ -920,6 +950,13 @@ void *plc_cycle_thread(void *arg)
                      * NOT re-release (binary), so activations never pile up. The
                      * task simply runs at a lower effective rate; the others are
                      * unaffected. Rate-limit the log. */
+                    /* Ticks, not wall time: replayed ticks after a late dispatcher are missed deadlines too. */
+                    if (task_first_scan_done(c))
+                    {
+                        long st = c->stuck_ticks.fetch_add(1, std::memory_order_relaxed) + 1;
+                        if (st >= PLC_TASK_STUCK_PERIODS && stuck_idx == SIZE_MAX)
+                            stuck_idx = i;
+                    }
                     long oc = c->overrun_count.fetch_add(1, std::memory_order_relaxed) + 1;
                     if (oc == 1 || (oc % 50) == 0)
                         log_warn("[task %s] scan overrun #%ld: body exceeds its "
@@ -933,20 +970,47 @@ void *plc_cycle_thread(void *arg)
             /* This frame owes a cycle_end once its released tasks all finish. */
             if (released_any) cycle_end_pending = true;
             ++scan_counter;
+
+            bool first_scan_trip = false;
+            if (stuck_idx == SIZE_MAX && g_first_scan_trip.exchange(false, std::memory_order_acq_rel))
+            {
+                for (size_t i = 0; i < plc_task_count; ++i)
+                {
+                    PlcTaskCtx *c = &plc_tasks[i];
+                    if (!c->alive.load(std::memory_order_acquire) || !task_in_scan(c) ||
+                        task_first_scan_done(c))
+                        continue;
+                    if (stuck_idx == SIZE_MAX ||
+                        c->release_ns.load(std::memory_order_acquire) <
+                            plc_tasks[stuck_idx].release_ns.load(std::memory_order_acquire))
+                        stuck_idx = i;
+                }
+                first_scan_trip = (stuck_idx != SIZE_MAX);
+            }
+
+            if (stuck_idx != SIZE_MAX)
+            {
+                PlcTaskCtx *c = &plc_tasks[stuck_idx];
+                if (first_scan_trip)
+                    log_error("[task %s] first scan still running after %d ms: stopping the PLC",
+                              c->name, PLC_FIRST_SCAN_TIMEOUT_MS);
+                else
+                    log_error("[task %s] stuck in one scan for %d periods (%lld ms): stopping the PLC",
+                              c->name, PLC_TASK_STUCK_PERIODS,
+                              (long long)(task_stuck_limit_ns(c) / NS_PER_MS));
+                g_task_fault.store(true, std::memory_order_release);
+                /* Claim now so no command lands mid-drain; the teardown runs after the reap. */
+                fault_stop_claimed = plc_claim_transition(PLC_STATE_STOPPED);
+                break;
+            }
         }
 
         ++master_tick;
 
-        /* ---- Phase A: wait out the period on the absolute deadline, waking
-         * early to retire cycle_end the instant the frame's tasks all finish.
-         *
-         * pthread_cond_timedwait wakes on whichever comes first: the
-         * completion signal (g_tasks_running hit 0) or the deadline. When the
-         * frame is done we drain + fire cycle_end here — OFF the task-wake hot
-         * path — then keep waiting (cycle_end_pending now false) purely for the
-         * deadline. The predicate (g_tasks_running == 0) is checked under
-         * done_mutex BEFORE waiting, so a task that finishes before we reach the
-         * wait can't lose its wakeup. ---- */
+        /* Phase A: wait out the period on the absolute deadline, waking
+         * early to retire cycle_end as soon as the frame completes
+         * (g_tasks_running hits 0). Predicate checked under done_mutex
+         * before the wait so a finishing task does not lose its wakeup. */
         next_tick.tv_nsec += (long)(base_ns % 1000000000ULL);
         next_tick.tv_sec  += (time_t)(base_ns / 1000000000ULL);
         if (next_tick.tv_nsec >= 1000000000L)
@@ -968,21 +1032,16 @@ void *plc_cycle_thread(void *arg)
             {
                 pthread_mutex_unlock(&done_mutex);
                 image_lock();          /* drain: commit this frame's outputs */
-                /* Config-scope shared globals (VAR_GLOBAL ... AT): g_tasks_running
-                 * == 0 so no worker is mid-scan touching the canonical storage —
-                 * journal changed output/memory globals here, before the drain
-                 * applies them to the image. Safe without the per-global mutex
-                 * (quiescence is the synchronization). */
+                /* Journal config-scope globals before the drain copies
+                 * them to the image. Safe under quiescence; no per-global
+                 * mutex needed. */
                 image_tables_copy_config_globals_out();
                 /* Apply queued external writes/forces (debugger, OPC-UA) here:
                  * g_tasks_running == 0 so no worker is mid-scan, and we hold
                  * image_lock. Cheap no-op when nothing is queued. */
                 debug_write_journal_drain();
-                /* Retained values, once per scan. This window is the only place
-                 * they can be read safely: g_tasks_running == 0, so no worker is
-                 * inside a body mutating them — the same guarantee
-                 * copy_config_globals_out relies on. The plugin decides whether
-                 * these bytes are actually committed now; no-op with no store. */
+                /* Retained values once per scan, under quiescence. The
+                 * plugin decides whether to actually commit now. */
                 plc_retain_save();
                 image_unlock();
                 if (plugin_driver) plugin_driver_cycle_end(plugin_driver);
@@ -997,10 +1056,17 @@ void *plc_cycle_thread(void *arg)
         pthread_mutex_unlock(&done_mutex);
     }
 
+    watchdog_dispatcher_stopped();
+    g_first_scan_since_ns.store(0, std::memory_order_release);
     reap_task_threads();
+    plc_outputs_off();
 
     signal(SIGFPE,  SIG_DFL);
     signal(SIGSEGV, SIG_DFL);
+
+    /* The stop's unload joins this thread, so it must run on another one. */
+    if (fault_stop_claimed && !plc_complete_claimed_transition_async(PLC_STATE_STOPPED))
+        log_error("Could not start the fault stop; the PLC stays in TRANSITIONING_TO_STOP");
 
     return NULL;
 }
@@ -1019,13 +1085,8 @@ extern "C" int load_plc_program(PluginManager *pm)
 
     if (plugin_manager_load(pm))
     {
-        /* Progress, not a state change. This used to publish PLC_STATE_INIT,
-         * which is now actively wrong: it overwrites TRANSITIONING_TO_RUN, so the
-         * runtime would stop reporting a transition in flight and let a stop be
-         * claimed while the start was still landing -- the same hole the
-         * TRANSITIONING states exist to close. (It is also what made STATUS
-         * flicker to INIT mid-start.) INIT survives in the enum as a startup
-         * value; nothing writes it during a transition. */
+        /* Log only: must NOT publish PLC_STATE_INIT here, which would
+         * erase TRANSITIONING_TO_RUN and let a stop be claimed mid-start. */
         log_info("Loading PLC application");
 
         if (plugin_driver)
@@ -1104,34 +1165,40 @@ extern "C" int load_plc_program(PluginManager *pm)
         plc_state = PLC_STATE_EMPTY;
         pthread_mutex_unlock(&state_mutex);
         log_info("PLC State: EMPTY");
-        // Without this, plc_program survives the failed dlopen with a
-        // stale so_path. The build script rotates the libplc filename
-        // (libplc_<ns_timestamp>.so) on every successful build, so the
-        // next "Start PLC" would reuse the deleted path and fail with
-        // `cannot open shared object file`. Drop the manager and let
-        // plc_set_state(RUNNING) re-run find_libplc_file next time.
+        // Clear plc_program so the next Start re-runs find_libplc_file.
+        // The build rotates libplc_<ts>.so, so the stale so_path would
+        // fail with "cannot open shared object file".
         if (pm == plc_program) plc_program = NULL;
         plugin_manager_destroy(pm);
         return -1;
     }
 }
 
+/* Serialises unloads: a shutdown and a fault stop may both reach here; the second finds nothing. */
+static pthread_mutex_t unload_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+__attribute__((constructor)) static void unload_mutex_init_pi(void)
+{
+    rt_mutex_upgrade_static(&unload_mutex, "unload_mutex");
+}
+
+static int unload_plc_program_locked(PluginManager *pm);
+
 extern "C" int unload_plc_program(PluginManager *pm)
+{
+    pthread_mutex_lock(&unload_mutex);
+    int rc = unload_plc_program_locked(pm);
+    pthread_mutex_unlock(&unload_mutex);
+    return rc;
+}
+
+static int unload_plc_program_locked(PluginManager *pm)
 {
     if (pm && pm == plc_program)
     {
-        /* The dispatcher and its workers leave their loops on anything that is
-         * not RUNNING, and the join below depends on that. A claimed stop has
-         * already published TRANSITIONING_TO_STOP, which is that signal.
-         *
-         * Anything that is not ERROR is overwritten, not just RUNNING, because
-         * this also covers the shutdown path (plc_state_manager_cleanup), which
-         * tears down without claiming a transition first. On SIGTERM during a
-         * start the state is TRANSITIONING_TO_RUN, and a guard that only matched
-         * RUNNING published nothing at all -- so the cycle thread went on to
-         * publish RUNNING and the join below never returned. Pairs with the
-         * conditional publish in plc_cycle_thread: this write is what makes that
-         * one decline. ERROR is left alone -- it must survive teardown. */
+        /* Publish TRANSITIONING_TO_STOP to break the dispatcher and
+         * workers out of their RUNNING loops. Overwrite anything but
+         * ERROR, which must survive teardown. */
         pthread_mutex_lock(&state_mutex);
         if (plc_state != PLC_STATE_ERROR)
         {
@@ -1141,13 +1208,9 @@ extern "C" int unload_plc_program(PluginManager *pm)
 
         pthread_join(plc_thread, NULL);
 
-        /* Retained values: ask the store to commit whatever it is still
-         * holding. Placed exactly here on purpose — AFTER the join, so no scan
-         * is mid-save and the bytes are a consistent snapshot, and BEFORE
-         * plugin_driver_stop(), because a plugin-backed store has to still be
-         * alive to answer. A driver that already commits inside save() has
-         * nothing to do; what this buys is that a clean stop loses nothing on
-         * one that buffers. */
+        /* Commit retained values: AFTER the join (consistent snapshot)
+         * and BEFORE plugin_driver_stop (plugin-backed stores need to
+         * still be alive to answer). */
         plc_retain_flush();
 
         journal_cleanup();
@@ -1170,9 +1233,11 @@ extern "C" int unload_plc_program(PluginManager *pm)
 
         log_info("PLC program unloaded successfully");
 
-        /* The teardown is done, so this is the moment STOPPED becomes true.
-         * plc_publish_final_state keeps ERROR if a task crashed on the way out. */
-        plc_publish_final_state(PLC_STATE_STOPPED);
+        /* An aborted task makes the stop a fault: land ERROR. ERROR also survives STOPPED. */
+        if (g_task_fault.exchange(false, std::memory_order_acq_rel))
+            plc_publish_final_state(PLC_STATE_ERROR);
+        else
+            plc_publish_final_state(PLC_STATE_STOPPED);
         return 0;
     }
     else
@@ -1184,10 +1249,61 @@ extern "C" int unload_plc_program(PluginManager *pm)
 
 extern "C" PLCState plc_get_state(void)
 {
-    pthread_mutex_lock(&state_mutex);
-    PLCState s = plc_state;
-    pthread_mutex_unlock(&state_mutex);
-    return s;
+    return plc_state.load(std::memory_order_acquire);
+}
+
+extern "C" int64_t plc_stop_budget_ms(void)
+{
+    int64_t grace_ms =
+        PLC_TASK_STUCK_PERIODS * g_longest_interval_ns.load(std::memory_order_acquire) / NS_PER_MS;
+    if (grace_ms < PLC_FIRST_SCAN_TIMEOUT_MS)
+        grace_ms = PLC_FIRST_SCAN_TIMEOUT_MS;
+    return grace_ms + PLC_OUTPUTS_OFF_SETTLE_MS + PLC_STOP_TEARDOWN_ALLOWANCE_MS;
+}
+
+extern "C" bool plc_outputs_off_without_program(void)
+{
+    if (!plugin_driver)
+    {
+        log_warn("No plugin driver: outputs cannot be driven off");
+        return false;
+    }
+    if (plugin_driver_update_config(plugin_driver, "./plugins.conf") != 0 ||
+        plugin_driver_append_config(plugin_driver, "./vpp_plugins.conf") != 0)
+    {
+        log_error("[PLUGIN]: Could not load the plugin configuration to drive outputs off");
+        return false;
+    }
+    if (plugin_driver_init(plugin_driver) != 0)
+    {
+        plugin_driver_cleanup_init(plugin_driver);
+        log_error("[PLUGIN]: Plugin init failed: outputs cannot be driven off");
+        return false;
+    }
+
+    pthread_mutex_t *itm = image_tables_mutex();
+    pthread_mutex_lock(itm);
+    image_tables_fill_null_pointers();
+    pthread_mutex_unlock(itm);
+
+    plugin_driver_start(plugin_driver);
+    plc_outputs_off();
+    plugin_driver_stop(plugin_driver);
+
+    pthread_mutex_lock(itm);
+    image_tables_clear_null_pointers();
+    pthread_mutex_unlock(itm);
+    return true;
+}
+
+extern "C" int64_t plc_first_scan_pending_since_ns(void)
+{
+    return g_first_scan_since_ns.load(std::memory_order_acquire);
+}
+
+extern "C" void plc_request_first_scan_trip(void)
+{
+    g_first_scan_trip.store(true, std::memory_order_release);
 }
 
 extern "C" bool plc_state_is_transitioning(void)
@@ -1261,10 +1377,8 @@ extern "C" void plc_publish_final_state(PLCState final_state)
 
 extern "C" bool plc_publish_running_if_claimed(void)
 {
-    /* Land RUNNING only while the start we are completing is still the transition
-     * in flight. The check and the write share one critical section: reading the
-     * state and then publishing in two steps would let a stop be claimed in
-     * between, and RUNNING would go down on top of it. */
+    /* Check and publish RUNNING under one critical section, so a stop
+     * cannot be claimed between the read and the write. */
     pthread_mutex_lock(&state_mutex);
     if (plc_state != PLC_STATE_TRANSITIONING_TO_RUN)
     {
@@ -1279,18 +1393,10 @@ extern "C" bool plc_publish_running_if_claimed(void)
 
 extern "C" bool plc_set_state(PLCState new_state)
 {
-    // Performs a transition already claimed via plc_claim_transition(), which
-    // published TRANSITIONING_TO_RUN or TRANSITIONING_TO_STOP. No state is
-    // written here: writing the target up front is what used to let a stop's
-    // STOPPED be resurrected by a start still landing. The final state is
-    // published by whoever knows the transition actually finished --
-    // plc_cycle_thread for RUNNING (just before it releases the first scan) and
-    // unload_plc_program for STOPPED (after the teardown joins) -- with the
-    // failure paths below publishing ERROR or EMPTY.
-    //
-    // The current TRANSITIONING state is itself the signal the task and
-    // dispatcher loops need: they run while plc_get_state() == RUNNING, so
-    // TRANSITIONING_TO_STOP breaks them exactly as the old early STOPPED did.
+    // Executes a transition already claimed via plc_claim_transition.
+    // No state is written here: the final state is published by whoever
+    // confirms the transition finished (plc_cycle_thread for RUNNING,
+    // unload_plc_program for STOPPED).
 
     if (new_state == PLC_STATE_RUNNING)
     {
@@ -1351,20 +1457,9 @@ extern "C" bool plc_set_state(PLCState new_state)
 
 extern "C" void plc_state_manager_cleanup(void)
 {
-    /* Let an in-flight transition finish before tearing anything down.
-     *
-     * Shutdown is the one state change that does not go through
-     * plc_claim_transition, so it can land on top of a start that is still
-     * running. Tearing down from there is not safe at any point of it: during
-     * plugin bring-up load_plc_program has not assigned plc_thread yet, so the
-     * join below would run on a handle that was never set; a moment later the
-     * cycle thread is mid-bring-up and would have RUNNING published underneath
-     * the teardown. Both disappear if the transition is allowed to land first --
-     * then this is an ordinary stop of a RUNNING (or ERROR, or EMPTY) runtime.
-     *
-     * Bounded by the same constant the transition worker waits on, so a
-     * transition that will never land cannot hold the process open forever; the
-     * teardown then proceeds and does what it can. */
+    /* Wait for any in-flight transition to land before teardown, so we
+     * never join an unassigned plc_thread or race the cycle thread's
+     * RUNNING publish. Bounded by the transition-landing timeout. */
     const int poll_ms = 20;
     int       waited  = 0;
     while (plc_state_is_transitioning() && waited < PLC_TRANSITION_LANDING_TIMEOUT_MS)

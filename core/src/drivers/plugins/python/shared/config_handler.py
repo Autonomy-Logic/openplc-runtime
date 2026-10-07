@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 Configuration Handler for OpenPLC Python Plugin System
 
@@ -14,7 +17,6 @@ try:
 except ImportError:
     # Fall back to absolute imports (when testing standalone)
     from component_interfaces import IConfigHandler
-
 
 class ConfigHandler(IConfigHandler):
     """

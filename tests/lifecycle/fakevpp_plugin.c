@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file fakevpp_plugin.c
  * @brief Test-only native plugin standing in for a board's VPP package.
@@ -149,16 +152,9 @@ int init(void *args)
     return 0;
 }
 
-/* The watcher lives between start_loop and stop_loop, and NOT a moment longer.
- *
- * init() is the tempting place for it -- a real mode switch has to be watched
- * while the PLC is stopped too -- but the contract forbids threads there for a
- * concrete reason: plugin_driver_update_config tears every slot down and
- * re-dlopens it on each start, so a thread left running from init() ends up
- * executing code that has been unmapped. That is a SIGSEGV, and this fixture
- * earned one before being written this way. Everything the tests need still
- * works, because the runtime stops plugins only AFTER joining the PLC thread:
- * a flip during a stop is still seen. */
+/* Start the watcher here, not in init(): plugin_driver_update_config
+ * re-dlopens plugins per start, so a thread from init() runs code that
+ * has been unmapped (SIGSEGV). */
 int start_loop(void *args)
 {
     (void)args;
@@ -179,10 +175,8 @@ int stop_loop(void *args)
 {
     (void)args;
 
-    /* Optional slow teardown, BEFORE the watcher is joined, so the switch is
-     * still being watched while the stop is in flight. That is the only way to
-     * land a flip inside a stop transition on purpose: a stop is otherwise tens
-     * of milliseconds and there is nothing to aim at. */
+    /* Optional slow teardown BEFORE joining the watcher, so a switch
+     * flip can land inside a stop transition. */
     const long slow_ms = env_long("FAKEVPP_STOP_MS", 0);
     if (slow_ms > 0)
     {

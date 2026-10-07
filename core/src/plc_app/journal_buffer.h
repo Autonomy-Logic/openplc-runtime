@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file journal_buffer.h
  * @brief Journal Buffer System for Race-Condition-Free Plugin Writes
@@ -29,7 +32,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <pthread.h>
-#include "../lib/iec_types.h"
+#include "../lib/plc_image_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,7 +49,7 @@ extern "C" {
  * triggers an emergency flush. Keep this large enough that overflow only
  * happens under genuine misconfiguration/overload.
  */
-#define JOURNAL_MAX_ENTRIES 4096
+#define JOURNAL_MAX_ENTRIES 40960
 
 /**
  * @brief Buffer type enumeration for journal entries
