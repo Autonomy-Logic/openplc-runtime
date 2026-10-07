@@ -61,7 +61,10 @@ static int journal_add(uint8_t type, uint16_t index, uint8_t bit, uint64_t value
  * =============================================================================
  */
 
+/* Mirrors the image's BUFFER_SIZE; divergence trips the runtime guard. */
 #define JBUF_FORCE_SIZE 1024
+/* Written only by journal_force_set/clear from the dispatcher drain and
+ * read only by apply_entry() — both under image_lock, so no atomics. */
 static uint8_t g_forced[JOURNAL_TYPE_COUNT][JBUF_FORCE_SIZE];
 static int     g_force_count = 0;
 

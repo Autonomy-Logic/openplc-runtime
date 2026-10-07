@@ -34,7 +34,7 @@ type ContainerState struct {
 type ContainerHostConfig struct {
 	Binds       []string `json:"Binds"`
 	NetworkMode string   `json:"NetworkMode"`
-	// "host", or empty for Docker's private default (RTOP-292).
+	// "host", or empty for Docker's private default.
 	UTSMode       string        `json:"UTSMode"`
 	Privileged    bool          `json:"Privileged"`
 	RestartPolicy RestartPolicy `json:"RestartPolicy"`
@@ -152,9 +152,9 @@ func (c *Client) RemoveContainer(ctx context.Context, name string, force bool) e
 	return nil
 }
 
-// ContainerLogs returns the tail of a container's combined output. Used by the
-// bootloader's status endpoint so an operator can see why a runtime would not
-// start without needing shell access -- which is the entire point of RTOP-283.
+// ContainerLogs returns the tail of a container's combined output.
+// Used by the bootloader status endpoint so an operator can see why a
+// runtime would not start without needing shell access on the device.
 func (c *Client) ContainerLogs(ctx context.Context, name string, tail int) (string, error) {
 	params := url.Values{}
 	params.Set("stdout", "true")

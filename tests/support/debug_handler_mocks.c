@@ -1,21 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-/*
- * debug_handler_mocks.c — implementation of the test-side debugger ABI
- * fakes. See debug_handler_mocks.h for the contract.
- *
- * These functions are wired into the runtime by overwriting the
- * ext_strucpp_debug_* function pointers (declared extern in
- * image_tables.h, defined in image_tables.cpp) and the program-MD5
- * char* pointer (declared in utils.h, defined in utils.c).
- *
- * Because the runtime declares those externs in C++ (image_tables.cpp)
- * and we install from C, the declarations are reproduced here under
- * `extern "C"`-equivalent linkage. The installed function pointer
- * signatures must match exactly — a mismatch silently corrupts the
- * call frame.
- */
+/* Implementation of the test-side debugger ABI fakes. The runtime's
+ * ext_strucpp_debug_* function pointers and the program-MD5 char*
+ * are overwritten to point here. Signatures must match exactly or
+ * the call frame is silently corrupted. */
 
 #include "debug_handler_mocks.h"
 

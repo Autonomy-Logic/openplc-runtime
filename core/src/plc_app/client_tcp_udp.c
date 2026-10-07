@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// This is the file for the network routines of the OpenPLC. It has procedures
-// to create a socket and connect to a server. These functions are called by
-// the TCP communication function blocks (TCP_CONNECT, TCP_SEND, TCP_RECEIVE,
-// TCP_CLOSE) defined in communication.h.
+// Socket/connect helpers for the TCP/UDP communication function blocks
+// (TCP_CONNECT, TCP_SEND, TCP_RECEIVE, TCP_CLOSE) in communication.h.
 
 #include <arpa/inet.h>
 #include <errno.h>

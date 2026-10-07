@@ -47,7 +47,9 @@ CPU_JOBS=$(nproc)
 [ "$CPU_JOBS" -gt 1 ] && CPU_JOBS=$((CPU_JOBS - 1))
 MEM_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
 MEM_MB=$((MEM_KB / 1024))
+# Round to nearest GB so a 2 GB Pi (~1.8 GiB) does not demote to -j1.
 MEM_JOBS=$(( (MEM_MB + 512) / 1024 ))
+# Floor at 1: -j0 in GNU make means unlimited.
 [ "$MEM_JOBS" -lt 1 ] && MEM_JOBS=1
 if [ "$CPU_JOBS" -lt "$MEM_JOBS" ]; then
     JOBS=$CPU_JOBS

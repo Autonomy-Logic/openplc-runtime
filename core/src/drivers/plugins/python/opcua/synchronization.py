@@ -4,10 +4,9 @@
 """
 OPC-UA ↔ PLC synchronization — request-driven.
 
-Replaces the old unconditional bidirectional poll (which read every
-writable node every cycle and wrote it back to the PLC — OpenPLC
-bug #2: OPC-UA fighting the program for readwrite variables). The
-model is now:
+Replaces the old unconditional bidirectional poll, which read every
+writable node every cycle and wrote it back to the PLC — making the
+server fight the program for readwrite variables. The model is now:
 
   - READS (client → server): a per-node value_callback returns the
     LIVE PLC value via args.debug_read at read time. No staleness, no

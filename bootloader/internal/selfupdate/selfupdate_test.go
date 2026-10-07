@@ -388,7 +388,7 @@ func TestTheChildRecreatesEvenIfTheParentIsAlreadyGone(t *testing.T) {
 	}
 }
 
-// A pre-RTOP-292 parent must not pass its namespace on.
+// A parent with a private UTS namespace must not pass it on.
 func TestAParentWithAPrivateUTSNamespaceDoesNotPassItOn(t *testing.T) {
 	// "" is Docker's private default; "private" covers the set-not-defaulted
 	// field an earlier revision inherited.

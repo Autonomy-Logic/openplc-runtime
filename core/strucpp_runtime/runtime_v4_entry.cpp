@@ -1,31 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// runtime_v4_entry.cpp
-//
-// Static C-linkage shim compiled into every user .so. Identical for every
-// project — no per-project codegen. Lives here in the runtime repo
-// because the build (scripts/compile.sh) is the consumer; the editor's
-// upload bundle does not ship this file.
-//
-// Responsibilities:
-//
-//   1. Instantiate strucpp::Configuration_CONFIG0 g_config — the actual
-//      object the runtime walks. Must have external linkage so
-//      generated_debug.cpp's compile-time address-of expressions resolve.
-//   2. Export strucpp_get_config() — C-linkage entry the runtime dlsyms
-//      to obtain a ConfigurationInstance* pointer.
-//   3. Export strucpp_get_located_vars / strucpp_get_located_var_count
-//      — re-expose strucpp::locatedVars[] (a per-project namespaced
-//      symbol) under stable C linkage.
-//   4. Activate STRUCPP_V4_DEBUG_EXPORTS_DEFINE — emits the C-linkage
-//      strucpp_debug_* PDU helpers from debug_dispatch.hpp.
-//   5. Export strucpp_advance_time() — bumps the per-.so
-//      strucpp::__CURRENT_TIME_NS by the runtime-supplied tick. The
-//      runtime owns the tick (computed from g_config); the shim just
-//      provides the cross-DSO advance entry point.
-//   6. Export strucpp_program_md5 — the project MD5, surfaced by FC 0x45
-//      so the editor can verify it's debugging the matching source.
+// Static C-linkage shim in every user .so. Instantiates g_config,
+// re-exposes strucpp::locatedVars[] and the strucpp_debug_* PDU
+// helpers under C linkage, provides the cross-DSO time-advance entry,
+// and exports strucpp_program_md5 for FC 0x45.
 
 #define STRUCPP_V4_DEBUG_EXPORTS_DEFINE
 #include "debug_dispatch.hpp"

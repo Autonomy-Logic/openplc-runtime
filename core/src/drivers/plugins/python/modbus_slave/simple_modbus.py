@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Autonomy®
 
+# pylint disables kept so pymodbus-mandated names, segmented data-block
+# constructors and the shared-module import order do not warn here.
 # pylint: disable=C0103,C0301,C0302,C0413,W0107,W0602,W0621,C0415,R0913,R0914,R0917
-# C0103: Method/variable naming (getValues/setValues required by pymodbus API)
-# C0301: Line too long (some lines exceed 100 chars)
-# C0302: Too many lines in module (complex Modbus implementation)
-# C0413: Import position (shared module import must be after sys.path modification)
-# W0107: Unnecessary pass (used for read-only setValues methods)
-# W0602: Global variable not assigned (threading.Event uses methods, not reassignment)
-# W0621: Redefining name from outer scope (runtime_args parameter shadows global)
-# C0415: Import outside toplevel (traceback imported in exception handlers)
-# R0913: Too many arguments (required for segmented data block configuration)
-# R0914: Too many local variables (complex address segmentation logic)
-# R0917: Too many positional arguments (required for segmented data block configuration)
 
 import asyncio
 import os

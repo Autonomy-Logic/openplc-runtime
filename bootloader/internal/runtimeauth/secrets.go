@@ -2,18 +2,9 @@
 // Copyright (c) 2026 Autonomy®
 
 // Package runtimeauth authenticates callers against the runtime's own
-// credentials.
-//
-// The bootloader deliberately does not keep a second user database. It reads the
-// runtime's “.env“ and “restapi.db“ from the shared data directory --
-// mounted read-only, because it only ever needs to read them -- so there is
-// exactly one set of accounts on the device and no second thing to keep in
-// sync or forget to revoke.
-//
-// The formats here mirror the runtime's and must stay byte-compatible with it,
-// the same hazard as the ctypes mirror in shared/plugin_runtime_args.py. Both
-// sides are pinned by a shared test vector: tests/pytest/restapi generates a
-// hash and a token, and the Go tests verify the identical values.
+// credentials. Reads `.env` and `restapi.db` from the shared data
+// directory (mounted read-only). The hash and token formats mirror
+// the runtime's — pinned byte-for-byte by a shared pytest/Go vector.
 package runtimeauth
 
 import (

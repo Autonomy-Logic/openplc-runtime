@@ -1,22 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// strucpp_abi.hpp — runtime-side mirror of the strucpp ABI we walk.
-//
-// The runtime executable is built ONCE; the .so it loads at runtime
-// carries the actual strucpp runtime headers (shipped with the user
-// program upload, used by scripts/compile.sh to build the .so). The
-// runtime itself does NOT vendor strucpp headers — only this minimal
-// set of layout-compatible mirror declarations.
-//
-// CONTRACT: every type below MUST match the layout strucpp's vendored
-// headers expose. The .so's vtables, struct offsets, and enum values
-// are all assumed identical. ABI consistency between the runtime and
-// the strucpp version a user .so was built against is maintained as
-// part of the development cycle — not enforced here. When strucpp's
-// ABI version bumps in a breaking way, update this file.
-//
-// Mirrored from strucpp v0.4.5 (iec_located.hpp + iec_std_lib.hpp).
+// Runtime-side mirror of the strucpp ABI the loaded .so exposes.
+// Every type below MUST match that layout: vtables, struct offsets,
+// enum values. Mirrored from strucpp v0.4.5; update on an ABI bump.
 
 #ifndef OPENPLC_STRUCPP_ABI_HPP
 #define OPENPLC_STRUCPP_ABI_HPP

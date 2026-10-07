@@ -1,22 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-/*
- * test_debug_handler.c — wire-level tests for the new STruC++ debugger
- * ABI (FC 0x41-0x45) at the `process_debug_data` boundary.
- *
- * Replaces the MatIEC-era flat-index API tests (get_var_list /
- * get_var_size / get_var_count) deleted with the runtime cleanup. Goal
- * is to lock the on-wire frame format (mirrored by the editor's debug
- * client at src/frontend/utils/debug-parser.ts and the Arduino
- * StrucppBaremetal/ModbusSlave.cpp), and to pin the defensive bounds
- * checks the runtime added on top of the .so's internal validation.
- *
- * Tests use the mock debugger ABI in tests/support/debug_handler_mocks.*
- * to drive controlled `arr_count` / `elem_count` / `read` / `set`
- * behavior. process_debug_data is called directly with a constructed
- * frame; the response is unpacked and compared against expected bytes.
- */
+/* Wire-level tests for the STruC++ debugger ABI (FC 0x41-0x45) at the
+ * `process_debug_data` boundary. The mock debugger ABI in
+ * tests/support/debug_handler_mocks.* drives controlled responses so
+ * the on-wire frame format and runtime bounds checks can be pinned. */
 
 #include "debug_handler.h"
 #include "debug_handler_mocks.h"

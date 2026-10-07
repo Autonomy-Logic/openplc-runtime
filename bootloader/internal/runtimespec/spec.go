@@ -2,51 +2,27 @@
 // Copyright (c) 2026 Autonomy®
 
 // Package runtimespec decides how the runtime container is run.
+// Every flag below is load-bearing:
 //
-// This is the ONE place those flags exist. The plan settled on a single
-// privilege level rather than a matrix of profiles, because multiple profiles
-// mean multiple ways to be misconfigured and a support matrix nobody can hold
-// in their head. Every flag below is load-bearing:
+//   - Privileged + /dev bind: parity with the host-root install so
+//     SPI_IOC_MESSAGE and GPIO line-handle ioctls reach real devices
+//     and hot-plugged serial adapters appear without mknod.
+//   - NetworkMode host: NICs under their real names for EtherCAT
+//     AF_PACKET and UDP discovery broadcasts.
+//   - UTSMode host: the device's live hostname, so discovery does
+//     not report a container id captured at image build time.
+//   - No CPU limits, ever: Cpus/CpuQuota/CpuPeriod/Memory enable the
+//     cgroup CPU controller, and under CONFIG_RT_GROUP_SCHED a
+//     non-root cgroup starts at rt_runtime_us=0, which makes
+//     sched_setscheduler(SCHED_FIFO) fail. No fields exist for them.
+//   - rtprio/memlock ulimits: redundant under Privileged (CAP_SYS_NICE
+//     bypasses RLIMIT_RTPRIO, CAP_IPC_LOCK bypasses RLIMIT_MEMLOCK),
+//     kept so a de-privileged container still works.
+//   - RestartPolicy "no": the supervisor owns the lifecycle; a Docker
+//     restart would race crash-loop accounting.
 //
-//   - Privileged + /dev bind: exact parity with the current root install.
-//     Verified against the SLM-RP4 HAL, which drives /dev/spidev6.0 through
-//     SPI_IOC_MESSAGE and /dev/gpiochip0 through the GPIO line-handle ioctls.
-//     Binding the host's live devtmpfs also means hot-plugged serial adapters
-//     appear without mknod or device cgroup rules.
-//
-//   - NetworkMode host: every NIC visible under its real name in the host's
-//     own namespace. EtherCAT needs AF_PACKET and SIOCSIFFLAGS on a real
-//     interface, and the UDP discovery responder needs to see broadcasts.
-//     Deliberately NOT the orchestrator's dedicated-NIC mechanism, which moves
-//     a host NIC into a container namespace and removes it from the host.
-//
-//   - UTSMode host: the device's hostname, live, which is what discovery
-//     reports. NetworkMode host alone copies it once at CREATE time, so an
-//     image built in a container ships that container's id (RTOP-292).
-//
-//   - No CPU limits, ever. This is the one trap that survives "just make it
-//     privileged", because it is not a privilege. Setting Cpus/CpuQuota/
-//     CpuPeriod/Memory enables the cgroup CPU controller, and with
-//     CONFIG_RT_GROUP_SCHED a non-root cgroup starts at rt_runtime_us = 0 --
-//     at which point sched_setscheduler(SCHED_FIFO) fails outright and the
-//     runtime silently loses real-time scheduling. There is no field for them
-//     in this package, so they cannot be set by accident. CpusetCpus would be
-//     safe (pinning is not bandwidth throttling) but nothing needs it yet.
-//
-//   - rtprio/memlock ulimits are redundant under Privileged, since
-//     CAP_SYS_NICE bypasses RLIMIT_RTPRIO and CAP_IPC_LOCK bypasses
-//     RLIMIT_MEMLOCK. They stay as documented intent, and they are what saves
-//     the deployment if anyone ever de-privileges the container.
-//
-//   - RestartPolicy "no": the supervisor owns the lifecycle. Letting Docker
-//     also restart it would race the crash-loop accounting and hide exactly
-//     the signal recovery mode depends on.
-//
-// Board-specific additions come from a JSON file in the bootloader's own volume,
-// written by install.sh. That file may only ADD binds and environment; it can
-// never remove privilege, change the network mode, or introduce a CPU limit.
-// Validation is strict because the file is the one operator-supplied input to
-// a component that runs as host root.
+// Board-specific JSON additions may only ADD binds and environment;
+// they cannot remove privilege, change network mode, or add CPU limits.
 package runtimespec
 
 import (

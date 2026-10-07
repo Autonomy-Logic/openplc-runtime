@@ -1,31 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-/*
- * test_scan_cycle_tracker.c — unit tests for the per-task scan-cycle
- * tracker introduced alongside the multi-task refactor.
- *
- * Replaces the previous global-stats path (single fastest-task counters
- * shared across all threads). Each task now owns its own tracker and the
- * STATS handler walks plc_tasks[] to emit one entry per task.
- *
- * The behaviour we lock here:
- *   - first call to scan_cycle_tracker_start() seeds anchors WITHOUT
- *     emitting cycle-time / latency stats (those need a baseline);
- *   - second and subsequent starts compute cycle_time = now -
- *     last_start, latency = now - expected_start;
- *   - scan_cycle_tracker_end() captures scan_time = now - last_start
- *     and increments `overruns` if we ran past the projected next-wakeup;
- *   - scan_cycle_tracker_snapshot() returns false until at least one
- *     scan completes, then returns the tracker's stats with the avg
- *     fields recovered from the EWMA sum/avg_window.
- *
- * The EWMA window is computed as EWMA_TARGET_WINDOW_US / interval_us
- * (clamped to >= 1). Tests that pin specific `avg` values choose
- * intervals that produce avg_window=1, so a single sample IS the average
- * — that side-steps the cold-start ramp the reviewer flagged in #16,
- * which is intended behaviour.
- */
+/* Unit tests for the per-task scan_cycle_tracker. Pin: first start()
+ * only seeds anchors, later starts emit cycle/latency, end() records
+ * scan_time and bumps overruns. Tests pick intervals that make
+ * avg_window=1 so the EWMA cold-start ramp drops out. */
 
 #include "scan_cycle_manager.h"
 #include "unity.h"

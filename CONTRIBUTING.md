@@ -24,4 +24,5 @@ If your change alters documented behavior (commands, endpoints, env vars, archit
 
 ## Review
 
-PRs are reviewed against `docs/pr-reviews/PR_REVIEW_CHECKLIST.md` (summary in `.claude/review-guidelines.md`).
+PRs are reviewed against the shared review process maintained outside the repo. The in-tree
+summary lives at `.claude/review-guidelines.md`.

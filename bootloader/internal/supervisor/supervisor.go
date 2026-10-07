@@ -1,28 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// Package supervisor owns the runtime container's lifecycle.
+// Package supervisor owns the runtime container's lifecycle. Reconciles
+// the container at boot, blocks on the Docker events stream, restarts
+// on crash, enters recovery on crash-loop.
 //
-// This is the part of the bootloader that decides what the runtime container
-// should be doing: at boot it reconciles that container into existence, then
-// sits blocked on the Docker events stream and does nothing until something
-// happens. When the runtime dies it restarts it, and when it dies repeatedly
-// it stops trying and enters recovery, so an operator can reach the device
-// from the editor instead of the bootloader hammering a runtime that will
-// never come up.
-//
-// Two boundaries are deliberate and easy to get wrong:
-//
-//   - Health means the runtime WEBSERVER came up. Whether plc_main is running,
-//     whether a program is loaded, and whether that program errors are all the
-//     webserver's concern -- it already restarts plc_main and drops to safe
-//     mode on rapid crashes. If the bootloader looked at PLC state, a user
-//     uploading broken logic would trigger a runtime recovery, which would be
-//     a spectacular way to turn a program bug into a device outage.
-//
-//   - There is no automatic rollback. A failed update or a crash-loop stops
-//     and waits for a human. Choosing a version is a decision with physical
-//     consequences, and guessing wrong twice is worse than stopping once.
+//   - Health means the runtime webserver came up. PLC state is the
+//     webserver's concern; caring about it here would turn a bad
+//     program into a device outage.
+//   - No automatic rollback. A failed update or crash-loop stops and
+//     waits for a human.
 package supervisor
 
 import (
@@ -489,9 +476,10 @@ func (s *Supervisor) containerIsStale(
 	if inspect.Config.Image != desired {
 		return true, "image tag differs from the desired one"
 	}
-	// A pre-RTOP-292 container reports a container id and the image can match,
-	// so nothing else notices. Latched: it alone reads what the daemon reports
-	// back, which an engine could omit and loop forever.
+	// A container with a private UTS namespace reports a container id,
+	// and the image can still match, so nothing else notices. Latched:
+	// it alone reads what the daemon reports back, which an engine
+	// could omit and loop forever.
 	if !s.utsRecreateDone() && inspect.HostConfig.UTSMode != runtimespec.UTSModeHost {
 		return true, "container does not share the host UTS namespace, so " +
 			"discovery would report a container id as the device name"

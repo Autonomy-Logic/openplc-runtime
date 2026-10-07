@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// This file is responsible for loading function blocks written in Python.
-// Python function blocks communicate with the PLC runtime via shared memory.
-//
-// Logging is done via function pointers that are set by the runtime after
-// loading libplc.so. This avoids symbol resolution issues between the
-// shared library and the main executable.
+// Loader for function blocks written in Python; they talk to the PLC
+// runtime via shared memory. Logging is wired through function pointers
+// set after libplc.so is loaded, to avoid cross-library symbol lookup.
 
 #include <errno.h>
 #include <fcntl.h>

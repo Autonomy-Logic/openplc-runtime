@@ -10,8 +10,8 @@ set -euo pipefail
 HOST_CONTAINER=openplc-testhost
 HOST_IMAGE=openplc-testhost:latest
 
-# The device's hostname. Set explicitly: on Docker's container-id default a
-# correct reply and the RTOP-292 bug both look like hex.
+# The device's hostname. Set explicitly: on Docker's container-id default
+# a correct reply and a UTS-namespace leak both look like hex.
 DEVICE_HOSTNAME="${DEVICE_HOSTNAME:-slm-rp4-testhost}"
 DOCKER_VOLUME=openplc-testhost-docker
 REGISTRY=localhost:5000

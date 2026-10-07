@@ -1,14 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// plc_state_manager.cpp
-//
-// Walks the loaded program's ConfigurationInstance via virtual dispatch
-// (Phase 5), spawns one SCHED_FIFO pthread per IEC TASK (Phase 6), and
-// anchors the per-cycle housekeeping window on the fastest task's
-// thread (Phase 7).
-//
-// Linux-only (the runtime targets Linux).
+// Walks the loaded program's ConfigurationInstance via virtual dispatch,
+// spawns one SCHED_FIFO pthread per IEC task, and anchors per-cycle
+// housekeeping on the fastest task's thread. Linux-only.
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE

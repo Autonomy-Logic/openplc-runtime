@@ -1,19 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-/*
- * debug_handler.c — STruC++ hierarchical debugger PDU handler.
- *
- * The Modbus-style function codes (0x41-0x45) are kept for wire compatibility
- * with the editor and the Arduino runtime. The payload format uses
- * (array_idx: u8, elem_idx: u16) addressing — the editor's debug-map.json
- * carries the path → (arr, elem) mapping.
- *
- * Mirrors the dispatch logic in resources/sources/StrucppBaremetal/ModbusSlave.cpp
- * from the editor repo. Linux supports larger PDUs than RTU/Arduino; the cap
- * here is the runtime-side MAX_DEBUG_FRAME, not the conservative 1400-byte
- * limit the Arduino sketch uses.
- */
+/* STruC++ debugger PDU handler. Codes 0x41-0x45 are Modbus-style for
+ * editor/Arduino wire compatibility. Addressing is (arr:u8, elem:u16);
+ * the editor's debug-map.json carries path→(arr, elem). */
 
 #include <string.h>
 

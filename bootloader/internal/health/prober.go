@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// Package health probes the runtime webserver.
-//
-// Scope is deliberately narrow: "is the webserver answering". Whether plc_main
-// is running, whether a program is loaded, and whether that program is in
-// ERROR are all the webserver's own business -- runtimemanager._monitor()
-// already restarts plc_main and drops it into safe mode on rapid crashes. A
-// probe that cared about PLC state would let a bad user program trigger a
-// runtime rollback, turning a logic bug into a device outage.
+// Package health probes the runtime webserver. Scope is narrow: "is
+// the webserver answering". PLC state is the webserver's business
+// (runtimemanager._monitor() handles plc_main). Caring about PLC
+// state here would let a bad user program trigger a runtime rollback.
 package health
 
 import (

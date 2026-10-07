@@ -2,26 +2,11 @@
 // Copyright (c) 2026 Autonomy®
 
 // Package updater changes which runtime version a device runs.
-//
-// The whole flow, and the reasoning behind its order:
-//
-//	pull new -> stop old -> start new -> health-gate -> remove old
-//
-// Pull first because `docker pull` is non-destructive: it does not touch the
-// existing image, so until the explicit removal at the end the device still
-// has a working version on disk. That costs nothing in the steady state --
-// only one image remains afterwards -- and it means a link that dies mid-pull,
-// or a new image that will not start, leaves something to fall back to.
-// Removing first would save nothing at the moment that matters, since you
-// cannot start the new version without having downloaded it anyway.
-//
-// Upgrade and downgrade are the same operation. There is no version floor: a
-// user may deliberately pair an older runtime with an older editor, and the
-// bootloader stays reachable either way, so nothing is gained by refusing.
-//
-// There is no automatic rollback. A failure stops and hands the device to an
-// operator in recovery mode, because choosing a version has physical
-// consequences and guessing wrong twice is worse than stopping once.
+// Flow: pull new -> stop old -> start new -> health-gate -> remove old.
+// Pull before stop so a mid-pull failure or an image that will not
+// start leaves the old image on disk. Upgrade and downgrade are the
+// same operation; no version floor. No automatic rollback — a failure
+// stops in recovery mode and waits for an operator.
 package updater
 
 import (

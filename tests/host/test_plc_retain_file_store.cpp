@@ -1,48 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-/*
- * Host test for the built-in retain file store's identity handling.
- *
- * WHY THIS EXISTS SEPARATELY FROM THE PYTEST SUITE
- * ------------------------------------------------
- * `tests/pytest/plugins/test_apply_retain_conf.py` covers the webserver half:
- * which retain.conf gets installed, and when the device's copy is removed. It
- * says nothing about the half that decides whether stored BYTES still belong to
- * the running program, which is the behaviour the whole design rests on:
- *
- *   - the `[32-byte program md5][payload]` on-disk layout. No length field: a
- *     file has a size, so the payload length is recovered by reading to EOF.
- *     (Baremetal's flash driver DOES carry an explicit length, because its
- *     region is fixed-size and trailing erased bytes read as 0xFF — the two
- *     formats are deliberately not the same, and this test pins this one.);
- *   - discarding the payload when the identity does not match;
- *   - treating a file too short to carry the header as unattributable;
- *   - holding the identity from load() so the next save() can label its bytes.
- *
- * Until this file existed, that path's only evidence was a by-hand run on an
- * SLM-RP4 recorded in a PR body. The case it proves — a program's values are
- * refused for a DIFFERENT program even when the retain layout is identical — is
- * exactly the one a layout hash cannot catch, so it is worth being able to
- * re-run without hardware.
- *
- * WHY NOT CEEDLING, AND WHY NOT THE LIFECYCLE HARNESS
- * --------------------------------------------------
- * Ceedling is configured for C (`:test_file_prefix: test_`, `.c` sources) and
- * this store is C++ with `std::thread`/`std::mutex`, so it is not in that
- * runner's reach. `tests/lifecycle/` could reach it, but it boots a real
- * `plc_main` against a compiled PLC program and needs Linux, Docker and an
- * editor payload — far more machinery than file-header logic warrants, and it
- * would not run on a developer's machine.
- *
- * This is a plain executable instead: no framework, no fixtures, one command.
- *
- *   c++ -std=c++17 -I core/src/plc_app -I core/src \
- *       tests/host/test_plc_retain_file_store.cpp \
- *       core/src/plc_app/plc_retain_file_store.cpp -o /tmp/t && /tmp/t
- *
- * See tests/host/run.sh, which does exactly that.
- */
+/* Host test for the retain file store's identity handling. Pins the
+ * [32-byte md5][payload] layout, discard-on-mismatch, short files
+ * unattributable, identity held from load() to the next save(). */
 
 #include <cassert>
 #include <cstdarg>

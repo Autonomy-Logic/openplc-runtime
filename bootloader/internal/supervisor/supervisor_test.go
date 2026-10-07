@@ -35,8 +35,9 @@ type fakeDocker struct {
 	// image so existing tests keep describing a matching container.
 	configImage string
 
-	// privateUTS models a pre-RTOP-292 container. Defaults off, so every other
-	// test still describes a container to leave alone.
+	// privateUTS models an older container with a private UTS namespace.
+	// Defaults off so every other test still describes a container
+	// the supervisor should leave alone.
 	privateUTS bool
 
 	// neverReportsUTS models an engine that accepts UTSMode and never echoes
@@ -547,8 +548,8 @@ func TestStartTimeoutIsReportedRatherThanHanging(t *testing.T) {
 }
 
 func TestRunEntersRecoveryWhenTheRuntimeCannotStart(t *testing.T) {
-	// Recovery must be reachable precisely when the runtime will not come up:
-	// that is the case RTOP-283 exists for.
+	// Recovery must be reachable precisely when the runtime will not
+	// come up — the whole reason the bootloader exists.
 	docker := &fakeDocker{startErr: errors.New("no such image"), imagePresent: true}
 	sup := newTestSupervisor(docker, &fakeProbe{err: errors.New("down")})
 
@@ -654,7 +655,8 @@ func TestAContainerOnTheWrongImageIsRecreated(t *testing.T) {
 	}
 }
 
-// RTOP-292: the image checks see nothing wrong, so a pinned board keeps it.
+// Image checks see nothing wrong with a private-UTS container, so the
+// supervisor has to recreate it on its own.
 func TestAContainerWithAPrivateUTSNamespaceIsRecreated(t *testing.T) {
 	docker := &fakeDocker{
 		exists: true, running: true, health: "healthy", imagePresent: true,

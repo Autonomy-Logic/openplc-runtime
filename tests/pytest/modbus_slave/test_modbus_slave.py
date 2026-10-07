@@ -130,7 +130,6 @@ class ObservingSafeBufferAccess:
         return (int(self.args.analog_output[index]) & 0xFFFF, "Success")
 
 
-
 # -----------------------------------------------------------------------
 # Data Block tests (use ObservingSafeBufferAccess patched in)
 # -----------------------------------------------------------------------

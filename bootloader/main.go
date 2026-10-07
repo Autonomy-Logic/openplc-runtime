@@ -1,27 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// Command openplc-bootloader brings up and maintains one local OpenPLC runtime
-// container (RTOP-283).
-//
-// It plays the same role a bootloader plays on an embedded target, and the name
-// is meant literally. A bootloader is the small, rarely-changed program that
-// starts the real firmware, and that stays reachable to flash a new image when
-// the firmware is broken or missing. This does exactly that for the runtime: it
-// starts the runtime container, and when the runtime will not run it remains
-// available so a new version can be installed from the editor. That is the
-// whole reason it exists -- many vendors do not allow SSH, so without something
-// that survives a bad runtime there is no way back onto the device.
-//
-// The analogy holds on the other axis too. A bootloader is kept deliberately
-// dumb and stable because it is the one thing that cannot be recovered by any
-// other means, so it does the minimum: it does not accept programs, control the
-// PLC, or look at PLC state. It is always resident and, in steady state, does
-// nothing at all -- after confirming the runtime came up it blocks on the
-// Docker events stream, with no timers and no polling.
-//
-// Docker is the only dependency. Docker's own restart policy starts this
-// process, so nothing of ours goes into systemd.
+// Command openplc-bootloader brings up and maintains one OpenPLC runtime
+// container, and stays reachable to install a new version. Minimal:
+// blocks on the Docker events stream, no PLC control or state inspection.
 package main
 
 import (

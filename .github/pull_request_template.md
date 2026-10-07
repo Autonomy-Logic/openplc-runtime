@@ -15,4 +15,4 @@
 - [ ] `bash scripts/run-pytest.sh` passes
 - [ ] `pre-commit run` clean
 - [ ] Docs updated if behavior changed (README, CLAUDE.md, docs/)
-- [ ] Follows `docs/pr-reviews/PR_REVIEW_CHECKLIST.md`
+- [ ] Follows the shared review process (summary in `.claude/review-guidelines.md`)

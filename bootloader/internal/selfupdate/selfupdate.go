@@ -1,25 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// Package selfupdate replaces the bootloader with a newer version of itself.
-//
-// A container cannot replace itself: removing it kills the process doing the
-// removing, halfway through. So the running bootloader spawns a ONE-SHOT child
-// from the new image, and that child does the work from outside -- the same
-// shape orchestrator-agent uses in tools/upgrade_self.py, which is proven in
-// production.
-//
-// The runtime container is never touched. A bootloader update must not
-// interrupt a running PLC: losing the ability to manage a device is a bad
-// afternoon, stopping its plant is a different category of problem. That is
-// also why the failure mode is acceptable -- if the new bootloader will not
-// start, Docker's restart policy keeps trying while the runtime carries on.
-//
-// The child reproduces the parent's configuration from the RUNNING container
-// rather than from defaults. An operator may have installed with extra mounts
-// or a non-standard port, and a self-update that quietly dropped them would
-// leave a device subtly wrong in a way nobody would connect to "the bootloader
-// updated itself".
+// Package selfupdate replaces the bootloader with a newer version of
+// itself. A container cannot remove itself mid-process, so the parent
+// spawns a one-shot child from the new image that does the swap from
+// outside. The runtime container is never touched. The child
+// reproduces the parent's container config (binds, port, env) from
+// the RUNNING container, not from defaults.
 package selfupdate
 
 import (
@@ -255,7 +242,8 @@ func replacementSpec(parent *dockerapi.ContainerInspect, newImage string) map[st
 		"HostConfig": map[string]any{
 			"Binds":       parent.HostConfig.Binds,
 			"NetworkMode": parent.HostConfig.NetworkMode,
-			// Set, never inherited: a pre-RTOP-292 parent would pass the bug on.
+			// Set explicitly, never inherited: an older parent with a
+			// private UTS namespace would otherwise propagate it.
 			"UTSMode":       runtimespec.UTSModeHost,
 			"Privileged":    parent.HostConfig.Privileged,
 			"RestartPolicy": map[string]any{"Name": restart},

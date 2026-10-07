@@ -94,7 +94,7 @@ def restapi_capabilities():
     programs from.  The runtime only ADVERTISES it: the editor compares
     the value against its own version and refuses to upload.  Nothing on
     the upload path enforces it, so shipping a new runtime can never lock
-    out an editor already installed in the field (DOPE-448).
+    out an editor already installed in the field.
 
     Editors that predate this endpoint get a 404 and fall back to
     ``/version``; they simply see no editor floor, which is exactly the

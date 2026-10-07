@@ -1340,10 +1340,9 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
     // get_stats is fully optional — plugins that don't publish statistics
     // simply don't export it. No warning.
 
-    // Retain store (NODE-94), fully optional. A plugin exporting both becomes
-    // a candidate for this device's retain store; see
-    // plugin_driver_find_retain_store. No warning when absent — most plugins
-    // have nothing to do with retention.
+    // Optional retain store. A plugin exporting both save and load
+    // becomes a candidate; see plugin_driver_find_retain_store. No
+    // warning when absent — most plugins have no retention role.
     native_bundle->retain_save  = (plugin_retain_save_func_t)dlsym(handle, "retain_save");
     native_bundle->retain_load  = (plugin_retain_load_func_t)dlsym(handle, "retain_load");
     native_bundle->retain_flush = (plugin_retain_flush_func_t)dlsym(handle, "retain_flush");

@@ -111,9 +111,9 @@ def test_get_board_id_returns_raw_ascii_anchor(tmp_path, monkeypatch):
 
 
 def test_get_board_id_missing_anchor_is_empty_success(tmp_path, monkeypatch):
-    # No anchor -> LIC_UNSUPPORTED (review 2026-08-20, R2): on this medium 0x48
-    # is ONLY the licensing anchor, and SUCCESS/0 made every anchor-less host
-    # derive the SAME deviceId -- a purchase bound to it never validated.
+    # No anchor -> LIC_UNSUPPORTED: on this medium 0x48 is only the
+    # licensing anchor, and SUCCESS/0 would make every anchor-less host
+    # derive the SAME deviceId, so purchases bound to it never validate.
     monkeypatch.setattr(lic, "ANCHOR_PATH", str(tmp_path / "nope"))
     assert lic.handle_license_command("48") == "48 85"
 
@@ -184,8 +184,6 @@ def test_write_without_installed_plugin_is_unsupported(tmp_path, monkeypatch):
     # Valid blob, so UNSUPPORTED can only come from the missing plugin config.
     cmd = _hex(bytes([0x49, 0x00, 0x62]) + _golden_blob())
     assert lic.handle_license_command(cmd) == "49 85"  # LIC_UNSUPPORTED
-
-
 
 
 def test_read_reports_corrupt_when_the_crc_does_not_verify(tmp_path, monkeypatch):
@@ -331,8 +329,6 @@ def test_read_maps_an_unreadable_license_to_io_error(tmp_path, monkeypatch):
     assert lic.handle_license_command("4A") == "4A 82"  # IO_ERROR
 
 
-
-
 def test_anchor_keeps_a_trailing_tab(tmp_path, monkeypatch):
     """TAB is NOT in the C's strip list, so it must not be in ours either.
 
@@ -467,8 +463,6 @@ def test_a_single_candidate_does_not_warn(tmp_path, monkeypatch):
         lic.logger.removeHandler(handler)
 
     assert [r for r in records if r.levelno >= logging.WARNING] == []
-
-
 
 
 def test_rejects_sibling_that_shares_the_root_as_a_string_prefix(tmp_path):

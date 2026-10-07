@@ -244,6 +244,7 @@ typedef struct
     plugin_journal_write_dint_func_t journal_write_dint;
     plugin_journal_write_lint_func_t journal_write_lint;
 
+    /* Append-only below: compiled plugins bake in the offsets above. */
     /* Async request to stop the whole PLC — see plugin_request_plc_stop_func_t. */
     plugin_request_plc_stop_func_t request_plc_stop;
 
@@ -251,8 +252,6 @@ typedef struct
      * Populated when the runtime initializes the plugin; may be 0 if
      * symbols are not yet resolved (plugin must guard against zero). */
     unsigned long long base_tick_ns;
-
-    
 
     /* Async request to run — see plugin_request_plc_start_func_t. */
     plugin_request_plc_start_func_t request_plc_start;

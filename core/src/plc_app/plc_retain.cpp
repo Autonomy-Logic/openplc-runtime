@@ -3,7 +3,7 @@
 
 /**
  * @file plc_retain.cpp
- * @brief Retain-variable persistence — the runtime's half (NODE-94).
+ * @brief Retain-variable persistence — the runtime's half.
  *
  * See plc_retain.h for the split: the .so marshals, a plugin stores, and this
  * file owns the buffer and the call sites.

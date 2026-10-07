@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// image_tables.cpp
-//
-// Resolves the strucpp .so's exported symbols (configuration accessor,
-// locks setter, debug PDU helpers) and walks strucpp::locatedVars[] to
-// bind image-table buffer pointers. Plugins read/write through the
-// buffer pointers directly under the image-tables mutex.
+// Resolves the strucpp .so's exported symbols and binds image-table
+// buffer pointers by walking strucpp::locatedVars[]. Plugins read/write
+// through the buffer pointers under the image-tables mutex.
 
 #include <cstdint>
 #include <cstdlib>

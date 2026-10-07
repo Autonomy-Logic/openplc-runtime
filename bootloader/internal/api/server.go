@@ -2,18 +2,10 @@
 // Copyright (c) 2026 Autonomy®
 
 // Package api is the bootloader's control API on port 8445.
-//
-// Deliberately small. This is the interface to the component that recovers a
-// device, so its surface is the shortest list that does the job: say what
-// state you are in, show me the runtime's logs, restart it, change its
-// version, wipe its data. It accepts no programs and does not control the PLC
-// -- those belong to the runtime, and a bootloader that could do them would be
-// a second, less-reviewed path to the same capability.
-//
-// Every route except login and capabilities requires a token from the
-// runtime's own account set. Capabilities is unauthenticated for the same
-// reason the runtime's is: a client has to be able to tell what it is talking
-// to before it has credentials.
+// Surface is intentionally small: state, runtime logs, restart,
+// version change, wipe. No program upload, no PLC control — those
+// belong to the runtime. Every route except login and capabilities
+// requires a token from the runtime's own account set.
 package api
 
 import (

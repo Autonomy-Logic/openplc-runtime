@@ -39,7 +39,9 @@ typedef int (*plugin_get_stats_func_t)(char *out, size_t out_size);
 /* Optional retain storage. load() once pre-first-scan, save() every
  * cycle while RUNNING (inside the scan, MUST NOT block), flush() at
  * stop. load() memcmps program_md5 (not NUL-terminated); save AND
- * load are both required. */
+ * load are both required. Protocol: on identity mismatch load reports
+ * *out_len=0; load MUST NOT persist the new identity — it is committed
+ * alongside the blob by the next save. */
 typedef int (*plugin_retain_save_func_t)(const uint8_t *blob, uint16_t len);
 typedef int (*plugin_retain_load_func_t)(const char *program_md5, uint16_t md5_len,
                                          uint8_t *out, uint16_t cap, uint16_t *out_len);

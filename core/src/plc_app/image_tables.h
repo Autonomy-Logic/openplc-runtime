@@ -19,8 +19,6 @@ extern "C"
 #define BUFFER_SIZE 1024
 #define libplc_build_dir "./build"
 
-    
-
     extern IEC_BOOL *bool_input[BUFFER_SIZE][8];
     extern IEC_BOOL *bool_output[BUFFER_SIZE][8];
 
@@ -40,8 +38,6 @@ extern "C"
     extern IEC_UDINT *dint_memory[BUFFER_SIZE];
     extern IEC_ULINT *lint_memory[BUFFER_SIZE];
     extern IEC_BOOL  *bool_memory[BUFFER_SIZE][8];
-
-    
 
     extern void (*ext_strucpp_advance_time)(uint64_t tick_ns);
     /* Sets IEC TIME() for the CALLING thread. Call on the worker thread at the
@@ -83,19 +79,16 @@ extern "C"
                                                      uint16_t *byte_index,
                                                      uint8_t *bit_index);
 
-    
     int symbols_init(PluginManager *pm);
 
-    
+    /* Caller must hold the image-tables mutex. */
     void image_tables_bind_located_vars(void);
 
-    
+    /* Caller must hold the image-tables mutex. */
     void image_tables_fill_null_pointers(void);
 
-    /* -------------------------------------------------------------------------
-     * Reset all image-table pointers to NULL before unloading a program.
-     * Caller must hold the image-tables mutex.
-     * --------------------------------------------------------------------- */
+    /* Reset all image-table pointers to NULL before unloading a program.
+     * Caller must hold the image-tables mutex. */
     void image_tables_clear_null_pointers(void);
 
     /**
@@ -107,20 +100,20 @@ extern "C"
      */
     void image_tables_zero_outputs(void);
 
-    
     pthread_mutex_t *image_tables_mutex(void);
 
-    
     void image_lock(void);
     void image_unlock(void);
 
-    
+    /* copy_in runs before run(), under the image mutex, after the journal drain.
+     * copy_out publishes changed slots through the lock-free journal and never
+     * commits %I. config_globals_* mirror the same ordering for CONFIG globals. */
     void image_tables_threaded_copy_in(uint32_t offset, uint32_t count);
     void image_tables_threaded_copy_out(uint32_t offset, uint32_t count);
     void image_tables_copy_config_globals_in(void);
     void image_tables_copy_config_globals_out(void);
 
-    
+    /* NULL until symbols_init() succeeds; cleared by image_tables_clear_null_pointers(). */
     void *strucpp_config_handle(void);
 
 #ifdef __cplusplus

@@ -1,34 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-/*
- * test_located_globals.c — unit tests for located_globals_join_ex(), which
- * resolves which locatedVars[] entries are CONFIGURATION VAR_GLOBAL ... AT by
- * joining against the .so's locatedGlobals[] on pointer identity.
- *
- * Why this exists: the runtime used to derive the config-scope set from POSITION,
- * assuming strucpp emitted [program-local ...][config globals ...] and treating
- * the tail uncovered by any program's located_range() as the globals. strucpp
- * emits config globals FIRST, so the program-local block is always the tail:
- * `covered_end` reached locatedVarsCount as soon as any POU declared a located
- * variable, the count collapsed to 0, and EVERY located configuration global
- * (%MX, %QX, %MW alike) silently stopped being synced. Reported on the forum as
- * "%MX locations now invalid - Runtime v4".
- *
- * The behaviour locked here:
- *   - the join follows pointer identity only, so the result is identical whether
- *     globals come first, last, or interleaved (ordering_* cases);
- *   - out_matched reports how many locatedGlobals[] entries found a located
- *     variable, so the caller can detect the two generated arrays disagreeing;
- *   - unbound (NULL) descriptors are skipped rather than guessed at;
- *   - an absent/empty globals array yields zero config-scope entries, which is
- *     the "older program" degradation path.
- *
- * Build (standalone, no runtime deps):
- *   cc -std=c11 -Wall -Wextra -I core/src/plc_app \
- *      tests/test_located_globals.c core/src/plc_app/located_globals.c \
- *      -o /tmp/test_located_globals && /tmp/test_located_globals
- */
+/* Unit tests for located_globals_join_ex(). Pin: join is by pointer
+ * identity, order-independent; out_matched<globals_count signals the
+ * generated arrays disagree; NULLs are skipped; empty globals → 0. */
 
 #include <stdio.h>
 #include <stddef.h>

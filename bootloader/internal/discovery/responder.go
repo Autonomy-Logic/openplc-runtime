@@ -1,23 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// Package discovery answers the editor's LAN discovery probe while the runtime
-// is not running.
-//
-// The runtime has its own responder (webserver/discovery/network_discovery.py)
-// and normally owns this port. The bootloader's exists for one situation: the
-// runtime is down, so nothing is answering, and a device that cannot be found
-// cannot be repaired. Without this, a failed update makes a device vanish from
-// the editor's list at exactly the moment somebody needs to reach it.
-//
-// It runs ONLY in recovery mode, which is what keeps the two responders from
-// ever competing. Recovery is defined as "the runtime container is stopped" --
-// the supervisor stops it before entering that state -- so exclusivity holds
-// by construction rather than by coordination. Two services answering the same
-// broadcast would give the editor two different answers for one device.
-//
-// The protocol is the runtime's, byte for byte: a fixed magic string in, one
-// JSON datagram back, unicast to the sender.
+// Package discovery answers the editor's LAN discovery probe while
+// the runtime is down. Runs ONLY in recovery mode (the supervisor
+// stops the runtime first), so it never races the runtime's own
+// responder. Protocol is byte-for-byte the runtime's: fixed magic in,
+// one JSON datagram back, unicast to the sender.
 package discovery
 
 import (

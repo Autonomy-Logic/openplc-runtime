@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// Package dockerapi is a minimal client for the Docker Engine API over the
-// host's unix socket.
-//
-// Hand-rolled rather than using the official SDK on purpose: the bootloader needs
-// eight calls, and the SDK brings a dependency tree into the one component
-// whose job is to still work when everything else is broken. The Engine API is
-// JSON over HTTP; the only unusual part is dialing a unix socket instead of a
-// TCP address, which the transport below handles.
+// Package dockerapi is a minimal client for the Docker Engine API
+// over the host's unix socket. Hand-rolled to avoid pulling the
+// official SDK's dependency tree into the one component that must
+// still work when everything else is broken.
 package dockerapi
 
 import (
