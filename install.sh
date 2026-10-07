@@ -140,15 +140,9 @@ EOF
 # Ensure we're in the project directory
 cd "$OPENPLC_DIR"
 
-# Dispatch: Docker install by default, source build behind --native (RTOP-283).
-#
-# The Docker path installs no toolchain and compiles nothing, which is what
-# makes a version change from the editor possible at all -- and what removes
-# the failure this ticket exists to fix, where a half-finished source rebuild
-# leaves a device with no build/ and no way in.
-#
-# --native keeps today's behaviour verbatim for MSYS2 and for targets that
-# cannot host a container engine. It is a supported path, not a deprecated one.
+# Default install mode is Docker; --native triggers the source build.
+# Docker installs no toolchain and compiles nothing. --native stays a
+# supported path for MSYS2 and container-less targets.
 INSTALL_MODE="docker"
 declare -a DOCKER_INSTALL_ARGS=()
 for arg in "$@"; do
@@ -242,15 +236,9 @@ install_cmake() {
     echo "CMake $(cmake --version | head -1) installed"
 }
 
-# `ccache` is added to every package set below. The runtime's
-# scripts/Makefile.strucpp picks it up automatically when present and
-# uses it to cache compiled .o files keyed by a hash of the
-# preprocessed source + compile flags. The editor uploads the full
-# project on every build, but ccache compares CONTENT (not file
-# mtime), so unchanged TUs hit the cache and skip recompilation
-# entirely. Single-POU edits drop incremental rebuilds from minutes
-# to a few seconds. Without ccache the runtime still builds — just
-# without the per-file reuse.
+# `ccache` is installed by every package set. Makefile.strucpp picks
+# it up automatically and caches .o files by content hash so repeated
+# editor uploads reuse unchanged TUs. Optional: runtime builds without it.
 
 # For apt-based distros (Debian, Ubuntu, Linux Mint, Pop!_OS, elementary OS, Zorin, MX Linux, etc.)
 install_deps_apt() {
@@ -328,10 +316,9 @@ install_deps_apk() {
 # For MSYS2 on Windows
 install_deps_msys2() {
     echo "Installing dependencies via pacman (MSYS2)..."
-    # Note: python-cryptography is installed via pacman because pip cannot build
-    # Rust-based packages on MSYS2/Cygwin.
-    # Plugin venvs use --system-site-packages to access these pre-built packages.
-    # bcrypt is skipped on MSYS2 - the OPC-UA plugin uses PBKDF2 fallback (Python stdlib).
+    # python-cryptography via pacman: pip cannot build Rust packages on
+    # MSYS2/Cygwin. Plugin venvs use --system-site-packages. bcrypt is
+    # skipped (OPC-UA plugin falls back to PBKDF2).
     local pkgs=(
         base-devel
         gcc
