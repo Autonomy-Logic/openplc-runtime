@@ -39,10 +39,9 @@ uint32_t located_globals_join_ex(uint32_t lv_count,
         }
     }
 
-    /* Report how many locatedGlobals[] entries found a home, so the caller can
-     * detect the two generated arrays disagreeing. Counted separately because a
-     * single global could in principle be referenced by more than one located
-     * descriptor (aliasing), which would make the index count misleading. */
+    /* Report how many locatedGlobals[] entries matched so the caller
+     * can detect the two generated arrays disagreeing. Counted separately
+     * because a single global may be aliased by multiple descriptors. */
     if (out_matched)
     {
         uint32_t matched = 0;

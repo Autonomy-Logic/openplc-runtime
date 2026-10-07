@@ -60,13 +60,9 @@ struct ProgramBase {
     virtual void run() = 0;
     virtual const RetainVarInfo *getRetainVars() const { return nullptr; }
     virtual size_t getRetainCount() const { return 0; }
-    // RESERVED vtable slots 4,5 (formerly sync_in / sync_out). The shared-global
-    // model moved from runtime-orchestrated per-task copy-in/out to per-global
-    // mutexes owned by strucpp's GlobalVar<V>, so the runtime no longer calls
-    // these and current strucpp no longer overrides them. They are KEPT as
-    // no-op base slots — never renumber the vtable, or every program built
-    // against an older ABI would mis-dispatch run()/located_range() on a newer
-    // runtime (and vice versa).
+    // RESERVED vtable slots 4,5 (formerly sync_in/sync_out). Kept as
+    // no-op base slots: renumbering the vtable would mis-dispatch
+    // run()/located_range() across ABI versions in either direction.
     virtual void sync_in() {}
     virtual void sync_out() {}
     virtual void located_range(uint32_t *offset, uint32_t *count) const {

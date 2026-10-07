@@ -40,13 +40,10 @@ typedef enum {
     DBGW_OP_UNFORCE = 2  /* unforce — release a pinned variable                */
 } debug_write_op_t;
 
-/*
- * Enqueue an external write/force/unforce of the debug leaf (arr, elem).
- * Safe to call from any thread (debugger socket thread, OPC-UA plugin
- * thread). `bytes`/`len` carry the value payload for WRITE/FORCE (ignored
- * for UNFORCE). Returns 0 on success, -1 if the queue is full (dropped +
- * logged). The write is applied at the next dispatcher drain.
- */
+/* Enqueue an external write/force/unforce of debug leaf (arr, elem).
+ * Thread-safe. bytes/len are the payload for WRITE/FORCE (ignored for
+ * UNFORCE). Returns 0, or -1 if full (dropped + logged). Applied at
+ * the next dispatcher drain. */
 int runtime_external_write(uint8_t arr, uint16_t elem, uint8_t op,
                            const uint8_t *bytes, uint16_t len);
 

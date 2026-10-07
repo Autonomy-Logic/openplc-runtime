@@ -93,16 +93,10 @@ static void apply_write_raw(const journal_entry_t *entry)
         return;
     }
 
-    /* bit_index is only meaningful for the three BOOL cases, where it indexes
-     * the inner [8] dimension of the bool_* pointer rows. A non-bool write sets
-     * the 0xFF sentinel (journal_write_byte/int/dint/lint), and the lock-free
-     * path can hand the consumer a torn or stale-recycled slot whose
-     * buffer_type reads as BOOL while bit_index carries that sentinel. An
-     * unchecked bool_*[idx][0xFF] reads a pointer 247 slots past the row,
-     * harvesting a wild pointer that the store below would write through --
-     * corrupting unrelated storage (observed: VAR_GLOBALs in the .so). Reject
-     * any bool entry whose bit_index is out of range so a torn/stale entry can
-     * never escalate into an out-of-bounds pointer write. */
+    /* bit_index is only meaningful for BOOL. A torn/stale slot can read
+     * as BOOL with the 0xFF non-bool sentinel; an unchecked
+     * bool_*[idx][0xFF] would dereference a wild pointer 247 slots past
+     * the row and corrupt unrelated storage. Reject out-of-range bits. */
     if ((entry->buffer_type == JOURNAL_BOOL_INPUT ||
          entry->buffer_type == JOURNAL_BOOL_OUTPUT ||
          entry->buffer_type == JOURNAL_BOOL_MEMORY) &&
@@ -186,10 +180,9 @@ static void apply_write_raw(const journal_entry_t *entry)
     }
 }
 
-/* Apply one drained journal entry, honoring the forced-slot bitmap: a write
- * to a forced slot is dropped so the force owns the slot for the whole cycle.
- * (copy_out's journal writes and plugin journal writes both flow through here,
- * so a forced located output stays pinned no matter who writes it.) */
+/* Apply one drained entry, honoring the forced-slot bitmap: a write to
+ * a forced slot is dropped so the force owns the slot for the whole
+ * cycle. All journal writes (copy_out and plugins) flow through here. */
 static void apply_entry(const journal_entry_t *entry)
 {
     if (is_slot_forced(entry->buffer_type, entry->index, entry->bit_index)) {
@@ -198,10 +191,9 @@ static void apply_entry(const journal_entry_t *entry)
     apply_write_raw(entry);
 }
 
-/* Pin an image slot to `value` and mark it forced. Seeds the slot immediately
- * (bypassing the drop), then every later journal write to it is dropped until
- * journal_force_clear. Called only from the dispatcher's debug-write drain,
- * under image_lock — the same serialization domain as apply_entry. */
+/* Pin an image slot to `value` and mark it forced. Seeds the slot
+ * immediately (bypass drop); later writes to it are dropped until
+ * journal_force_clear. Called under image_lock from the debug drain. */
 void journal_force_set(journal_buffer_type_t type, uint16_t index,
                        uint8_t bit, uint64_t value)
 {
@@ -341,12 +333,9 @@ void journal_apply_and_clear(void)
         return;
     }
 
-    /* Fast path: nothing pending -> nothing to apply, so skip the bank flip.
-     * The image already reflects every committed write. A producer that adds an
-     * entry after this load is simply applied on the next drain (one cycle
-     * later) -- the same ordering guarantee a flush-on-lock read offers. This
-     * keeps a read-heavy plugin (locking every cycle to read %Q via image_lock)
-     * from flipping the journal needlessly and racing producers mid-publish. */
+    /* Fast path: nothing pending → skip the bank flip. A producer that
+     * adds an entry after this load gets applied on the next drain. Keeps
+     * a read-heavy plugin from flipping banks on every image_lock. */
     if ((atomic_load_explicit(&g_control, memory_order_relaxed) & JOURNAL_COUNT_MASK) == 0) {
         return;
     }

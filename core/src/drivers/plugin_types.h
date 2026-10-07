@@ -207,20 +207,15 @@ typedef struct
     IEC_ULINT **lint_memory;
     IEC_BOOL *(*bool_memory)[8];
 
-    /* Flush-on-lock image read API for thread-safe buffer access.
-     *
-     * image_lock() takes the runtime's image mutex and drains the journal so
-     * the holder sees every committed write; image_unlock() releases it. Writes
-     * never take this lock -- use journal_write_* (lock-free). Prefer the bulk
-     * pattern for reads: lock, copy the region to a local buffer, unlock, then
-     * do any slow work (network, conversion) on the buffer OUTSIDE the lock. */
+    /* Flush-on-lock image read API. image_lock takes the mutex and
+     * drains the journal; image_unlock releases. Writes use
+     * journal_write_* (lock-free). Reads: lock, memcpy, unlock,
+     * then slow work OUTSIDE the lock. */
     void (*image_lock)(void);
     void (*image_unlock)(void);
 
-    /* STruC++ debugger variable-access surface.
-     * Replaces the MatIEC-era flat-index API (get_var_list /
-     * get_var_size / get_var_count). Plugins like OPC-UA receive
-     * pre-resolved (arr, elem) tuples from the editor in their
+    /* STruC++ debugger variable-access surface. Plugins (e.g. OPC-UA)
+     * receive pre-resolved (arr, elem) tuples from the editor in their
      * per-plugin config and forward them through these thunks. */
     plugin_debug_array_count_func_t debug_array_count;
     plugin_debug_elem_count_func_t  debug_elem_count;
