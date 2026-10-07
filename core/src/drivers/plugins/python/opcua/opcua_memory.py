@@ -54,30 +54,15 @@ _READ_BUFFER_SIZE = 256
 # Status code from debug_dispatch.hpp
 STATUS_OK = 0x7E
 
-# STRING / WSTRING are variable-length and share one wire format with
-# strucpp's debug surface: a single count byte, then the payload.
-#
-#   STRING   [count][count bytes]            padded to 127 bytes
-#   WSTRING  [count][count * 2 bytes LE]     padded to 253 bytes
-#
-# `count` is in BYTES for STRING and in UTF-16 CODE UNITS for WSTRING, and is
-# capped at DEBUG_STRING_CAP on both sides -- strucpp's `validate_payload`
-# REFUSES a longer write outright rather than truncating it, so the truncation
-# has to happen here.
-#
-# BYTES, not characters: `IECString` stores `char data_[MaxLen + 1]` with
-# `length_` counting bytes, and `_truncate_utf8` below spends its whole body on
-# that fact. The two comments used to contradict each other, and the difference
-# is user-visible -- 126 bytes is ~63 two-byte accented characters, or ~31
-# four-byte emoji, not 126 of either.
+# STRING/WSTRING wire: [count][payload]. `count` is BYTES (STRING) or
+# UTF-16 CODE UNITS (WSTRING), capped at DEBUG_STRING_CAP. strucpp's
+# validate_payload refuses over-cap; truncation happens here.
 STRING_DATATYPES = frozenset(["STRING", "WSTRING"])
 DEBUG_STRING_CAP = 126
 
-# Warnings raised from the READ path, which asyncua calls once per variable per
-# client Read. A leaf that is persistently malformed is not a new event every
-# poll -- at a one-second poll and a handful of clients it is a log that scrolls
-# its own cause off the screen. Say it once per distinct problem and stay quiet
-# after that; the condition is a property of the program, not of the poll.
+# Warnings raised from the READ path (called once per variable per
+# client Read). Say each distinct problem once; it is a property of
+# the program, not of the poll.
 _warned: set = set()
 
 def _warn_once(key: str, message: str) -> None:
@@ -118,11 +103,9 @@ def _decode_string(datatype: str, buf: Any, n: int) -> Optional[Any]:
     raw = bytes(bytearray(buf[1:1 + payload_len]))
     if wide:
         return raw
-    # UTF-8, because that is what the rest of the system already agrees on:
-    # the editor's debugger decodes this same wire form with the `len8-utf8`
-    # codec (`variable-sizes.ts`). `errors="replace"` rather than strict so a
-    # truncated multi-byte sequence degrades to one replacement character
-    # instead of taking down the read.
+    # UTF-8 (matches the editor's `len8-utf8` codec).
+    # errors="replace" so a truncated multi-byte sequence degrades to
+    # a replacement character instead of failing the read.
     return raw.decode("utf-8", errors="replace")
 
 def _encode_string(datatype: str, value: Any) -> Optional[bytes]:
@@ -140,12 +123,8 @@ def _encode_string(datatype: str, value: Any) -> Optional[bytes]:
             log_warn("WSTRING payload has an odd byte count; dropping the trailing byte")
             raw = raw[:-1]
         count = min(len(raw) // 2, DEBUG_STRING_CAP)
-        # Do not cut between the halves of a surrogate pair. The STRING path
-        # goes to real trouble not to split a UTF-8 sequence (_truncate_utf8);
-        # the same care is owed here, because a lone high surrogate is not a
-        # shorter string, it is an undecodable one -- `bytes.decode('utf-16-le')`
-        # raises on it. Astral characters (emoji, most CJK extensions) are the
-        # common case.
+        # Do not cut a UTF-16 surrogate pair in half: a lone high surrogate
+        # is undecodable and raises in bytes.decode('utf-16-le').
         if count > 0:
             last = int.from_bytes(raw[(count - 1) * 2 : count * 2], "little")
             if 0xD800 <= last <= 0xDBFF:  # high surrogate with its pair cut off
@@ -205,11 +184,9 @@ def _ctype_for(datatype: str) -> Optional[Any]:
         # strucpp encodes time-family types as int64 nanoseconds (TIME_t).
         return ctypes.c_int64
     if t in STRING_DATATYPES:
-        # Variable-length: no fixed-width ctype owns these. They ARE readable
-        # and writable -- strucpp wires read_string / write_string /
-        # read_wstring / write_wstring into type_ops[] at tags 19/20 -- through
-        # _decode_string / _encode_string instead. Callers must therefore pair
-        # a None from here with an _is_string() check rather than giving up.
+        # Variable-length: no fixed-width ctype. Read/write go through
+        # _decode_string / _encode_string; callers must pair None with
+        # an _is_string() check rather than giving up.
         return None
     return None
 
@@ -294,10 +271,7 @@ def debug_force_value(args: Any, arr: int, elem: int, datatype: str, value: Any)
     if ctype is None and not _is_string(datatype):
         return False
 
-    # Strings force through the same wire form as a write. Read and write each
-    # grew a string path and force did not, so forcing a STRING answered False
-    # with no reason given -- the same silence that hid the read bug, kept
-    # alive in the one operation nobody calls yet.
+    # Strings force through the same wire form as a write.
     if _is_string(datatype):
         encoded_str = _encode_string(datatype, value)
         if encoded_str is None:

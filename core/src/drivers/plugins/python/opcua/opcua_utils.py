@@ -79,18 +79,10 @@ def map_plc_to_opcua_type(plc_type: str) -> ua.VariantType:
         "LREAL": ua.VariantType.Double, # IEC 61131-3 LREAL = 64-bit float
         # String type
         "STRING": ua.VariantType.String,
-        # WSTRING is UTF-16LE code units, carried as an opaque ByteString
-        # rather than a UA String. Transcoding to UTF-8 would need a scratch
-        # buffer the size of the string and is lossy for lone surrogates, so
-        # the client is given the bytes and the encoding is documented on the
-        # node. Same choice the baremetal runtime makes, so a project behaves
-        # the same on both targets.
-        #
-        # Leaving this out did NOT merely lose the mapping: the `.get` default
-        # below is `VariantType.Variant`, so asyncua tried to serialise a
-        # nested Variant around an int and died encoding the RESPONSE
-        # ("'int' object has no attribute 'VariantType'"), which the client saw
-        # as BadInternalError and which took the whole response with it.
+        # WSTRING carried as opaque ByteString (UTF-16LE units) rather than
+        # UA String: transcoding to UTF-8 needs a scratch buffer and is
+        # lossy for lone surrogates. Must be mapped: the `.get` default
+        # below is `VariantType.Variant`, which asyncua cannot serialise.
         "WSTRING": ua.VariantType.ByteString,
         # TIME-related types
         "TIME": ua.VariantType.Int64,   # Duration in milliseconds
@@ -180,11 +172,9 @@ def convert_value_for_opcua(datatype: str, value: Any) -> Any:
             return ctypes.c_uint64(clamped_value).value
 
         elif datatype.upper() in ["FLOAT", "REAL", "LREAL"]:
-            # debug_read_value casts the raw bytes to c_float / c_double, so
-            # what arrives here is the number itself, never its bit pattern.
-            # The MatIEC-era debug protocol did hand over raw integers, and the
-            # struct.unpack that decoded them outlived it -- on the STruC++
-            # debug surface it would turn an integer-valued REAL of 1 into
+            # debug_read_value already casts to c_float/c_double, so this
+            # receives the number itself, not its bit pattern. A legacy
+            # struct.unpack on the integer bits would turn REAL 1 into
             # 1.4e-45. Mirror of the write-side fix below.
             return float(value)
 
@@ -338,11 +328,9 @@ def convert_value_for_plc(datatype: str, value: Any) -> Any:
             return ctypes.c_uint64(clamped_value).value
 
         elif datatype.upper() in ["FLOAT", "REAL", "LREAL"]:
-            # debug_write_value packs this through c_float / c_double, so hand
-            # it the number. Packing the bit pattern here -- correct back when
-            # the debug protocol exchanged raw integers -- meant a client
-            # writing 42.0 stored 1109917696.0 in the PLC (forum thread
-            # "Error changing values via OPC UA").
+            # debug_write_value packs through c_float/c_double, so hand
+            # the number. Packing the integer bit-pattern would store
+            # 1109917696.0 for a client write of 42.0.
             return float(value)
 
         elif datatype.upper() == "STRING":

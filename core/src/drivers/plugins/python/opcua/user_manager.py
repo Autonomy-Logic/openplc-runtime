@@ -324,11 +324,8 @@ class OpenPLCUserManager(UserManager):
         # Initialize rate limiter for brute-force protection
         self.rate_limiter = RateLimiter(rate_limit_config)
 
-        # Build user dictionaries
-        # A password user with no hash cannot authenticate — `_validate_password`
-        # has no format to match and refuses it — so registering it only creates
-        # an account that looks configured and never works. Refuse it at load,
-        # where the reason can be said once, instead of once per failed login.
+        # Password user without a hash cannot authenticate; refuse it at
+        # load (once) rather than once per failed login.
         _credentialled = []
         for user in config.users:
             if user.type != "password":
@@ -353,14 +350,9 @@ class OpenPLCUserManager(UserManager):
             elif user.type == "certificate" and user.certificate_id:
                 self._user_roles[f"cert:{user.certificate_id}"] = str(user.role)
 
-        # Anonymous role is a PER-PROFILE field, but anonymous authentication
-        # carries no endpoint identity into get_user(), so the lookup can only
-        # take the FIRST enabled profile that offers Anonymous
-        # (_find_profile_by_auth_method). The editor is where two Anonymous
-        # profiles should be prevented; this is the belt-and-suspenders: if more
-        # than one enabled profile offers Anonymous, warn at load (once, where
-        # the admin sees it) that list order decides the role, and name the one
-        # that wins. Behaviour is unchanged — the first profile is still used.
+        # Anonymous role is per-profile, but anonymous auth carries no
+        # endpoint identity, so the first enabled Anonymous profile wins
+        # (list order). Warn once if more than one is configured.
         anon_profiles = [
             p for p in getattr(config.server, "security_profiles", [])
             if getattr(p, "enabled", False) and "Anonymous" in getattr(p, "auth_methods", [])
@@ -581,14 +573,9 @@ class OpenPLCUserManager(UserManager):
             log_warn("Anonymous authentication not allowed for this profile")
             return None, None
 
-        # Explicit, config-driven role (defaults to viewer). The value is
-        # validated at parse time (opcua_config_model.SecurityProfile), and
-        # normalized here through normalize_role() — the same strip+lowercase
-        # normalization callbacks applies to every other role — so casing or
-        # whitespace ("Engineer", " engineer ") cannot make an anonymous session
-        # silently degrade to viewer. Map to the asyncua role for
-        # operation-level checks; per-variable enforcement uses the OpenPLC role
-        # string. normalize_role always returns a ROLE_MAPPING key.
+        # Config-driven role (defaults to viewer), normalized here so
+        # casing/whitespace cannot silently degrade an anonymous session
+        # to viewer. normalize_role always returns a ROLE_MAPPING key.
         openplc_role = normalize_role(getattr(profile, "anonymous_role", "viewer") or "viewer")
         asyncua_role = self.ROLE_MAPPING[openplc_role]
 

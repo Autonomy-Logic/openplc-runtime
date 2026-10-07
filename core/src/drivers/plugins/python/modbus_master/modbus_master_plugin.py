@@ -291,10 +291,9 @@ class ModbusSlaveDevice(threading.Thread):
                                 f"for read updates: {lock_msg}"
                             )
 
-                # 2. WRITE OPERATIONS - Process only I/O points that are due for polling this cycle
-                # OPTIMIZATION: Batch all write preparations under a single mutex acquisition
-                # to minimize mutex hold time. Read all raw IEC values at once, then convert
-                # and write to Modbus outside the mutex.
+                # WRITES - process only points due this cycle. Batch all
+                # raw IEC reads under one image_lock; convert and send
+                # to Modbus outside the lock to minimise hold time.
 
                 # Phase 1: Collect all write points that are due this cycle
                 write_points_due = []
@@ -1029,10 +1028,9 @@ def start_loop():
 
         logger.info(f"Found {len(tcp_devices)} TCP device(s) and {len(rtu_devices)} RTU device(s)")
 
-        # Group TCP devices by (host, port). A lone device on an endpoint keeps
-        # the simple one-thread-per-device path; multiple devices on one endpoint
-        # (a Modbus gateway / TCP-to-RTU converter) share a single TCP connection
-        # and are multiplexed by slave/unit ID via ModbusBusHandler.
+        # Group TCP devices by (host, port). One device → one thread;
+        # multiple on one endpoint (a Modbus gateway) share a TCP
+        # connection, multiplexed by unit ID via ModbusBusHandler.
         if tcp_devices:
             tcp_endpoints = group_tcp_devices_by_endpoint(tcp_devices)
             logger.info(f"TCP devices grouped into {len(tcp_endpoints)} endpoint(s)")
