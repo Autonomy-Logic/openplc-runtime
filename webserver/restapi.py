@@ -4,6 +4,7 @@
 import base64
 import json
 import os
+import threading
 from typing import Callable, Optional
 
 from flask import Blueprint, Flask, current_app, jsonify, request
@@ -18,6 +19,7 @@ from flask_jwt_extended import (
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import text as sa_text
+from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import webserver.config
@@ -135,10 +137,10 @@ db = SQLAlchemy(app_restapi)
 
 jwt_blacklist = set()
 
-# Role-based access control.  For now there are exactly two roles: ``admin``
-# (may manage every account) and ``user`` (may edit only its own account and
-# cannot create or delete accounts).  Enforcement lives server-side in the
-# endpoints below — the editor UI mirrors it but is never the boundary.
+# RBAC: two roles. ``admin`` manages accounts and retrieves projects.
+# ``user`` operates the PLC (upload, start/stop, debug, status/logs) and
+# edits its own account. Enforcement is server-side; the editor UI mirrors
+# it but is never the boundary.
 ADMIN_ROLE = "admin"
 USER_ROLE = "user"
 ROLES = (ADMIN_ROLE, USER_ROLE)
@@ -184,6 +186,25 @@ class User(db.Model):  # type: ignore[name-defined]
 
     def to_dict(self):
         return {"id": self.id, "username": self.username, "role": self.role}
+
+
+class BootstrapMarker(db.Model):  # type: ignore[name-defined]
+    """One-row sentinel inserted alongside the first admin.
+
+    Primary key is implicitly ``UNIQUE``, so a second concurrent writer that
+    races past ``_bootstrap_lock`` collides on commit and the create-user
+    handler catches it as ``IntegrityError``. The row is written in the same
+    transaction as the first ``User``, so either both land or neither does.
+    """
+
+    __tablename__ = "bootstrap_marker"
+    id: int = db.Column(db.Integer, primary_key=True)
+
+
+# Serializes the unauthenticated bootstrap branch of create-user. Only one
+# thread runs the check / hash / commit sequence at a time; the authoritative
+# re-check inside the lock closes the window the TOCTOU race opened.
+_bootstrap_lock = threading.Lock()
 
 
 def admin_count() -> int:
@@ -351,19 +372,19 @@ def create_user():
         logger.error("Error checking for users: %s", e)
         return jsonify({"msg": f"User creation error: {e}"}), 401
 
-    # Bootstrap: with no users yet, anyone may create the FIRST account and it
-    # is always an admin (someone has to be able to manage accounts). Once any
-    # user exists, only an authenticated admin may create further accounts.
+    # First account on an empty DB is created unauthenticated and is always
+    # admin. The bootstrap branch is serialized so two racing callers cannot
+    # both land as admin. See _bootstrap_first_admin.
     if not users_exist:
-        role = ADMIN_ROLE
-    else:
-        if verify_jwt_in_request(optional=True) is None:
-            return jsonify({"msg": "Authentication required"}), 401
-        if not (current_user and current_user.is_admin()):
-            return jsonify({"msg": "Admin privileges required"}), 403
-        role = (request.get_json() or {}).get("role", USER_ROLE)
-        if role not in ROLES:
-            return jsonify({"msg": f"Invalid role. Must be one of: {', '.join(ROLES)}"}), 400
+        return _bootstrap_first_admin()
+
+    if verify_jwt_in_request(optional=True) is None:
+        return jsonify({"msg": "Authentication required"}), 401
+    if not (current_user and current_user.is_admin()):
+        return jsonify({"msg": "Admin privileges required"}), 403
+    role = (request.get_json() or {}).get("role", USER_ROLE)
+    if role not in ROLES:
+        return jsonify({"msg": f"Invalid role. Must be one of: {', '.join(ROLES)}"}), 400
 
     data = request.get_json()
     username = data.get("username")
@@ -382,6 +403,37 @@ def create_user():
     db.session.commit()
 
     return jsonify({"msg": "User created", "id": user.id, "role": user.role}), 201
+
+
+def _bootstrap_first_admin():
+    """Create the first admin on an empty database, serialized against races.
+
+    Called from ``create_user`` only when the pre-lock check sees no users.
+    Inside the lock an authoritative re-check against ``User`` and
+    ``BootstrapMarker`` closes the TOCTOU window; the UNIQUE PK on
+    ``BootstrapMarker`` catches a lock bypass as ``IntegrityError``.
+    """
+    with _bootstrap_lock:
+        if User.query.first() is not None or BootstrapMarker.query.first() is not None:
+            return jsonify({"msg": "Authentication required"}), 401
+
+        data = request.get_json() or {}
+        username = data.get("username")
+        password = data.get("password")
+        if not username or not password:
+            return jsonify({"msg": "Missing username or password"}), 400
+
+        user = User(username=username, role=ADMIN_ROLE)
+        user.set_password(password)
+        db.session.add(user)
+        db.session.add(BootstrapMarker(id=1))
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            return jsonify({"msg": "Authentication required"}), 401
+
+        return jsonify({"msg": "User created", "id": user.id, "role": user.role}), 201
 
 
 # verify existing users individually
