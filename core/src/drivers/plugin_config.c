@@ -25,21 +25,14 @@ static void remove_newline(char *str)
 }
 
 /**
- * Reject a plugin path that could point outside the runtime tree.
+ * @brief Reject a plugin path that could point outside the runtime tree.
  *
- * The `path` field of a plugin config is handed straight to dlopen (VPP) or
- * used as a Python module location, so a config the runtime did not write is
- * arbitrary-code selection. vpp_plugins.conf IS such a config: it arrives
- * verbatim inside the user's upload. The Python side contains it too
- * (webserver/plcapp_management.py validate_vpp_plugins_conf); this check is
- * here so containment does not depend on one language alone.
+ * `path` is handed to dlopen (VPP) or used as a Python module location, so
+ * an upload-supplied config is arbitrary-code selection.
  *
- * @param require_contained 0 to only reject `..` traversal, 1 to also reject
- *        absolute paths. Config files the runtime itself owns (plugins.conf)
- *        pass 0: an operator with a hand-written absolute path there is not
- *        the threat, and refusing it would break working installations. Only
- *        the upload-supplied config is parsed with 1.
- * @return 1 when the path is acceptable, 0 when it must be rejected.
+ * @param require_contained 0 rejects only `..` traversal; 1 also rejects
+ *        absolute paths (used for upload-supplied configs).
+ * @return 1 if acceptable, 0 if rejected.
  */
 static int plugin_path_is_acceptable(const char *path, int require_contained)
 {

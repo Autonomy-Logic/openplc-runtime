@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// Package dockerapi is a minimal client for the Docker Engine API over the
-// host's unix socket.
-//
-// Hand-rolled rather than using the official SDK on purpose: the bootloader needs
-// eight calls, and the SDK brings a dependency tree into the one component
-// whose job is to still work when everything else is broken. The Engine API is
-// JSON over HTTP; the only unusual part is dialing a unix socket instead of a
-// TCP address, which the transport below handles.
+// Package dockerapi is a minimal client for the Docker Engine API
+// over the host's unix socket. Hand-rolled to avoid pulling the
+// official SDK's dependency tree into the one component that must
+// still work when everything else is broken.
 package dockerapi
 
 import (
@@ -30,10 +26,8 @@ import (
 // which is why the bootloader stays small enough to audit.
 const DefaultSocket = "/var/run/docker.sock"
 
-// apiVersion is pinned low enough to work on the oldest engine we support.
-// The SLM-RP4 test device ships Docker 20.10 (API 1.41), and every call this
-// package makes has been stable since well before that. Pinning avoids a
-// daemon upgrade silently changing a response shape under us.
+// apiVersion is pinned low enough for Docker 20.10 (SLM-RP4). Pinning
+// avoids a daemon upgrade silently changing a response shape.
 const apiVersion = "v1.41"
 
 // Client talks to the Docker daemon. Safe for concurrent use: the embedded
@@ -45,14 +39,9 @@ type Client struct {
 	socket     string
 }
 
-// New returns a client bound to socket. A zero-value socket means
-// DefaultSocket.
-//
-// The timeout applies to unary calls only. Streaming calls (events, image
-// pull) must not be bounded by it -- an events stream is meant to stay open
-// for the life of the process -- so they run on a separate, timeout-free
-// client. Using one client for both is the classic way to end up with an
-// events stream that dies silently after 30 seconds.
+// New returns a client bound to socket (empty means DefaultSocket). The
+// 30s timeout applies to unary calls only; streaming (events, pull) runs
+// on a separate timeout-free client.
 func New(socket string) *Client {
 	if socket == "" {
 		socket = DefaultSocket
@@ -75,18 +64,9 @@ func New(socket string) *Client {
 	}
 }
 
-// newStreamClient builds the timeout-free client used for long-lived response
-// bodies. Called ONCE, from New.
-//
-// It used to be built per call, from stream() and doLongRunning(). Each
-// throwaway Transport kept its own idle connection pool with no
-// IdleConnTimeout, and a drained-and-closed body returns its connection to
-// that pool -- where the read and write goroutines pin it forever. Every
-// StopContainer, PullImage and ContainerLogs therefore leaked a unix socket
-// and two goroutines, fastest while an operator reads logs in recovery, which
-// is the state this component exists for. It ends in EMFILE.
-//
-// An http.Client is safe for concurrent use, so one is all that is needed.
+// newStreamClient builds the timeout-free client used for long-lived
+// response bodies. One instance (not per-call) so idle sockets are
+// shared and bounded, instead of pinned by throwaway transports.
 func newStreamClient(socket string) *http.Client {
 	dial := func(ctx context.Context, _, _ string) (net.Conn, error) {
 		var d net.Dialer
@@ -223,10 +203,9 @@ func checkResponse(resp *http.Response, path string) error {
 	return &APIError{Status: resp.StatusCode, Message: message, Path: path}
 }
 
-// doLongRunning issues a request whose duration the caller bounds with the
-// context, rather than the shared client's fixed timeout. For calls the daemon
-// legitimately holds open -- stopping a container waits out its grace period --
-// a fixed client timeout is a race the caller cannot widen.
+// doLongRunning issues a request bounded by the caller's context, not by
+// the shared client's fixed timeout. Needed for calls the daemon holds
+// open (stop with a grace period, image pull).
 func (c *Client) doLongRunning(ctx context.Context, method, path string, body any) error {
 	req, err := c.newRequest(ctx, method, path, body)
 	if err != nil {
@@ -276,13 +255,9 @@ func encodeQuery(params url.Values) string {
 	return "?" + params.Encode()
 }
 
-// Reason extracts the most useful human-readable part of a daemon error.
-//
-// Errors here accumulate layers on the way up -- "could not download X:
-// pulling X: docker /images/create?fromImage=X&tag=Y: HTTP 500: pull access
-// denied" -- and every layer but the last is machinery. The daemon's own
-// message is the only part that tells an operator what to do about it, so
-// that is what gets shown; the full chain still goes to the log.
+// Reason extracts the daemon's own message from a wrapped error chain:
+// everything above the APIError is transport machinery, and operators
+// need the bottom layer. The full chain still goes to the log.
 func Reason(err error) string {
 	if err == nil {
 		return ""

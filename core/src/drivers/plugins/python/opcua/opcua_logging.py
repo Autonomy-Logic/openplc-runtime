@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from typing import Optional, Callable
 import sys
 
-
 class OpcuaLogger:
     """
     Singleton logger for OPC UA plugin.
@@ -109,27 +108,22 @@ class OpcuaLogger:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] [DEBUG] [OPCUA] {message}", file=sys.stdout)
 
-
 # Module-level convenience functions
 def get_logger() -> OpcuaLogger:
     """Get the singleton logger instance."""
     return OpcuaLogger.get_instance()
 
-
 def log_info(message: str) -> None:
     """Log an informational message."""
     get_logger().info(message)
-
 
 def log_warn(message: str) -> None:
     """Log a warning message."""
     get_logger().warn(message)
 
-
 def log_error(message: str) -> None:
     """Log an error message."""
     get_logger().error(message)
-
 
 def log_debug(message: str) -> None:
     """Log a debug message."""

@@ -2,26 +2,11 @@
 // Copyright (c) 2026 Autonomy®
 
 // Package updater changes which runtime version a device runs.
-//
-// The whole flow, and the reasoning behind its order:
-//
-//	pull new -> stop old -> start new -> health-gate -> remove old
-//
-// Pull first because `docker pull` is non-destructive: it does not touch the
-// existing image, so until the explicit removal at the end the device still
-// has a working version on disk. That costs nothing in the steady state --
-// only one image remains afterwards -- and it means a link that dies mid-pull,
-// or a new image that will not start, leaves something to fall back to.
-// Removing first would save nothing at the moment that matters, since you
-// cannot start the new version without having downloaded it anyway.
-//
-// Upgrade and downgrade are the same operation. There is no version floor: a
-// user may deliberately pair an older runtime with an older editor, and the
-// bootloader stays reachable either way, so nothing is gained by refusing.
-//
-// There is no automatic rollback. A failure stops and hands the device to an
-// operator in recovery mode, because choosing a version has physical
-// consequences and guessing wrong twice is worse than stopping once.
+// Flow: pull new -> stop old -> start new -> health-gate -> remove old.
+// Pull before stop so a mid-pull failure or an image that will not
+// start leaves the old image on disk. Upgrade and downgrade are the
+// same operation; no version floor. No automatic rollback — a failure
+// stops in recovery mode and waits for an operator.
 package updater
 
 import (
@@ -187,21 +172,12 @@ func (u *Updater) run(ctx context.Context, targetVersion string) {
 	if err != nil {
 		u.cfg.Log.Error("update failed", "from", previousVersion, "to", targetVersion, "error", err)
 
-		// Only a failure that got as far as touching the container hands the
-		// device to an operator. A bad version name, a full disk or an
-		// unreachable registry changed nothing -- the runtime is still
-		// running the version it was, and stopping it would turn a harmless
-		// refusal into a plant outage. Observed on the SLM-RP4: a failed pull
-		// stopped a RUNNING PLC.
+		// Failures that never touched the container leave the running
+		// runtime intact; recovery would be an unforced plant outage.
 		var beforeSwap errBeforeSwap
 		if errors.As(err, &beforeSwap) {
 			u.cfg.Log.Info("nothing was changed; leaving the runtime alone",
 				"version", previousVersion)
-			// Put back exactly the state this attempt found. Reconcile used to
-			// do the re-deriving, but it re-derives by ACTING: from recovery
-			// it restarted the stopped container and called the device
-			// healthy, and with the container absent it left the state on
-			// "starting" forever after the pull failed again.
 			u.cfg.Supervisor.AbortUpdate()
 			return
 		}
@@ -240,17 +216,8 @@ func (u *Updater) execute(ctx context.Context, previousVersion, targetVersion st
 		u.setPhase(StatePulling, p.Phase, p.Percent)
 	})
 	if err != nil {
-		// A pull can fail for a reason that does not matter: the image is
-		// already here. That covers an air-gapped device with a side-loaded
-		// image, a locally built one, and a registry that is merely
-		// unreachable right now. Refusing in that case would make a version
-		// the device already holds uninstallable -- which is exactly what
-		// happened on the SLM-RP4, where a locally tagged image produced
-		// "pull access denied" and failed an update that could not have
-		// been more ready to succeed.
-		//
-		// Same policy as orchestrator-agent's _pull_runtime_image: only a
-		// confirmed local copy excuses a failed pull.
+		// A pull failure is excused only when the image is already present
+		// locally (air-gapped, side-loaded, offline registry).
 		if _, inspectErr := u.cfg.Docker.InspectImage(ctx, targetRef); inspectErr != nil {
 			// The full chain goes to the log; the operator gets one sentence.
 			u.cfg.Log.Error("pull failed", "image", targetRef, "error", err)
@@ -301,20 +268,9 @@ func (u *Updater) execute(ctx context.Context, previousVersion, targetVersion st
 	return nil
 }
 
-// checkDiskSpace reports, with numbers, when the target is unlikely to fit.
-//
-// Advisory, and now actually advisory: it used to return an error that the
-// caller turned into a failed update, contradicting this comment and refusing
-// updates on any device whose Docker data-root had been moved -- the estimate
-// is taken from the bootloader's own filesystem, which is only the same disk
-// on a default install. The operator on the moved-data-root board was the one
-// who lost.
-//
-// So a tight measurement is surfaced as a warning on the progress the editor
-// polls, and the pull goes ahead. If the estimate was right, Docker's own pull
-// fails with a clear ENOSPC, which is a legible failure rather than a silent
-// one -- and if it was about the wrong disk, nothing was refused for no
-// reason.
+// checkDiskSpace is advisory: a tight measurement becomes a progress
+// warning, and the pull proceeds. The estimate measures the bootloader's
+// own disk, which only matches Docker's data-root on a default install.
 func (u *Updater) checkDiskSpace(ctx context.Context, targetRef string) {
 	free, err := freeBytes(u.cfg.StateDir)
 	if err != nil {
@@ -361,12 +317,9 @@ func (u *Updater) setPhase(state State, phase string, percent *int) {
 	u.progress.Percent = percent
 }
 
-// validateVersion rejects a tag the daemon would refuse or that could be used
-// to reach an image other than the one intended.
-//
-// The reference is always built as repository + ":" + version by
-// runtimespec.ImageRefFor, so a version containing a slash or a colon could
-// otherwise redirect the pull to a different repository or registry entirely.
+// validateVersion rejects a tag the daemon would refuse. The reference
+// is built as repository + ":" + version, so a slash or colon in the
+// version could redirect the pull to a different repository.
 func validateVersion(version string) error {
 	if version == "" {
 		return errors.New("a version is required")
@@ -411,17 +364,9 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f PiB", value/unit)
 }
 
-// describePullFailure turns a failed pull into a sentence an operator can act
-// on.
-//
-// The default is the daemon's own reason, which is usually specific ("manifest
-// unknown", "pull access denied"). What it cannot know is the trap behind the
-// most confusing case: a device whose spec names a repository with no registry
-// host -- "openplc-runtime" rather than "ghcr.io/autonomy-logic/openplc-runtime"
-// -- sends every pull to Docker Hub, where none of these images exist. That
-// happens on a device installed from a side-loaded image, and the resulting
-// "repository does not exist" points nowhere near the actual problem, so the
-// configured repository is named explicitly.
+// describePullFailure turns a failed pull into an operator-actionable
+// sentence. The special case is an unqualified repository (no registry
+// host), which Docker silently routes to Docker Hub.
 func describePullFailure(repository, ref string, err error) string {
 	reason := dockerapi.Reason(err)
 	if isUnqualifiedRepository(repository) {

@@ -28,7 +28,6 @@ except ImportError:
     from component_interfaces import IBufferAccessor
     from mutex_manager import MutexManager
 
-
 class GenericBufferAccessor(IBufferAccessor):
     """
     Generic buffer accessor that handles all buffer types uniformly.

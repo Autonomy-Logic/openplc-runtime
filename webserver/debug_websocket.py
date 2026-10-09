@@ -17,11 +17,8 @@ from flask_socketio import SocketIO, emit
 
 from webserver.logger import get_logger
 
-# The debug socket is mounted on app_restapi and shares its JWT manager, so it
-# also shares the two decisions that outlive a token: the logout blacklist and
-# who the token's subject actually is. Importing the loaders rather than reaching
-# into `jwt_blacklist` keeps one definition of each. Safe direction: restapi does
-# not import this module.
+# Share restapi's JWT manager (blacklist + subject lookup) by importing its
+# callbacks. One-way: restapi never imports this module.
 from webserver.restapi import check_if_token_revoked, user_lookup_callback
 from webserver.vpp_license_debug import handle_license_command
 
@@ -237,27 +234,16 @@ def init_debug_websocket(app, unix_client_instance):
                 emit("debug_response", {"success": False, "error": "Empty command"})
                 return
 
-            # Re-check EVERY command, not just the connect. See
-            # _reverify_session_token: a revoked token, or one whose account is
-            # gone, must stop working on a socket that is already open. Plain
-            # expiry does not, which is why this is a re-CHECK and not a full
-            # re-authentication.
+            # Re-CHECK on every command: a revoked token or a deleted account
+            # must stop working on a socket already open. Expiry alone would
+            # not catch that.
             if not _reverify_session_token():
                 emit("debug_response", {"success": False, "error": "Unauthorized"})
                 return
 
-            # The license FCs are open to any AUTHENTICATED role, not just admin
-            # (decision 2026-08-25). They were admin-gated on the theory that the
-            # anchor read (0x48) and the blob write (0x49) were a trust boundary,
-            # but that gate protected the wrong thing: the PURCHASE is authorized
-            # by the Edge account on the /buy page, never by the runtime role, so
-            # requiring admin here only stopped an operator from activating a
-            # licence they had already paid for. What stays open is low-risk: the
-            # anchor is the board's serial (baremetal exposes it with no auth at
-            # all), the blob is node-locked and useless on another device, and a
-            # bad write is recoverable (the entitlement lives in the backend; a
-            # refresh rewrites the correct blob). JWT re-verification above still
-            # applies, so "any role" means any logged-in user, never anonymous.
+            # License FCs (0x48/0x49/0x4A) are open to any authenticated role.
+            # Purchase authority lives on the Edge /buy page, not in the runtime
+            # role; the on-device entitlement is node-locked and recoverable.
 
             # License function codes (0x48/0x49/0x4A) operate on host files
             # (/proc anchor + conf/<plugin>.license) and are resolved here in

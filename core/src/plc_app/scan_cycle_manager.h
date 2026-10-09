@@ -31,21 +31,10 @@ typedef struct
     int64_t overruns;
 } plc_timing_stats_t;
 
-/* Per-task scan-cycle tracker. Each IEC task thread owns one and is the
- * exclusive writer; the snapshot reader (the STATS handler) acquires the
- * mutex briefly to copy out a consistent view.
- *
- * `interval_ns` is this task's scheduling period, used to project the
- * next-expected start time so latency = actual_start - expected_start
- * stays meaningful across tasks with different periods.
- *
- * Averages use a time-based EWMA targeting a wall-clock window that
- * matches the editor's polling cadence (so the displayed avg doesn't
- * decorrelate between consecutive polls). Each `*_sum` field holds an
- * approximate sum of the last `avg_window` samples; the per-cycle update
- * is `sum += sample - sum/avg_window` and the read is `avg = sum/avg_window`.
- * This accumulator-then-divide form avoids the integer-precision stall
- * of the incremental `avg += (sample - avg)/N` shape when delta < N. */
+/* Per-task tracker. The IEC task thread is the sole writer; STATS
+ * briefly takes the mutex to snapshot. `interval_ns` projects
+ * next-expected start for latency. EWMA sum form (sum += sample -
+ * sum/N; avg = sum/N) avoids integer-precision stalls when delta<N. */
 typedef struct
 {
     plc_timing_stats_t stats;
@@ -77,13 +66,9 @@ void scan_cycle_tracker_end(scan_cycle_tracker_t *tracker);
  * completed at least one full cycle (snapshot is meaningful). */
 bool scan_cycle_tracker_snapshot(scan_cycle_tracker_t *tracker, plc_timing_stats_t *out);
 
-/* Format the multi-task STATS response. Walks plc_tasks[] and emits
- * `STATS:{"tasks":[{...},{...}]}`. Plugins that drive their own threads
- * (e.g. the EtherCAT bus thread) report timing through their own
- * dedicated channels (in EtherCAT's case the
- * `/api/discovery/ethercat/{runtime-status,diagnostics}` routes), not
- * through this STATS feed. Returns chars written excluding the null
- * terminator. */
+/* Format multi-task STATS response: `STATS:{"tasks":[{...}]}`. Plugins
+ * that drive their own threads report timing through their own
+ * channels, not through STATS. Returns chars written (no NUL). */
 int format_timing_stats_response(char *buffer, size_t buffer_size);
 
 #ifdef __cplusplus

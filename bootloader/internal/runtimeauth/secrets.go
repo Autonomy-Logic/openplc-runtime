@@ -2,18 +2,9 @@
 // Copyright (c) 2026 Autonomy®
 
 // Package runtimeauth authenticates callers against the runtime's own
-// credentials.
-//
-// The bootloader deliberately does not keep a second user database. It reads the
-// runtime's “.env“ and “restapi.db“ from the shared data directory --
-// mounted read-only, because it only ever needs to read them -- so there is
-// exactly one set of accounts on the device and no second thing to keep in
-// sync or forget to revoke.
-//
-// The formats here mirror the runtime's and must stay byte-compatible with it,
-// the same hazard as the ctypes mirror in shared/plugin_runtime_args.py. Both
-// sides are pinned by a shared test vector: tests/pytest/restapi generates a
-// hash and a token, and the Go tests verify the identical values.
+// credentials. Reads `.env` and `restapi.db` from the shared data
+// directory (mounted read-only). The hash and token formats mirror
+// the runtime's — pinned byte-for-byte by a shared pytest/Go vector.
 package runtimeauth
 
 import (
@@ -23,14 +14,9 @@ import (
 	"strings"
 )
 
-// Secrets are the two values the runtime generates once, in
-// webserver/config.py::generate_env_file, and never rotates: changing either
-// invalidates every stored password hash, which is why that function deletes
-// the database when it writes a new .env.
-//
-// The pepper is what the bootloader genuinely needs, since it is required to
-// verify a password against a stored hash. The JWT secret is used only to sign
-// the bootloader's own tokens -- the two services do not share sessions.
+// Secrets generated once by generate_env_file and never rotated.
+// Changing either invalidates every stored password hash. Pepper verifies
+// passwords; JWTSecret signs the bootloader's own tokens.
 type Secrets struct {
 	// JWTSecret signs and verifies access tokens (HS256).
 	JWTSecret string
@@ -38,12 +24,8 @@ type Secrets struct {
 	Pepper string
 }
 
-// LoadSecrets reads the runtime's .env.
-//
-// A hand-rolled parser rather than a dotenv library: the file is written by
-// generate_env_file with four fixed KEY=VALUE lines and no quoting, expansion
-// or multi-line values, so a dependency would buy nothing in the component
-// that most wants none.
+// LoadSecrets reads the runtime's .env. Hand-rolled parser: the file has
+// four fixed KEY=VALUE lines with no quoting or expansion.
 func LoadSecrets(path string) (*Secrets, error) {
 	file, err := os.Open(path)
 	if err != nil {

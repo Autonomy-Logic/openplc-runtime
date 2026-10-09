@@ -57,17 +57,9 @@ func (e *Event) HealthStatus() string {
 	return ""
 }
 
-// StreamEvents delivers container events for the named container to handle
-// until ctx is cancelled or the stream breaks.
-//
-// It returns the error that ended the stream, always non-nil -- a broken
-// events stream is never a normal end of work, and the caller is expected to
-// reconnect and re-reconcile. That reconnect matters: the daemon restarting
-// closes this stream, and any state change during the gap is missed, so the
-// caller must re-inspect rather than assume it saw everything.
-//
-// Filtering happens daemon-side so an unrelated busy host does not push
-// thousands of irrelevant events through this process.
+// StreamEvents delivers container events until ctx is cancelled or the
+// stream breaks (always returns non-nil). Caller must reconnect AND
+// re-inspect, since state changes during the gap are missed.
 func (c *Client) StreamEvents(ctx context.Context, containerName string, handle func(Event)) error {
 	filters := map[string][]string{
 		"type":      {"container"},
@@ -103,17 +95,9 @@ func (c *Client) StreamEvents(ctx context.Context, containerName string, handle 
 	}
 }
 
-// readMultiplexed decodes Docker's non-TTY stream framing into plain text.
-//
-// Without a TTY the daemon interleaves stdout and stderr as frames with an
-// 8-byte header: [stream byte, 3 zero bytes, 4-byte big-endian length]. Reading
-// the body raw would splice those headers into the middle of log lines, which
-// is exactly the kind of small wrongness that makes an operator distrust the
-// recovery screen. Both streams are kept, in arrival order, because a runtime
-// that failed to start says why on stderr.
-//
-// Output is capped at limit bytes; the tail is kept, since the end of the log
-// is where the failure is.
+// readMultiplexed decodes Docker's non-TTY framing: 8-byte header
+// [stream byte, 3 zero, 4-byte BE length]. Both streams kept in arrival
+// order. Output capped at limit bytes, keeping the tail.
 func readMultiplexed(r io.Reader, limit int) (string, error) {
 	reader := bufio.NewReader(r)
 	var out strings.Builder

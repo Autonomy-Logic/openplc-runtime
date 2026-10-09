@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Autonomy®
 
+# pylint disables kept so pymodbus-mandated names, segmented data-block
+# constructors and the shared-module import order do not warn here.
 # pylint: disable=C0103,C0301,C0302,C0413,W0107,W0602,W0621,C0415,R0913,R0914,R0917
-# C0103: Method/variable naming (getValues/setValues required by pymodbus API)
-# C0301: Line too long (some lines exceed 100 chars)
-# C0302: Too many lines in module (complex Modbus implementation)
-# C0413: Import position (shared module import must be after sys.path modification)
-# W0107: Unnecessary pass (used for read-only setValues methods)
-# W0602: Global variable not assigned (threading.Event uses methods, not reassignment)
-# W0621: Redefining name from outer scope (runtime_args parameter shadows global)
-# C0415: Import outside toplevel (traceback imported in exception handlers)
-# R0913: Too many arguments (required for segmented data block configuration)
-# R0914: Too many local variables (complex address segmentation logic)
-# R0917: Too many positional arguments (required for segmented data block configuration)
 
 import asyncio
 import os
@@ -96,7 +87,6 @@ from shared import (  # noqa: E402
 # runtime keeps the image square for every run this plugin is loaded in --
 # which, since it is loaded on most devices, would be every run.
 from shared.image_sizes import set_image_sizes, table_capacity  # noqa: E402,F401
-
 
 class OpenPLCDeviceContext(ModbusDeviceContext):
     """
@@ -184,7 +174,6 @@ class OpenPLCDeviceContext(ModbusDeviceContext):
 
         return super().getValues(func_code, address, count)
 
-
 class OpenPLCCoilsDataBlock(ModbusSparseDataBlock):
     """Custom Modbus coils data block that mirrors OpenPLC bool_output using SafeBufferAccess"""
 
@@ -271,7 +260,6 @@ class OpenPLCCoilsDataBlock(ModbusSparseDataBlock):
                     if logger:
                         logger.error(f"Error setting coil {coil_addr}: {error_msg}")
 
-
 class OpenPLCDiscreteInputsDataBlock(ModbusSparseDataBlock):
     """Custom Modbus discrete inputs data block that mirrors OpenPLC bool_input."""
 
@@ -339,7 +327,6 @@ class OpenPLCDiscreteInputsDataBlock(ModbusSparseDataBlock):
         """Discrete inputs are read-only, this method should not be called"""
         pass  # Silently ignore writes to read-only inputs
 
-
 class OpenPLCInputRegistersDataBlock(ModbusSparseDataBlock):
     """Custom Modbus input registers data block that mirrors OpenPLC analog inputs."""
 
@@ -402,7 +389,6 @@ class OpenPLCInputRegistersDataBlock(ModbusSparseDataBlock):
     def setValues(self, address, values):
         """Input registers are read-only, this method should not be called"""
         pass  # Silently ignore writes to read-only registers
-
 
 class OpenPLCHoldingRegistersDataBlock(ModbusSparseDataBlock):
     """Custom Modbus holding registers data block that mirrors OpenPLC analog outputs."""
@@ -478,7 +464,6 @@ class OpenPLCHoldingRegistersDataBlock(ModbusSparseDataBlock):
                 if error_msg != "Success":
                     if logger:
                         logger.error(f"Error setting holding register {reg_addr}: {error_msg}")
-
 
 class OpenPLCSegmentedCoilsDataBlock(ModbusSparseDataBlock):
     """
@@ -630,7 +615,6 @@ class OpenPLCSegmentedCoilsDataBlock(ModbusSparseDataBlock):
                 if error_msg != "Success":
                     if logger:
                         logger.error(f"Error setting coil %MX{mx_addr}: {error_msg}")
-
 
 class OpenPLCSegmentedHoldingRegistersDataBlock(ModbusSparseDataBlock):
     """
@@ -1195,7 +1179,6 @@ def parse_buffer_mapping_config(config_map, buffer_size):
         ),
     }
 
-
 # Global variables for plugin lifecycle
 server_task = None
 server_context = None
@@ -1211,7 +1194,6 @@ gPort = 5020
 # Retry configuration for server restart
 RETRY_DELAY_BASE = 2.0  # Initial delay between restart attempts (seconds)
 RETRY_DELAY_MAX = 30.0  # Maximum delay between restart attempts (seconds)
-
 
 def init(args_capsule):
     """Initialize the Modbus plugin"""
@@ -1249,7 +1231,6 @@ def init(args_capsule):
 
         traceback.print_exc()
         return False
-
 
 def start_loop():
     """Start the Modbus server with automatic restart on failure."""
@@ -1455,12 +1436,10 @@ def start_loop():
         logger.error(f"Timeout waiting for server to start on {gIp}:{gPort}")
         return False
 
-
 def _cancel_all_tasks(loop):
     """Cancel all running tasks on the event loop."""
     for task in asyncio.all_tasks(loop):
         task.cancel()
-
 
 def stop_loop():
     """Stop the Modbus server gracefully.
@@ -1504,7 +1483,6 @@ def stop_loop():
     logger.info("Server stopped")
     return True
 
-
 def cleanup():
     """Cleanup plugin resources"""
     global server_context, runtime_args
@@ -1514,7 +1492,6 @@ def cleanup():
 
     logger.info("Plugin cleaned up")
     return True
-
 
 async def main():
     """Standalone server for testing"""
@@ -1564,7 +1541,6 @@ async def main():
             print("Failed to start server")
     else:
         print("Failed to initialize plugin")
-
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,36 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-/*
- * debug_write_journal.cpp — see debug_write_journal.h.
- *
- * A mutex-protected queue of external write/force requests, drained by the
- * dispatcher at the no-task-running window. Producers (debugger socket
- * thread, OPC-UA plugin thread) only enqueue; the single dispatcher consumer
- * applies them while no IEC worker is mid-scan and while it holds the image
- * lock, so no per-variable locking is needed and the application is race-free.
- *
- * Routing, decided per entry via ext_strucpp_debug_locate:
- *
- *   - GLOBAL / program-internal leaf (or an older .so without the classifier):
- *     applied straight to the IECVar through the strucpp debug exports
- *     (ext_strucpp_debug_write / _set). This is the OPC-UA global-corruption /
- *     bug #3 case — the write that used to race the workers now lands here,
- *     serialized.
- *
- *   - LOCATED variable (%I/%Q/%M): routed through the image journal and the
- *     forced-slot bitmap, because on v4 the image is decoupled from the IECVar
- *     (copy_in/copy_out) and a direct IECVar poke would be clobbered by the
- *     next copy_in. A WRITE becomes a journal_write_* (transient — program
- *     logic / the driver own the slot); a FORCE seeds + pins the slot via
- *     journal_force_set (drop-on-write keeps it pinned all cycle) AND forces
- *     the IECVar so the program's own view is forced too; UNFORCE reverses
- *     both.
- */
+/* Queue of external write/force requests; dispatcher drains at the
+ * no-task-running window under image_lock. ext_strucpp_debug_locate
+ * routes each: GLOBAL → IECVar; LOCATED → journal_write_* / force. */
 #include "debug_write_journal.h"
 
 #include "image_tables.h"  /* ext_strucpp_debug_set / _write / _locate */
 #include "journal_buffer.h" /* journal_write_* / journal_force_set/clear  */
+#include "utils/rt_mutex.h"
 
 extern "C" {
 #include "utils/log.h"
@@ -60,6 +38,11 @@ DbgwEntry           g_dbgw[DBGW_MAX_ENTRIES];
 std::atomic<size_t> g_dbgw_count{0};
 pthread_mutex_t     g_dbgw_lock = PTHREAD_MUTEX_INITIALIZER;
 bool                g_overflow_logged = false;
+
+__attribute__((constructor)) void dbgw_lock_init_pi(void)
+{
+    rt_mutex_upgrade_static(&g_dbgw_lock, "g_dbgw_lock");
+}
 
 /* LocatedArea (strucpp_abi.hpp): Input=0, Output=1, Memory=2.
  * LocatedSize: Bit=0, Byte=1, Word=2, DWord=3, LWord=4. */

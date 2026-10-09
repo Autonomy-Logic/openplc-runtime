@@ -105,11 +105,8 @@ def test_clear_then_no_stage_erases_the_previous_project():
 
 
 def test_a_stranded_staged_snapshot_is_never_promoted_by_a_later_build():
-    # If an upload dies after staging but before the compile thread starts
-    # (a failed extract, say), nothing discards what it staged. The next
-    # upload's clear() has to be what removes it -- otherwise that build would
-    # promote a snapshot belonging to an upload that never landed, and the
-    # device would advertise a project it is definitely not running.
+    # The next upload's clear() must evict a stranded staged snapshot;
+    # otherwise it would be promoted by a build it did not belong to.
     project_snapshot.stage(b"stranded", _metadata(projectName="Never Landed"))
     project_snapshot.clear()  # the next upload
     assert project_snapshot.promote() is False
@@ -283,13 +280,8 @@ def test_capabilities_advertises_snapshot_support(client):
     assert client.get("/api/capabilities").get_json()["projectSnapshot"] is True
 
 
-# --- the size guard at the boundary it defends ---------------------------
-#
-# `test_an_oversized_snapshot_is_refused` exercises `stage()` directly, which
-# proves the cap fires once the bytes already exist. The point of the guard is
-# that they never do: the route is authenticated but not admin-gated, so any
-# account could otherwise have an arbitrarily large part spooled to disk and
-# pulled into memory before anything refused it.
+# Size-guard tests at the route boundary. The cap must fire before the
+# bytes are spooled to disk, not only inside stage().
 
 
 def _post_snapshot(client, admin_token, blob, *, metadata=None):
@@ -398,11 +390,8 @@ def test_a_blob_left_without_metadata_says_so_in_the_log(caplog):
     assert any("no metadata beside it" in record.message for record in caplog.records)
 
 
-# --- the advertised fields cache -----------------------------------------
-#
-# The discovery responder reads these on every probe, so they are held in
-# memory. A cache that can go stale would make the device advertise a project it
-# is no longer running, which is the one thing this whole design refuses to do.
+# Advertised-fields cache tests. The responder reads this per probe, so
+# a stale cache would advertise a project no longer running.
 
 
 def test_what_the_device_advertises_follows_every_change_to_the_store():
@@ -422,11 +411,8 @@ def test_what_the_device_advertises_follows_every_change_to_the_store():
 
 
 def test_a_staged_project_is_never_advertised():
-    # By the time anything is staged, the upload has already passed its point of
-    # no return and cleared the old project -- the program it described is being
-    # replaced. So the device advertises nothing at all until a build succeeds,
-    # which is the honest answer: naming the staged project would name one the
-    # device is not running and may never run.
+    # Once staging starts, the old project is already cleared. The
+    # device advertises nothing until the build succeeds.
     _store(projectName="Running")
     project_snapshot.stage(b"new-archive", _metadata(projectName="Building"))
 

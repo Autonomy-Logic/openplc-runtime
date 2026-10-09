@@ -82,7 +82,6 @@ logger: PluginLogger = None
 slave_threads: List[threading.Thread] = []
 # pylint: enable=invalid-name
 
-
 def queue_zero_fill_on_failure(point: Any, read_results_to_update: List[Any]) -> bool:
     """
     Queue a zeroed payload for a read point whose group asks for it.
@@ -104,7 +103,6 @@ def queue_zero_fill_on_failure(point: Any, read_results_to_update: List[Any]) ->
         (point.iec_location, get_zero_payload_for_io_point(point), point.length)
     )
     return True
-
 
 class ModbusSlaveDevice(threading.Thread):
     """
@@ -309,10 +307,9 @@ class ModbusSlaveDevice(threading.Thread):
                                 f"for read updates: {lock_msg}"
                             )
 
-                # 2. WRITE OPERATIONS - Process only I/O points that are due for polling this cycle
-                # OPTIMIZATION: Batch all write preparations under a single mutex acquisition
-                # to minimize mutex hold time. Read all raw IEC values at once, then convert
-                # and write to Modbus outside the mutex.
+                # WRITES - process only points due this cycle. Batch all
+                # raw IEC reads under one image_lock; convert and send
+                # to Modbus outside the lock to minimise hold time.
 
                 # Phase 1: Collect all write points that are due this cycle
                 write_points_due = []
@@ -477,7 +474,6 @@ class ModbusSlaveDevice(threading.Thread):
     def stop(self):
         self.logger.info(f"[{self.name}] Stop signal received.")
         self._stop_event.set()
-
 
 class ModbusBusHandler(threading.Thread):
     """
@@ -884,10 +880,8 @@ class ModbusBusHandler(threading.Thread):
         self.logger.info(f"[{self.name}] Stop signal received.")
         self._stop_event.set()
 
-
 # Backward-compatible alias: the bus handler used to be RTU-only.
 ModbusRtuBusHandler = ModbusBusHandler
-
 
 def group_rtu_devices_by_bus(devices: List[Any]) -> dict:
     """
@@ -937,7 +931,6 @@ def group_rtu_devices_by_bus(devices: List[Any]) -> dict:
 
     return buses
 
-
 def group_tcp_devices_by_endpoint(devices: List[Any]) -> dict:
     """
     Group TCP devices by (host, port) endpoint.
@@ -983,7 +976,6 @@ def group_tcp_devices_by_endpoint(devices: List[Any]) -> dict:
 
     return endpoints
 
-
 def init(args_capsule):
     """
     Initialize the Modbus Master plugin.
@@ -1012,7 +1004,6 @@ def init(args_capsule):
         logger.error(f"Error during initialization: {e}")
         traceback.print_exc()
         return False
-
 
 def start_loop():
     """
@@ -1063,10 +1054,9 @@ def start_loop():
 
         logger.info(f"Found {len(tcp_devices)} TCP device(s) and {len(rtu_devices)} RTU device(s)")
 
-        # Group TCP devices by (host, port). A lone device on an endpoint keeps
-        # the simple one-thread-per-device path; multiple devices on one endpoint
-        # (a Modbus gateway / TCP-to-RTU converter) share a single TCP connection
-        # and are multiplexed by slave/unit ID via ModbusBusHandler.
+        # Group TCP devices by (host, port). One device → one thread;
+        # multiple on one endpoint (a Modbus gateway) share a TCP
+        # connection, multiplexed by unit ID via ModbusBusHandler.
         if tcp_devices:
             tcp_endpoints = group_tcp_devices_by_endpoint(tcp_devices)
             logger.info(f"TCP devices grouped into {len(tcp_endpoints)} endpoint(s)")
@@ -1143,7 +1133,6 @@ def start_loop():
         traceback.print_exc()
         return False
 
-
 def stop_loop():
     """
     Stop the main loop and all running device threads.
@@ -1195,7 +1184,6 @@ def stop_loop():
         traceback.print_exc()
         return False
 
-
 def cleanup():
     """
     Clean up resources before plugin unload.
@@ -1227,7 +1215,6 @@ def cleanup():
         logger.error(f"Error during cleanup: {e}")
         traceback.print_exc()
         return False
-
 
 if __name__ == "__main__":
     # Test mode for development purposes.

@@ -15,15 +15,10 @@ except ImportError:
 # Permission types for variables
 PermissionType = Literal["r", "w", "rw"]
 
-# opcua.json contract version this runtime understands. v2 introduced
-# compiler-canonical per-leaf `datatype` + `size` (sourced from the same
-# STruC++ compile that builds the .so) so the runtime encodes the exact
-# byte width instead of re-deriving it from a drift-prone stored datatype.
-# A config without `format_version` (or below this) is an older editor's
-# output: we refuse it gracefully (OPC-UA stays down; the rest of the PLC
-# runs) rather than risk writing the wrong number of bytes to a variable.
-# Mirror of OPCUA_CONFIG_FORMAT_VERSION in openplc-editor's
-# generate-opcua-config.ts.
+# Minimum opcua.json contract version. v2 introduced compiler-canonical
+# per-leaf datatype+size. Older configs are refused gracefully (OPC-UA
+# stays down; the rest of the PLC runs). Mirror of
+# OPCUA_CONFIG_FORMAT_VERSION in generate-opcua-config.ts.
 OPCUA_CONFIG_MIN_FORMAT_VERSION = 2
 
 # Valid datatypes for OPC-UA variables (IEC 61131-3 base types)
@@ -51,7 +46,6 @@ VALID_DATATYPES = frozenset([
 # truth for every role consumer (config parse here, user_manager, callbacks).
 VALID_ROLES = frozenset(["viewer", "operator", "engineer"])
 
-
 def normalize_role(role: Any) -> str:
     """Normalize any role value to one of 'viewer' | 'operator' | 'engineer'.
 
@@ -72,7 +66,6 @@ def normalize_role(role: Any) -> str:
         return "viewer"
     return "viewer"
 
-
 @dataclass
 class SecurityProfile:
     """Configuration for a security profile/endpoint."""
@@ -81,10 +74,8 @@ class SecurityProfile:
     security_policy: str
     security_mode: str
     auth_methods: List[str]
-    # Role granted to Anonymous sessions on this profile. Explicit rather than
-    # inferred: an anonymous client has no identity, so what it may do is stated
-    # here. Absent (projects authored before this field) -> least-privilege
-    # 'viewer'. Only meaningful when 'Anonymous' is in auth_methods.
+    # Role for Anonymous sessions on this profile. Absent → 'viewer'.
+    # Only meaningful when 'Anonymous' is in auth_methods.
     anonymous_role: str = "viewer"
 
     @classmethod
@@ -99,12 +90,9 @@ class SecurityProfile:
         except KeyError as e:
             raise ValueError(f"Missing required field in security profile: {e}")
 
-        # Optional; default to viewer for backward compatibility. Validate at
-        # parse time (like VALID_DATATYPES) so a typo surfaces once at server
-        # start — where the admin sees it — instead of a per-session log_warn.
-        # Case/whitespace are normalized so "Engineer" or " engineer " are
-        # accepted; anything not a known role is rejected rather than silently
-        # degraded, since that role decides what an unauthenticated client may do.
+        # Optional; default viewer. Validated at parse so a typo
+        # surfaces once at server start, not per session. Normalized
+        # case/whitespace; unknown value is rejected, never degraded.
         raw_role = data.get("anonymous_role")
         if raw_role is None or raw_role == "":
             anonymous_role = "viewer"
@@ -452,11 +440,9 @@ class OpcuaConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'OpcuaConfig':
         """Creates an OpcuaConfig instance from a dictionary."""
-        # Contract gate FIRST, before parsing variables: an older editor's
-        # config omits per-leaf `size`, so reject it with a clear message
-        # instead of a confusing "missing size" KeyError. Raising here makes
-        # load_config() return None -> the OPC-UA server simply doesn't start
-        # while the rest of the runtime keeps running.
+        # Contract gate first (before parsing variables) so an older
+        # editor's config fails with a clear message instead of a
+        # confusing KeyError on missing `size`.
         format_version = data.get("format_version", 0)
         if not isinstance(format_version, int) or format_version < OPCUA_CONFIG_MIN_FORMAT_VERSION:
             raise ValueError(

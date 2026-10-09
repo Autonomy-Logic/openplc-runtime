@@ -106,10 +106,8 @@ pytestmark = pytest.mark.skipif(
 
 
 def _read_source(rel_path: str) -> str:
-    # newline=None gives universal-newline translation; strip any stray \r on
-    # top of it, because a Windows checkout can hand us CRLF where the
-    # extraction patterns expect bare \n (tasks #50/#58). Normalizing line
-    # endings for matching does not change what the C does.
+    # Normalise newlines so a Windows CRLF checkout matches patterns
+    # that expect bare \n.
     path = os.path.join(_PACKAGES_ROOT, rel_path)
     with open(path, "r", encoding="utf-8", newline=None) as handle:
         return handle.read().replace("\r", "")
@@ -164,15 +162,8 @@ def test_python_anchor_ceiling_matches_the_c_buffer():
     )
 
 
-# ---------------------------------------------------------------------------
-# 2. The behaviour, by executing the real C. Needs a compiler.
-#
-# license_platform.c ships its own test seam: LIC_LINUX_ANCHOR_PATH overrides
-# the /proc/device-tree path at compile time (the packages host tests use the
-# same seam). So the whole file compiles UNMODIFIED, pointed at a temp file,
-# and a three-line main() prints what license_platform_anchor() returned --
-# no extraction, no transcription, the real translation unit end to end.
-# ---------------------------------------------------------------------------
+# Executes the real C via LIC_LINUX_ANCHOR_PATH, which overrides the
+# /proc/device-tree path at compile time.
 
 _HARNESS_MAIN = """\
 #include <stdio.h>

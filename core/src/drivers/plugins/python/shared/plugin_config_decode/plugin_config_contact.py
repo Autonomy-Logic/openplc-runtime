@@ -12,7 +12,6 @@ class PluginConfigError(Exception):
     """Custom exception for plugin configuration errors."""
     pass
 
-
 class PluginConfigContract(ABC):
     """
     Abstract base class for protocol-specific configurations.

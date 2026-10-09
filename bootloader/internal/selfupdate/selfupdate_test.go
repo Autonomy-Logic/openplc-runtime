@@ -388,7 +388,7 @@ func TestTheChildRecreatesEvenIfTheParentIsAlreadyGone(t *testing.T) {
 	}
 }
 
-// A pre-RTOP-292 parent must not pass its namespace on.
+// A parent with a private UTS namespace must not pass it on.
 func TestAParentWithAPrivateUTSNamespaceDoesNotPassItOn(t *testing.T) {
 	// "" is Docker's private default; "private" covers the set-not-defaulted
 	// field an earlier revision inherited.
@@ -472,13 +472,7 @@ func TestTheRuntimeContainerIsNeverTouched(t *testing.T) {
 	}
 }
 
-// A create that fails must leave the device with the bootloader it has.
-//
-// The parent used to be force-removed first. If the create was then rejected
-// -- an invalid HostConfig on an older daemon, a full disk, an image pruned
-// between the pull and the create -- the helper exited with RestartPolicy: no
-// and the device had no bootloader at all, on hardware that by this feature's
-// own framing has no SSH.
+// A create that fails must leave the old bootloader running.
 func TestAFailedCreateLeavesTheOldBootloaderRunning(t *testing.T) {
 	docker := newFake()
 	docker.containers["openplc-bootloader"] = parentContainer()

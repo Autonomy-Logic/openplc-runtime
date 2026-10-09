@@ -1,25 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// Package selfupdate replaces the bootloader with a newer version of itself.
-//
-// A container cannot replace itself: removing it kills the process doing the
-// removing, halfway through. So the running bootloader spawns a ONE-SHOT child
-// from the new image, and that child does the work from outside -- the same
-// shape orchestrator-agent uses in tools/upgrade_self.py, which is proven in
-// production.
-//
-// The runtime container is never touched. A bootloader update must not
-// interrupt a running PLC: losing the ability to manage a device is a bad
-// afternoon, stopping its plant is a different category of problem. That is
-// also why the failure mode is acceptable -- if the new bootloader will not
-// start, Docker's restart policy keeps trying while the runtime carries on.
-//
-// The child reproduces the parent's configuration from the RUNNING container
-// rather than from defaults. An operator may have installed with extra mounts
-// or a non-standard port, and a self-update that quietly dropped them would
-// leave a device subtly wrong in a way nobody would connect to "the bootloader
-// updated itself".
+// Package selfupdate replaces the bootloader with a newer version of
+// itself. A container cannot remove itself mid-process, so the parent
+// spawns a one-shot child from the new image that does the swap from
+// outside. The runtime container is never touched. The child
+// reproduces the parent's container config (binds, port, env) from
+// the RUNNING container, not from defaults.
 package selfupdate
 
 import (
@@ -147,11 +134,8 @@ func Start(ctx context.Context, docker DockerClient, repository, version string,
 	return nil
 }
 
-// Execute is the child's side: replace the parent and exit.
-//
-// Idempotent by design. A parent that is already gone -- because a previous
-// attempt got that far before dying -- is not an error; the goal is that a
-// bootloader on the new image is running when this finishes.
+// Execute replaces the parent and exits. Idempotent: a parent already
+// gone from an interrupted attempt is not an error.
 func Execute(ctx context.Context, docker DockerClient, log *slog.Logger) error {
 	target := os.Getenv(EnvTarget)
 	newImage := os.Getenv(EnvNewImage)
@@ -187,13 +171,8 @@ func Execute(ctx context.Context, docker DockerClient, log *slog.Logger) error {
 	case <-time.After(settleDelay):
 	}
 
-	// Create the replacement FIRST, under a temporary name.
-	//
-	// Removing the parent first meant a rejected create -- an invalid
-	// HostConfig on an older daemon, a full disk, an image pruned between the
-	// pull and the create -- left the device with no bootloader at all, on
-	// hardware this feature exists because it has no SSH. The helper runs with
-	// RestartPolicy: no, so nothing would have come back for it.
+	// Create the replacement under a temporary name BEFORE removing the
+	// parent, so a rejected create leaves the old bootloader intact.
 	staging := target + "-next"
 	// A leftover from an interrupted attempt would take the name.
 	if err := docker.RemoveContainer(ctx, staging, true); err != nil {
@@ -228,12 +207,9 @@ func Execute(ctx context.Context, docker DockerClient, log *slog.Logger) error {
 	return nil
 }
 
-// replacementSpec rebuilds the parent's create payload with the new image.
-//
-// The parent's own environment is carried over except the self-update
-// variables: leaving those in would put the NEW bootloader straight back into
-// child mode on start-up, and it would immediately try to replace itself in a
-// loop.
+// replacementSpec rebuilds the parent's create payload with the new
+// image, dropping the self-update env vars so the new container does
+// not immediately re-enter helper mode.
 func replacementSpec(parent *dockerapi.ContainerInspect, newImage string) map[string]any {
 	env := make([]string, 0, len(parent.Config.Env))
 	for _, entry := range parent.Config.Env {
@@ -266,7 +242,8 @@ func replacementSpec(parent *dockerapi.ContainerInspect, newImage string) map[st
 		"HostConfig": map[string]any{
 			"Binds":       parent.HostConfig.Binds,
 			"NetworkMode": parent.HostConfig.NetworkMode,
-			// Set, never inherited: a pre-RTOP-292 parent would pass the bug on.
+			// Set explicitly, never inherited: an older parent with a
+			// private UTS namespace would otherwise propagate it.
 			"UTSMode":       runtimespec.UTSModeHost,
 			"Privileged":    parent.HostConfig.Privileged,
 			"RestartPolicy": map[string]any{"Name": restart},
@@ -298,13 +275,9 @@ func defaultSpec(newImage string) map[string]any {
 	}
 }
 
-// findSelf identifies the container this process is running in.
-//
-// HOSTNAME is the container's short id under Docker's defaults, which is the
-// most direct answer. It can be overridden (--hostname), so a miss falls back
-// to the name install.sh uses -- and a miss on both is reported rather than
-// guessed at, because every caller of this is about to delete whatever it
-// names.
+// findSelf identifies the current container by HOSTNAME, falling back
+// to the conventional name install.sh uses. A miss on both is reported,
+// never guessed: the caller is about to delete whatever this names.
 func findSelf(ctx context.Context, docker DockerClient) (*dockerapi.ContainerInspect, error) {
 	if hostname := os.Getenv("HOSTNAME"); hostname != "" {
 		if found, err := docker.InspectContainer(ctx, hostname); err == nil {

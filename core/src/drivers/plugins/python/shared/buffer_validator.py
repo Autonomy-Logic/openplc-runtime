@@ -21,7 +21,6 @@ except ImportError:
     from component_interfaces import IBufferValidator
     from image_sizes import table_capacity
 
-
 class BufferValidator(IBufferValidator):
     """
     Centralized validation for buffer operations.

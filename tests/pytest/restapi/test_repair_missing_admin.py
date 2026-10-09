@@ -52,15 +52,8 @@ def test_a_lone_non_admin_account_is_promoted(app):
 
 
 def test_a_null_role_counts_as_no_admin_rather_than_crashing(app):
-    # Rebuilt as the schema an affected device actually carries, copied from
-    # the hardware unit this was found on:
-    #
-    #     role VARCHAR(20)      -- nullable, no default
-    #
-    # The current model declares NOT NULL DEFAULT 'admin', so a NULL role
-    # cannot be created through it or even inserted into the table it builds.
-    # Reproducing the old shape is the only way to check the repair copes with
-    # what is out there rather than with what we would write today.
+    # Reproduces the legacy schema (role VARCHAR(20) nullable, no
+    # default) that the current model's NOT NULL would prevent.
     db.session.execute(sa_text("DROP TABLE users"))
     db.session.execute(
         sa_text(

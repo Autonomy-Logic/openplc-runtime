@@ -75,8 +75,9 @@ Not covered:
   transition is honoured, but the branch that hands the movement record back only
   runs when the corrective transition is *refused* by a request that slipped in
   first — a race that cannot be forced without a hook in the runtime.
-- **The watchdog forcing ERROR on a stuck transition.** Needs a transition that
-  outlives `PLC_TRANSITION_STUCK_TIMEOUT_MS` (2 minutes), so it belongs in a slow
-  opt-in run rather than here.
-- **A runaway IEC task.** Terminating one needs the forced-abort ladder that does
-  not exist yet; today a program with an unbounded loop wedges the stop.
+- **The watchdog forcing ERROR on a stuck start.** Needs a start that outlives
+  `PLC_TRANSITION_STUCK_TIMEOUT_MS` (2 minutes), so it belongs in a slow opt-in run
+  rather than here.
+- **A runaway IEC task.** The stuck-task watchdog (see "Watchdog System" in
+  `docs/ARCHITECTURE.md`) is not exercised here; its tests are the host tests under
+  `tests/host/` and end-to-end runs against real uploaded programs.

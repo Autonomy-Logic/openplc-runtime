@@ -225,12 +225,10 @@ int vpp_plugin_seal_required(const char *path)
         return 0;
     }
 
-    /* Compare RESOLVED paths, not the literal string: the config may say
-     * ./build/vpp/libx.so, build/vpp/libx.so, or an absolute path, and a
-     * symlink anywhere in the chain would defeat a textual match. When the
-     * file does not exist yet realpath fails -- fall back to a textual test so
-     * a missing object is still treated as VPP (and therefore still refused
-     * below) instead of being waved through as a built-in. */
+    /* Compare RESOLVED paths so symlinks and relative vs absolute forms
+     * cannot defeat the match. If realpath fails (file does not exist
+     * yet), fall back to textual so a missing object is still treated
+     * as VPP and refused below rather than waved through. */
     char resolved_path[PATH_MAX];
     char resolved_vpp[PATH_MAX];
     if (realpath(path, resolved_path) && realpath(VPP_BUILD_SUBDIR, resolved_vpp))

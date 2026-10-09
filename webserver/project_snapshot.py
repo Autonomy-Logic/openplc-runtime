@@ -55,22 +55,12 @@ _PROMOTED_META: Final[Path] = SNAPSHOT_DIR / "project.json"
 _STAGED_BLOB: Final[Path] = SNAPSHOT_DIR / "staged.zip"
 _STAGED_META: Final[Path] = SNAPSHOT_DIR / "staged.json"
 
-# What the discovery responder advertises, kept in memory.
-#
-# `advertised_fields()` is called on every UDP probe, from the unauthenticated
-# responder, and read the metadata file each time -- two stats and a JSON parse
-# per packet. The per-source rate limit means that was never a real DoS, but a
-# spoofed-source flood still turned each packet into disk I/O for no reason.
-# Only the four functions below write the store, so those are the only places
-# this has to be dropped. `None` means "not computed yet", which is distinct
-# from the empty dict meaning "nothing stored".
+# In-memory cache of advertised_fields(), to spare the UDP probe path a
+# stat+parse per packet. None = not computed yet; {} = nothing stored.
 _advertised_cache: Optional[dict] = None
 
-# Cap for the snapshot field.  Deliberately its own constant and much larger
-# than the program-zip limits in plcapp_management: those guard an archive that
-# gets extracted and compiled, while this one is stored untouched, and a real
-# project carrying its bundled libraries is a great deal bigger than the
-# generated sources.
+# Snapshot cap. Larger than the program-zip limits because the snapshot
+# travels untouched (no extract/compile) and includes bundled libraries.
 MAX_SNAPSHOT_BYTES: Final[int] = 100 * 1024 * 1024
 
 # Bounds on the metadata the device will repeat back to clients.  This is not
@@ -236,12 +226,8 @@ def read_metadata() -> Optional[dict]:
     try:
         record = json.loads(_PROMOTED_META.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        # `promote()` moves the blob and the metadata in two steps, so a power
-        # cut between them can leave a blob with no metadata. Reporting "nothing
-        # stored" is the right answer -- a blob we cannot describe is not
-        # retrievable -- but doing it silently leaves a device that was storing
-        # a project now saying it is not, with nothing to explain why on a
-        # machine you cannot attach a debugger to.
+        # Interrupted promote(): blob present, metadata absent. Log so the
+        # "nothing stored" response has a visible explanation.
         if _PROMOTED_BLOB.exists():
             logger.warning(
                 "A stored project archive exists with no metadata beside it "

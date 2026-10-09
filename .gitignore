@@ -44,3 +44,7 @@ core/src/drivers/plugins/native/ethercat/libs/soem/cmake/CYGWIN.cmake
 
 # Written by the upload: the last project's ST, not the repository's.
 core/src/program.st
+
+# EtherDOG (EtherCAT master service) source, fetched or copied in by install.sh
+/etherdog/
+/third_party/

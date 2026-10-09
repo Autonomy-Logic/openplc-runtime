@@ -28,17 +28,13 @@ type ContainerState struct {
 	} `json:"Health"`
 }
 
-// ContainerHostConfig is the part of a container's host configuration the
-// bootloader needs to reproduce when it replaces itself.
-//
-// Captured from the RUNNING container rather than reconstructed from defaults:
-// an operator may have installed with extra mounts or a different port, and
-// a self-update that silently dropped them would leave a device subtly
-// misconfigured in a way nobody would connect to "the bootloader updated".
+// ContainerHostConfig is the host-config slice captured from a RUNNING
+// container so a self-update can reproduce it, including operator-added
+// mounts and port overrides that defaults would silently drop.
 type ContainerHostConfig struct {
 	Binds       []string `json:"Binds"`
 	NetworkMode string   `json:"NetworkMode"`
-	// "host", or empty for Docker's private default (RTOP-292).
+	// "host", or empty for Docker's private default.
 	UTSMode       string        `json:"UTSMode"`
 	Privileged    bool          `json:"Privileged"`
 	RestartPolicy RestartPolicy `json:"RestartPolicy"`
@@ -111,34 +107,24 @@ func (c *Client) StartContainer(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(name)+"/start", nil, nil)
 }
 
-// StopContainer sends SIGTERM and, after the grace period, SIGKILL.
-//
-// The grace period matters: the runtime shuts the PLC down and flushes retained
-// variables on SIGTERM, so cutting it short risks losing the retain image. The
-// daemon returns 304 when the container is already stopped, which is inside the
-// 2xx-or-not check and so surfaces as success.
+// StopContainer sends SIGTERM, then SIGKILL after the grace period. The
+// runtime flushes retained variables on SIGTERM; cutting the grace short
+// risks losing the retain image.
 func (c *Client) StopContainer(ctx context.Context, name string, grace time.Duration) error {
 	params := url.Values{}
 	params.Set("t", strconv.Itoa(int(grace.Seconds())))
 	path := "/containers/" + url.PathEscape(name) + "/stop" + encodeQuery(params)
 
-	// The daemon holds this request open for the whole grace period before it
-	// resorts to SIGKILL, so the client must be allowed to wait longer than
-	// the grace itself. The shared unary client's fixed 30s timeout is exactly
-	// equal to the default grace, so every swap raced it: observed on the
-	// SLM-RP4 as "Client.Timeout exceeded while awaiting headers" on a stop
-	// that was proceeding perfectly well, leaving the runtime to be killed by
-	// the force-remove path instead of shut down cleanly -- which for a PLC
-	// means skipping the SIGTERM handler that flushes retained variables.
+	// Daemon holds this open for the whole grace; the client needs more
+	// than the shared 30s unary timeout, which equals the default grace
+	// and would truncate every clean shutdown.
 	stopCtx, cancel := context.WithTimeout(ctx, grace+stopTimeoutMargin)
 	defer cancel()
 
 	err := c.doLongRunning(stopCtx, http.MethodPost, path, nil)
 	if err != nil && (IsNotFound(err) || hasStatus(err, http.StatusNotModified)) {
-		// Nothing was running, so nothing will exit. Reported rather than
-		// swallowed: a caller that suppresses crash accounting for the exit it
-		// is about to cause must know when that exit is never coming, or the
-		// suppression outlives the stop and eats the next real crash.
+		// Reported, not swallowed: a caller suppressing crash accounting
+		// around this stop must know when no exit will follow.
 		return ErrNotRunning
 	}
 	return err
@@ -166,9 +152,9 @@ func (c *Client) RemoveContainer(ctx context.Context, name string, force bool) e
 	return nil
 }
 
-// ContainerLogs returns the tail of a container's combined output. Used by the
-// bootloader's status endpoint so an operator can see why a runtime would not
-// start without needing shell access -- which is the entire point of RTOP-283.
+// ContainerLogs returns the tail of a container's combined output.
+// Used by the bootloader status endpoint so an operator can see why a
+// runtime would not start without needing shell access on the device.
 func (c *Client) ContainerLogs(ctx context.Context, name string, tail int) (string, error) {
 	params := url.Values{}
 	params.Set("stdout", "true")
@@ -183,11 +169,9 @@ func (c *Client) ContainerLogs(ctx context.Context, name string, tail int) (stri
 	return readMultiplexed(body, 512*1024)
 }
 
-// RenameContainer gives an existing container a new name.
-//
-// Used by the self-update so a replacement can be created under a temporary
-// name and only then take over the real one -- which means a failed create
-// leaves the old container untouched instead of removing it first and hoping.
+// RenameContainer gives an existing container a new name. Used by the
+// self-update to swap atomically: a failed create leaves the old
+// container untouched instead of removed-then-missing.
 func (c *Client) RenameContainer(ctx context.Context, name, newName string) error {
 	params := url.Values{}
 	params.Set("name", newName)

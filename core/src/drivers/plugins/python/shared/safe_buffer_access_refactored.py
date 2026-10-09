@@ -31,7 +31,6 @@ except ImportError:
     from config_handler import ConfigHandler
     from mutex_manager import MutexManager
 
-
 class SafeBufferAccess(ISafeBufferAccess):
     """
     Refactored SafeBufferAccess with modular architecture.
@@ -297,19 +296,6 @@ class SafeBufferAccess(ISafeBufferAccess):
     ) -> Tuple[Dict, str]:
         """Process mixed read and write operations in batch."""
         return self.batch_processor.process_mixed_operations(read_operations, write_operations)
-
-    # ============================================================================
-    # Variable access (debug_*) — moved out of SafeBufferAccess.
-    #
-    # The MatIEC-era flat-index API (get_var_list / get_var_size /
-    # get_var_count / get_var_value / get_var_*_batch) is gone. Plugins
-    # that need to read/write program variables call the runtime's
-    # debug_read / debug_write / debug_set / debug_size function
-    # pointers directly via runtime_args.* — see
-    # opcua/opcua_memory.py for the typed Python helpers
-    # (debug_read_value, debug_write_value, debug_force_value,
-    # debug_unforce, initialize_variable_cache).
-    # ============================================================================
 
     # ============================================================================
     # Configuration Operations

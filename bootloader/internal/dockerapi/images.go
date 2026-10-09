@@ -45,17 +45,9 @@ type pullEvent struct {
 	} `json:"errorDetail"`
 }
 
-// StallTimeout is how long a pull may go without any progress before it is
-// abandoned.
-//
-// A stall timeout rather than a total timeout, deliberately. The Docker
-// client's streaming pull takes no timeout at all, so a half-open connection
-// to the registry leaves the decoder parked forever -- the failure
-// orchestrator-agent documents in pull_runtime_image.py, where the entry stuck
-// in "pulling" refused every retry for the life of the process. A total
-// timeout would instead punish a slow-but-working link, which on a plant
-// network is the normal case: a 1.4 GB image over a poor connection can
-// legitimately take a very long time while never stalling.
+// StallTimeout aborts a pull after this long with no progress. Stall
+// (not total) timeout so a slow-but-working link is not punished: a
+// 1.4 GB image over a plant network can legitimately take hours.
 const StallTimeout = 5 * time.Minute
 
 // PullImage pulls ref, reporting progress until it completes.
@@ -219,12 +211,8 @@ func (c *Client) InspectImage(ctx context.Context, ref string) (*ImageInfo, erro
 	return &out, nil
 }
 
-// RemoveImage deletes an image by reference.
-//
-// A missing image is success: the goal is "not present". A conflict is NOT
-// swallowed -- it means a container still references the image, and silently
-// ignoring that would leave an operator believing disk was reclaimed when it
-// was not.
+// RemoveImage deletes an image by reference. Missing is success. A
+// conflict (container still references it) is NOT swallowed.
 func (c *Client) RemoveImage(ctx context.Context, ref string, force bool) error {
 	params := url.Values{}
 	if force {
@@ -237,11 +225,9 @@ func (c *Client) RemoveImage(ctx context.Context, ref string, force bool) error 
 	return nil
 }
 
-// splitImageRef separates a reference into name and tag.
-//
-// Only the last colon counts as the tag separator, and only when it appears
-// after the final slash: a registry with a port ("host:5000/image") puts a
-// colon in the name, and splitting on the first would produce nonsense.
+// splitImageRef separates a reference into name and tag. Only the last
+// colon after the final slash is the tag separator, so a registry port
+// like "host:5000/image" is not misparsed.
 func splitImageRef(ref string) (name, tag string) {
 	lastSlash := strings.LastIndex(ref, "/")
 	lastColon := strings.LastIndex(ref, ":")

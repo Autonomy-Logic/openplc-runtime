@@ -1,97 +1,151 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+#include <fcntl.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "../plc_state_manager.h"
+#include "../task_policy.h"
 #include "log.h"
 #include "utils.h"
 #include "watchdog.h"
 
-atomic_long plc_heartbeat;
+/* CLOCK_MONOTONIC ms of the last dispatcher tick; 0 while no dispatcher runs. */
+static atomic_llong g_dispatch_beat_ms;
+static atomic_llong g_dispatch_stall_ms;
+static const char *_Atomic g_fault_context;
 
-/* Watchdog loop period. The stuck-transition bound is NOT defined here: it comes
- * from plc_state_manager.h, where it is derived from the same constant the
- * transition worker waits on, so this can never fire while the runtime still
- * considers the transition to be progressing normally. */
-#define WATCHDOG_TICK_S      2
-#define TRANSITION_STUCK_S   (PLC_TRANSITION_STUCK_TIMEOUT_MS / 1000)
+#define WATCHDOG_TICK_MS 100
+
+static int64_t mono_ms(void)
+{
+    return monotonic_ns() / NS_PER_MS;
+}
+
+void watchdog_feed(void)
+{
+    atomic_store_explicit(&g_dispatch_beat_ms, mono_ms(), memory_order_relaxed);
+}
+
+void watchdog_dispatcher_started(int64_t period_ns)
+{
+    int64_t stall = PLC_TASK_STUCK_PERIODS * period_ns / NS_PER_MS;
+    if (stall < PLC_DISPATCHER_STALL_MIN_MS)
+        stall = PLC_DISPATCHER_STALL_MIN_MS;
+    atomic_store_explicit(&g_dispatch_stall_ms, stall, memory_order_relaxed);
+    watchdog_feed();
+}
+
+void watchdog_dispatcher_stopped(void)
+{
+    atomic_store_explicit(&g_dispatch_beat_ms, 0, memory_order_relaxed);
+}
+
+void watchdog_set_fault_context(const char *context)
+{
+    atomic_store(&g_fault_context, context);
+}
+
+void watchdog_fatal_exit(const char *reason)
+{
+    const char *context = atomic_load(&g_fault_context);
+    char msg[512];
+    snprintf(msg, sizeof(msg), "Watchdog: %s%s%s. Exiting with code %d for a safe-mode restart",
+             reason, context ? " during " : "", context ? context : "", PLC_EXIT_WATCHDOG_FAULT);
+    log_emergency(msg);
+    int fd = open(PLC_WATCHDOG_FAULT_MARKER, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd >= 0)
+    {
+        if (write(fd, msg, strnlen(msg, sizeof(msg))) < 0)
+        {
+            /* The marker exists even if empty; the boot check only tests for it. */
+        }
+        close(fd);
+    }
+    _exit(PLC_EXIT_WATCHDOG_FAULT);
+}
 
 void *watchdog_thread(void *arg)
 {
     (void)arg;
-    long last = atomic_load(&plc_heartbeat);
-    int transitioning_ticks = 0;
+    pthread_setname_np(pthread_self(), "plc_watchdog");
+
+    struct sched_param sp = {.sched_priority = PLC_FIFO_WATCHDOG};
+    int rc                = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+    if (rc != 0)
+        log_warn("Watchdog: SCHED_FIFO(%d) failed: %s", PLC_FIFO_WATCHDOG, strerror(rc));
+    else
+        log_info("Watchdog: SCHED_FIFO priority %d", PLC_FIFO_WATCHDOG);
+
+    PLCState last_state        = PLC_STATE_STOPPED;
+    int64_t state_since_ms     = 0;
+    const struct timespec tick = {0, (long)(WATCHDOG_TICK_MS * NS_PER_MS)};
 
     while (1)
     {
-        sleep(WATCHDOG_TICK_S);
+        nanosleep(&tick, NULL);
+        const PLCState state = plc_get_state();
+        const int64_t now    = mono_ms();
 
-        PLCState current_state = plc_get_state();
-
-        // A transition that never publishes a final state would leave the
-        // runtime in TRANSITIONING forever, refusing every command but PING and
-        // STATUS — the state is the interlock now, so there is no flag anyone
-        // could clear to recover. Every path is meant to land a final state;
-        // this is the backstop for the one that doesn't, turning a silent
-        // permanent wedge into a reported fault the webserver can act on.
-        //
-        // KNOWN LIMITATION: forcing ERROR releases the interlock but does not
-        // abort the transition, so the worker that failed to land is still
-        // running -- and a START accepted from ERROR would begin a second one
-        // over the top of it. Reaching this point at all now takes longer than
-        // the runtime's own landing bound (see PLC_TRANSITION_STUCK_TIMEOUT_MS),
-        // which removes the realistic trigger; closing it properly needs the
-        // transition owner to be able to abort its own work, which is the
-        // lifecycle-executor refactor and not this function's job.
-        if (current_state == PLC_STATE_TRANSITIONING_TO_RUN ||
-            current_state == PLC_STATE_TRANSITIONING_TO_STOP)
+        if (state != last_state)
         {
-            transitioning_ticks++;
-            if (transitioning_ticks * WATCHDOG_TICK_S > TRANSITION_STUCK_S)
+            last_state     = state;
+            state_since_ms = now;
+        }
+
+        if (state == PLC_STATE_TRANSITIONING_TO_STOP)
+        {
+            const int64_t budget = plc_stop_budget_ms();
+            if (now - state_since_ms > budget)
             {
-                log_error("Watchdog: state change stuck in progress for over %d s — "
-                          "forcing ERROR so the runtime accepts commands again",
-                          TRANSITION_STUCK_S);
+                char reason[WATCHDOG_REASON_LEN];
+                snprintf(reason, sizeof(reason), "stop did not complete within %lld ms",
+                         (long long)budget);
+                watchdog_fatal_exit(reason);
+            }
+            continue;
+        }
+
+        /* A start that never lands keeps the runtime refusing commands; release it. */
+        if (state == PLC_STATE_TRANSITIONING_TO_RUN)
+        {
+            if (now - state_since_ms > PLC_TRANSITION_STUCK_TIMEOUT_MS)
+            {
+                log_error("Watchdog: start stuck in progress for over %d s — forcing ERROR",
+                          PLC_TRANSITION_STUCK_TIMEOUT_MS / 1000);
                 plc_force_error_state();
-                transitioning_ticks = 0;
             }
             continue;
         }
-        transitioning_ticks = 0;
 
-        if (current_state != PLC_STATE_RUNNING)
+        if (state == PLC_STATE_RUNNING)
         {
-            // Reset tracking when not running so we get a fresh
-            // baseline when the PLC starts again
-            if (current_state == PLC_STATE_ERROR)
+            const int64_t first_since = plc_first_scan_pending_since_ns();
+            if (first_since != 0 &&
+                monotonic_ns() - first_since > (int64_t)PLC_FIRST_SCAN_TIMEOUT_MS * NS_PER_MS)
+                plc_request_first_scan_trip();
+
+            const int64_t beat  = atomic_load_explicit(&g_dispatch_beat_ms, memory_order_relaxed);
+            const int64_t stall = atomic_load_explicit(&g_dispatch_stall_ms, memory_order_relaxed);
+            if (beat != 0 && now - beat > stall)
             {
-                last = 0;
-                atomic_store(&plc_heartbeat, 0);
+                char reason[WATCHDOG_REASON_LEN];
+                snprintf(reason, sizeof(reason), "dispatcher stalled, no tick for %lld ms",
+                         (long long)(now - beat));
+                watchdog_fatal_exit(reason);
             }
-            continue;
         }
-
-        long now = atomic_load(&plc_heartbeat);
-        if (now == last)
-        {
-            log_error("Watchdog: No heartbeat detected - PLC program is unresponsive");
-            log_error("The loaded PLC program may contain an infinite loop. "
-                      "Upload a corrected program to recover.");
-
-            // Transition to ERROR state instead of killing the process.
-            // This keeps the runtime alive so the webserver can still
-            // communicate with it and upload a new program.
-            plc_force_error_state();
-            continue;
-        }
-
-        last = now;
     }
 
     return NULL;

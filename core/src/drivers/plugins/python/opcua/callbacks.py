@@ -32,7 +32,6 @@ except ImportError:
 
 from shared.plugin_config_decode.opcua_config_model import VariablePermissions
 
-
 class PermissionCallbackHandler:
     """
     Handles OPC-UA read/write permission callbacks.

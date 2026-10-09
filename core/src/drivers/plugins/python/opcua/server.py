@@ -48,7 +48,6 @@ except ImportError:
 from shared import SafeBufferAccess
 from shared.plugin_config_decode.opcua_config_model import OpcuaConfig
 
-
 class OpcuaServerManager:
     """
     Manages the OPC-UA server lifecycle and coordinates components.

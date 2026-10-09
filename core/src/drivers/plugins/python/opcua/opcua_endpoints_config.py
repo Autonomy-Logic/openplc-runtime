@@ -15,12 +15,10 @@ try:
 except ImportError:
     PSUTIL_AVAILABLE = False
 
-
 def _is_docker_interface(interface_name: str) -> bool:
     """Check if interface name looks like a Docker/container internal interface."""
     docker_prefixes = ('docker', 'br-', 'veth', 'cni', 'flannel', 'cali', 'weave')
     return interface_name.lower().startswith(docker_prefixes)
-
 
 def _is_docker_ip(ip: str) -> bool:
     """
@@ -40,7 +38,6 @@ def _is_docker_ip(ip: str) -> bool:
         except (ValueError, IndexError):
             pass
     return False
-
 
 def _get_ips_from_psutil() -> List[str]:
     """Get non-loopback, non-Docker IPs using psutil (preferred method)."""
@@ -64,7 +61,6 @@ def _get_ips_from_psutil() -> List[str]:
         return non_loopback_ips
     except Exception:
         return []
-
 
 def _get_ips_from_socket() -> List[str]:
     """
@@ -101,7 +97,6 @@ def _get_ips_from_socket() -> List[str]:
 
     return non_loopback_ips
 
-
 def _get_ip_from_external_connection() -> Optional[str]:
     """
     Get IP by connecting to external address (last resort, requires network).
@@ -120,7 +115,6 @@ def _get_ip_from_external_connection() -> Optional[str]:
     except Exception:
         pass
     return None
-
 
 def get_local_ip() -> Optional[str]:
     """
@@ -147,7 +141,6 @@ def get_local_ip() -> Optional[str]:
     # Last resort: external connection (requires network)
     return _get_ip_from_external_connection()
 
-
 def get_available_hostnames() -> List[str]:
     """Get list of available hostnames/IPs for the server."""
     hostnames = ["localhost", "127.0.0.1"]
@@ -172,7 +165,6 @@ def get_available_hostnames() -> List[str]:
         pass
 
     return hostnames
-
 
 def normalize_endpoint_url(endpoint_url: str) -> str:
     """
@@ -206,7 +198,6 @@ def normalize_endpoint_url(endpoint_url: str) -> str:
 
     return endpoint_url
 
-
 def create_multiple_endpoints(base_endpoint: str) -> List[str]:
     """Create multiple endpoint variations for better connectivity."""
     parsed = urlparse(base_endpoint)
@@ -221,7 +212,6 @@ def create_multiple_endpoints(base_endpoint: str) -> List[str]:
     
     return endpoints
 
-
 def suggest_client_endpoints(server_endpoint: str) -> Dict[str, str]:
     """Suggest different endpoint URLs for different client scenarios."""
     parsed = urlparse(server_endpoint)
@@ -232,7 +222,6 @@ def suggest_client_endpoints(server_endpoint: str) -> Dict[str, str]:
         "network_hostname": f"opc.tcp://{socket.gethostname()}:{parsed.port}{parsed.path}",
         "network_ip": f"opc.tcp://{get_local_ip()}:{parsed.port}{parsed.path}" if get_local_ip() else None
     }
-
 
 def validate_endpoint_format(endpoint_url: str) -> bool:
     """Validate if endpoint URL has correct OPC-UA format."""

@@ -19,19 +19,9 @@ import (
 	"time"
 )
 
-// The bootloader serves HTTPS with its own self-signed certificate, generated
-// once into its state directory and reused thereafter.
-//
-// Its own, rather than the runtime's: the runtime generates its certificate
-// inside its image (webserver/certOPENPLC.pem), so it is not in the shared
-// volume and there is nothing to share. Reusing it would also mean the
-// bootloader could not serve TLS at all before the runtime had ever started,
-// which is exactly the case recovery exists for.
-//
-// Self-signed is the same posture the runtime already has, so the editor's
-// handling is unchanged. Persisting it matters: regenerating on every boot
-// would change the fingerprint each time the device restarted, training
-// operators to click through certificate warnings.
+// Self-signed HTTPS cert, generated once into the state dir and persisted
+// so the fingerprint stays stable. Owned by the bootloader because
+// recovery must work before the runtime has ever started.
 const (
 	certFileName = "bootloader-cert.pem"
 	keyFileName  = "bootloader-key.pem"
@@ -72,11 +62,8 @@ func LoadOrCreateCertificate(stateDir string) (tls.Certificate, error) {
 	return cert, nil
 }
 
-// generateSelfSigned writes a new P-256 certificate and key.
-//
-// ECDSA rather than RSA: a 2048-bit RSA keygen on a Pi-class CPU takes long
-// enough to notice at first boot, and P-256 is both faster and universally
-// supported by anything that will talk to this port.
+// generateSelfSigned writes a new P-256 ECDSA certificate and key.
+// ECDSA because 2048-bit RSA keygen is slow enough on a Pi to notice.
 func generateSelfSigned(certPath, keyPath string) error {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

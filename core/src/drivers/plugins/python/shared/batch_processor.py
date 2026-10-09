@@ -26,7 +26,6 @@ except ImportError:
     from buffer_accessor import GenericBufferAccessor
     from mutex_manager import MutexManager
 
-
 class BatchProcessor(IBatchProcessor):
     """
     Processes batch operations for optimized buffer access.

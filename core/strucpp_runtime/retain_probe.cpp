@@ -1,43 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// retain_probe.cpp
-//
-// Build-time capability probe for the STruC++ runtime headers that arrive
-// INSIDE the program upload (core/generated/strucpp_runtime/include). Compiled
-// with -fsyntax-only by scripts/Makefile.strucpp and never linked into
-// anything; only its exit status matters.
-//
-// WHY THIS EXISTS
-//
-// runtime_v4_entry.cpp is the one runtime source file compiled against
-// editor-supplied headers, so its dependencies are only as new as the STruC++
-// the uploading editor was built with. The retain exports it added in v4.2.0
-// need `strucpp::retain` and `strucpp::debug::retain_layout_hash`, both of
-// which landed in STruC++ v0.6.5 -- newer than the STruC++ pinned by every
-// OpenPLC Editor released to date. Compiled unconditionally, those exports turn
-// any older editor's upload into a build failure, which is exactly what
-// happened on the v4.2.0 release.
-//
-// The runtime already runs correctly without the exports: image_tables.cpp
-// resolves all four as OPTIONAL symbols and plc_retain_init() stands the store
-// down when they are absent. So the only thing missing was a way to ask, per
-// upload, whether the headers in front of us can supply the API.
-//
-// WHY A COMPILED PROBE AND NOT A GREP
-//
-// The question is literally "does this expression compile against these
-// headers", and the compiler is the only thing that answers it exactly. A grep
-// for `namespace retain` looks equivalent and is not: every STruC++ back to
-// v0.5.5 ships an iec_retain.hpp, and up to v0.6.4 it held an unrelated
-// retain-variable descriptor struct -- so the include resolves, a name-based
-// check can be fooled by a comment, and the real failure surfaces later at the
-// point of use.
-//
-// KEEP IN SYNC: every strucpp::retain / retain_layout_hash name the shim
-// touches must be touched here too, or the probe will pass for a header set the
-// shim cannot actually compile against. A test pins that
-// (tests/pytest/compile/test_retain_capability_probe.py).
+// Build-time capability probe for the strucpp retain API in the
+// upload's headers. -fsyntax-only; only exit status matters. KEEP IN
+// SYNC with every strucpp::retain / retain_layout_hash name the shim
+// touches, else the probe passes for headers the shim will not build. */
 
 #include <cstddef>
 #include <cstdint>

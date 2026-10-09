@@ -43,7 +43,6 @@ from shared.plugin_config_decode.opcua_config_model import (
     VariablePermissions,
 )
 
-
 def _type_default(datatype: str) -> Any:
     """Per-type seed value for newly-created OPC-UA nodes. Replaces
     the removed `initial_value` config field — the first sync cycle
@@ -54,7 +53,6 @@ def _type_default(datatype: str) -> Any:
     `""` where the rest of the plugin uses `b""` — and a WSTRING node is a
     ByteString, so the seed was the wrong Python type for a whole tick."""
     return default_for_opcua(datatype)
-
 
 class AddressSpaceBuilder:
     """

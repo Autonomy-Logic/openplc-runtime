@@ -1,20 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// Command stubruntime stands in for the OpenPLC runtime in integration tests.
-//
-// It serves the two endpoints the bootloader actually depends on -- an
-// unauthenticated /api/version and a healthcheck -- and nothing else. The
-// point is not to emulate the runtime; it is to make the runtime's FAILURE
-// modes reproducible on demand, which the real image cannot be asked to do.
-// A real runtime cannot be told "exit 1 during start-up" or "come up healthy
-// then die three times", and those are exactly the paths where the
-// bootloader's crash accounting and recovery transitions live.
-//
-// The real image is exercised separately in the same harness for the
-// does-it-actually-come-up case, and hardware behaviour (SPI, GPIO, VPP
-// plugins, real SCHED_FIFO latency) is validated on a device, which no
-// container on a developer machine can stand in for.
+// Command stubruntime stands in for the OpenPLC runtime in integration
+// tests. Serves only /api/version and a healthcheck. Lets failure modes
+// (exit 1 at start, die after N healthy scans) be reproduced on demand.
 package main
 
 import (

@@ -4,8 +4,8 @@
 """EtherCAT discovery helpers.
 
 Validation utilities for EtherCAT configuration and interface names.
-Network operations (scan, list-interfaces, test) are handled by the
-native EtherCAT plugin via plugin commands routed through the unix socket.
+Network operations (scan, list-interfaces, test) are handled by EtherDOG, the
+EtherCAT master service, through webserver.etherdog_manager.
 """
 
 import re
@@ -17,6 +17,8 @@ from typing import Any
 # Linux interface names: eth0, enp3s0, eno1, wlan0, br-docker0, veth123abc
 INTERFACE_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
 MAX_INTERFACE_NAME_LENGTH = 15  # IFNAMSIZ - 1
+# Windows (Npcap) device paths: \Device\NPF_{GUID} or \Device\NPF_Loopback
+NPF_DEVICE_PATTERN = re.compile(r"^\\Device\\NPF_(\{[0-9A-Fa-f-]{36}\}|Loopback)$")
 
 
 class DiscoveryStatus(str, Enum):
@@ -69,6 +71,8 @@ def _validate_interface_name(interface: str) -> tuple[bool, str]:
     """
     if not interface:
         return False, "Interface name cannot be empty"
+    if NPF_DEVICE_PATTERN.match(interface):
+        return True, ""
     if len(interface) > MAX_INTERFACE_NAME_LENGTH:
         return False, f"Interface name too long (max {MAX_INTERFACE_NAME_LENGTH} chars)"
     if not INTERFACE_NAME_PATTERN.match(interface):

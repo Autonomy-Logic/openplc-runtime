@@ -1,6 +1,6 @@
 # Review Guidelines
 
-Apply the full checklist in `docs/pr-reviews/PR_REVIEW_CHECKLIST.md`. Priorities:
+Apply the shared review process maintained outside the repo. Priorities for this runtime:
 
 - Dual-process boundaries hold: PLC core (C/C++) and webserver (Python) communicate only via the documented IPC commands (`core/src/plc_app/unix_socket.c`).
 - Real-time safety in the scan cycle: no blocking calls, allocation, or logging in the hot path.

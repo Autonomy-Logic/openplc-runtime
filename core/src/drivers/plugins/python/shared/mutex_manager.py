@@ -22,7 +22,6 @@ except ImportError:
     # Fall back to absolute imports (when testing standalone)
     from component_interfaces import IMutexManager
 
-
 class MutexManager(IMutexManager):
     """
     Manages mutex operations for thread-safe buffer access.

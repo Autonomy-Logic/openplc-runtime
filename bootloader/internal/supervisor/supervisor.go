@@ -1,28 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-// Package supervisor owns the runtime container's lifecycle.
+// Package supervisor owns the runtime container's lifecycle. Reconciles
+// the container at boot, blocks on the Docker events stream, restarts
+// on crash, enters recovery on crash-loop.
 //
-// This is the part of the bootloader that decides what the runtime container
-// should be doing: at boot it reconciles that container into existence, then
-// sits blocked on the Docker events stream and does nothing until something
-// happens. When the runtime dies it restarts it, and when it dies repeatedly
-// it stops trying and enters recovery, so an operator can reach the device
-// from the editor instead of the bootloader hammering a runtime that will
-// never come up.
-//
-// Two boundaries are deliberate and easy to get wrong:
-//
-//   - Health means the runtime WEBSERVER came up. Whether plc_main is running,
-//     whether a program is loaded, and whether that program errors are all the
-//     webserver's concern -- it already restarts plc_main and drops to safe
-//     mode on rapid crashes. If the bootloader looked at PLC state, a user
-//     uploading broken logic would trigger a runtime recovery, which would be
-//     a spectacular way to turn a program bug into a device outage.
-//
-//   - There is no automatic rollback. A failed update or a crash-loop stops
-//     and waits for a human. Choosing a version is a decision with physical
-//     consequences, and guessing wrong twice is worse than stopping once.
+//   - Health means the runtime webserver came up. PLC state is the
+//     webserver's concern; caring about it here would turn a bad
+//     program into a device outage.
+//   - No automatic rollback. A failed update or crash-loop stops and
+//     waits for a human.
 package supervisor
 
 import (
@@ -72,13 +59,8 @@ type Status struct {
 	HealthSource string    `json:"healthSource,omitempty"`
 }
 
-// DockerClient is the slice of the Docker API the supervisor uses.
-//
-// An interface rather than *dockerapi.Client so the state machine can be
-// tested directly. The subtle logic here is crash accounting -- distinguishing
-// an exit we asked for from one we did not -- and that is exactly the kind of
-// thing that is wrong in a way no integration test notices until a device
-// drops into recovery during its first successful update.
+// DockerClient is the Docker API slice the supervisor uses. An
+// interface so the crash-accounting state machine is unit-testable.
 type DockerClient interface {
 	Ping(ctx context.Context) error
 	InspectContainer(ctx context.Context, name string) (*dockerapi.ContainerInspect, error)
@@ -87,10 +69,8 @@ type DockerClient interface {
 	StopContainer(ctx context.Context, name string, grace time.Duration) error
 	RemoveContainer(ctx context.Context, name string, force bool) error
 	StreamEvents(ctx context.Context, name string, handle func(dockerapi.Event)) error
-	// Image access, so the supervisor can fetch a runtime it has been told to
-	// run but does not have. Needed on a fresh install -- install.sh writes
-	// the spec and starts the bootloader without pulling anything -- and
-	// after a data wipe or an operator editing the spec by hand.
+	// Image access: the supervisor fetches a runtime it has been told to
+	// run but does not have (fresh install, data wipe, hand-edited spec).
 	InspectImage(ctx context.Context, ref string) (*dockerapi.ImageInfo, error)
 	PullImage(ctx context.Context, ref string, onProgress func(dockerapi.PullProgress)) error
 }
@@ -170,10 +150,8 @@ type Supervisor struct {
 	mu sync.Mutex
 	// status is the current externally visible condition.
 	status Status
-	// expectStop suppresses crash accounting while we are deliberately taking
-	// the container down. Counted rather than boolean: an update stops the
-	// container and a concurrent reconcile must not clear the suppression
-	// early, which would make our own stop look like a crash.
+	// expectStop suppresses crash accounting during a deliberate stop.
+	// Counted so a concurrent reconcile cannot clear it early.
 	expectStop int
 
 	// preUpdateState is what BeginUpdate displaced, so an update that changes
@@ -281,12 +259,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	return s.watch(ctx)
 }
 
-// watch consumes the events stream, reconnecting on failure.
-//
-// Every reconnect re-reconciles. The stream can only report what happened
-// while it was open, so a gap -- most often the daemon restarting -- may hide
-// a container exit. Re-inspecting is the only way to be sure the world still
-// matches what we believe.
+// watch consumes the events stream and reconnects on failure. Every
+// reconnect also re-reconciles: the stream can hide a container exit
+// during a gap (daemon restart).
 func (s *Supervisor) watch(ctx context.Context) error {
 	const reconnectDelay = 2 * time.Second
 	for {
@@ -308,15 +283,9 @@ func (s *Supervisor) watch(ctx context.Context) error {
 		case <-time.After(reconnectDelay):
 		}
 
-		// Re-sync before trusting the new stream -- but NOT while recovery or
-		// an update owns the runtime.
-		//
-		// Reconcile starts any stopped container it finds. In recovery that
-		// would restart a runtime the supervisor deliberately stopped, flip
-		// the state to healthy and disable discovery, with no operator
-		// involved -- a daemon restart or a socket hiccup was enough. During
-		// an update it would race the updater's own Reconcile, and the loser
-		// of the create/remove contention fails the update into recovery.
+		// Re-sync, but NOT while recovery or an update owns the runtime:
+		// Reconcile would restart a deliberately-stopped container or
+		// race the updater's own Reconcile.
 		s.mu.Lock()
 		state := s.status.State
 		s.mu.Unlock()
@@ -426,13 +395,9 @@ func (s *Supervisor) handleWedged(ctx context.Context) {
 	}
 }
 
-// Reconcile brings the runtime container to the desired state and is safe to
-// call at any time.
-//
-// Adoption is the important property: a running healthy container is left
-// exactly as it is. The bootloader restarts (its own crash, a self-update) far
-// more often than the runtime does, and a reconcile that recreated or bounced
-// a working runtime would turn a bootloader hiccup into a plant outage.
+// Reconcile brings the runtime container to the desired state; safe to
+// call at any time. Adoption is the point: a running healthy container
+// is left exactly as it is, so a bootloader restart does not bounce it.
 func (s *Supervisor) Reconcile(ctx context.Context) error {
 	inspect, err := s.docker.InspectContainer(ctx, s.cfg.ContainerName)
 	switch {
@@ -453,19 +418,9 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	s.status.Image = inspect.Config.Image
 	s.mu.Unlock()
 
-	// Does the existing container actually match what the spec now asks for?
-	//
-	// This is what makes Reconcile reconcile rather than merely "start
-	// whatever is there". A container is created from an image reference and
-	// keeps it for life, so after a version change the existing one is the OLD
-	// version -- and the branch below would have happily restarted it and
-	// reported success. The update then appeared to work while the device kept
-	// running the version it started with, which is precisely the bug the
-	// integration suite caught.
-	//
-	// It also covers an operator editing the spec by hand (a board mount, an
-	// env var) and restarting the bootloader: the container is rebuilt from
-	// the spec instead of silently keeping the old configuration.
+	// A container keeps its image for life. After a version change the
+	// existing one is the OLD version, so Reconcile must replace it, not
+	// just restart it, otherwise the update silently has no effect.
 	desired := s.spec.ImageRef()
 	if stale, reason := s.containerIsStale(ctx, inspect, desired); stale {
 		s.log.Info("runtime container needs replacing, recreating",
@@ -512,26 +467,19 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	}
 }
 
-// containerIsStale reports whether the running container needs replacing, and
-// why. The reason is logged, so an unexpected recreate can be traced.
-//
-// Compares resolved image IDs, not tag strings. A container pins its image by
-// ID, so a re-pull of the same tag can leave the container on the OLD layers
-// while Config.Image still reads as a match -- which made "reinstall the
-// current version", the documented repair path, silently a no-op that started
-// the very layers the operator was trying to replace.
-//
-// The tag comparison stays as the first check because it is free and catches
-// the ordinary version change; the ID lookup only runs when the tags agree.
+// containerIsStale reports whether the running container needs
+// replacing, and why. Compares resolved image IDs (not tags) because a
+// re-pull of the same tag can leave the container on the OLD layers.
 func (s *Supervisor) containerIsStale(
 	ctx context.Context, inspect *dockerapi.ContainerInspect, desired string,
 ) (bool, string) {
 	if inspect.Config.Image != desired {
 		return true, "image tag differs from the desired one"
 	}
-	// A pre-RTOP-292 container reports a container id and the image can match,
-	// so nothing else notices. Latched: it alone reads what the daemon reports
-	// back, which an engine could omit and loop forever.
+	// A container with a private UTS namespace reports a container id,
+	// and the image can still match, so nothing else notices. Latched:
+	// it alone reads what the daemon reports back, which an engine
+	// could omit and loop forever.
 	if !s.utsRecreateDone() && inspect.HostConfig.UTSMode != runtimespec.UTSModeHost {
 		return true, "container does not share the host UTS namespace, so " +
 			"discovery would report a container id as the device name"
@@ -565,11 +513,9 @@ func (s *Supervisor) markUTSRecreated() {
 	s.utsRecreated = true
 }
 
-// recreate replaces the container, stopping it gracefully first if it runs.
-//
-// create() force-removes, and a SIGKILL skips the runtime's SIGTERM handler
-// that flushes retained variables. The kill's exit would also arrive as an
-// unmarked death and be counted as a crash.
+// recreate replaces the container, stopping gracefully first so the
+// runtime's SIGTERM handler flushes retained variables (create's
+// force-remove sends SIGKILL and would also look like a crash).
 func (s *Supervisor) recreate(ctx context.Context, inspect *dockerapi.ContainerInspect) error {
 	if inspect != nil && inspect.State.Running {
 		if err := s.Stop(ctx); err != nil {
@@ -608,17 +554,9 @@ func (s *Supervisor) create(ctx context.Context) error {
 	return nil
 }
 
-// ensureImage pulls imageRef when it is not already present.
-//
-// The bootloader is what fetches the runtime on a fresh device: install.sh
-// writes the spec and starts the bootloader without pulling anything, so
-// without this a brand-new install would go straight to recovery with "No
-// such image". It also covers a spec that names a version whose image was
-// retired, or one an operator edited by hand.
-//
-// Only pulls when the image is absent. A present image is never re-pulled --
-// that would turn every restart into a network round trip, and on a slow link
-// into minutes of delay before a PLC that was working comes back.
+// ensureImage pulls imageRef only when it is not already present.
+// Fresh installs rely on this (install.sh pulls nothing). Never
+// re-pulls a present image: a working PLC must not pay for a restart.
 func (s *Supervisor) ensureImage(ctx context.Context, imageRef string) error {
 	if _, err := s.docker.InspectImage(ctx, imageRef); err == nil {
 		return nil
@@ -649,15 +587,9 @@ func (s *Supervisor) ensureImage(ctx context.Context, imageRef string) error {
 func (s *Supervisor) startAndConfirm(ctx context.Context) error {
 	s.setState(StateStarting, "starting runtime")
 
-	// Release anything the bootloader holds that the runtime is about to
-	// claim -- the UDP discovery port -- BEFORE the container starts.
-	//
-	// Waiting for the Healthy transition was too late: the runtime binds
-	// 33333 once at start-up with SO_REUSEADDR and never retries, the
-	// bootloader's responder binds it without, and Linux only shares a UDP
-	// port when every socket asked to. So the runtime got EADDRINUSE, logged a
-	// warning, and the device was undiscoverable after every recovery until
-	// its next restart.
+	// Release the UDP discovery port BEFORE the container starts: the
+	// runtime binds it once with SO_REUSEADDR and never retries, so a
+	// late release leaves the device undiscoverable until next restart.
 	if s.onRuntimeStarting != nil {
 		s.onRuntimeStarting()
 	}
@@ -668,11 +600,9 @@ func (s *Supervisor) startAndConfirm(ctx context.Context) error {
 	return s.awaitHealthy(ctx)
 }
 
-// awaitHealthy polls until the runtime is healthy or StartTimeout elapses.
-//
-// Polling, not events: a container that never becomes healthy emits no event
-// to wait for, so a timeout is the only way to notice. The poll is on the
-// bootloader's own clock and touches nothing in the scan path.
+// awaitHealthy polls until the runtime is healthy or StartTimeout
+// elapses. Polling (not events) because a never-healthy container emits
+// no event.
 func (s *Supervisor) awaitHealthy(ctx context.Context) error {
 	deadline := time.Now().Add(s.cfg.StartTimeout)
 	const pollInterval = 2 * time.Second
@@ -734,16 +664,9 @@ func (s *Supervisor) confirmByProbe(ctx context.Context) error {
 	return nil
 }
 
-// markHealthy records steady state and clears the restart backoff.
-//
-// It deliberately does NOT clear the crash window. A crash-loop is a runtime
-// that dies, comes back up fine, and dies again -- which is the common shape,
-// because a program that faults on load lets the webserver start before it
-// takes the process down. Resetting the count on every healthy start would
-// zero the evidence between each crash, so the loop could never reach the
-// threshold and the supervisor would restart forever instead of handing the
-// device to an operator. The window forgets by aging entries out, which is all
-// the forgetting that is wanted: crashes weeks apart never accumulate.
+// markHealthy records steady state and clears restart backoff. It does
+// NOT clear the crash window: the window ages entries out, which is the
+// only forgetting wanted (otherwise die/healthy/die loops never trip).
 func (s *Supervisor) markHealthy(source string) {
 	s.mu.Lock()
 	s.consecutiveFailures = 0
@@ -752,12 +675,9 @@ func (s *Supervisor) markHealthy(source string) {
 	s.setState(StateHealthy, "")
 }
 
-// enterRecovery stops the runtime and switches to recovery mode.
-//
-// Stopping first is what makes UDP discovery exclusive: only one service on
-// the host may answer the broadcast, and recovery is defined as "the runtime
-// is not running", so the responder can be switched on without ever racing
-// the runtime's own.
+// enterRecovery stops the runtime, then switches to recovery mode. The
+// stop first makes the UDP discovery responder exclusive (only one
+// service on the host answers the broadcast).
 func (s *Supervisor) enterRecovery(ctx context.Context, reason string) {
 	s.markExpectedStop()
 	if err := s.docker.StopContainer(ctx, s.cfg.ContainerName, s.cfg.StopGrace); err != nil {
@@ -778,10 +698,8 @@ func (s *Supervisor) EnterRecovery(ctx context.Context, reason string) {
 	s.enterRecovery(ctx, reason)
 }
 
-// BeginUpdate claims the supervisor for a version change, suppressing crash
-// accounting for the stop that is about to happen. It returns an error when an
-// update is already running: two concurrent swaps of the same container is not
-// a situation worth trying to make safe.
+// BeginUpdate claims the supervisor for a version change and suppresses
+// crash accounting for the imminent stop. Refuses concurrent updates.
 func (s *Supervisor) BeginUpdate() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -799,14 +717,9 @@ func (s *Supervisor) BeginUpdate() error {
 	return nil
 }
 
-// AbortUpdate undoes BeginUpdate for an update that changed nothing.
-//
-// The alternative was calling Reconcile, which re-derived the state by acting
-// on the device: from recovery -- the common case, where an operator typed a
-// version that does not exist -- it found the stopped container and started
-// it, leaving recovery with no operator decision. With the container absent it
-// set "starting", the pull failed again, and the device reported starting
-// indefinitely. "Nothing was changed" has to include the supervisor's state.
+// AbortUpdate restores the pre-BeginUpdate state. Does not Reconcile:
+// re-deriving state would act on the device and could silently exit
+// recovery (where the operator typed a non-existent version).
 func (s *Supervisor) AbortUpdate() {
 	s.mu.Lock()
 	if s.expectStop > 0 {

@@ -1,34 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Autonomy®
 
-/*
- * test_located_globals.c — unit tests for located_globals_join_ex(), which
- * resolves which locatedVars[] entries are CONFIGURATION VAR_GLOBAL ... AT by
- * joining against the .so's locatedGlobals[] on pointer identity.
- *
- * Why this exists: the runtime used to derive the config-scope set from POSITION,
- * assuming strucpp emitted [program-local ...][config globals ...] and treating
- * the tail uncovered by any program's located_range() as the globals. strucpp
- * emits config globals FIRST, so the program-local block is always the tail:
- * `covered_end` reached locatedVarsCount as soon as any POU declared a located
- * variable, the count collapsed to 0, and EVERY located configuration global
- * (%MX, %QX, %MW alike) silently stopped being synced. Reported on the forum as
- * "%MX locations now invalid - Runtime v4".
- *
- * The behaviour locked here:
- *   - the join follows pointer identity only, so the result is identical whether
- *     globals come first, last, or interleaved (ordering_* cases);
- *   - out_matched reports how many locatedGlobals[] entries found a located
- *     variable, so the caller can detect the two generated arrays disagreeing;
- *   - unbound (NULL) descriptors are skipped rather than guessed at;
- *   - an absent/empty globals array yields zero config-scope entries, which is
- *     the "older program" degradation path.
- *
- * Build (standalone, no runtime deps):
- *   cc -std=c11 -Wall -Wextra -I core/src/plc_app \
- *      tests/test_located_globals.c core/src/plc_app/located_globals.c \
- *      -o /tmp/test_located_globals && /tmp/test_located_globals
- */
+/* Unit tests for located_globals_join_ex(). Pin: join is by pointer
+ * identity, order-independent; out_matched<globals_count signals the
+ * generated arrays disagree; NULLs are skipped; empty globals → 0. */
 
 #include <stdio.h>
 #include <stddef.h>
@@ -45,10 +20,6 @@ static int g_failures = 0;
         }                                                                      \
     } while (0)
 
-/* ---------------------------------------------------------------------------
- * Stand-in for locatedVars[]: an array of storage pointers. Distinct dummy
- * objects give distinct addresses, exactly as real IEC storage does.
- * ------------------------------------------------------------------------- */
 #define MAX_VARS 8
 static char  g_storage[MAX_VARS];          /* distinct addresses */
 static const void *g_lv[MAX_VARS];         /* the "locatedVars[i].pointer" values */
@@ -67,10 +38,6 @@ static void reset(void)
     for (uint32_t i = 0; i < MAX_VARS; ++i) g_lv[i] = NULL;
 }
 
-/* ---------------------------------------------------------------------------
- * The regression: config globals FIRST, one program-local var last. Under the
- * old positional rule this produced zero config entries.
- * ------------------------------------------------------------------------- */
 static void test_globals_first(void)
 {
     printf("test_globals_first (the reported regression)\n");
@@ -123,10 +90,6 @@ static void test_ordering_independence(void)
     }
 }
 
-/* ---------------------------------------------------------------------------
- * Multi-program shape that also collapsed to zero under the old rule:
- * 3 globals, then two programs with two located vars each.
- * ------------------------------------------------------------------------- */
 static void test_multi_program(void)
 {
     printf("test_multi_program\n");
@@ -204,11 +167,6 @@ static void test_degradation_and_edges(void)
     }
 }
 
-/* ---------------------------------------------------------------------------
- * Inconsistency detection: a locatedGlobals[] entry that matches no located
- * variable means the two generated arrays disagree. The join must report it via
- * out_matched rather than silently dropping it.
- * ------------------------------------------------------------------------- */
 static void test_inconsistency_detected(void)
 {
     printf("test_inconsistency_detected\n");
@@ -227,10 +185,6 @@ static void test_inconsistency_detected(void)
           matched);
 }
 
-/* ---------------------------------------------------------------------------
- * Unbound descriptors: a located variable whose pointer was never populated
- * (e.g. a program never instantiated) must be skipped, not guessed at.
- * ------------------------------------------------------------------------- */
 static void test_unbound_skipped(void)
 {
     printf("test_unbound_skipped\n");

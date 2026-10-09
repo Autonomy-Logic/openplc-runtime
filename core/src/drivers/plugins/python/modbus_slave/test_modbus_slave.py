@@ -36,17 +36,11 @@ def runtime_args():
 
     return ra
 
-
 def assert_block_zeroed(block, size):
     """Ensure the ModbusSparseDataBlock-like block returns zeros for fresh region."""
     assert isinstance(block, ModbusSparseDataBlock)
     assert block.getValues(0, size) == [0] * size
 
-
-# -----------------------------------------------------------------------
-# Fake SafeBufferAccess used to observe locking behavior.
-# We patch simple_modbus.SafeBufferAccess to return this object inside blocks
-# -----------------------------------------------------------------------
 class ObservingSafeBufferAccess:
     """
     Test double for SafeBufferAccess that matches the REAL method signatures used
@@ -130,8 +124,6 @@ class ObservingSafeBufferAccess:
             return (0, "Invalid buffer index")
         return (int(self.args.analog_output[index]) & 0xFFFF, "Success")
 
-
-
 # -----------------------------------------------------------------------
 # Data Block tests (use ObservingSafeBufferAccess patched in)
 # -----------------------------------------------------------------------
@@ -157,7 +149,6 @@ def test_coils_read_write_and_locking(runtime_args):
         assert sba.acquire_count >= 1
         assert sba.release_count >= 1
 
-
 def test_coils_invalid_ranges_return_zero(runtime_args):
     with patch("simple_modbus.SafeBufferAccess", new=ObservingSafeBufferAccess):
         block = simple_modbus.OpenPLCCoilsDataBlock(runtime_args, num_coils=8)
@@ -170,7 +161,6 @@ def test_coils_invalid_ranges_return_zero(runtime_args):
         block.setValues(1000, [1, 1])
         assert runtime_args.bool_output.count(1) == 0
 
-
 def test_discrete_inputs_behavior(runtime_args):
     with patch("simple_modbus.SafeBufferAccess", new=ObservingSafeBufferAccess):
         blk = simple_modbus.OpenPLCDiscreteInputsDataBlock(runtime_args, num_inputs=8)
@@ -181,7 +171,6 @@ def test_discrete_inputs_behavior(runtime_args):
         val = blk.getValues(3, 1)
         assert val == [1]
 
-
 def test_holding_registers_masking(runtime_args):
     with patch("simple_modbus.SafeBufferAccess", new=ObservingSafeBufferAccess):
         blk = simple_modbus.OpenPLCHoldingRegistersDataBlock(runtime_args, num_registers=8)
@@ -191,7 +180,6 @@ def test_holding_registers_masking(runtime_args):
         stored = blk.getValues(1, 1)[0]
         assert stored == (70000 & 0xFFFF)
 
-
 def test_input_registers_out_of_range(runtime_args):
     with patch("simple_modbus.SafeBufferAccess", new=ObservingSafeBufferAccess):
         blk = simple_modbus.OpenPLCInputRegistersDataBlock(runtime_args, num_registers=4)
@@ -200,7 +188,6 @@ def test_input_registers_out_of_range(runtime_args):
         # Ensure that for a very large start we get zeros
         got = blk.getValues(10, 3)
         assert got == [0, 0, 0]
-
 
 # -----------------------------------------------------------------------
 # SafeBufferAccess concurrency test (basic)
@@ -230,7 +217,6 @@ def test_concurrent_writes_are_consistent(runtime_args):
     # after concurrent increments the final value should be deterministic (sum mod 2^16)
     expected = (1 + 2 + 3 + 4) * 200 & 0xFFFF
     assert runtime_args.analog_output[0] == expected
-
 
 # -----------------------------------------------------------------------
 # Verify that blocks do not raise on odd inputs (robustness)

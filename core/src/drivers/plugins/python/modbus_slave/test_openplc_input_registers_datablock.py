@@ -9,7 +9,6 @@ from core.src.drivers.plugins.python.modbus_slave.simple_modbus import (
     OpenPLCInputRegistersDataBlock
 )
 
-
 # -----------------------------
 # Advanced Observing SBA mock
 # -----------------------------
@@ -80,7 +79,6 @@ class AdvancedObservingSBA:
         if 0 <= index < self.length:
             self._buf[index] = int(value) & 0xFFFF
 
-
 # -----------------------------
 # Fixtures
 # -----------------------------
@@ -97,14 +95,12 @@ def runtime_args():
             return True, ""
     return FakeRuntimeArgs()
 
-
 @pytest.fixture
 def runtime_args_invalid():
     class BadRuntimeArgs:
         def validate_pointers(self):
             return False, "invalid"
     return BadRuntimeArgs()
-
 
 # -----------------------------
 # Tests
@@ -121,7 +117,6 @@ def test_datablock_initialization(runtime_args):
     assert hasattr(db, "safe_buffer_access")
     assert db.safe_buffer_access.is_valid is True
 
-
 def test_datablock_invalid_sba(runtime_args_invalid, capfd):
     # constructing with invalid runtime args should produce a warning and mark SBA invalid
     db = OpenPLCInputRegistersDataBlock(runtime_args_invalid, num_registers=4)
@@ -129,7 +124,6 @@ def test_datablock_invalid_sba(runtime_args_invalid, capfd):
     out = capfd.readouterr().out
     assert "Warning" in out
     assert db.safe_buffer_access.is_valid is False
-
 
 def test_datablock_read_from_sba(runtime_args):
     # Patch SafeBufferAccess to use our advanced mock with values [10,20,30,40,...]
@@ -152,7 +146,6 @@ def test_datablock_read_from_sba(runtime_args):
         read_indices = [e[1] for e in read_events]
         assert read_indices == [0, 1, 2, 3]
 
-
 def test_datablock_read_out_of_range(runtime_args):
     with patch(
         "core.src.drivers.plugins.python.modbus_slave.simple_modbus.SafeBufferAccess",
@@ -169,11 +162,9 @@ def test_datablock_read_out_of_range(runtime_args):
         # it correctly returns 0 without calling the SBA mock.
         # REMOVED ASSERTION: assert any(e[0] == "read_oor" and e[1] == 4 for e in sba.trace)
 
-
 def test_read_zero_length(runtime_args):
     db = OpenPLCInputRegistersDataBlock(runtime_args, num_registers=4)
     assert db.getValues(1, 0) == []
-
 
 def test_read_negative_index(runtime_args):
     with patch(
@@ -186,7 +177,6 @@ def test_read_negative_index(runtime_args):
         vals = db.getValues(-5, 2)
         assert vals == [0, 0]
 
-
 def test_read_past_modbus_block_size(runtime_args):
     with patch(
         "core.src.drivers.plugins.python.modbus_slave.simple_modbus.SafeBufferAccess",
@@ -196,7 +186,6 @@ def test_read_past_modbus_block_size(runtime_args):
 
         vals = db.getValues(10, 3)
         assert vals == [0, 0, 0]
-
 
 def test_overlapping_reads_consistent(runtime_args):
     with patch(
@@ -217,7 +206,6 @@ def test_overlapping_reads_consistent(runtime_args):
         # should contain 1,2 twice each (order preserved)
         assert read_indices.count(1) >= 2
         assert read_indices.count(2) >= 2
-
 
 def test_sba_invalid_returns_zero(runtime_args):
     # create an SBA subclass that reports invalid

@@ -2,25 +2,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Autonomy®
 
-#
-# compile.sh — build the user PLC program into core/build/new_libplc.so
-#
-# This script is the entry point the runtime's webserver calls after
-# extracting an upload into core/generated/. The actual build rules
-# live in scripts/Makefile.strucpp — invoking `make` lets us:
-#
-#   - run per-file compilation in parallel via `-j$(nproc)` (Pi 4 = 4×,
-#     workstations more);
-#   - reuse cached .o files automatically when ccache is installed,
-#     so incremental rebuilds (one POU edited) drop from minutes to
-#     a few seconds;
-#   - adapt to whatever .cpp set STruC++'s codegen split emitted —
-#     the Makefile uses `wildcard $(GENERATED_DIR)/*.cpp` rather than
-#     a hard-coded list.
-#
-# The MatIEC-era files (Config0.c, Res0.c, debug.c, glueVars.c) are
-# rejected with a clear error so stale uploads fail loudly instead of
-# silently building against the old pipeline.
+# compile.sh builds the user PLC program into core/build/new_libplc.so.
+# Entry point from the webserver after it extracts core/generated/.
+# MatIEC-era files are rejected explicitly so stale uploads fail loudly.
 
 set -euo pipefail
 
@@ -56,46 +40,16 @@ check_required_files() {
 
 check_required_files
 
-# Build the program — actual rules live in scripts/Makefile.strucpp.
-#
-# Pick the build parallelism (`-j`) as min(CPU cap, memory cap). Both
-# are real constraints on the Pi-class targets we ship to, and either
-# bound alone has caused field outages.
-#
-# CPU cap = nproc - 1.  On a 4-core Pi 4 `-j$(nproc)` saturates every
-# core with g++ and starves the webserver / runtime monitor of CPU
-# during the compile; combined with the Pi's slow SD-card swap, that
-# made port-8443 RST new connections for 60+ seconds while the compile
-# thrashed. Reserving one core for the Flask webserver, the runtime
-# monitor thread, and any plugins keeps the device responsive
-# throughout — only ~25 % slower per build on a Pi 4.
-#
-# Memory cap = total RAM (rounded to nearest GB) — one parallel job
-# per gigabyte.  Each cc1plus invocation on OpenPLC-generated TUs
-# peaks at ~500–700 MB on a Pi 4.  With `-j3` on a 2 GB device,
-# three concurrent cc1pluses exhaust RAM + swap and the system enters
-# a swap-thrash deadlock where no compile process makes progress —
-# requires a physical reboot to recover on a headless target.
-# Capping at one job per GB gives ~500 MB per cc1plus + headroom for
-# the kernel, the webserver, the PLC core, and the plugins.  The
-# `+512` before dividing rounds MemTotal to the nearest GB so a 2 GB
-# Pi (which reports ~1.8 GiB usable after kernel reserves) doesn't
-# get wrongly demoted to -j1.
-#
-# Floor at 1 so single-core or sub-GB targets don't end up with `-j0`
-# (which means "unlimited" in GNU make, i.e. fork-bomb).
-#
-# Worked examples:
-#   Pi 4 2 GB (nproc=4): cpu=3, mem=2 → -j2
-#   Pi 4 4 GB (nproc=4): cpu=3, mem=4 → -j3
-#   Pi 4 8 GB (nproc=4): cpu=3, mem=8 → -j3
-#   1 GB / 1 core VM:    cpu=1, mem=1 → -j1
-#   Workstation 8c/16GB: cpu=7, mem=16 → -j7
+# Build parallelism = min(nproc-1, RAM_GB). The CPU bound keeps the
+# webserver responsive; the memory bound avoids swap-thrash from
+# cc1plus peaks (~500-700 MB each on Pi-class targets). Floor at 1.
 CPU_JOBS=$(nproc)
 [ "$CPU_JOBS" -gt 1 ] && CPU_JOBS=$((CPU_JOBS - 1))
 MEM_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
 MEM_MB=$((MEM_KB / 1024))
+# Round to nearest GB so a 2 GB Pi (~1.8 GiB) does not demote to -j1.
 MEM_JOBS=$(( (MEM_MB + 512) / 1024 ))
+# Floor at 1: -j0 in GNU make means unlimited.
 [ "$MEM_JOBS" -lt 1 ] && MEM_JOBS=1
 if [ "$CPU_JOBS" -lt "$MEM_JOBS" ]; then
     JOBS=$CPU_JOBS
@@ -104,26 +58,12 @@ else
 fi
 make -j"$JOBS" -f scripts/Makefile.strucpp
 
-# -----------------------------------------------------------------------
-# Compile VPP plugin if source is present in the uploaded project
-#
-# The editor ships an optional vpp_plugin/ subtree alongside the IEC
-# program when the project includes a VPP package. The plugin builds
-# into BUILD_PATH (next to new_libplc.so) so the runtime's plugin
-# loader picks it up under the same lookup rules as built-ins.
-#
-# checksum.sha256 is a RECOMPILATION CACHE KEY: the editor writes it over the
-# files it copied, it travels inside the upload, and it is only ever compared
-# against a copy of itself saved by a previous build -- to decide whether the
-# plugin source changed since the last compile.
-# -----------------------------------------------------------------------
+# Build the optional VPP plugin subtree. checksum.sha256 is the
+# recompilation cache key; the editor writes it, this build compares.
 VPP_PLUGIN_DIR="$GENERATED_DIR/vpp_plugin"
 VPP_CHECKSUM_FILE="$VPP_PLUGIN_DIR/checksum.sha256"
-# VPP outputs land in a dedicated subdir of BUILD_PATH so the cleanup
-# glob below can scope itself to VPP-only artefacts. If a future built-in
-# plugin ships as a .so dropped into BUILD_PATH directly, the old
-# "$BUILD_PATH/lib*_plugin.so" glob would have rm'd it on every upload
-# without a vpp_plugin subtree present.
+# VPP outputs in a dedicated subdir so cleanup can scope to VPP-only
+# artefacts without touching other plugins dropped into BUILD_PATH.
 VPP_OUTPUT_DIR="$BUILD_PATH/vpp"
 VPP_CACHED_CHECKSUM="$VPP_OUTPUT_DIR/checksum.sha256"
 # Seal the loader checks before dlopen (core/src/drivers/vpp_plugin_seal.c).
@@ -164,12 +104,9 @@ if [ -d "$VPP_PLUGIN_DIR" ] && [ -f "$VPP_PLUGIN_DIR/Makefile" ]; then
     if [ -f "$VPP_CHECKSUM_FILE" ] && [ -f "$VPP_CACHED_CHECKSUM" ]; then
         if diff -q "$VPP_CHECKSUM_FILE" "$VPP_CACHED_CHECKSUM" > /dev/null 2>&1; then
             if ls "$VPP_OUTPUT_DIR"/lib*_plugin.so 1>/dev/null 2>&1; then
-                # A cache hit only stands when the SEAL vouches for the
-                # objects on disk (review 2026-08-20, R3): re-blessing
-                # whatever sits in build/vpp/ converted a detected tamper
-                # into a permanent pass on the next re-upload, and an
-                # upgraded runtime with no seal must REBUILD from the
-                # just-extracted tree, never bless unknown bytes.
+                # Cache hit only stands when the SEAL vouches for the
+                # on-disk objects; otherwise rebuild from the uploaded
+                # tree so unknown bytes are never blessed.
                 if vpp_object_seal_matches; then
                     echo "[INFO] VPP plugin source unchanged (checksum match), skipping recompilation"
                     NEEDS_COMPILE=0
@@ -197,12 +134,9 @@ if [ -d "$VPP_PLUGIN_DIR" ] && [ -f "$VPP_PLUGIN_DIR/Makefile" ]; then
         echo "[INFO] VPP plugin compiled successfully"
     fi
 
-    # Record the sha256 of every .so this build produced, so the
-    # plugin loader can refuse an object swapped in AFTER the compile
-    # (core/src/drivers/vpp_plugin_seal.c, checked immediately before dlopen).
-    # ONLY when this run compiled (review 2026-08-20, R3): sealing on the
-    # cache-hit path blessed whatever bytes sat in build/vpp/; the upgrade-
-    # without-seal case is served by the forced recompile above.
+    # Seal every .so this build produced so the loader can refuse an
+    # object swapped in after compile. Only on compile paths: sealing a
+    # cache-hit would bless whatever bytes already sat in build/vpp/.
     if [ "$NEEDS_COMPILE" -eq 1 ]; then
     : > "$VPP_OBJECT_SEAL"
     for so in "$VPP_OUTPUT_DIR"/lib*_plugin.so; do

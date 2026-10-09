@@ -11,7 +11,6 @@ from pymodbus.client import ModbusTcpClient, ModbusSerialClient
 TransportType = Literal["tcp", "rtu"]
 ParityType = Literal["N", "E", "O"]
 
-
 class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
     """Manages Modbus TCP and RTU connections with retry logic."""
 

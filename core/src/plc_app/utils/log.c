@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Autonomy®
 
 #include "log.h"
+#include "rt_mutex.h"
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
@@ -19,6 +20,11 @@ static LogLevel current_level    = LOG_LEVEL_INFO;
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 int socket_fd                    = -1;
 bool print_logs                  = false;
+
+__attribute__((constructor)) static void log_mutex_init_pi(void)
+{
+    rt_mutex_upgrade_static(&log_mutex, "log_mutex");
+}
 
 extern volatile sig_atomic_t keep_running;
 
@@ -172,11 +178,31 @@ static void log_write(LogLevel level, const char *fmt, va_list args)
         va_end(args_copy);
     }
 
-    // Format the log message in JSON format
-    int n =
-        snprintf(log_msg, sizeof(log_msg), "{\"timestamp\":\"%ld\",\"level\":\"%s\",\"message\":\"",
-                 (long)now, level_to_str(level));
-    n += vsnprintf(log_msg + n, sizeof(log_msg) - n, fmt, args);
+    // Format the log message in JSON format; the message is escaped so quotes cannot break it
+    char text[LOG_MESSAGE_SIZE];
+    vsnprintf(text, sizeof(text), fmt, args);
+    int head = snprintf(log_msg, sizeof(log_msg),
+                        "{\"timestamp\":\"%ld\",\"level\":\"%s\",\"message\":\"", (long)now,
+                        level_to_str(level));
+    size_t n = head > 0 ? (size_t)head : 0;
+    const size_t tail = sizeof("\"}\n");
+    for (const char *c = text; *c != '\0' && n + tail + 6 < sizeof(log_msg); c++)
+    {
+        unsigned char ch = (unsigned char)*c;
+        if (ch == '"' || ch == '\\')
+        {
+            log_msg[n++] = '\\';
+            log_msg[n++] = (char)ch;
+        }
+        else if (ch < 0x20)
+        {
+            n += (size_t)snprintf(log_msg + n, sizeof(log_msg) - n, "\\u%04x", ch);
+        }
+        else
+        {
+            log_msg[n++] = (char)ch;
+        }
+    }
     snprintf(log_msg + n, sizeof(log_msg) - n, "\"}\n");
 
     // Send to unix socket if connected
@@ -257,4 +283,53 @@ void log_error(const char *fmt, ...)
     va_start(args, fmt);
     log_write(LOG_LEVEL_ERROR, fmt, args);
     va_end(args);
+}
+
+void log_emergency(const char *msg)
+{
+    char line[LOG_MESSAGE_SIZE];
+    int n = snprintf(line, sizeof(line), "[FATAL] %s\n", msg);
+    if (n > 0)
+    {
+        size_t len = (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1;
+        if (write(STDERR_FILENO, line, len) < 0)
+        {
+            /* Nothing else to report to. */
+        }
+    }
+
+    if (pthread_mutex_trylock(&log_mutex) != 0)
+        return;
+    if (socket_fd >= 0)
+    {
+        char escaped[LOG_MESSAGE_SIZE / 2];
+        size_t e = 0;
+        for (const char *p = msg; *p && e + 7 < sizeof(escaped); ++p)
+        {
+            unsigned char c = (unsigned char)*p;
+            if (c < 0x20)
+            {
+                e += (size_t)snprintf(escaped + e, sizeof(escaped) - e, "\\u%04x", c);
+                continue;
+            }
+            if (c == '"' || c == '\\')
+                escaped[e++] = '\\';
+            escaped[e++] = (char)c;
+        }
+        escaped[e] = '\0';
+
+        char json[LOG_MESSAGE_SIZE];
+        int m = snprintf(json, sizeof(json),
+                         "{\"timestamp\":\"%ld\",\"level\":\"ERROR\",\"message\":\"%s\"}\n",
+                         (long)time(NULL), escaped);
+        if (m > 0)
+        {
+            size_t len = (size_t)m < sizeof(json) ? (size_t)m : sizeof(json) - 1;
+            if (send(socket_fd, json, len, MSG_DONTWAIT | MSG_NOSIGNAL) < 0)
+            {
+                /* Socket full or gone: stderr already has it. */
+            }
+        }
+    }
+    pthread_mutex_unlock(&log_mutex);
 }

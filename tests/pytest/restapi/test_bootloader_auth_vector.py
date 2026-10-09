@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Autonomy®
 
-"""Python half of the bootloader's shared authentication vector (RTOP-283).
+"""Python half of the bootloader's shared authentication vector.
 
 The bootloader is written in Go and reimplements two formats this codebase owns:
 Werkzeug's PBKDF2 password hash and Flask-JWT-Extended's HS256 access token.

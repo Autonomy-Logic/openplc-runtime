@@ -6,13 +6,6 @@
 #include "unity.h"
 #include <string.h>
 
-// Mock functions for standard library calls used in plugin_config.c
-// Cmock will generate these automatically when we #include "mock_stdlib.h" or similar,
-// but for direct functions like fopen, fgets, etc., we might need to create them manually
-// or use a more generic mock approach if Cmock doesn't handle them out of the box.
-// For simplicity, we'll assume Cmock can handle these or we'll create simple wrappers.
-// Let's start by assuming Cmock handles them. If not, we'll adjust.
-
 // Helper function to create a temporary config file for testing
 static void create_test_config_file(const char *filename, const char *content)
 {
