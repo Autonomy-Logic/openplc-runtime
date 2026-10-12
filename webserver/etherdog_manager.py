@@ -149,6 +149,12 @@ class EtherDogManager:
         # Serialises start, spawn and stop; separate from _lock, which apply_busconfig holds.
         self._lifecycle = threading.Lock()
         self._stopping = threading.Event()
+        # Last EtherDOG hello captured on a command roundtrip. Kept so a client can ask for
+        # the connected runtime's feature set without opening its own control-socket session,
+        # and so the editor's pre-build capability gate has somewhere to read from.
+        self._hello_lock = threading.Lock()
+        self._last_features: list[str] | None = None
+        self._last_hello_version: str | None = None
 
     # --- process lifecycle -------------------------------------------------------------
 
@@ -359,6 +365,7 @@ class EtherDogManager:
                 reply = json.loads(reader.readline() or "{}")
                 if "error" in reply:
                     raise EtherDogUnavailable(reply["error"])
+                self._capture_hello(reply)
                 sock.sendall(json.dumps(request).encode() + b"\n")
                 line = reader.readline()
         except (OSError, ValueError) as e:
@@ -383,6 +390,31 @@ class EtherDogManager:
         except EtherDogUnavailable as e:
             logger.warning("EtherDOG command %s failed: %s", request.get("command"), e)
             return {"error": e.public_message}
+
+    def _capture_hello(self, reply: dict[str, Any]) -> None:
+        """Cache the features and version from the hello reply so the capabilities endpoint
+        can hand them back without a second roundtrip. Pre-R4 EtherDOG does not send either
+        field, so a missing key is kept as None; a non-list features field is ignored."""
+        features_raw = reply.get("features")
+        features = (
+            [str(f) for f in features_raw if isinstance(f, str)]
+            if isinstance(features_raw, list)
+            else None
+        )
+        version_raw = reply.get("version")
+        version = str(version_raw) if isinstance(version_raw, str) else None
+        with self._hello_lock:
+            if features is not None:
+                self._last_features = features
+            if version is not None:
+                self._last_hello_version = version
+
+    def get_last_hello(self) -> tuple[list[str] | None, str | None]:
+        """Last features+version pair captured from an EtherDOG hello, or (None, None) when
+        no hello has succeeded yet. Pre-R4 EtherDOG never fills these fields."""
+        with self._hello_lock:
+            features = list(self._last_features) if self._last_features is not None else None
+            return features, self._last_hello_version
 
     # --- bus configuration -----------------------------------------------------------------
 

@@ -4,11 +4,14 @@
 """Flask Blueprint for Discovery REST endpoints.
 
 Endpoints:
-    GET  /api/discovery/interfaces          - List network interfaces (common)
-    GET  /api/discovery/ethercat/status     - Check if EtherCAT discovery service is available
-    POST /api/discovery/ethercat/scan       - Scan network for EtherCAT slaves (via EtherDOG)
-    POST /api/discovery/ethercat/validate   - Validate EtherCAT configuration
-    POST /api/discovery/ethercat/test       - Test connection to specific EtherCAT slave
+    GET  /api/discovery/interfaces              - List network interfaces (common)
+    GET  /api/discovery/ethercat/status         - Check if EtherCAT discovery service is available
+    GET  /api/discovery/ethercat/capabilities   - EtherDOG features captured on hello
+    POST /api/discovery/ethercat/scan           - Scan network for EtherCAT slaves (via EtherDOG)
+    POST /api/discovery/ethercat/scan-modules   - Scan a modular coupler's 0xF050 module list
+    POST /api/discovery/ethercat/diagnostics    - Per-slave coupler + module diagnostics
+    POST /api/discovery/ethercat/validate       - Validate EtherCAT configuration
+    POST /api/discovery/ethercat/test           - Test connection to specific EtherCAT slave
 """
 
 import json
@@ -62,6 +65,58 @@ def ethercat_status():
     if "error" in result:
         return jsonify({"available": False, "message": f"EtherDOG unavailable: {result['error']}"})
     return jsonify({"available": True, "message": "Discovery service is ready (EtherDOG)"})
+
+
+@discovery_bp.route("/ethercat/capabilities", methods=["GET"])
+@jwt_required()
+def ethercat_capabilities():
+    """
+    Return the EtherDOG feature set captured on the last hello.
+
+    The editor's pre-build capability gate reads this to decide whether the project can
+    be built against the connected runtime. A touch-up `status` roundtrip is sent first
+    so the gate sees fresh features from the current EtherDOG — a cached list could be
+    stale after a runtime upgrade without a page reload.
+    ---
+    tags:
+      - EtherCAT
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Feature set retrieved
+        schema:
+          type: object
+          properties:
+            available:
+              type: boolean
+            features:
+              type: array
+              items:
+                type: string
+              example: ["ethercat.dynamic_alloc", "ethercat.scan_modules"]
+            version:
+              type: string
+              example: 0.5.0
+            message:
+              type: string
+    """
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
+    probe = etherdog.plugin_style_command({"command": "status"}, timeout=5.0)
+    if "error" in probe:
+        return jsonify({
+            "available": False,
+            "features": [],
+            "version": None,
+            "message": probe["error"],
+        }), 200
+    features, version = etherdog.get_last_hello()
+    return jsonify({
+        "available": True,
+        "features": features if features is not None else [],
+        "version": version,
+        "message": "ok",
+    }), 200
 
 
 @discovery_bp.route("/interfaces", methods=["GET"])
@@ -278,6 +333,124 @@ def ethercat_scan():
     )
 
 
+@discovery_bp.route("/ethercat/scan-modules", methods=["POST"])
+@jwt_required()
+def ethercat_scan_modules():
+    """
+    Scan a modular coupler's 0xF050 module ident list.
+
+    EtherDOG speaks `scan-modules` in terms of (master_index, slave_position); OpenPLC
+    today supervises a single EtherCAT master, so bus_name is a label the editor passes
+    to make the request shape round-trip-safe and master index 0 is implied. If and when
+    more than one master lands, this is where the mapping grows.
+
+    EtherDOG returns `{"status":"success","idents":["0x00001A0F","0x00001A10"]}`; the
+    editor and the web both consume `modules: [{slot, ident}, ...]`, so we flatten the
+    list to slot-indexed objects here, keeping the ident string EtherDOG printed.
+    ---
+    tags:
+      - EtherCAT
+    security:
+      - BearerAuth: []
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - bus_name
+            - slave_position
+          properties:
+            bus_name:
+              type: string
+              example: ethercat0
+            slave_position:
+              type: integer
+              example: 1
+            timeout_ms:
+              type: integer
+              default: 5000
+    responses:
+      200:
+        description: Module list retrieved
+      400:
+        description: Invalid request parameters
+      502:
+        description: EtherDOG refused the scan or returned an unknown reply
+    """
+    data = request.get_json(silent=True) or {}
+    bus_name = data.get("bus_name")
+    slave_pos = data.get("slave_position")
+
+    if not isinstance(bus_name, str) or not bus_name:
+        return (
+            jsonify({"status": "error", "message": "Missing or invalid 'bus_name'"}),
+            400,
+        )
+    if not isinstance(slave_pos, int) or isinstance(slave_pos, bool):
+        return (
+            jsonify({"status": "error", "message": "Missing or invalid 'slave_position'"}),
+            400,
+        )
+
+    timeout_ms = data.get("timeout_ms")
+    etherdog_timeout = max(5.0, (float(timeout_ms) / 1000.0) + 2.0) if isinstance(timeout_ms, (int, float)) else 10.0
+
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
+    result = etherdog.plugin_style_command(
+        {"command": "scan-modules", "params": {"master": 0, "slave": slave_pos}},
+        timeout=etherdog_timeout,
+    )
+
+    if "error" in result:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "bus_name": bus_name,
+                    "slave_position": slave_pos,
+                    "message": result["error"],
+                    "modules": [],
+                }
+            ),
+            502,
+        )
+
+    if result.get("status") != "success":
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "bus_name": bus_name,
+                    "slave_position": slave_pos,
+                    "message": result.get("message", "scan-modules did not succeed"),
+                    "modules": [],
+                }
+            ),
+            502,
+        )
+
+    idents = result.get("idents") or []
+    modules = [
+        {"slot": slot, "ident": str(ident)}
+        for slot, ident in enumerate(idents)
+        if isinstance(ident, str)
+    ]
+
+    return (
+        jsonify(
+            {
+                "status": "success",
+                "bus_name": bus_name,
+                "slave_position": slave_pos,
+                "modules": modules,
+            }
+        ),
+        200,
+    )
+
+
 @discovery_bp.route("/ethercat/runtime-status", methods=["GET"])
 @jwt_required()
 def ethercat_runtime_status():
@@ -355,11 +528,11 @@ def ethercat_runtime_status():
     return jsonify(_with_plugin_state(result)), 200
 
 
-@discovery_bp.route("/ethercat/diagnostics", methods=["GET"])
+@discovery_bp.route("/ethercat/master-diagnostics", methods=["GET"])
 @jwt_required()
-def ethercat_diagnostics():
+def ethercat_master_diagnostics():
     """
-    Get detailed EtherCAT diagnostic information from EtherDOG.
+    Get the master-wide EtherCAT diagnostic dump from EtherDOG.
     ---
     tags:
       - EtherCAT
@@ -395,6 +568,117 @@ def ethercat_diagnostics():
     if "error" in result:
         return jsonify({"status": "error", "message": result["error"]}), 503
     return jsonify(_with_plugin_state(result)), 200
+
+
+@discovery_bp.route("/ethercat/diagnostics", methods=["POST"])
+@jwt_required()
+def ethercat_diagnostics():
+    """
+    Per-slave diagnostics for a modular coupler.
+
+    Returns the coupler's ETG.5001 device-state word and the per-slot module
+    status bytes. Forwards to EtherDOG's `diagnostics-slave` command, which
+    performs the SDO reads against the live bus.
+    ---
+    tags:
+      - EtherCAT
+    security:
+      - BearerAuth: []
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - bus_name
+            - slave_position
+          properties:
+            bus_name:
+              type: string
+              example: ethercat0
+            slave_position:
+              type: integer
+              example: 1
+    responses:
+      200:
+        description: Per-slave diagnostics retrieved
+      400:
+        description: Invalid request parameters
+      502:
+        description: EtherDOG refused the diagnostics read or returned an unknown reply
+    """
+    data = request.get_json(silent=True) or {}
+    bus_name = data.get("bus_name")
+    slave_pos = data.get("slave_position")
+
+    if not isinstance(bus_name, str) or not bus_name:
+        return (
+            jsonify({"status": "error", "message": "Missing or invalid 'bus_name'"}),
+            400,
+        )
+    if not isinstance(slave_pos, int) or isinstance(slave_pos, bool):
+        return (
+            jsonify({"status": "error", "message": "Missing or invalid 'slave_position'"}),
+            400,
+        )
+
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
+    result = etherdog.plugin_style_command(
+        {"command": "diagnostics-slave", "params": {"master": 0, "slave": slave_pos}},
+        timeout=10.0,
+    )
+
+    if "error" in result:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "bus_name": bus_name,
+                    "slave_position": slave_pos,
+                    "message": result["error"],
+                }
+            ),
+            502,
+        )
+
+    if result.get("status") != "success":
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "bus_name": bus_name,
+                    "slave_position": slave_pos,
+                    "message": result.get("message", "diagnostics-slave did not succeed"),
+                }
+            ),
+            502,
+        )
+
+    coupler_raw = result.get("coupler") or {}
+    status_word = coupler_raw.get("status_word", 0)
+    poll_at_ms = coupler_raw.get("poll_at_ms")
+    modules_raw = result.get("modules") or []
+    modules = [
+        {
+            "slot": m.get("slot"),
+            "status_byte": m.get("status_byte"),
+        }
+        for m in modules_raw
+        if isinstance(m, dict) and isinstance(m.get("slot"), int)
+            and isinstance(m.get("status_byte"), int)
+    ]
+
+    response = {
+        "status": "success",
+        "bus_name": bus_name,
+        "slave_position": slave_pos,
+        "coupler": {"status_word": status_word},
+        "modules": modules,
+    }
+    if isinstance(poll_at_ms, (int, float)):
+        response["coupler"]["poll_at_ms"] = poll_at_ms
+    return jsonify(response), 200
 
 
 @discovery_bp.route("/ethercat/validate", methods=["POST"])
