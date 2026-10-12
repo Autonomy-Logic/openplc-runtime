@@ -25,8 +25,8 @@ from shared import (
 # Import the configuration model
 # Importing set_image_sizes is not a formality: the name has to exist in THIS
 # module for the runtime to find it, and its presence is how this plugin
-# declares it understands per-table image sizes (RTOP-284). The runtime keeps
-# the image SQUARE for any run in which even one loaded plugin lacks it -- and
+# declares it understands per-table image sizes. The runtime keeps the image
+# SQUARE for any run in which even one loaded plugin lacks it -- and
 # this plugin ships in plugins_default.conf, so without this line per-table
 # sizing never activates on a stock device.
 #

@@ -338,7 +338,7 @@ static const void *located_pointer_at(const void *located_vars, uint32_t index)
 }
 
 // ---------------------------------------------------------------------------
-// How big the image has to be (RTOP-284)
+// How big the image has to be
 // ---------------------------------------------------------------------------
 
 /* Local copy rather than shared with plc_retain_file_store.cpp, where the same
@@ -407,7 +407,7 @@ extern "C" const char *image_table_key(image_table_id_t id)
  * this function: `%MB` (Memory + Byte). image_tables.h declares byte_input and
  * byte_output but no byte_memory, so a program declaring `AT %MB4` names
  * storage that does not exist. A current editor refuses that before the build
- * (DOPE-615); an older one, or a hand-built .so, can still reach us, and the
+ * before the build; an older one, or a hand-built .so, can still reach us, and the
  * caller says so once rather than sizing a table that is not there.
  */
 static image_table_id_t table_for(strucpp::LocatedArea area, strucpp::LocatedSize size)
@@ -1273,7 +1273,7 @@ void image_tables_fill_null_pointers(void)
  *
  * This used to be fourteen `memset(table, 0, sizeof(table))` calls at the top
  * of image_tables_clear_null_pointers(). Fourteen call sites is fourteen
- * places to miss when the tables become pointers plus counts (RTOP-284), and
+ * places to miss when the tables become pointers plus counts, and
  * missing one is silent: `sizeof` drops from 65536 to 8, it compiles without a
  * warning, and the damage only shows on the SECOND program load, when
  * fill_null_pointers() finds the slots still populated and declines to rebind

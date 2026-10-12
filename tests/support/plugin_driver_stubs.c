@@ -21,8 +21,8 @@ uint64_t base_tick_ns = 0;
 // Stub storage for the image tables (defined in image_tables.cpp in the real
 // build). One symbol rather than fourteen, and it takes its shape from
 // image_tables.h -- which is the point: the stub used to spell the fourteen
-// arrays out by hand at BUFFER_SIZE=128 (project.yml) while plugin_driver.c
-// saw them at 1024, a disagreement the linker was happy to accept.
+// arrays out by hand, at a length the production build did not share. The
+// linker was happy to accept the disagreement.
 //
 // The tables are heap pointers in the real build, allocated per program load.
 // Here they point at fixed arrays of STUB_IMAGE_ELEMENTS, which is all the
@@ -53,7 +53,7 @@ static IEC_ULINT *stub_lint_memory[STUB_IMAGE_ELEMENTS];
 // capacity is zero, which is the ordering invariant it now enforces, so a test
 // that wants args has to call this first exactly as the real load path does.
 //
-// TAKES THE SIZES STRUCT, not a single count (RTOP-284). The signature moved
+// TAKES THE SIZES STRUCT, not a single count. The signature moved
 // when the fourteen tables stopped sharing a length, and this stub kept the
 // old one -- so the C unit tests did not compile at all on this branch.
 // Nothing caught it because the Ceedling suite does not run in CI, and it

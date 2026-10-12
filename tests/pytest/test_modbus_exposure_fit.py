@@ -1,4 +1,4 @@
-"""How the Modbus slave fits its declared exposure to the image (RTOP-284).
+"""How the Modbus slave fits its declared exposure to the image.
 
 These sit in ``tests/pytest`` rather than ``tests/pytest/modbus_slave`` on
 purpose: the workflow ignores that directory, so a test placed there would
@@ -234,7 +234,7 @@ def test_the_legacy_shape_has_no_memory_segments(sm):
     assert parsed["word_order"] == "high_word_first"
 
 
-# --- per-table clamping (RTOP-284, C1.3/C1.4) ----------------------------
+# --- per-table clamping ---------------------------------------------------
 
 
 @pytest.fixture

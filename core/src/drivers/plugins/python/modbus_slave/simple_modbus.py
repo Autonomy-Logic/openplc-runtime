@@ -30,7 +30,7 @@ MODBUS_MAX_ADDRESSES = 65536
 # BUFFER_SIZE used to live here as `1024  # Must match BUFFER_SIZE in
 # image_tables.h`, and that comment was the whole problem: a copy of a number
 # owned by the runtime, kept in step by hand. It is gone, and the runtime's
-# actual `buffer_size` is used instead (RTOP-284).
+# actual `buffer_size` is used instead.
 #
 # The runtime no longer HAS a fixed image. It allocates one per program load,
 # sized from what the project needs, so a copy here could not be right for more
@@ -83,8 +83,8 @@ from shared import (  # noqa: E402
 
 # Importing set_image_sizes is not a formality: the name has to exist in THIS
 # module for the runtime to find it, and its presence is how this plugin
-# declares it understands per-table image sizes (RTOP-284). Without it the
-# runtime keeps the image square for every run this plugin is loaded in --
+# declares it understands per-table image sizes. Without it the runtime keeps
+# the image square for every run this plugin is loaded in --
 # which, since it is loaded on most devices, would be every run.
 from shared.image_sizes import set_image_sizes, table_capacity  # noqa: E402,F401
 
@@ -283,9 +283,8 @@ class OpenPLCDiscreteInputsDataBlock(ModbusSparseDataBlock):
         """Get discrete input values from OpenPLC bool_input using SafeBufferAccess"""
         address = address - 1  # Modbus addresses are 0-based
 
-        # Fora da imagem: excecao 02, nunca zero nem silencio. O bloco segmentado
-        # ja fazia isto no getValues; estes quatro caminhos respondiam um zero
-        # plausivel, ou aceitavam a escrita e a descartavam.
+        # Outside the image: exception 02, never a plausible zero -- a client
+        # cannot tell a real 0 from an address the device does not have.
         if address < 0 or address + count > self.num_inputs:
             return ExcCodes.ILLEGAL_ADDRESS
 
@@ -350,9 +349,8 @@ class OpenPLCInputRegistersDataBlock(ModbusSparseDataBlock):
         """Get input register values from OpenPLC int_input using SafeBufferAccess"""
         address = address - 1  # Modbus addresses are 0-based
 
-        # Fora da imagem: excecao 02, nunca zero nem silencio. O bloco segmentado
-        # ja fazia isto no getValues; estes quatro caminhos respondiam um zero
-        # plausivel, ou aceitavam a escrita e a descartavam.
+        # Outside the image: exception 02, never a plausible zero -- a client
+        # cannot tell a real 0 from an address the device does not have.
         if address < 0 or address + count > self.num_registers:
             return ExcCodes.ILLEGAL_ADDRESS
 
@@ -557,7 +555,7 @@ class OpenPLCSegmentedCoilsDataBlock(ModbusSparseDataBlock):
                             logger.error(f"Error reading coil %MX{mx_addr}: {error_msg}")
                         values.append(0)
                 else:
-                    # FORA DE TODO SEGMENTO: excecao 02, nunca zero.
+                    # Outside every segment: exception 02, never a zero.
                     #
                     # O clamp acima faz o bloco declarado bater com a imagem,
                     # e o plano era que o validate() do pymodbus recusasse o
@@ -584,9 +582,8 @@ class OpenPLCSegmentedCoilsDataBlock(ModbusSparseDataBlock):
         """
         address = address - 1  # Modbus addresses are 1-based
 
-        # Fora da imagem: excecao 02, nunca zero nem silencio. O bloco segmentado
-        # ja fazia isto no getValues; estes quatro caminhos respondiam um zero
-        # plausivel, ou aceitavam a escrita e a descartavam.
+        # Outside the image: exception 02, never a plausible zero -- a client
+        # cannot tell a real 0 from an address the device does not have.
         if address < 0 or address + len(values) > self.total_bits:
             return ExcCodes.ILLEGAL_ADDRESS
 
@@ -817,7 +814,7 @@ class OpenPLCSegmentedHoldingRegistersDataBlock(ModbusSparseDataBlock):
                         values.append(0)
 
                 else:
-                    # FORA DE TODO SEGMENTO: excecao 02, nunca zero.
+                    # Outside every segment: exception 02, never a zero.
                     #
                     # O clamp acima faz o bloco declarado bater com a imagem,
                     # e o plano era que o validate() do pymodbus recusasse o
@@ -846,9 +843,8 @@ class OpenPLCSegmentedHoldingRegistersDataBlock(ModbusSparseDataBlock):
         """
         address = address - 1  # Modbus addresses are 1-based
 
-        # Fora da imagem: excecao 02, nunca zero nem silencio. O bloco segmentado
-        # ja fazia isto no getValues; estes quatro caminhos respondiam um zero
-        # plausivel, ou aceitavam a escrita e a descartavam.
+        # Outside the image: exception 02, never a plausible zero -- a client
+        # cannot tell a real 0 from an address the device does not have.
         if address < 0 or address + len(values) > self.total_registers:
             return ExcCodes.ILLEGAL_ADDRESS
 
@@ -1023,7 +1019,7 @@ def _trim_to_one_table(counts, layout):
         total -= drop * width
 
 
-# THE COMPOSED BLOCK, DECIDED (RTOP-284, C1.4)
+# THE COMPOSED BLOCK, DECIDED
 #
 # The holding-register block lays four segments end to end -- qw | mw | 2*md |
 # 4*ml -- so it spans four tables in one contiguous Modbus range. The question
@@ -1048,9 +1044,9 @@ def _trim_to_one_table(counts, layout):
 # change because the project changed, without anyone editing the Modbus screen.
 #
 # Which image table each Modbus segment actually lives in. The clamp follows
-# this rather than one figure, because the tables no longer share a length
-# (RTOP-284): %QW comes out of int_output and %ML out of lint_memory, and a
-# project may size those very differently.
+# this rather than one figure, because the tables no longer share a length:
+# %QW comes out of int_output and %ML out of lint_memory, and a project may
+# size those very differently.
 SEGMENT_TABLES = {
     "qw_count": "int_output",
     "mw_count": "int_memory",
@@ -1131,9 +1127,9 @@ def parse_buffer_mapping_config(config_map, buffer_size):
 
     `buffer_size` is the runtime's ACTUAL image size for the program now
     loaded, from ``runtime_args.safe_access_buffer_size()``. Every count is
-    clamped to it (RTOP-284) -- this used to clamp to a copy of the runtime's
-    old fixed 1024, kept in step by hand and unable to be right for more than
-    one program at a time.
+    clamped to it -- this used to clamp to a copy of the runtime's old fixed
+    1024, kept in step by hand and unable to be right for more than one
+    program at a time.
 
     THE CLAMP IS WHAT MAKES OUT-OF-RANGE HONEST, not just tidy. Each data block
     declares itself as wide as the counts returned here, and getValues answers
@@ -1242,9 +1238,9 @@ def start_loop():
         return False
 
     # THE IMAGE SIZE COMES FIRST, because every count parsed below is clamped
-    # to it. The runtime allocates the image per program load (RTOP-284), so
-    # this is the size for the program running right now -- not a constant this
-    # plugin can keep a copy of.
+    # to it. The runtime allocates the image per program load, so this is the
+    # size for the program running right now -- not a constant this plugin can
+    # keep a copy of.
     buffer_size, size_error = runtime_args.safe_access_buffer_size()
     if buffer_size == -1:
         logger.error(f"Failed to access buffer size: {size_error}")

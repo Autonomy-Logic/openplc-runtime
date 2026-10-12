@@ -23,8 +23,8 @@ from .iec_types import IEC_BOOL, IEC_BYTE, IEC_UDINT, IEC_UINT, IEC_ULINT
 # arrived at the same way.
 #
 # It replaces a bare literal that appeared twice here and gated EVERY Python
-# plugin, not only Modbus: once the image stopped being a fixed 1024
-# (RTOP-284), any program needing more than that literal would have had its
+# plugin, not only Modbus: once the image stopped being a fixed 1024, any
+# program needing more than that literal would have had its
 # plugins refuse to start before a line of their own logic ran -- and the
 # message said "buffer_size is invalid", which points at the runtime rather
 # than at the limit that actually rejected it.

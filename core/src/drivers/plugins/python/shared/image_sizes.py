@@ -1,4 +1,4 @@
-"""The fourteen image table lengths, for a Python plugin (RTOP-284).
+"""The fourteen image table lengths, for a Python plugin.
 
 Importing ``set_image_sizes`` from here into a plugin module does two things at
 once: it puts the name in that module's namespace, which is where the runtime

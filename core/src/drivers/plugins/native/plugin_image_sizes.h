@@ -1,5 +1,5 @@
 /**
- * The fourteen image table lengths, for a native plugin (RTOP-284).
+ * The fourteen image table lengths, for a native plugin.
  *
  * Linking this file into a plugin gives it two things at once: the exported
  * `set_image_sizes` symbol the runtime looks for -- whose PRESENCE is how a

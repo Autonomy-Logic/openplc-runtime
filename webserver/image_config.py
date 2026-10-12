@@ -15,8 +15,7 @@ user can see.
 Before this existed the image was ``BUFFER_SIZE 1024`` per table, compiled in,
 identical for every program that ever ran on the device. That is wrong in both
 directions: a project needing more could not have it, and a project needing
-less paid for the rest anyway, out of the memory its own program wanted
-(RTOP-284, editor side DOPE-615).
+less paid for the rest anyway, out of the memory its own program wanted.
 
 Flat ``key=value`` rather than JSON, for the reason recorded for
 ``retain.conf``: the core parses it in C++ during startup, before any plugin
@@ -38,16 +37,20 @@ for a program that is no longer on the device -- silently, and for as long as
 nobody notices. So an upload without the file REMOVES the device's copy, and
 the runtime falls back to what the program itself requires.
 
-THE UNIT IS EACH TABLE'S OWN, WHICH IS NOT ALWAYS THE ADDRESS'S
---------------------------------------------------------------
-Every value is a count of that table's elements, matching
-``core/src/plc_app/image_tables.h``. For eleven tables that is the number of
-addresses (``int_memory[N]`` holds N ``%MW``s). For the three BOOL tables it is
-not: they are declared ``IEC_BOOL *table[N][8]``, so N counts BYTES while
-``%QX`` addresses bits. The editor does that conversion once, on its side, and
-what arrives here is already in table elements. Nothing in this module divides
-or multiplies by eight, deliberately -- a second conversion is how the two
-sides end up disagreeing by a factor of eight with no diagnostic anywhere.
+EVERY VALUE CARRIES THE UNIT OF THE ADDRESS IT COUNTS
+-----------------------------------------------------
+At ``format_version=2`` each line is ``<count> <unit>`` and the unit word is
+part of the contract, not decoration: eleven tables count addresses and say
+``words``/``dwords``/``lwords``/``bytes``, while the three BOOL tables count
+BITS, because ``%QX`` addresses bits. Storage does not match that shape --
+they are declared ``IEC_BOOL *table[N][8]``, so N counts bytes -- and the core
+is the single place that rounds the bit count up to whole bytes.
+
+So this module does not convert, with one deliberate exception: the ceiling in
+``max_in_file_unit`` is scaled INTO the file's unit so a bit count is compared
+against a bit ceiling. Converting anywhere else reintroduces the factor of
+eight the unit word exists to make impossible, and a second conversion is how
+the two sides end up disagreeing with no diagnostic anywhere.
 """
 
 from __future__ import annotations
@@ -125,7 +128,7 @@ class ImageConfigError(ValueError):
 
 def read_image_conf_file(
     path: str | os.PathLike,
-) -> tuple[int, dict[str, int | None], dict[str, str]]:
+) -> tuple[int | None, dict[str, int | None], dict[str, str]]:
     """Parse an ``image.conf``, with every unset table read as zero.
 
     Takes a path rather than assuming the runtime root, because the file worth
@@ -191,7 +194,9 @@ def read_image_conf_file(
         # already knows how to handle -- it refuses the stanza and falls back to
         # the floor derived from the program.
         logger.warning("Image: could not read %s (%s); treating as no sizes", path, exc)
-        return -1, {key: None for key in IMAGE_TABLE_KEYS}, units
+        # None, not -1: -1 is what a file that DECLARES an unparseable
+        # format_version yields, and the two produce different refusals.
+        return None, {key: None for key in IMAGE_TABLE_KEYS}, units
     return version, sizes, units
 
 
@@ -229,7 +234,7 @@ def validate_table_count(key: str, value: object, unit: object) -> int:
 
 
 def validate_image_conf(
-    version: int, sizes: dict[str, int | None], units: dict[str, str]
+    version: int | None, sizes: dict[str, int | None], units: dict[str, str]
 ) -> dict[str, int]:
     """Validate the version and every table, returning the normalised counts.
 
@@ -242,6 +247,17 @@ def validate_image_conf(
     allocation hands out together, and a half-applied image is worse than a
     refused one.
     """
+    if version is None:
+        raise ImageConfigError(
+            "image.conf could not be read (it is not UTF-8 text, or it is not a "
+            "file). Re-upload the project."
+        )
+    if version < 0:
+        raise ImageConfigError(
+            "image.conf declares a format_version that is not a whole number; "
+            f"this runtime reads format_version {IMAGE_CONF_FORMAT_VERSION}. "
+            "Re-upload the project from a current editor."
+        )
     if version != IMAGE_CONF_FORMAT_VERSION:
         raise ImageConfigError(
             f"image.conf declares format_version {version}; this runtime reads "

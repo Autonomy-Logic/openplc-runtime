@@ -45,6 +45,7 @@ extern "C" {
 
 /* Writers serialise on state_mutex; readers load the atomic without locking. */
 static std::atomic<PLCState> plc_state{PLC_STATE_STOPPED};
+
 static_assert(std::atomic<PLCState>::is_always_lock_free, "state reads must not lock");
 static pthread_mutex_t       state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -53,6 +54,21 @@ pthread_t        plc_thread;
 PluginManager   *plc_program = NULL;
 
 extern plugin_driver_t   *plugin_driver;
+
+/* Release the image only once no plugin still holds a base pointer into it.
+ * Both native plugins copy those pointers by value at init(), so the ordering
+ * is checked here rather than left to a comment. Caller holds the mutex. */
+static void image_tables_free_when_unheld(void)
+{
+    if (plugin_driver_any_initialized(plugin_driver))
+    {
+        log_error("[PLUGIN]: refusing to free the image while a plugin is still "
+                  "initialised — it still holds the base pointers it copied at init()");
+        return;
+    }
+    image_tables_free();
+}
+
 
 PlcTaskCtx *plc_tasks      = nullptr;
 size_t      plc_task_count = 0;
@@ -1282,23 +1298,7 @@ extern "C" int load_plc_program(PluginManager *pm)
                 {
                     pthread_mutex_t *rollback_itm = image_tables_mutex();
                     pthread_mutex_lock(rollback_itm);
-                    /* THE OTHER HALF OF THE ORDERING, now checked rather than assumed.
-                     *
-                     * Allocate-before-init is refused at run time in
-                     * generate_structured_args_with_driver. Release-after-stop had only a
-                     * comment, so a refactor moving a cleanup_init call below this free
-                     * got no diagnostic at all -- and both native plugins spend the run
-                     * holding the base pointers they copied by value at init(). */
-                    if (plugin_driver_any_initialized(plugin_driver))
-                    {
-                        log_error(
-                            "[PLUGIN]: refusing to free the image while a plugin is still "
-                            "initialised — it still holds the base pointers it copied at init()");
-                    }
-                    else
-                    {
-                        image_tables_free();
-                    }
+                    image_tables_free_when_unheld();
                     pthread_mutex_unlock(rollback_itm);
                 }
                 pthread_mutex_lock(&state_mutex);
@@ -1326,22 +1326,7 @@ extern "C" int load_plc_program(PluginManager *pm)
             {
                 pthread_mutex_t *rollback_itm = image_tables_mutex();
                 pthread_mutex_lock(rollback_itm);
-                /* THE OTHER HALF OF THE ORDERING, now checked rather than assumed.
-                 *
-                 * Allocate-before-init is refused at run time in
-                 * generate_structured_args_with_driver. Release-after-stop had only a
-                 * comment, so a refactor moving a cleanup_init call below this free
-                 * got no diagnostic at all -- and both native plugins spend the run
-                 * holding the base pointers they copied by value at init(). */
-                if (plugin_driver_any_initialized(plugin_driver))
-                {
-                    log_error("[PLUGIN]: refusing to free the image while a plugin is still "
-                              "initialised — it still holds the base pointers it copied at init()");
-                }
-                else
-                {
-                    image_tables_free();
-                }
+                image_tables_free_when_unheld();
                 pthread_mutex_unlock(rollback_itm);
             }
             pthread_mutex_lock(&state_mutex);
@@ -1456,22 +1441,7 @@ static int unload_plc_program_locked(PluginManager *pm)
         /* Released only after every plugin has been stopped AND de-initialised
          * above. Both native plugins cache these pointers by value at init(),
          * so freeing any earlier hands them memory that belongs to nobody. */
-        /* THE OTHER HALF OF THE ORDERING, now checked rather than assumed.
-         *
-         * Allocate-before-init is refused at run time in
-         * generate_structured_args_with_driver. Release-after-stop had only a
-         * comment, so a refactor moving a cleanup_init call below this free
-         * got no diagnostic at all -- and both native plugins spend the run
-         * holding the base pointers they copied by value at init(). */
-        if (plugin_driver_any_initialized(plugin_driver))
-        {
-            log_error("[PLUGIN]: refusing to free the image while a plugin is still "
-                      "initialised — it still holds the base pointers it copied at init()");
-        }
-        else
-        {
-            image_tables_free();
-        }
+        image_tables_free_when_unheld();
         pthread_mutex_unlock(itm);
 
         void (*python_cleanup)(void);

@@ -2,7 +2,7 @@
 
 The file format is written in three places and read in a fourth:
 
-  * the OpenPLC editor emits it (``generate-image-conf.ts``, DOPE-615);
+  * the OpenPLC editor emits it (``generate-image-conf.ts``);
   * ``webserver/image_config.py`` validates and installs it;
   * ``core/src/plc_app/image_tables.cpp`` parses it in the PLC application;
   * ``core/src/plc_app/image_tables.h`` declares the tables it names.
@@ -41,7 +41,7 @@ from webserver import image_config
 REPO_ROOT = Path(__file__).resolve().parents[2]
 IMAGE_TABLES_H = REPO_ROOT / "core" / "src" / "plc_app" / "image_tables.h"
 # The enum moved out of image_tables.h so plugin_types.h could reach it without
-# pulling the runtime internals in (RTOP-284, B2). Publishing a type costs no
+# pulling the runtime internals in. Publishing a type costs no
 # ABI, and a plugin receiving an array indexed by it has to be able to name the
 # entries -- the alternative being a second copy of the enum, which is the
 # drift this whole file exists to catch.
@@ -50,7 +50,7 @@ IMAGE_TABLES_CPP = REPO_ROOT / "core" / "src" / "plc_app" / "image_tables.cpp"
 JOURNAL_H = REPO_ROOT / "core" / "src" / "plc_app" / "journal_buffer.h"
 JOURNAL_C = REPO_ROOT / "core" / "src" / "plc_app" / "journal_buffer.c"
 S7COMM_C = REPO_ROOT / "core/src/drivers/plugins/native/s7comm/s7comm_plugin.cpp"
-ETHERCAT_C = REPO_ROOT / "core/src/drivers/plugins/native/ethercat/ethercat_io.c"
+ETHERCAT_C = REPO_ROOT / "core/src/drivers/plugins/native/ethercat/ethercat_iomap.c"
 MODBUS_PY = REPO_ROOT / "core/src/drivers/plugins/python/modbus_slave/simple_modbus.py"
 
 

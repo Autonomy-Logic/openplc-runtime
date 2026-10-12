@@ -132,7 +132,7 @@ typedef struct {
      * finding. */
     uint32_t table_sizes[JOURNAL_TYPE_COUNT];
 
-    /* THE SMALLEST ARRAY, NOT THE LENGTH OF ALL OF THEM (RTOP-284).
+    /* THE SMALLEST ARRAY, NOT THE LENGTH OF ALL OF THEM.
      *
      * The arrays above no longer share a length. This field was a second copy
      * of the one-number assumption, internal to the runtime, and it is kept

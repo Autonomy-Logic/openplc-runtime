@@ -20,7 +20,7 @@
 
 #include "../lib/plc_image_types.h"
 /* The image table identities, so a plugin receiving the sizes array can name
- * the entries it indexes rather than counting positions (RTOP-284, B2).
+ * the entries it indexes rather than counting positions.
  * Publishing a type costs no ABI: no struct gains a field and no offset
  * moves, which is what CON06 guarantees pre-compiled plugins.
  *
@@ -237,7 +237,7 @@ typedef struct
     /* Plugin configuration */
     char plugin_specific_config_file_path[256];
 
-    /* THE SMALLEST TABLE, NOT THE ONLY ONE (RTOP-284).
+    /* THE SMALLEST TABLE, NOT THE ONLY ONE.
      *
      * The fourteen image tables no longer share a length. This field cannot
      * say that -- CON06 guarantees pre-compiled plugins keep their field

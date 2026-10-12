@@ -49,7 +49,7 @@ typedef int (*plugin_retain_load_func_t)(const char *program_md5, uint16_t md5_l
  * assumed to commit inside save(), which is where durability belongs anyway. */
 typedef int (*plugin_retain_flush_func_t)(void);
 
-/* Optional, and its PRESENCE is the capability declaration (RTOP-284).
+/* Optional, and its PRESENCE is the capability declaration.
  *
  * The fourteen image tables no longer share one length, and
  * `plugin_runtime_args_t` carries a single `buffer_size` that cannot say so.

@@ -36,9 +36,8 @@
 /* The image tables come from image_tables.h, included above. This file used to
  * redeclare all fourteen of them by hand right here -- redundant while the
  * shapes agreed, and two incompatible declarations in different translation
- * units the moment they stopped, which C does not diagnose across TUs. Deleted
- * for RTOP-284: there is one declaration now, `g_image`, and it lives in the
- * header. */
+ * units the moment they stopped, which C does not diagnose across TUs. There
+ * is one declaration now, `g_image`, and it lives in the header. */
 static PyThreadState *main_tstate = NULL;
 static PyGILState_STATE gstate;
 static int has_python_plugin = 0;
@@ -563,10 +562,19 @@ static int deliver_image_sizes(plugin_instance_t *plugin)
         }
         for (uint32_t i = 0; i < count; ++i)
         {
-            /* PyList_SetItem steals the reference, so a failed PyLong_FromLong
-             * is the only leak to worry about and it cannot happen for a
-             * uint32_t that already exists. */
-            PyList_SetItem(list, (Py_ssize_t)i, PyLong_FromUnsignedLong(sizes[i]));
+            /* PyList_SetItem steals the reference, so the item is built first
+             * and checked: handing it a NULL leaves a hole the call below
+             * dereferences. */
+            PyObject *item = PyLong_FromUnsignedLong(sizes[i]);
+            if (!item)
+            {
+                PyErr_Clear();
+                Py_DECREF(list);
+                log_error("Plugin '%s': could not build the image size list",
+                          plugin->config.name);
+                return -1;
+            }
+            PyList_SetItem(list, (Py_ssize_t)i, item);
         }
         PyObject *result =
             PyObject_CallFunctionObjArgs(plugin->python_plugin->pFuncSetImageSizes, list, NULL);
@@ -611,10 +619,18 @@ bool plugin_driver_all_understand_per_table_sizes(plugin_driver_t *driver,
         if (plugin->degraded)
             continue;
 
+        /* NOR DOES ONE WITH NO MODULE LOADED. A disabled plugin whose symbols
+         * fail to load is warned about, not degraded, and init skips it the
+         * same way, so it never holds a base pointer. */
+        if (plugin->config.type == PLUGIN_TYPE_NATIVE && !plugin->native_plugin)
+            continue;
+        if (plugin->config.type == PLUGIN_TYPE_PYTHON && !plugin->python_plugin)
+            continue;
+
         if (plugin->config.type == PLUGIN_TYPE_NATIVE)
-            understands = plugin->native_plugin && plugin->native_plugin->set_image_sizes;
+            understands = plugin->native_plugin->set_image_sizes != NULL;
         else if (plugin->config.type == PLUGIN_TYPE_PYTHON)
-            understands = plugin->python_plugin && plugin->python_plugin->pFuncSetImageSizes;
+            understands = plugin->python_plugin->pFuncSetImageSizes != NULL;
 
         if (!understands)
         {
@@ -1890,6 +1906,7 @@ static void python_plugin_cleanup(plugin_instance_t *plugin)
         Py_XDECREF(plugin->python_plugin->pFuncStart);
         Py_XDECREF(plugin->python_plugin->pFuncStop);
         Py_XDECREF(plugin->python_plugin->pFuncCleanup);
+        Py_XDECREF(plugin->python_plugin->pFuncSetImageSizes);
         Py_XDECREF(plugin->python_plugin->pModule);
         Py_XDECREF(plugin->python_plugin->args_capsule);
 

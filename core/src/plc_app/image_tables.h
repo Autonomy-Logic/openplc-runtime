@@ -17,7 +17,7 @@ extern "C"
 {
 #endif
 
-/* BUFFER_SIZE is gone, and its absence is the point of RTOP-284.
+/* BUFFER_SIZE is gone, and its absence is the point.
  *
  * It was 1024 per table, compiled in, identical for every program that ever
  * ran on the device: a project needing more could not have it, and a project
@@ -51,8 +51,8 @@ extern "C"
      * walks the wrong layout. With one struct there is one declaration to get
      * right, and it lives here.
      *
-     * What the struct deliberately does NOT do is make the eventual switch to
-     * heap allocation (RTOP-284) a compile error. Indexing `IEC_BOOL *(*p)[8]`
+     * What the struct deliberately does NOT do is make the switch to heap
+     * allocation a compile error. Indexing `IEC_BOOL *(*p)[8]`
      * is syntactically identical to indexing `IEC_BOOL *a[N][8]`, so every
      * access site compiles unchanged either way -- verified, with -Wall
      * -Wextra. The tripwires that do work are in image_tables.cpp: the size
@@ -97,7 +97,7 @@ extern "C"
     extern image_tables_t g_image;
 
     /* -------------------------------------------------------------------------
-     * How big the image has to be (RTOP-284)
+     * How big the image has to be
      *
      * Two independent answers, and the runtime takes the larger:
      *
@@ -156,7 +156,7 @@ extern "C"
      *
      * The square fallback, for a run where some plugin does not understand
      * per-table sizes. It takes and returns an `image_sizes_t` rather than
-     * collapsing to one number on purpose (RTOP-284): a single figure for
+     * collapsing to one number on purpose: a single figure for
      * fourteen tables is the assumption this work exists to remove, and a
      * helper that produces one is an invitation to reintroduce it.
      *
@@ -204,7 +204,12 @@ extern "C"
      *  CALLER MUST HOLD THE IMAGE-TABLES MUTEX. */
     void image_tables_free(void);
 
-    /** How many elements each table currently holds; 0 before any allocation. */
+    /** The SMALLEST table's length, in elements; 0 before any allocation.
+     *
+     * Not "how big the image is": the tables no longer share a length. This is
+     * the figure a consumer that reads one number can index every table with,
+     * so it refuses early rather than running off the end of the shortest.
+     * `image_table_capacity(id)` is the honest answer per area. */
     uint32_t image_tables_capacity(void);
 
     /** How long one table actually is, in its own elements.

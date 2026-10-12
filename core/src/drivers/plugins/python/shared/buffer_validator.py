@@ -61,7 +61,7 @@ class BufferValidator(IBufferValidator):
                 return False, f"Buffer index cannot be negative: {buffer_idx}"
 
             # Against THIS BUFFER'S OWN TABLE. args.buffer_size is now the
-            # smallest of the fourteen (RTOP-284), so validating against it
+            # smallest of the fourteen, so validating against it
             # would refuse every index above the shortest table's length in
             # every longer one. When the sizes were not delivered -- a square
             # run -- buffer_size IS the length they all have, so it is the

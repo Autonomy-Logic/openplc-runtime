@@ -104,7 +104,7 @@ static int journal_add(uint8_t type, uint16_t index, uint8_t bit, uint64_t value
  * Mutated only from the dispatcher's debug-write drain and read only from
  * apply_entry() — both under image_lock — so no atomics are required.
  *
- * SIZED FROM THE IMAGE, not from a constant of its own (RTOP-284). This was a
+ * SIZED FROM THE IMAGE, not from a constant of its own. This was a
  * fixed 1024 per journal type -- a third hardcoded 1024, alongside the image's
  * and the Modbus slave plugin's -- and the three guards below bounded against
  * it and returned quietly. On an image larger than 1024 that made forcing a
