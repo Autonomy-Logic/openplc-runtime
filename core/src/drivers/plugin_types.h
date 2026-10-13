@@ -101,8 +101,9 @@ typedef uint8_t  (*plugin_debug_write_func_t)(uint8_t arr, uint16_t elem,
  * transition and returns immediately. `reason` is logged at error level.
  * Safe to call from any plugin thread.
  *
- * Start and stop requests made during the boot-time init() are not acted on:
- * the boot auto-start reads the switch position stored by then instead.
+ * Start and stop requests from any plugin thread, including threads started
+ * by init(), are not acted on from boot-time plugin init until the boot
+ * auto-start has decided; it reads the switch position stored by then instead.
  */
 typedef void (*plugin_request_plc_stop_func_t)(const char *reason);
 
@@ -120,8 +121,9 @@ typedef void (*plugin_request_plc_stop_func_t)(const char *reason);
  * mapped across a stop, so this is how a hardware STOP -> RUN edge starts the
  * PLC again.
  *
- * Start and stop requests made during the boot-time init() are not acted on:
- * the boot auto-start reads the switch position stored by then instead.
+ * Start and stop requests from any plugin thread, including threads started
+ * by init(), are not acted on from boot-time plugin init until the boot
+ * auto-start has decided; it reads the switch position stored by then instead.
  */
 typedef void (*plugin_request_plc_start_func_t)(const char *reason);
 
@@ -204,7 +206,8 @@ typedef int (*plugin_get_plc_state_func_t)(void);
  *   and calls init() again, including the first start after power-on. Any
  *   thread started in init() must be joined in cleanup(), and init() must
  *   re-acquire whatever cleanup() released.
- * - Start/stop requests made from the boot-time init() are not acted on.
+ * - Start/stop requests from any plugin thread are not acted on from boot-time
+ *   init() until the boot auto-start has decided.
  */
 typedef struct
 {
