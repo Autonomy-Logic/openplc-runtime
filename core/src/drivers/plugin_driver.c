@@ -20,12 +20,11 @@
 #include "../plc_app/image_tables.h"
 #include "../plc_app/journal_buffer.h"
 #include "../plc_app/plc_state_manager.h"
-#include "../plc_app/plc_switch.h"
-#include "../plc_app/unix_socket.h"
 #include "../plc_app/utils/log.h"
 #include "../plc_app/utils/utils.h"
 #include "plugin_config.h"
 #include "plugin_driver.h"
+#include "plugin_plc_requests.h"
 #include "vpp_plugin_seal.h"
 #include <dlfcn.h>
 #include <stdio.h>
@@ -145,47 +144,6 @@ static uint8_t plugin_debug_write(uint8_t arr, uint16_t elem,
     if (!ext_strucpp_debug_write) return 0x81; // no program loaded
     int rc = runtime_external_write(arr, elem, (uint8_t)DBGW_OP_WRITE, bytes, len);
     return (rc == 0) ? 0x7E : 0x82;
-}
-
-// Plugin-invoked async PLC stop. Routes through the same transition
-// path as the socket STOP; non-blocking. The claim is atomic under the
-// state lock, so no pre-check here.
-static void plugin_request_plc_stop(const char *reason)
-{
-    log_info("[PLUGIN] stop requested: %s", reason ? reason : "(no reason given)");
-    if (!plc_begin_transition(PLC_STATE_STOPPED))
-    {
-        // Already stopping/stopped, or another transition is in flight;
-        // the switch-movement reconciliation picks it up later (see
-        // transition_worker in unix_socket.c), so a switch-driven stop cannot be
-        // lost here.
-        log_warn("[PLUGIN] stop request collapsed (already transitioning or not running)");
-    }
-}
-
-// Plugin-invoked PLC start. Gated on the hardware mode switch: a plugin
-// cannot start a PLC whose switch reads STOP.
-static void plugin_request_plc_start(const char *reason)
-{
-    if (!plc_switch_allows_run())
-    {
-        log_warn("[PLUGIN] start request refused — mode switch is in STOP (%s)",
-                 reason ? reason : "(no reason given)");
-        return;
-    }
-
-    log_info("[PLUGIN] start requested: %s", reason ? reason : "(no reason given)");
-    if (!plc_begin_transition(PLC_STATE_RUNNING))
-    {
-        log_warn("[PLUGIN] start request collapsed (already transitioning or already running)");
-    }
-}
-
-// Thin adapter so plugin_types.h can declare the position as a plain int and
-// stay free of the plc_app include tree.
-static void plugin_set_switch_position(int position)
-{
-    plc_set_switch_position(position == PLC_SWITCH_STOP ? PLC_SWITCH_STOP : PLC_SWITCH_RUN);
 }
 
 // Map PLCState to FC 0x49 LED values (0 STOPPED, 1 RUNNING, 2 ERROR).

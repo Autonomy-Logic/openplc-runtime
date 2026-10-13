@@ -18,8 +18,8 @@
 
 #include "../drivers/plugin_driver.h"
 #include "image_tables.h"
+#include "plc_boot.h"
 #include "plc_state_manager.h"
-#include "plc_switch.h"
 #include "plcapp_manager.h"
 #include "task_policy.h"
 #include "unix_socket.h"
@@ -156,15 +156,10 @@ int main(int argc, char *argv[])
         // Make plugin driver available to unix socket for PLUGIN_CMD routing
         unix_socket_set_plugin_driver(plugin_driver);
         log_info("[PLUGIN]: Plugin driver system created");
-        if (plugin_driver_load_config(plugin_driver, "./plugins.conf") == 0)
-        {
-            plugin_driver_init(plugin_driver);
-            log_info("[PLUGIN]: All plugins initialized (not started)");
-        }
-        else
-        {
-            log_error("[PLUGIN]: Failed to load plugin configuration");
-        }
+        // Includes the program's VPP plugins (not in safe mode), so a plugin
+        // owning the mode switch reports it before the auto-start below.
+        // Plugin run/stop requests stay held until plc_boot_autostart().
+        plc_boot_init_plugins(plugin_driver, !safe_mode);
 
         // Release the GIL through the driver (not PyEval_SaveThread
         // directly) so plugin_driver_destroy can restore this exact
@@ -209,19 +204,10 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // Auto-start (skipped in safe mode). The switch gate below reads
-    // the default (RUN) when no plugin has reported yet — a VPP that
-    // owns the switch is initialised DURING the start transition, so
-    // a device in STOP will start and movement-reconciliation stops it.
-    if (!safe_mode && !plc_switch_allows_run())
-    {
-        log_info("Hardware mode switch is in STOP - PLC left stopped");
-        log_info("Move the switch to RUN to start the PLC");
-    }
-    else if (!safe_mode && !plc_begin_transition(PLC_STATE_RUNNING))
-    {
-        log_error("Failed to initiate PLC start");
-    }
+    // Auto-start (skipped in safe mode). Every plugin, VPP included, has
+    // run init() above, so the switch gate holds the reported position;
+    // it reads the RUN default only when no plugin owns a switch.
+    plc_boot_autostart(safe_mode);
 
     while (keep_running)
     {

@@ -77,7 +77,8 @@ bash scripts/run-pytest.sh
 ceedling test:all
 ceedling gcov:all
 
-# Runtime C++ that Ceedling does not reach (tests/host/test_*.cpp listed in its TESTS array, C++17)
+# Runtime C++ that Ceedling does not reach (tests/host/test_*.cpp listed in its TESTS array, C++17);
+# needs python3 and the Python 3 dev headers (Python.h, via plugin_driver.h)
 ./tests/host/run.sh
 
 # Bootloader (Go), same checks as CI (gofmt -l always exits 0, so test -z fails on any listed file)
