@@ -13,6 +13,7 @@
 
 #include "plc_boot.h"
 
+#include "../drivers/plugin_plc_requests.h"
 #include "plc_state_manager.h"
 #include "plc_switch.h"
 #include "unix_socket.h"
@@ -52,11 +53,11 @@ int plc_boot_init_plugins(plugin_driver_t *driver, bool load_program_plugins)
         }
     }
 
-    plugin_driver_hold_plc_requests(false);
+    /* Released by plc_boot_autostart(), once the start is decided. */
     return rc;
 }
 
-plc_boot_start_t plc_boot_autostart(bool safe_mode)
+static plc_boot_start_t decide_autostart(bool safe_mode)
 {
     if (safe_mode)
     {
@@ -65,8 +66,6 @@ plc_boot_start_t plc_boot_autostart(bool safe_mode)
 
     if (!plc_switch_allows_run())
     {
-        log_info("Hardware mode switch is in STOP - PLC left stopped");
-        log_info("Move the switch to RUN to start the PLC");
         return PLC_BOOT_START_HELD_BY_SWITCH;
     }
 
@@ -76,4 +75,32 @@ plc_boot_start_t plc_boot_autostart(bool safe_mode)
         return PLC_BOOT_START_FAILED;
     }
     return PLC_BOOT_START_BEGUN;
+}
+
+plc_boot_start_t plc_boot_autostart(bool safe_mode)
+{
+    plc_boot_start_t result = decide_autostart(safe_mode);
+    plugin_driver_hold_plc_requests(false);
+
+    if (result != PLC_BOOT_START_HELD_BY_SWITCH)
+    {
+        return result;
+    }
+
+    /* A flip to RUN after the gate was read had its request dropped by the hold;
+     * the stored position is all that is left of it, so act on it here. */
+    if (plc_switch_allows_run())
+    {
+        log_info("Hardware mode switch moved to RUN during boot - starting the PLC");
+        if (!plc_begin_transition(PLC_STATE_RUNNING))
+        {
+            log_warn("Boot start after the switch moved to RUN collapsed (already transitioning)");
+            return PLC_BOOT_START_FAILED;
+        }
+        return PLC_BOOT_START_BEGUN;
+    }
+
+    log_info("Hardware mode switch is in STOP - PLC left stopped");
+    log_info("Move the switch to RUN to start the PLC");
+    return PLC_BOOT_START_HELD_BY_SWITCH;
 }

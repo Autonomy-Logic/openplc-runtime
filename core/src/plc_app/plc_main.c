@@ -158,6 +158,7 @@ int main(int argc, char *argv[])
         log_info("[PLUGIN]: Plugin driver system created");
         // Includes the program's VPP plugins (not in safe mode), so a plugin
         // owning the mode switch reports it before the auto-start below.
+        // Plugin run/stop requests stay held until plc_boot_autostart().
         plc_boot_init_plugins(plugin_driver, !safe_mode);
 
         // Release the GIL through the driver (not PyEval_SaveThread

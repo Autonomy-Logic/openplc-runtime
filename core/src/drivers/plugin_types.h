@@ -100,6 +100,9 @@ typedef uint8_t  (*plugin_debug_write_func_t)(uint8_t arr, uint16_t elem,
  * The call is non-blocking: the runtime spawns a worker thread for the
  * transition and returns immediately. `reason` is logged at error level.
  * Safe to call from any plugin thread.
+ *
+ * Start and stop requests made during the boot-time init() are not acted on:
+ * the boot auto-start reads the switch position stored by then instead.
  */
 typedef void (*plugin_request_plc_stop_func_t)(const char *reason);
 
@@ -191,6 +194,17 @@ typedef int (*plugin_get_plc_state_func_t)(void);
  * Plugins read buffers under image_lock()/image_unlock() (flush-on-lock) and
  * write through journal_write_* (lock-free), keeping access race-free against
  * the PLC scan cycle.
+ *
+ * init() lifecycle, for plugins in plugins.conf and in a program's
+ * vpp_plugins.conf alike:
+ * - init() runs at power-on, before any program is loaded, and stays in effect
+ *   even if the PLC never starts (switch in STOP, safe mode excepted: VPP
+ *   plugins are not loaded there). It must not depend on program state.
+ * - Every PLC start then calls cleanup(), dlclose()s and re-dlopen()s the .so
+ *   and calls init() again, including the first start after power-on. Any
+ *   thread started in init() must be joined in cleanup(), and init() must
+ *   re-acquire whatever cleanup() released.
+ * - Start/stop requests made from the boot-time init() are not acted on.
  */
 typedef struct
 {

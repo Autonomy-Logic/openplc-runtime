@@ -30,9 +30,11 @@ typedef enum
  *
  * Loads plugins.conf and, when @p load_program_plugins is true (not safe mode),
  * the program's vpp_plugins.conf, then calls init() on all of them. Plugin
- * start/stop requests are held for the duration, so a plugin that reports its
- * mode switch from init() only stores the position; plc_boot_autostart() acts
- * on it. The start transition re-initialises the plugins exactly as before.
+ * start/stop requests are held from here until plc_boot_autostart() has
+ * decided, so a plugin that reports its mode switch from init() only stores the
+ * position and plc_boot_autostart() acts on it. Always pair this call with
+ * plc_boot_autostart(), which releases the hold. The start transition
+ * re-initialises the plugins exactly as before.
  *
  * @return 0 when every step succeeded, -1 otherwise (already logged; the boot
  *         continues, as it did before).
@@ -43,7 +45,11 @@ int plc_boot_init_plugins(plugin_driver_t *driver, bool load_program_plugins);
  * @brief Boot auto-start: begin a start unless in safe mode or the switch reads STOP.
  *
  * Must run after plc_boot_init_plugins(), so the switch gate holds the position
- * the plugins reported rather than its RUN default.
+ * the plugins reported rather than its RUN default. Releases the plugin request
+ * hold on every path. When the switch read STOP, the gate is checked again after
+ * the release: a flip to RUN while requests were held then starts the PLC here,
+ * since its own request was dropped. A flip to STOP after a begun start is
+ * corrected by the switch-movement reconciliation once the start lands.
  */
 plc_boot_start_t plc_boot_autostart(bool safe_mode);
 

@@ -53,6 +53,7 @@ add_executable(plc_main
     ${CMAKE_SOURCE_DIR}/core/src/plc_app/task_policy.c
     ${CMAKE_SOURCE_DIR}/core/src/drivers/plugin_driver.c
     ${CMAKE_SOURCE_DIR}/core/src/drivers/plugin_config.c
+    ${CMAKE_SOURCE_DIR}/core/src/drivers/plugin_plc_requests.c
     ${CMAKE_SOURCE_DIR}/core/src/drivers/vpp_plugin_seal.c
     ${CMAKE_SOURCE_DIR}/core/src/plc_app/unix_socket.c
     ${CMAKE_SOURCE_DIR}/core/src/plc_app/debug_handler.c
