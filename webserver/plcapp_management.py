@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Final
 
-from webserver import project_snapshot
+from webserver import mqtt_config, project_snapshot
 from webserver.config import VPP_DATA_DIR
 from webserver.logger import LogParser, get_logger
 from webserver.plugin_config_model import PluginConfig, PluginsConfiguration, PluginType
@@ -119,6 +119,44 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
         return safe, valid_files
 
 
+def logical_zip_entries(valid_files: list[zipfile.ZipInfo]) -> list[tuple[zipfile.ZipInfo, str]]:
+    """Archive members paired with the path ``safe_extract`` writes them to.
+
+    Skips macOS metadata and directories, normalizes separators and strips a
+    single common root folder, so readers before extraction see the same layout.
+    """
+    roots: set[str] = set()
+    for info in valid_files:
+        if info.filename.startswith("__MACOSX/") or info.filename.endswith(".DS_Store"):
+            continue
+        parts = info.filename.split("/", 1)
+        if parts and parts[0]:
+            roots.add(parts[0])
+    strip_root = len(roots) == 1
+
+    entries: list[tuple[zipfile.ZipInfo, str]] = []
+    for info in valid_files:
+        # Normalize path separators for cross-platform compatibility (Windows \ to Unix /)
+        filename = info.filename.replace('\\', '/')
+
+        if (
+            filename.startswith("__MACOSX/")
+            or filename.endswith(".DS_Store")
+            or filename.endswith("/")
+        ):
+            continue
+
+        if strip_root:
+            parts = filename.split("/", 1)
+            if len(parts) == 2:
+                filename = parts[1]
+            else:
+                filename = parts[0]
+
+        entries.append((info, filename))
+    return entries
+
+
 def safe_extract(zip_path, dest_dir, valid_files):
     """Extract files safely to a target directory.
     - Skips macOS metadata (__MACOSX, .DS_Store)
@@ -127,34 +165,7 @@ def safe_extract(zip_path, dest_dir, valid_files):
     build_state.status = BuildStatus.UNZIPPING
 
     with zipfile.ZipFile(zip_path, "r") as zf:
-        # Detect roots (ignoring macOS junk)
-        roots = set()
-        for info in valid_files:
-            if info.filename.startswith("__MACOSX/") or info.filename.endswith(".DS_Store"):
-                continue
-            parts = info.filename.split("/", 1)
-            if parts and parts[0]:
-                roots.add(parts[0])
-        strip_root = len(roots) == 1
-
-        for info in valid_files:
-            filename = info.filename
-
-            # Normalize path separators for cross-platform compatibility (Windows \ to Unix /)
-            filename = filename.replace('\\', '/')
-
-            # Skip macOS junk and directories
-            if filename.startswith("__MACOSX/") or filename.endswith(".DS_Store") or filename.endswith("/"):
-                continue
-
-            # Optionally strip single root folder
-            if strip_root:
-                parts = filename.split("/", 1)
-                if len(parts) == 2:
-                    filename = parts[1]
-                else:
-                    filename = parts[0]
-
+        for info, filename in logical_zip_entries(valid_files):
             out_path = os.path.join(dest_dir, filename)
             out_path = os.path.abspath(out_path)
 
@@ -173,12 +184,19 @@ def safe_extract(zip_path, dest_dir, valid_files):
             logger.debug("Extracted: %s", out_path)
 
 
-def update_plugin_configurations(generated_dir: str = "core/generated"):
+def update_plugin_configurations(
+    generated_dir: str = "core/generated", program_built: bool = True
+):
     """
     Update plugin configurations based on available config files.
     
     Scans generated/conf/ for config files, copies them to plugin directories,
     and updates plugins.conf to enable/disable plugins accordingly.
+
+    ``program_built`` is False when called on upload, before the build: MQTT,
+    whose configuration addresses the compiled program, stays disabled until
+    the build of that program succeeds. A rejected MQTT configuration raises
+    ``mqtt_config.MqttActivationError`` after plugins.conf is saved with it off.
     """
     plugins_conf_path = "plugins.conf"
     conf_dir = os.path.join(generated_dir, "conf")
@@ -215,7 +233,9 @@ def update_plugin_configurations(generated_dir: str = "core/generated"):
         # Process config files normally when conf directory exists
         # Use the utility method to update plugins based on available config files
         # Copy config files to plugin directories instead of referencing them directly
-        plugins_updated, update_messages = plugins_config.update_plugins_from_config_dir(conf_dir, copy_to_plugin_dirs=True)
+        plugins_updated, update_messages = plugins_config.update_plugins_from_config_dir(
+            conf_dir, copy_to_plugin_dirs=True, exclude=frozenset({mqtt_config.PLUGIN_NAME})
+        )
         
         # Log the updates
         config_files = glob.glob(os.path.join(conf_dir, "*.json"))
@@ -229,6 +249,14 @@ def update_plugin_configurations(generated_dir: str = "core/generated"):
                 build_state.log(f"[INFO] {message}\n")
             else:
                 build_state.log(f"[WARNING] {message}\n")
+
+    mqtt_failure: mqtt_config.MqttActivationError | None = None
+    try:
+        for message in mqtt_config.apply_activation(plugins_config, generated_dir, program_built):
+            build_state.log(f"[INFO] {message}\n")
+    except mqtt_config.MqttActivationError as e:
+        build_state.log(f"[ERROR] {e}\n")
+        mqtt_failure = e
 
     # VPP plugins are handled separately via vpp_plugins.conf — see
     # apply_vpp_plugin_conf(). Nothing to do here for VPP.
@@ -254,6 +282,9 @@ def update_plugin_configurations(generated_dir: str = "core/generated"):
                 build_state.log(f"[WARNING] {issue}\n")
     else:
         build_state.log("[ERROR] Failed to save updated plugin configuration\n")
+
+    if mqtt_failure is not None:
+        raise mqtt_failure
 
 
 def _wait_for_plc_idle(runtime_manager: RuntimeManager, timeout_s: float) -> bool:
@@ -597,6 +628,8 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
         build_state.log(f"[ERROR] {step_name} failed (exit={exit_code})\n")
         return False
 
+    mqtt_claim = mqtt_config.begin_build()
+
     # Fail-closed guard: without this, a raise inside run_compile dies in the
     # daemon thread and status stays pinned at COMPILING, which the editor
     # only recovers from via its minutes-long TCP timeout.
@@ -724,3 +757,4 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
                 project_snapshot.discard_staged()
         except Exception as e:  # never let snapshot bookkeeping mask a build result
             build_state.log(f"[WARNING] Project snapshot bookkeeping failed: {e}\n")
+        mqtt_config.finish_build(mqtt_claim, build_state.status == BuildStatus.SUCCESS)
