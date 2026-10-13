@@ -556,6 +556,7 @@ def test_real_client_on_change_qos0_reaches_the_broker_exactly(tmp_path: Path) -
         RealTime().advance(0.35)
     finally:
         assert state.deactivate() is True
+        _until(lambda: broker.disconnects == 1, 2.0)
         broker.close()
     wire = [(p.topic, p.payload) for p in broker.publishes]
     assert wire[:6] == FIXTURE_ANNOUNCE

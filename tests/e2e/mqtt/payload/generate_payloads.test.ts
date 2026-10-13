@@ -136,7 +136,10 @@ const base = (value: string): TypeRef => ({ definition: 'base-type', value })
 const arrayOf = (value: string, baseType: TypeRef, dims: string[]): TypeRef => ({
   definition: 'array',
   value,
-  data: { baseType: { definition: baseType.definition, value: baseType.value }, dimensions: dims.map((d) => ({ dimension: d })) },
+  data: {
+    baseType: { definition: baseType.definition, value: baseType.value },
+    dimensions: dims.map((d) => ({ dimension: d })),
+  },
 })
 const variable = (name: string, type: TypeRef, cls = 'local', location = '') => ({
   name,
@@ -419,16 +422,24 @@ const SCENARIOS: Array<[string, string, PLCProjectData]> = [
   [
     'e2e-periodic',
     E2E_ST,
-    project(E2E_VARIABLES, true, integration('generic', E2E_SELECTIONS, { publishMode: 'periodic', qos: 1, retain: true })),
+    project(
+      E2E_VARIABLES,
+      true,
+      integration('generic', E2E_SELECTIONS, { publishMode: 'periodic', qos: 1, retain: true }),
+    ),
   ],
   ['e2e-sparkplug', E2E_ST, project(E2E_VARIABLES, true, integration('sparkplug_b', E2E_SELECTIONS))],
   ['e2e-none', E2E_ST, project(E2E_VARIABLES, true, null)],
+  ['e2e-regression', E2E_ST, project(E2E_VARIABLES, true, integration('generic', E2E_SELECTIONS), REGRESSION_SERVERS)],
   [
-    'e2e-regression',
-    E2E_ST,
-    project(E2E_VARIABLES, true, integration('generic', E2E_SELECTIONS), REGRESSION_SERVERS),
+    'bench-none',
+    BENCH_ST,
+    project(
+      [variable('Arr', arrayOf('ARRAY[1..1000] OF DINT', base('DINT'), ['1..1000'])), variable('I', base('DINT'))],
+      false,
+      null,
+    ),
   ],
-  ['bench-none', BENCH_ST, project([variable('Arr', arrayOf('ARRAY[1..1000] OF DINT', base('DINT'), ['1..1000'])), variable('I', base('DINT'))], false, null)],
   [
     'bench-generic',
     BENCH_ST,
@@ -454,10 +465,14 @@ beforeAll(() => {
 })
 
 describe('MQTT end-to-end payloads', () => {
-  it.each(SCENARIOS)('builds %s', async (name, st, data) => {
-    expect(OUT).not.toBe('')
-    const bundle = await build(st, data)
-    write(name, bundle)
-    expect(typeof bundle['debug-map.json']).toBe('string')
-  }, 120_000)
+  it.each(SCENARIOS)(
+    'builds %s',
+    async (name, st, data) => {
+      expect(OUT).not.toBe('')
+      const bundle = await build(st, data)
+      write(name, bundle)
+      expect(typeof bundle['debug-map.json']).toBe('string')
+    },
+    120_000,
+  )
 })

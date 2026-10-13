@@ -63,16 +63,20 @@ def _status_threads() -> list[threading.Thread]:
 
 
 def _raw(path: Path, payload: bytes, timeout: float = 2.0) -> bytes:
+    """Bytes the server answered; a reset (Linux, unread data at close) also means none."""
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         sock.connect(str(path))
-        sock.sendall(payload)
         data = b""
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                return data
-            data += chunk
+        try:
+            sock.sendall(payload)
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    return data
+                data += chunk
+        except (ConnectionResetError, BrokenPipeError):
+            return data
 
 
 @pytest.fixture
