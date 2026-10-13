@@ -12,7 +12,9 @@ cd "$(dirname "$0")/../.."
 
 CXX="${CXX:-c++}"
 CXXFLAGS="-std=c++17 -Wall -Wextra -Wno-unused-parameter -g"
-INCLUDES="-Icore/src/plc_app -Icore/src"
+# Python headers: plugin_driver.h includes Python.h.
+PY_INCLUDE=$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["include"])')
+INCLUDES="-Icore/src/plc_app -Icore/src -I$PY_INCLUDE"
 
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
@@ -23,6 +25,7 @@ TESTS=(
   "tests/host/test_rt_mutex.cpp:"
   "tests/host/test_task_policy.cpp:core/src/plc_app/task_policy.c"
   "tests/host/test_image_outputs.cpp:core/src/plc_app/image_tables.cpp:core/src/plc_app/located_globals.c"
+  "tests/host/test_plc_boot.cpp:core/src/plc_app/plc_boot.c:core/src/plc_app/plc_switch.c:core/src/drivers/plugin_plc_requests.c"
 )
 
 failures=0
