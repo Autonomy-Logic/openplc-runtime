@@ -4,6 +4,8 @@
 #ifndef PLUGIN_DRIVER_H
 #define PLUGIN_DRIVER_H
 
+#include <stdbool.h>
+
 #include "../plc_app/plcapp_manager.h"
 #include "plugin_config.h"
 #include "plugin_types.h"
@@ -108,6 +110,16 @@ int plugin_driver_cleanup_init(plugin_driver_t *driver);
 int plugin_driver_start(plugin_driver_t *driver);
 int plugin_driver_stop(plugin_driver_t *driver);
 void plugin_driver_destroy(plugin_driver_t *driver);
+
+/**
+ * @brief Drop plugin request_plc_start / request_plc_stop calls while @p hold is true.
+ *
+ * Set around the boot-time plugin init, so a plugin reporting its switch from
+ * init() cannot start a transition that would tear down the plugins still being
+ * initialised. The boot auto-start reads the switch gate afterwards instead.
+ * Switch positions are still stored while held.
+ */
+void plugin_driver_hold_plc_requests(bool hold);
 
 /* Release the Python GIL and remember the thread state so
  * plugin_driver_destroy can restore it before Py_FinalizeEx. Call once

@@ -116,6 +116,9 @@ typedef void (*plugin_request_plc_stop_func_t)(const char *reason);
  * thread, including while the PLC is stopped: the runtime keeps every plugin
  * mapped across a stop, so this is how a hardware STOP -> RUN edge starts the
  * PLC again.
+ *
+ * Start and stop requests made during the boot-time init() are not acted on:
+ * the boot auto-start reads the switch position stored by then instead.
  */
 typedef void (*plugin_request_plc_start_func_t)(const char *reason);
 
