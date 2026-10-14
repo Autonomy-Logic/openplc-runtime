@@ -23,6 +23,11 @@ from flask_jwt_extended import JWTManager, create_access_token
 
 from webserver.discovery.discovery_routes import discovery_bp
 
+_STATUS: dict[str, object] = {
+    "configured": True,
+    "masters": [{"name": "ethercat0"}, {"name": "ethercat1"}],
+}
+
 
 class _FakeManager:
     """Mimics ``EtherDogManager`` for route tests.
@@ -38,7 +43,7 @@ class _FakeManager:
         reply_by_command: dict[str, dict[str, object]] | None = None,
         hello: tuple[list[str] | None, str | None] = (None, None),
     ) -> None:
-        self.reply_by_command = reply_by_command or {}
+        self.reply_by_command = {"status": _STATUS, **(reply_by_command or {})}
         self._hello = hello
         self.calls: list[dict[str, object]] = []
         self.timeouts: list[float] = []
@@ -106,7 +111,10 @@ def test_scan_modules_translates_idents_to_slot_indexed_modules(app, client):
         {"slot": 2, "ident": "0x00001A10"},
     ]
     mgr = app.config["ETHERDOG_MANAGER"]
-    assert mgr.calls == [{"command": "scan-modules", "params": {"master": 0, "slave": 1}}]
+    assert mgr.calls == [
+        {"command": "status"},
+        {"command": "scan-modules", "params": {"master": 0, "slave": 1}},
+    ]
 
 
 def test_scan_modules_rejects_missing_bus_name(app, client):
@@ -180,6 +188,51 @@ def test_scan_modules_requires_auth(app, client):
     assert resp.status_code == 401
 
 
+@pytest.mark.parametrize("path", ["scan-modules", "diagnostics"])
+def test_bus_name_selects_the_etherdog_master_by_name(app, client, path):
+    command = "scan-modules" if path == "scan-modules" else "diagnostics-slave"
+    app.config["ETHERDOG_MANAGER"] = _FakeManager(
+        reply_by_command={command: {"status": "success", "idents": [], "modules": []}}
+    )
+    resp = client.post(
+        f"/api/discovery/ethercat/{path}",
+        json={"bus_name": "ethercat1", "slave_position": 3},
+        headers=_auth(app),
+    )
+    assert resp.status_code == 200
+    assert app.config["ETHERDOG_MANAGER"].calls[-1] == {
+        "command": command,
+        "params": {"master": 1, "slave": 3},
+    }
+
+
+@pytest.mark.parametrize("path", ["scan-modules", "diagnostics"])
+def test_unknown_bus_name_is_404_without_a_bus_command(app, client, path):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager()
+    resp = client.post(
+        f"/api/discovery/ethercat/{path}",
+        json={"bus_name": "missing", "slave_position": 1},
+        headers=_auth(app),
+    )
+    assert resp.status_code == 404
+    assert "missing" in resp.get_json()["message"]
+    assert app.config["ETHERDOG_MANAGER"].calls == [{"command": "status"}]
+
+
+@pytest.mark.parametrize("path", ["scan-modules", "diagnostics"])
+def test_etherdog_status_failure_is_502(app, client, path):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager(
+        reply_by_command={"status": {"error": "EtherDOG not connected"}}
+    )
+    resp = client.post(
+        f"/api/discovery/ethercat/{path}",
+        json={"bus_name": "ethercat0", "slave_position": 1},
+        headers=_auth(app),
+    )
+    assert resp.status_code == 502
+    assert "not connected" in resp.get_json()["message"]
+
+
 # ---------------------------------------------------------------------------
 # diagnostics
 # ---------------------------------------------------------------------------
@@ -217,7 +270,10 @@ def test_diagnostics_success_forwards_slave_and_shapes_response(app, client):
         {"slot": 2, "status_byte": 0},
     ]
     mgr = app.config["ETHERDOG_MANAGER"]
-    assert mgr.calls == [{"command": "diagnostics-slave", "params": {"master": 0, "slave": 1}}]
+    assert mgr.calls == [
+        {"command": "status"},
+        {"command": "diagnostics-slave", "params": {"master": 0, "slave": 1}},
+    ]
 
 
 def test_diagnostics_drops_poll_at_ms_when_absent(app, client):
@@ -381,7 +437,7 @@ def test_scan_modules_timeout_is_clamped(app, client, timeout_ms, etherdog_timeo
     if timeout_ms is not None:
         body["timeout_ms"] = timeout_ms
     client.post("/api/discovery/ethercat/scan-modules", json=body, headers=_auth(app))
-    assert app.config["ETHERDOG_MANAGER"].timeouts == [pytest.approx(etherdog_timeout)]
+    assert app.config["ETHERDOG_MANAGER"].timeouts[-1] == pytest.approx(etherdog_timeout)
 
 
 def test_non_object_body_is_refused(app, client):

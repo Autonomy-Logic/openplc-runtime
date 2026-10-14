@@ -78,6 +78,29 @@ def _bad_request(message: str):
     return jsonify({"status": "error", "message": message}), 400
 
 
+def _master_index(etherdog, bus_name: str) -> int | tuple[str, int]:
+    """EtherDOG's index of the master named ``bus_name``, or (message, HTTP status)."""
+    status = etherdog.plugin_style_command({"command": "status"}, timeout=5.0)
+    if "error" in status:
+        return f"EtherDOG status unavailable: {status['error']}", 502
+    masters = status.get("masters")
+    for index, master in enumerate(masters if isinstance(masters, list) else []):
+        if isinstance(master, dict) and master.get("name") == bus_name:
+            return index
+    return f"Bus '{bus_name}' is not in the loaded EtherCAT configuration", 404
+
+
+def _slave_error(bus_name: str, slave_pos: int, message: str, code: int, **extra: object):
+    body: dict[str, object] = {
+        "status": "error",
+        "bus_name": bus_name,
+        "slave_position": slave_pos,
+        "message": message,
+    }
+    body.update(extra)
+    return jsonify(body), code
+
+
 @discovery_bp.route("/ethercat/status", methods=["GET"])
 @jwt_required()
 def ethercat_status():
@@ -388,10 +411,8 @@ def ethercat_scan_modules():
     """
     Scan a modular coupler's 0xF050 module ident list.
 
-    EtherDOG speaks `scan-modules` in terms of (master_index, slave_position); OpenPLC
-    today supervises a single EtherCAT master, so bus_name is a label the editor passes
-    to make the request shape round-trip-safe and master index 0 is implied. If and when
-    more than one master lands, this is where the mapping grows.
+    EtherDOG speaks `scan-modules` in terms of (master_index, slave_position); the master
+    index is the position of the master named `bus_name` in EtherDOG's `status` reply.
 
     EtherDOG returns `{"status":"success","idents":["0x00001A0F","0x00001A10"]}`, one ident per
     slot in slot order; the reply lists them as `modules: [{slot, ident}, ...]` with slots from 1.
@@ -426,6 +447,8 @@ def ethercat_scan_modules():
         description: Module list retrieved, one entry per occupied slot, slots from 1
       400:
         description: Invalid request parameters
+      404:
+        description: No master named bus_name in the loaded EtherCAT configuration
       502:
         description: EtherDOG refused the scan or returned an unknown reply
     """
@@ -437,8 +460,11 @@ def ethercat_scan_modules():
     etherdog_timeout = _timeout_ms(data if isinstance(data, dict) else {}) / 1000.0 + 2.0
 
     etherdog = current_app.config["ETHERDOG_MANAGER"]
+    master = _master_index(etherdog, bus_name)
+    if isinstance(master, tuple):
+        return _slave_error(bus_name, slave_pos, master[0], master[1], modules=[])
     result = etherdog.plugin_style_command(
-        {"command": "scan-modules", "params": {"master": 0, "slave": slave_pos}},
+        {"command": "scan-modules", "params": {"master": master, "slave": slave_pos}},
         timeout=etherdog_timeout,
     )
 
@@ -647,6 +673,8 @@ def ethercat_slave_diagnostics():
           (0..255, or null when unread).
       400:
         description: Invalid request parameters
+      404:
+        description: No master named bus_name in the loaded EtherCAT configuration
       502:
         description: EtherDOG refused the diagnostics read or returned an unknown reply
     """
@@ -657,8 +685,11 @@ def ethercat_slave_diagnostics():
     bus_name, slave_pos = parsed
 
     etherdog = current_app.config["ETHERDOG_MANAGER"]
+    master = _master_index(etherdog, bus_name)
+    if isinstance(master, tuple):
+        return _slave_error(bus_name, slave_pos, master[0], master[1])
     result = etherdog.plugin_style_command(
-        {"command": "diagnostics-slave", "params": {"master": 0, "slave": slave_pos}},
+        {"command": "diagnostics-slave", "params": {"master": master, "slave": slave_pos}},
         timeout=10.0,
     )
 

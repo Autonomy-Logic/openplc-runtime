@@ -72,6 +72,7 @@ All under `/api/discovery`, JWT required.
 | `POST /ethercat/test` | Probe one slave |
 
 Per-slave requests (`scan-modules`, `POST diagnostics`) take `{"bus_name", "slave_position"}`:
+`bus_name` selects the master of that name in the loaded busconfig (404 when there is none),
 `slave_position` is 1 to 65535, anything else is a 400. `scan-modules` takes an optional
 `timeout_ms`, clamped to 100..60000 (default 5000). `POST diagnostics` answers
 `coupler.status_word` as a 16-bit integer or `null` when EtherDOG could not read it, and each module
