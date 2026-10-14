@@ -64,7 +64,7 @@ class FakeEtherDog:
     """Unix-socket server that records each command and echoes it back.
 
     ``hello_reply``, when set, overrides the reply sent to the ``hello`` command so
-    tests can simulate the R4-and-later features array or the pre-R4 bare success.
+    tests can simulate a features array or an older EtherDOG's bare success.
     """
 
     def __init__(self, path: str, hello_reply: dict | None = None) -> None:
@@ -420,26 +420,41 @@ def test_command_captures_hello_features_and_version(run_dir: Path) -> None:
         server.close()
 
 
-def test_command_keeps_last_hello_when_fields_absent(run_dir: Path) -> None:
-    """Pre-R4 EtherDOG hello has no features/version; manager caches (None, None)
-    and does not clobber a previous good capture when later hellos omit the fields."""
-    pre_r4 = {"status": "success"}
-    r4 = {
+def test_each_hello_replaces_the_cached_features(run_dir: Path) -> None:
+    """A hello without features or version (an older EtherDOG) clears the cache: the
+    capability gate must not see features of a process that is no longer there."""
+    older = {"status": "success"}
+    newer = {
         "status": "success",
         "name": "EtherDOG",
-        "version": "0.5.0",
+        "version": "1.0.0",
         "features": ["ethercat.dynamic_alloc"],
     }
-    server = FakeEtherDog(str(run_dir / "etherdog.socket"), hello_reply=r4)
+    server = FakeEtherDog(str(run_dir / "etherdog.socket"), hello_reply=newer)
     try:
         manager = _manager(run_dir)
         manager.command({"command": "status"})
-        assert manager.get_last_hello() == (["ethercat.dynamic_alloc"], "0.5.0")
-        server.hello_reply = pre_r4
+        assert manager.get_last_hello() == (["ethercat.dynamic_alloc"], "1.0.0")
+        server.hello_reply = older
         manager.command({"command": "status"})
-        # A subsequent hello that omits the fields must not clear the cache: the
-        # editor's capability gate reads the last known good features.
-        assert manager.get_last_hello() == (["ethercat.dynamic_alloc"], "0.5.0")
+        assert manager.get_last_hello() == (None, None)
+    finally:
+        server.close()
+
+
+def test_stop_and_disable_clear_the_cached_hello(run_dir: Path) -> None:
+    hello = {"status": "success", "version": "1.0.0", "features": ["ethercat.scan_modules"]}
+    server = FakeEtherDog(str(run_dir / "etherdog.socket"), hello_reply=hello)
+    try:
+        manager = _manager(run_dir)
+        manager.command({"command": "status"})
+        assert manager.get_last_hello()[1] == "1.0.0"
+        manager.stop()
+        assert manager.get_last_hello() == (None, None)
+        manager.command({"command": "status"})
+        assert manager.get_last_hello()[1] == "1.0.0"
+        manager._disable("test")
+        assert manager.get_last_hello() == (None, None)
     finally:
         server.close()
 

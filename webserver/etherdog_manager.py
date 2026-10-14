@@ -149,9 +149,7 @@ class EtherDogManager:
         # Serialises start, spawn and stop; separate from _lock, which apply_busconfig holds.
         self._lifecycle = threading.Lock()
         self._stopping = threading.Event()
-        # Last EtherDOG hello captured on a command roundtrip. Kept so a client can ask for
-        # the connected runtime's feature set without opening its own control-socket session,
-        # and so the editor's pre-build capability gate has somewhere to read from.
+        # Features and version from the latest EtherDOG hello; cleared whenever the process changes.
         self._hello_lock = threading.Lock()
         self._last_features: list[str] | None = None
         self._last_hello_version: str | None = None
@@ -196,6 +194,7 @@ class EtherDogManager:
     def stop(self) -> None:
         self._stopping.set()
         self._running = False
+        self._clear_hello()
         with self._lifecycle:
             proc = self._process
         if proc is not None and proc.poll() is None:
@@ -217,6 +216,7 @@ class EtherDogManager:
 
     def _disable(self, reason: str, kind: EtherDogErrorKind | None = None) -> None:
         self._running = False
+        self._clear_hello()
         self._disabled_reason = reason
         self._disabled_kind = kind
         logger.warning("%s. EtherCAT is disabled; the runtime continues without it.", reason)
@@ -255,6 +255,7 @@ class EtherDogManager:
         ]
         self._output.clear()
         self._ready = False
+        self._clear_hello()
         with self._lifecycle:
             # A stop() during the leftover cleanup or a restart must not leave a new process
             if self._stopping.is_set():
@@ -391,27 +392,29 @@ class EtherDogManager:
             logger.warning("EtherDOG command %s failed: %s", request.get("command"), e)
             return {"error": e.public_message}
 
-    def _capture_hello(self, reply: dict[str, Any]) -> None:
-        """Cache the features and version from the hello reply so the capabilities endpoint
-        can hand them back without a second roundtrip. Pre-R4 EtherDOG does not send either
-        field, so a missing key is kept as None; a non-list features field is ignored."""
+    def _capture_hello(self, reply: dict[str, object]) -> None:
+        """Record the hello's features and version. Each hello replaces both: a field the
+        EtherDOG did not send is recorded as None, never kept from an earlier process."""
         features_raw = reply.get("features")
         features = (
-            [str(f) for f in features_raw if isinstance(f, str)]
+            [f for f in features_raw if isinstance(f, str)]
             if isinstance(features_raw, list)
             else None
         )
         version_raw = reply.get("version")
-        version = str(version_raw) if isinstance(version_raw, str) else None
+        version = version_raw if isinstance(version_raw, str) else None
         with self._hello_lock:
-            if features is not None:
-                self._last_features = features
-            if version is not None:
-                self._last_hello_version = version
+            self._last_features = features
+            self._last_hello_version = version
+
+    def _clear_hello(self) -> None:
+        with self._hello_lock:
+            self._last_features = None
+            self._last_hello_version = None
 
     def get_last_hello(self) -> tuple[list[str] | None, str | None]:
-        """Last features+version pair captured from an EtherDOG hello, or (None, None) when
-        no hello has succeeded yet. Pre-R4 EtherDOG never fills these fields."""
+        """Features and version from the current EtherDOG's latest hello, or (None, None)
+        when none has been received since it started."""
         with self._hello_lock:
             features = list(self._last_features) if self._last_features is not None else None
             return features, self._last_hello_version

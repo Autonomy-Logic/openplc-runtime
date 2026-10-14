@@ -579,7 +579,8 @@ build_native_plugins() {
 
 # EtherDOG, the EtherCAT master service supervised by the webserver. Its source stays in the install.
 ETHERDOG_REPO="${ETHERDOG_REPO:-https://github.com/Autonomy-Logic/EtherDOG.git}"
-ETHERDOG_REF="${ETHERDOG_REF:-main}"
+# A release tag: the runtime is tested against this EtherDOG and no other.
+ETHERDOG_REF="${ETHERDOG_REF:-v1.0.0}"
 
 build_etherdog() {
     local src="${ETHERDOG_SRC:-}"

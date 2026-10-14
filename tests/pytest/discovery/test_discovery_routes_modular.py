@@ -6,6 +6,7 @@
 Covers:
   * ``POST /api/discovery/ethercat/scan-modules`` — modular coupler module ident scan.
   * ``POST /api/discovery/ethercat/diagnostics`` — per-slave coupler + module diagnostics.
+  * ``GET  /api/discovery/ethercat/diagnostics`` — master-wide diagnostics.
   * ``GET  /api/discovery/ethercat/capabilities`` — EtherDOG features captured on hello.
 
 Each test spins up a lightweight Flask app with the discovery blueprint registered and
@@ -15,8 +16,6 @@ request parsing, response reshaping, and failure translation.
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 import pytest
 from flask import Flask
@@ -36,15 +35,17 @@ class _FakeManager:
     def __init__(
         self,
         *,
-        reply_by_command: dict[str, dict[str, Any]] | None = None,
+        reply_by_command: dict[str, dict[str, object]] | None = None,
         hello: tuple[list[str] | None, str | None] = (None, None),
     ) -> None:
         self.reply_by_command = reply_by_command or {}
         self._hello = hello
-        self.calls: list[dict[str, Any]] = []
+        self.calls: list[dict[str, object]] = []
+        self.timeouts: list[float] = []
 
-    def plugin_style_command(self, request: dict[str, Any], timeout: float) -> dict[str, Any]:
+    def plugin_style_command(self, request: dict[str, object], timeout: float) -> dict[str, object]:
         self.calls.append(request)
+        self.timeouts.append(timeout)
         cmd = request.get("command")
         if cmd in self.reply_by_command:
             return self.reply_by_command[cmd]
@@ -101,13 +102,11 @@ def test_scan_modules_translates_idents_to_slot_indexed_modules(app, client):
     assert body["bus_name"] == "ethercat0"
     assert body["slave_position"] == 1
     assert body["modules"] == [
-        {"slot": 0, "ident": "0x00001A0F"},
-        {"slot": 1, "ident": "0x00001A10"},
+        {"slot": 1, "ident": "0x00001A0F"},
+        {"slot": 2, "ident": "0x00001A10"},
     ]
     mgr = app.config["ETHERDOG_MANAGER"]
-    assert mgr.calls == [
-        {"command": "scan-modules", "params": {"master": 0, "slave": 1}}
-    ]
+    assert mgr.calls == [{"command": "scan-modules", "params": {"master": 0, "slave": 1}}]
 
 
 def test_scan_modules_rejects_missing_bus_name(app, client):
@@ -161,9 +160,7 @@ def test_scan_modules_forwards_etherdog_error_as_502(app, client):
 
 def test_scan_modules_forwards_etherdog_failure_status_as_502(app, client):
     app.config["ETHERDOG_MANAGER"] = _FakeManager(
-        reply_by_command={
-            "scan-modules": {"status": "error", "message": "slave 7 unreachable"}
-        }
+        reply_by_command={"scan-modules": {"status": "error", "message": "slave 7 unreachable"}}
     )
     resp = client.post(
         "/api/discovery/ethercat/scan-modules",
@@ -197,8 +194,8 @@ def test_diagnostics_success_forwards_slave_and_shapes_response(app, client):
                 "slave": 1,
                 "coupler": {"status_word": 0, "poll_at_ms": 1700000000000.0},
                 "modules": [
-                    {"slot": 0, "status_byte": 0x00},
                     {"slot": 1, "status_byte": 0x00},
+                    {"slot": 2, "status_byte": 0x00},
                 ],
             }
         }
@@ -216,13 +213,11 @@ def test_diagnostics_success_forwards_slave_and_shapes_response(app, client):
     assert body["coupler"]["status_word"] == 0
     assert body["coupler"]["poll_at_ms"] == 1700000000000.0
     assert body["modules"] == [
-        {"slot": 0, "status_byte": 0},
         {"slot": 1, "status_byte": 0},
+        {"slot": 2, "status_byte": 0},
     ]
     mgr = app.config["ETHERDOG_MANAGER"]
-    assert mgr.calls == [
-        {"command": "diagnostics-slave", "params": {"master": 0, "slave": 1}}
-    ]
+    assert mgr.calls == [{"command": "diagnostics-slave", "params": {"master": 0, "slave": 1}}]
 
 
 def test_diagnostics_drops_poll_at_ms_when_absent(app, client):
@@ -274,6 +269,127 @@ def test_diagnostics_requires_auth(app, client):
     assert resp.status_code == 401
 
 
+def test_diagnostics_passes_unknown_values_through_as_null(app, client):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager(
+        reply_by_command={
+            "diagnostics-slave": {
+                "status": "success",
+                "coupler": {"status_word": None},
+                "modules": [{"slot": 1, "status_byte": None}, {"slot": 2, "status_byte": 0x20}],
+            }
+        }
+    )
+    resp = client.post(
+        "/api/discovery/ethercat/diagnostics",
+        json={"bus_name": "ethercat0", "slave_position": 1},
+        headers=_auth(app),
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["coupler"] == {"status_word": None}
+    assert body["modules"] == [{"slot": 1, "status_byte": None}, {"slot": 2, "status_byte": 0x20}]
+
+
+@pytest.mark.parametrize("status_word", ["0x00C0", -1, 0x10000, True, 1.5])
+def test_diagnostics_refuses_an_invalid_status_word(app, client, status_word):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager(
+        reply_by_command={
+            "diagnostics-slave": {
+                "status": "success",
+                "coupler": {"status_word": status_word},
+                "modules": [],
+            }
+        }
+    )
+    resp = client.post(
+        "/api/discovery/ethercat/diagnostics",
+        json={"bus_name": "ethercat0", "slave_position": 1},
+        headers=_auth(app),
+    )
+    assert resp.status_code == 502
+    assert "status word" in resp.get_json()["message"]
+
+
+def test_diagnostics_drops_modules_with_slot_0_or_bad_status(app, client):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager(
+        reply_by_command={
+            "diagnostics-slave": {
+                "status": "success",
+                "coupler": {"status_word": 0},
+                "modules": [
+                    {"slot": 0, "status_byte": 0},
+                    {"slot": 1, "status_byte": 256},
+                    {"slot": 2, "status_byte": "0"},
+                    {"slot": 3, "status_byte": 1},
+                ],
+            }
+        }
+    )
+    resp = client.post(
+        "/api/discovery/ethercat/diagnostics",
+        json={"bus_name": "ethercat0", "slave_position": 1},
+        headers=_auth(app),
+    )
+    assert resp.get_json()["modules"] == [{"slot": 3, "status_byte": 1}]
+
+
+def test_master_diagnostics_get_is_served_on_the_diagnostics_path(app, client):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager(
+        reply_by_command={"diagnostics": {"masters": [{"name": "m", "state": "OPERATIONAL"}]}}
+    )
+    resp = client.get("/api/discovery/ethercat/diagnostics", headers=_auth(app))
+    assert resp.status_code == 200
+    assert resp.get_json()["masters"][0]["plugin_state"] == "OPERATIONAL"
+    assert app.config["ETHERDOG_MANAGER"].calls == [{"command": "diagnostics"}]
+
+
+def test_master_diagnostics_get_reports_etherdog_unavailable(app, client):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager()
+    resp = client.get("/api/discovery/ethercat/diagnostics", headers=_auth(app))
+    assert resp.status_code == 503
+
+
+def test_unreleased_master_diagnostics_path_is_gone(app, client):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager()
+    resp = client.get("/api/discovery/ethercat/master-diagnostics", headers=_auth(app))
+    assert resp.status_code == 404
+
+
+@pytest.mark.parametrize("path", ["scan-modules", "diagnostics"])
+@pytest.mark.parametrize("position", [0, -1, 65536])
+def test_slave_position_outside_1_to_65535_is_refused(app, client, path, position):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager()
+    resp = client.post(
+        f"/api/discovery/ethercat/{path}",
+        json={"bus_name": "ethercat0", "slave_position": position},
+        headers=_auth(app),
+    )
+    assert resp.status_code == 400
+    assert "1 to 65535" in resp.get_json()["message"]
+    assert app.config["ETHERDOG_MANAGER"].calls == []
+
+
+@pytest.mark.parametrize(
+    ("timeout_ms", "etherdog_timeout"),
+    [(None, 7.0), (10, 2.1), (3000, 5.0), (10**9, 62.0), ("5000", 7.0), (True, 7.0)],
+)
+def test_scan_modules_timeout_is_clamped(app, client, timeout_ms, etherdog_timeout):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager(
+        reply_by_command={"scan-modules": {"status": "success", "idents": []}}
+    )
+    body: dict[str, object] = {"bus_name": "ethercat0", "slave_position": 1}
+    if timeout_ms is not None:
+        body["timeout_ms"] = timeout_ms
+    client.post("/api/discovery/ethercat/scan-modules", json=body, headers=_auth(app))
+    assert app.config["ETHERDOG_MANAGER"].timeouts == [pytest.approx(etherdog_timeout)]
+
+
+def test_non_object_body_is_refused(app, client):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager()
+    resp = client.post("/api/discovery/ethercat/scan-modules", json=[1, 2], headers=_auth(app))
+    assert resp.status_code == 400
+
+
 # ---------------------------------------------------------------------------
 # capabilities
 # ---------------------------------------------------------------------------
@@ -305,8 +421,8 @@ def test_capabilities_returns_cached_hello_fields(app, client):
     assert body["version"] == "0.5.0"
 
 
-def test_capabilities_reports_empty_for_pre_r4_etherdog(app, client):
-    # EtherDOG < R4 answers hello without a `features` array; the manager caches
+def test_capabilities_reports_empty_for_an_etherdog_without_features(app, client):
+    # An older EtherDOG answers hello without a `features` array; the manager caches
     # that as (None, None) and the endpoint must still answer available=True.
     app.config["ETHERDOG_MANAGER"] = _FakeManager(
         reply_by_command={"status": {"status": "success"}},

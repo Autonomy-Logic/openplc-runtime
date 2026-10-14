@@ -9,6 +9,8 @@ Endpoints:
     GET  /api/discovery/ethercat/capabilities   - EtherDOG features captured on hello
     POST /api/discovery/ethercat/scan           - Scan network for EtherCAT slaves (via EtherDOG)
     POST /api/discovery/ethercat/scan-modules   - Scan a modular coupler's 0xF050 module list
+    GET  /api/discovery/ethercat/runtime-status - Bus status from EtherDOG
+    GET  /api/discovery/ethercat/diagnostics    - Master-wide diagnostics from EtherDOG
     POST /api/discovery/ethercat/diagnostics    - Per-slave coupler + module diagnostics
     POST /api/discovery/ethercat/validate       - Validate EtherCAT configuration
     POST /api/discovery/ethercat/test           - Test connection to specific EtherCAT slave
@@ -34,6 +36,46 @@ def _with_plugin_state(result: dict) -> dict:
         if isinstance(master, dict) and "state" in master:
             master.setdefault("plugin_state", master["state"])
     return result
+
+
+SLAVE_POSITION_MIN = 1
+SLAVE_POSITION_MAX = 65535
+TIMEOUT_MS_MIN = 100
+TIMEOUT_MS_MAX = 60000
+TIMEOUT_MS_DEFAULT = 5000
+
+
+def _slave_request(data: dict[str, object]) -> tuple[str, int] | str:
+    """The (bus_name, slave_position) of a per-slave request, or the reason it is invalid."""
+    bus_name = data.get("bus_name")
+    slave_pos = data.get("slave_position")
+    if not isinstance(bus_name, str) or not bus_name:
+        return "Missing or invalid 'bus_name'"
+    if (
+        not isinstance(slave_pos, int)
+        or isinstance(slave_pos, bool)
+        or not SLAVE_POSITION_MIN <= slave_pos <= SLAVE_POSITION_MAX
+    ):
+        return (
+            f"'slave_position' must be an integer from {SLAVE_POSITION_MIN} to {SLAVE_POSITION_MAX}"
+        )
+    return bus_name, slave_pos
+
+
+def _timeout_ms(data: dict[str, object]) -> int:
+    """The request's `timeout_ms`, clamped to TIMEOUT_MS_MIN..TIMEOUT_MS_MAX."""
+    value = data.get("timeout_ms")
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return TIMEOUT_MS_DEFAULT
+    return int(min(max(value, TIMEOUT_MS_MIN), TIMEOUT_MS_MAX))
+
+
+def _is_uint(value: object, maximum: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= maximum
+
+
+def _bad_request(message: str):
+    return jsonify({"status": "error", "message": message}), 400
 
 
 @discovery_bp.route("/ethercat/status", methods=["GET"])
@@ -71,12 +113,9 @@ def ethercat_status():
 @jwt_required()
 def ethercat_capabilities():
     """
-    Return the EtherDOG feature set captured on the last hello.
+    Return the features and version from the running EtherDOG's hello.
 
-    The editor's pre-build capability gate reads this to decide whether the project can
-    be built against the connected runtime. A touch-up `status` roundtrip is sent first
-    so the gate sees fresh features from the current EtherDOG — a cached list could be
-    stale after a runtime upgrade without a page reload.
+    A `status` roundtrip is sent first, so the hello is the current process's.
     ---
     tags:
       - EtherCAT
@@ -104,19 +143,29 @@ def ethercat_capabilities():
     etherdog = current_app.config["ETHERDOG_MANAGER"]
     probe = etherdog.plugin_style_command({"command": "status"}, timeout=5.0)
     if "error" in probe:
-        return jsonify({
-            "available": False,
-            "features": [],
-            "version": None,
-            "message": probe["error"],
-        }), 200
+        return (
+            jsonify(
+                {
+                    "available": False,
+                    "features": [],
+                    "version": None,
+                    "message": probe["error"],
+                }
+            ),
+            200,
+        )
     features, version = etherdog.get_last_hello()
-    return jsonify({
-        "available": True,
-        "features": features if features is not None else [],
-        "version": version,
-        "message": "ok",
-    }), 200
+    return (
+        jsonify(
+            {
+                "available": True,
+                "features": features if features is not None else [],
+                "version": version,
+                "message": "ok",
+            }
+        ),
+        200,
+    )
 
 
 @discovery_bp.route("/interfaces", methods=["GET"])
@@ -344,9 +393,8 @@ def ethercat_scan_modules():
     to make the request shape round-trip-safe and master index 0 is implied. If and when
     more than one master lands, this is where the mapping grows.
 
-    EtherDOG returns `{"status":"success","idents":["0x00001A0F","0x00001A10"]}`; the
-    editor and the web both consume `modules: [{slot, ident}, ...]`, so we flatten the
-    list to slot-indexed objects here, keeping the ident string EtherDOG printed.
+    EtherDOG returns `{"status":"success","idents":["0x00001A0F","0x00001A10"]}`, one ident per
+    slot in slot order; the reply lists them as `modules: [{slot, ident}, ...]` with slots from 1.
     ---
     tags:
       - EtherCAT
@@ -371,31 +419,22 @@ def ethercat_scan_modules():
             timeout_ms:
               type: integer
               default: 5000
+              minimum: 100
+              maximum: 60000
     responses:
       200:
-        description: Module list retrieved
+        description: Module list retrieved, one entry per occupied slot, slots from 1
       400:
         description: Invalid request parameters
       502:
         description: EtherDOG refused the scan or returned an unknown reply
     """
-    data = request.get_json(silent=True) or {}
-    bus_name = data.get("bus_name")
-    slave_pos = data.get("slave_position")
-
-    if not isinstance(bus_name, str) or not bus_name:
-        return (
-            jsonify({"status": "error", "message": "Missing or invalid 'bus_name'"}),
-            400,
-        )
-    if not isinstance(slave_pos, int) or isinstance(slave_pos, bool):
-        return (
-            jsonify({"status": "error", "message": "Missing or invalid 'slave_position'"}),
-            400,
-        )
-
-    timeout_ms = data.get("timeout_ms")
-    etherdog_timeout = max(5.0, (float(timeout_ms) / 1000.0) + 2.0) if isinstance(timeout_ms, (int, float)) else 10.0
+    data = request.get_json(silent=True)
+    parsed = _slave_request(data if isinstance(data, dict) else {})
+    if isinstance(parsed, str):
+        return _bad_request(parsed)
+    bus_name, slave_pos = parsed
+    etherdog_timeout = _timeout_ms(data if isinstance(data, dict) else {}) / 1000.0 + 2.0
 
     etherdog = current_app.config["ETHERDOG_MANAGER"]
     result = etherdog.plugin_style_command(
@@ -434,7 +473,7 @@ def ethercat_scan_modules():
     idents = result.get("idents") or []
     modules = [
         {"slot": slot, "ident": str(ident)}
-        for slot, ident in enumerate(idents)
+        for slot, ident in enumerate(idents, start=1)
         if isinstance(ident, str)
     ]
 
@@ -528,11 +567,11 @@ def ethercat_runtime_status():
     return jsonify(_with_plugin_state(result)), 200
 
 
-@discovery_bp.route("/ethercat/master-diagnostics", methods=["GET"])
+@discovery_bp.route("/ethercat/diagnostics", methods=["GET"])
 @jwt_required()
-def ethercat_master_diagnostics():
+def ethercat_diagnostics():
     """
-    Get the master-wide EtherCAT diagnostic dump from EtherDOG.
+    Get detailed EtherCAT diagnostic information from EtherDOG.
     ---
     tags:
       - EtherCAT
@@ -572,7 +611,7 @@ def ethercat_master_diagnostics():
 
 @discovery_bp.route("/ethercat/diagnostics", methods=["POST"])
 @jwt_required()
-def ethercat_diagnostics():
+def ethercat_slave_diagnostics():
     """
     Per-slave diagnostics for a modular coupler.
 
@@ -602,26 +641,20 @@ def ethercat_diagnostics():
               example: 1
     responses:
       200:
-        description: Per-slave diagnostics retrieved
+        description: >
+          Per-slave diagnostics retrieved. `coupler.status_word` is a 16-bit integer, or null
+          when EtherDOG could not read it; each module has a 1-based `slot` and a `status_byte`
+          (0..255, or null when unread).
       400:
         description: Invalid request parameters
       502:
         description: EtherDOG refused the diagnostics read or returned an unknown reply
     """
-    data = request.get_json(silent=True) or {}
-    bus_name = data.get("bus_name")
-    slave_pos = data.get("slave_position")
-
-    if not isinstance(bus_name, str) or not bus_name:
-        return (
-            jsonify({"status": "error", "message": "Missing or invalid 'bus_name'"}),
-            400,
-        )
-    if not isinstance(slave_pos, int) or isinstance(slave_pos, bool):
-        return (
-            jsonify({"status": "error", "message": "Missing or invalid 'slave_position'"}),
-            400,
-        )
+    data = request.get_json(silent=True)
+    parsed = _slave_request(data if isinstance(data, dict) else {})
+    if isinstance(parsed, str):
+        return _bad_request(parsed)
+    bus_name, slave_pos = parsed
 
     etherdog = current_app.config["ETHERDOG_MANAGER"]
     result = etherdog.plugin_style_command(
@@ -655,18 +688,30 @@ def ethercat_diagnostics():
             502,
         )
 
-    coupler_raw = result.get("coupler") or {}
-    status_word = coupler_raw.get("status_word", 0)
+    coupler_raw = result.get("coupler")
+    coupler_raw = coupler_raw if isinstance(coupler_raw, dict) else {}
+    status_word = coupler_raw.get("status_word")
+    if status_word is not None and not _is_uint(status_word, 0xFFFF):
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "bus_name": bus_name,
+                    "slave_position": slave_pos,
+                    "message": "EtherDOG returned an invalid coupler status word",
+                }
+            ),
+            502,
+        )
     poll_at_ms = coupler_raw.get("poll_at_ms")
-    modules_raw = result.get("modules") or []
+    modules_raw = result.get("modules")
     modules = [
-        {
-            "slot": m.get("slot"),
-            "status_byte": m.get("status_byte"),
-        }
-        for m in modules_raw
-        if isinstance(m, dict) and isinstance(m.get("slot"), int)
-            and isinstance(m.get("status_byte"), int)
+        {"slot": m["slot"], "status_byte": m.get("status_byte")}
+        for m in (modules_raw if isinstance(modules_raw, list) else [])
+        if isinstance(m, dict)
+        and _is_uint(m.get("slot"), SLAVE_POSITION_MAX)
+        and m["slot"] >= 1
+        and (m.get("status_byte") is None or _is_uint(m.get("status_byte"), 0xFF))
     ]
 
     response = {
