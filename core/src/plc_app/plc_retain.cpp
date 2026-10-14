@@ -40,6 +40,11 @@ constexpr size_t RETAIN_BUFFER_MAX = 64 * 1024;
 std::vector<uint8_t> g_buffer;
 std::atomic<bool>    g_active{false};
 
+/* Leaves the current restore wrote and could not write. Touched only by
+ * plc_retain_read(), before any task is released. */
+unsigned g_restored_leaves = 0;
+unsigned g_refused_leaves  = 0;
+
 /**
  * Restore writes go through the runtime's external-write path, NOT straight to
  * the IECVar.
@@ -47,8 +52,12 @@ std::atomic<bool>    g_active{false};
  * A retained variable may also be located (`VAR RETAIN x AT %MW10`). Poking
  * such a leaf's storage directly is undone by the next copy-in from the process
  * image, so the value would appear to restore and then silently revert on the
- * first scan. `runtime_external_write` classifies the leaf and routes a located
+ * first scan. `runtime_external_write_now` classifies the leaf and routes a located
  * one through the image journal — the same path OPC-UA writes take.
+ *
+ * Applied at once, not queued: the restore runs before the first task is
+ * released, so it neither races a scan nor competes for the external-write
+ * queue, and every value is in place for the first scan.
  *
  * DBGW_OP_WRITE, never a force: restoring a retained value must not pin it. The
  * program has to be able to move it on the very next scan, and an operator's
@@ -56,7 +65,13 @@ std::atomic<bool>    g_active{false};
  */
 uint8_t retain_write_leaf(uint8_t arr, uint16_t elem, const uint8_t *bytes, uint16_t len)
 {
-    return runtime_external_write(arr, elem, (uint8_t)DBGW_OP_WRITE, bytes, len) == 0 ? 0x7E : 0x82;
+    if (runtime_external_write_now(arr, elem, (uint8_t)DBGW_OP_WRITE, bytes, len) == 0)
+    {
+        ++g_restored_leaves;
+        return 0x7E;
+    }
+    ++g_refused_leaves;
+    return 0x82;
 }
 
 /**
@@ -224,10 +239,22 @@ void plc_retain_read(void)
         return;
     }
 
+    g_restored_leaves = 0;
+    g_refused_leaves  = 0;
     const uint8_t res = ext_strucpp_retain_unpack(g_buffer.data(), got, retain_write_leaf);
     if (res == 0)
     {
-        log_info("Retain: restored %u bytes of retained variables", (unsigned)got);
+        if (g_refused_leaves == 0)
+        {
+            log_info("Retain: restored %u bytes of retained variables (%u values)", (unsigned)got,
+                     g_restored_leaves);
+        }
+        else
+        {
+            log_warn("Retain: restored %u of %u retained values — %u could not be written and "
+                     "start at their initial values",
+                     g_restored_leaves, g_restored_leaves + g_refused_leaves, g_refused_leaves);
+        }
         return;
     }
 

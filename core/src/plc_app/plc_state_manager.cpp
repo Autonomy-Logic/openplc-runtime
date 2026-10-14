@@ -447,10 +447,9 @@ void *plc_cycle_thread(void *arg)
      * program's values. Both must follow the located-variable binding above: a
      * retained variable may also be located, and its image slot has to exist
      * before anything writes through it. Both are no-ops when retain is not in
-     * play, and read() lands before the first task is released, so a new
-     * program never runs a scan on the old one's state. */
+     * play. read() runs after journal_init() below, because a located leaf is
+     * restored through the image journal and journal_init() clears it. */
     plc_retain_init();
-    plc_retain_read();
 
     journal_buffer_ptrs_t journal_ptrs = {
         .bool_input   = bool_input,
@@ -478,6 +477,10 @@ void *plc_cycle_thread(void *arg)
     {
         log_info("Journal buffer initialized");
     }
+
+    /* Before any task is released, so the first scan already sees the restored
+     * values, and before the plugins start, so no external write races it. */
+    plc_retain_read();
 
     if (plugin_driver)
     {

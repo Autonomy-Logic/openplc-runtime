@@ -48,6 +48,15 @@ int runtime_external_write(uint8_t arr, uint16_t elem, uint8_t op,
                            const uint8_t *bytes, uint16_t len);
 
 /*
+ * Apply one write/force/unforce of (arr, elem) at once, routed as the drain
+ * routes it, with no queue and no payload cap. ONLY for a caller that runs
+ * while no IEC task can be released and after journal_init() (the retain
+ * restore). Returns 0 if applied, -1 if the leaf was not written.
+ */
+int runtime_external_write_now(uint8_t arr, uint16_t elem, uint8_t op,
+                               const uint8_t *bytes, uint16_t len);
+
+/*
  * Drain + apply all queued external writes. MUST be called only by the
  * dispatcher at the no-task-running window, with the image lock held (the
  * located path commits through the image). Cheap no-op when the queue is

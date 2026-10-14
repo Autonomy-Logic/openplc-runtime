@@ -93,7 +93,7 @@ extern "C"
      * A retained variable may also be LOCATED (`VAR RETAIN x AT %MW10`), and
      * poking such a leaf's IECVar is undone by the next copy-in from the
      * process image — so the callback we hand over routes through
-     * runtime_external_write, which knows to send a located leaf through the
+     * runtime_external_write_now, which knows to send a located leaf through the
      * image journal.
      *
      * Optional: a program built by an older STruC++ resolves these to NULL and

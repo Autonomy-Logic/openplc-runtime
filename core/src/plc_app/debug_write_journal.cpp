@@ -45,6 +45,9 @@ namespace {
 constexpr size_t   DBGW_MAX_ENTRIES = 128;
 constexpr uint16_t DBGW_MAX_BYTES   = 256;
 
+/* strucpp debug status for an accepted write/set (debug_dispatch.hpp STATUS_OK). */
+constexpr uint8_t DBGW_STATUS_OK = 0x7E;
+
 struct DbgwEntry {
     uint8_t  arr;
     uint16_t elem;
@@ -113,71 +116,88 @@ uint64_t decode_value(const uint8_t *b, uint16_t len, uint8_t size)
 }
 
 /* Enqueue a located WRITE into the image journal (applied at the next image
- * drain; transient — program logic / the driver own the slot). */
-void journal_write_located(journal_buffer_type_t type, uint8_t size,
-                           uint16_t idx, uint8_t bit, uint64_t v)
+ * drain; transient — program logic / the driver own the slot). Returns the
+ * journal's result: 0 when queued. */
+int journal_write_located(journal_buffer_type_t type, uint8_t size,
+                          uint16_t idx, uint8_t bit, uint64_t v)
 {
     switch (size) {
-    case SZ_BIT:   journal_write_bool(type, idx, bit, (v & 1) != 0); break;
-    case SZ_BYTE:  journal_write_byte(type, idx, (uint8_t)v);        break;
-    case SZ_WORD:  journal_write_int(type, idx, (uint16_t)v);        break;
-    case SZ_DWORD: journal_write_dint(type, idx, (uint32_t)v);       break;
-    case SZ_LWORD: journal_write_lint(type, idx, v);                 break;
-    default: break;
+    case SZ_BIT:   return journal_write_bool(type, idx, bit, (v & 1) != 0);
+    case SZ_BYTE:  return journal_write_byte(type, idx, (uint8_t)v);
+    case SZ_WORD:  return journal_write_int(type, idx, (uint16_t)v);
+    case SZ_DWORD: return journal_write_dint(type, idx, (uint32_t)v);
+    case SZ_LWORD: return journal_write_lint(type, idx, v);
+    default:       return -1;
     }
 }
 
-/* Apply one drained entry to a LOCATED variable. */
-void apply_located(const DbgwEntry *e, uint8_t area, uint8_t size,
-                   uint16_t byte_index, uint8_t bit_index)
+/* Apply one write/force/unforce to a LOCATED variable. Returns false when the
+ * slot is unmappable or the op is unknown. */
+bool apply_located(uint8_t arr, uint16_t elem, uint8_t op, const uint8_t *bytes,
+                   uint16_t len, uint8_t area, uint8_t size, uint16_t byte_index,
+                   uint8_t bit_index)
 {
     journal_buffer_type_t jt;
     if (!located_journal_type(area, size, &jt)) {
-        return; /* unmappable (e.g. %MB) — copy_out can't emit it either */
+        return false; /* unmappable (e.g. %MB) — copy_out can't emit it either */
     }
-    const uint64_t val = decode_value(e->bytes, e->len, size);
+    const uint64_t val = decode_value(bytes, len, size);
 
-    switch (e->op) {
+    switch (op) {
     case DBGW_OP_WRITE:
-        journal_write_located(jt, size, byte_index, bit_index, val);
-        break;
+        return journal_write_located(jt, size, byte_index, bit_index, val) == 0;
     case DBGW_OP_FORCE:
         /* Program view: pin the IECVar so get() returns the forced value. */
         if (ext_strucpp_debug_set)
-            ext_strucpp_debug_set(e->arr, e->elem, true, e->bytes, e->len);
+            ext_strucpp_debug_set(arr, elem, true, bytes, len);
         /* Image view: seed + pin the slot; copy_out and plugin writes drop. */
         journal_force_set(jt, byte_index, bit_index, val);
-        break;
+        return true;
     case DBGW_OP_UNFORCE:
         if (ext_strucpp_debug_set)
-            ext_strucpp_debug_set(e->arr, e->elem, false, nullptr, 0);
+            ext_strucpp_debug_set(arr, elem, false, nullptr, 0);
         journal_force_clear(jt, byte_index, bit_index);
-        break;
+        return true;
     default:
-        break;
+        return false;
     }
 }
 
-/* Apply one drained entry to a GLOBAL / program-internal leaf via the IECVar
- * debug exports (the OPC-UA bug #3 case). */
-void apply_global(const DbgwEntry *e)
+/* Apply one write/force/unforce to a GLOBAL / program-internal leaf via the
+ * IECVar debug exports (the OPC-UA bug #3 case). Returns false when the .so
+ * lacks the export or refuses the value. */
+bool apply_global(uint8_t arr, uint16_t elem, uint8_t op, const uint8_t *bytes,
+                  uint16_t len)
 {
-    switch (e->op) {
+    switch (op) {
     case DBGW_OP_WRITE:
-        if (ext_strucpp_debug_write)
-            ext_strucpp_debug_write(e->arr, e->elem, e->bytes, e->len);
-        break;
+        return ext_strucpp_debug_write &&
+               ext_strucpp_debug_write(arr, elem, bytes, len) == DBGW_STATUS_OK;
     case DBGW_OP_FORCE:
-        if (ext_strucpp_debug_set)
-            ext_strucpp_debug_set(e->arr, e->elem, true, e->bytes, e->len);
-        break;
+        return ext_strucpp_debug_set &&
+               ext_strucpp_debug_set(arr, elem, true, bytes, len) == DBGW_STATUS_OK;
     case DBGW_OP_UNFORCE:
-        if (ext_strucpp_debug_set)
-            ext_strucpp_debug_set(e->arr, e->elem, false, nullptr, 0);
-        break;
+        return ext_strucpp_debug_set &&
+               ext_strucpp_debug_set(arr, elem, false, nullptr, 0) == DBGW_STATUS_OK;
     default:
-        break;
+        return false;
     }
+}
+
+/* Route one write by the leaf's classification, exactly as the drain does. */
+bool apply_entry(uint8_t arr, uint16_t elem, uint8_t op, const uint8_t *bytes,
+                 uint16_t len)
+{
+    uint8_t  area = 0, size = 0, bit_index = 0;
+    uint16_t byte_index = 0;
+    const bool located =
+        ext_strucpp_debug_locate &&
+        ext_strucpp_debug_locate(arr, elem, &area, &size, &byte_index, &bit_index) != 0;
+
+    if (located) {
+        return apply_located(arr, elem, op, bytes, len, area, size, byte_index, bit_index);
+    }
+    return apply_global(arr, elem, op, bytes, len);
 }
 
 } // namespace
@@ -190,8 +210,8 @@ extern "C" int runtime_external_write(uint8_t arr, uint16_t elem, uint8_t op,
     if (n >= DBGW_MAX_ENTRIES) {
         pthread_mutex_unlock(&g_dbgw_lock);
         if (!g_overflow_logged) {
-            log_warn("[debug-write] queue full (%zu) — external write dropped; "
-                     "applied next cycle once it drains", DBGW_MAX_ENTRIES);
+            log_warn("[debug-write] queue full (%zu) — external write dropped and not "
+                     "retried; further drops this cycle are not logged", DBGW_MAX_ENTRIES);
             g_overflow_logged = true;
         }
         return -1;
@@ -218,23 +238,17 @@ extern "C" void debug_write_journal_drain(void)
     size_t n = g_dbgw_count.load(std::memory_order_relaxed);
     for (size_t i = 0; i < n; ++i) {
         const DbgwEntry *e = &g_dbgw[i];
-
-        uint8_t  area = 0, size = 0, bit_index = 0;
-        uint16_t byte_index = 0;
-        const bool located =
-            ext_strucpp_debug_locate &&
-            ext_strucpp_debug_locate(e->arr, e->elem, &area, &size,
-                                     &byte_index, &bit_index) != 0;
-
-        if (located) {
-            apply_located(e, area, size, byte_index, bit_index);
-        } else {
-            apply_global(e);
-        }
+        apply_entry(e->arr, e->elem, e->op, e->bytes, e->len);
     }
     g_dbgw_count.store(0, std::memory_order_release);
     g_overflow_logged = false;
     pthread_mutex_unlock(&g_dbgw_lock);
+}
+
+extern "C" int runtime_external_write_now(uint8_t arr, uint16_t elem, uint8_t op,
+                                          const uint8_t *bytes, uint16_t len)
+{
+    return apply_entry(arr, elem, op, bytes, len) ? 0 : -1;
 }
 
 extern "C" void debug_write_journal_reset(void)
