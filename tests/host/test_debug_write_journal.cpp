@@ -7,7 +7,8 @@
  *     larger than it is refused rather than silently deferred;
  *   - runtime_external_write_now() applies at once, with the drain's routing,
  *     no entry cap and no payload cap, and reports a leaf it could not write.
- *     The retain restore depends on all three.
+ *     The retain restore depends on all three. Outside an open direct window
+ *     it refuses every write.
  *
  * The strucpp debug exports and the image journal are stubbed here, so the
  * test runs without a compiled program.
@@ -70,6 +71,7 @@ int (*ext_strucpp_debug_locate)(uint8_t, uint16_t, uint8_t *, uint8_t *, uint16_
                                 uint8_t *) = stub_debug_locate;
 
 void log_warn(const char *, ...) {}
+void log_error(const char *, ...) {}
 
 int journal_write_bool(journal_buffer_type_t, uint16_t, uint8_t, bool)
 {
@@ -123,6 +125,7 @@ static void reset()
     g_located_elem       = 0xFFFF;
     g_journal_result     = 0;
     g_journal_writes     = 0;
+    debug_write_journal_set_direct_window(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +199,17 @@ static void case_now_routes_a_located_leaf()
           "a journal refusal returns -1");
 }
 
+static void case_now_refused_outside_the_window()
+{
+    g_case = "write_now is refused outside the direct window";
+    reset();
+    debug_write_journal_set_direct_window(false);
+    const uint8_t v = 1;
+    CHECK(runtime_external_write_now(0, 1, DBGW_OP_WRITE, &v, 1) == -1, "the write is refused");
+    CHECK(g_global_writes.empty(), "nothing reaches the IECVar");
+    CHECK(runtime_external_write(0, 1, DBGW_OP_WRITE, &v, 1) == 0, "the queue still accepts");
+}
+
 int main()
 {
     printf("debug_write_journal — queued and immediate writes\n");
@@ -204,6 +218,7 @@ int main()
     case_now_has_no_payload_cap();
     case_now_reports_a_refused_global();
     case_now_routes_a_located_leaf();
+    case_now_refused_outside_the_window();
     reset();
 
     if (g_failures == 0)

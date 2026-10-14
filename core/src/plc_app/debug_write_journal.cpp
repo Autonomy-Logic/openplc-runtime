@@ -26,6 +26,7 @@
  */
 #include "debug_write_journal.h"
 
+#include "../lib/strucpp_abi.hpp" /* strucpp::debug::STATUS_OK */
 #include "image_tables.h"  /* ext_strucpp_debug_set / _write / _locate */
 #include "journal_buffer.h" /* journal_write_* / journal_force_set/clear  */
 
@@ -44,9 +45,7 @@ namespace {
  * for the widest debug value (the WSTRING wire width). */
 constexpr size_t   DBGW_MAX_ENTRIES = 128;
 constexpr uint16_t DBGW_MAX_BYTES   = 256;
-
-/* strucpp debug status for an accepted write/set (debug_dispatch.hpp STATUS_OK). */
-constexpr uint8_t DBGW_STATUS_OK = 0x7E;
+constexpr uint8_t DBGW_STATUS_OK = strucpp::debug::STATUS_OK;
 
 struct DbgwEntry {
     uint8_t  arr;
@@ -60,6 +59,8 @@ DbgwEntry           g_dbgw[DBGW_MAX_ENTRIES];
 std::atomic<size_t> g_dbgw_count{0};
 pthread_mutex_t     g_dbgw_lock = PTHREAD_MUTEX_INITIALIZER;
 bool                g_overflow_logged = false;
+std::atomic<bool>   g_direct_window{false};
+std::atomic<bool>   g_direct_refusal_logged{false};
 
 /* LocatedArea (strucpp_abi.hpp): Input=0, Output=1, Memory=2.
  * LocatedSize: Bit=0, Byte=1, Word=2, DWord=3, LWord=4. */
@@ -248,7 +249,18 @@ extern "C" void debug_write_journal_drain(void)
 extern "C" int runtime_external_write_now(uint8_t arr, uint16_t elem, uint8_t op,
                                           const uint8_t *bytes, uint16_t len)
 {
+    if (!g_direct_window.load(std::memory_order_acquire)) {
+        if (!g_direct_refusal_logged.exchange(true)) {
+            log_error("[debug-write] direct write refused: no direct window is open");
+        }
+        return -1;
+    }
     return apply_entry(arr, elem, op, bytes, len) ? 0 : -1;
+}
+
+extern "C" void debug_write_journal_set_direct_window(bool open)
+{
+    g_direct_window.store(open, std::memory_order_release);
 }
 
 extern "C" void debug_write_journal_reset(void)

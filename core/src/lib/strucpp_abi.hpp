@@ -132,6 +132,15 @@ struct ConfigurationInstance {
     virtual size_t            get_resource_count() const = 0;
 };
 
+// ---------------------------------------------------------------------------
+// Debug status codes (mirror of strucpp::debug, debug_dispatch.hpp)
+// ---------------------------------------------------------------------------
+
+namespace debug {
+constexpr uint8_t STATUS_OK             = 0x7E;
+constexpr uint8_t STATUS_DATA_TOO_LARGE = 0x82;
+}  // namespace debug
+
 }  // namespace strucpp
 
 #endif  // OPENPLC_STRUCPP_ABI_HPP

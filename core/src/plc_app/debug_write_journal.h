@@ -24,6 +24,7 @@
 #ifndef DEBUG_WRITE_JOURNAL_H
 #define DEBUG_WRITE_JOURNAL_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -47,14 +48,12 @@ typedef enum {
 int runtime_external_write(uint8_t arr, uint16_t elem, uint8_t op,
                            const uint8_t *bytes, uint16_t len);
 
-/*
- * Apply one write/force/unforce of (arr, elem) at once, routed as the drain
- * routes it, with no queue and no payload cap. ONLY for a caller that runs
- * while no IEC task can be released and after journal_init() (the retain
- * restore). Returns 0 if applied, -1 if the leaf was not written.
- */
+/* Immediate write with the drain's routing; refused (-1) outside an open direct window. */
 int runtime_external_write_now(uint8_t arr, uint16_t elem, uint8_t op,
                                const uint8_t *bytes, uint16_t len);
+
+/* Open/close the direct window. Only while no IEC task can run and after journal_init(). */
+void debug_write_journal_set_direct_window(bool open);
 
 /*
  * Drain + apply all queued external writes. MUST be called only by the

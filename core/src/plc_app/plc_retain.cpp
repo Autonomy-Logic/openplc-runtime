@@ -18,6 +18,7 @@ extern "C" {
 #include "utils/utils.h"  // ext_strucpp_program_md5 — the program's identity
 }
 
+#include "../lib/strucpp_abi.hpp"
 #include "debug_write_journal.h"
 #include "image_tables.h"
 #include "plc_retain_file_store.h"
@@ -40,8 +41,7 @@ constexpr size_t RETAIN_BUFFER_MAX = 64 * 1024;
 std::vector<uint8_t> g_buffer;
 std::atomic<bool>    g_active{false};
 
-/* Leaves the current restore wrote and could not write. Touched only by
- * plc_retain_read(), before any task is released. */
+/* Per-restore leaf counts, touched only inside plc_retain_read(). */
 unsigned g_restored_leaves = 0;
 unsigned g_refused_leaves  = 0;
 
@@ -55,9 +55,7 @@ unsigned g_refused_leaves  = 0;
  * first scan. `runtime_external_write_now` classifies the leaf and routes a located
  * one through the image journal — the same path OPC-UA writes take.
  *
- * Applied at once, not queued: the restore runs before the first task is
- * released, so it neither races a scan nor competes for the external-write
- * queue, and every value is in place for the first scan.
+ * Applied at once, not queued, so every value is in place for the first scan.
  *
  * DBGW_OP_WRITE, never a force: restoring a retained value must not pin it. The
  * program has to be able to move it on the very next scan, and an operator's
@@ -68,10 +66,10 @@ uint8_t retain_write_leaf(uint8_t arr, uint16_t elem, const uint8_t *bytes, uint
     if (runtime_external_write_now(arr, elem, (uint8_t)DBGW_OP_WRITE, bytes, len) == 0)
     {
         ++g_restored_leaves;
-        return 0x7E;
+        return strucpp::debug::STATUS_OK;
     }
     ++g_refused_leaves;
-    return 0x82;
+    return strucpp::debug::STATUS_DATA_TOO_LARGE;
 }
 
 /**
