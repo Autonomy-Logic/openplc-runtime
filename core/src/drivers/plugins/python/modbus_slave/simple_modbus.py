@@ -556,18 +556,8 @@ class OpenPLCSegmentedCoilsDataBlock(ModbusSparseDataBlock):
                         values.append(0)
                 else:
                     # Outside every segment: exception 02, never a zero.
-                    #
-                    # O clamp acima faz o bloco declarado bater com a imagem,
-                    # e o plano era que o validate() do pymodbus recusasse o
-                    # resto. Esse validate nao existe mais: em 3.11 a API do
-                    # datastore perdeu o metodo e ModbusDeviceContext.getValues
-                    # chama o bloco direto. Sem isto, todo endereco acima da
-                    # faixa respondia 0 -- medido ate 65000 -- que e o valor
-                    # plausivel e errado que o cliente nao distingue de um zero
-                    # real, exatamente o que o clamp existe para evitar.
-                    #
-                    # getValues pode devolver um ExcCodes no lugar da lista; e
-                    # o caminho que a propria assinatura do contexto declara.
+                    # pymodbus 3.11 dropped the datastore validate() that used
+                    # to refuse this, so the block has to refuse it itself.
                     return ExcCodes.ILLEGAL_ADDRESS
 
             return values
@@ -815,18 +805,8 @@ class OpenPLCSegmentedHoldingRegistersDataBlock(ModbusSparseDataBlock):
 
                 else:
                     # Outside every segment: exception 02, never a zero.
-                    #
-                    # O clamp acima faz o bloco declarado bater com a imagem,
-                    # e o plano era que o validate() do pymodbus recusasse o
-                    # resto. Esse validate nao existe mais: em 3.11 a API do
-                    # datastore perdeu o metodo e ModbusDeviceContext.getValues
-                    # chama o bloco direto. Sem isto, todo endereco acima da
-                    # faixa respondia 0 -- medido ate 65000 -- que e o valor
-                    # plausivel e errado que o cliente nao distingue de um zero
-                    # real, exatamente o que o clamp existe para evitar.
-                    #
-                    # getValues pode devolver um ExcCodes no lugar da lista; e
-                    # o caminho que a propria assinatura do contexto declara.
+                    # pymodbus 3.11 dropped the datastore validate() that used
+                    # to refuse this, so the block has to refuse it itself.
                     return ExcCodes.ILLEGAL_ADDRESS
 
             return values

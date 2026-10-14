@@ -21,8 +21,8 @@ add_library(ethercat_plugin SHARED
     ${OPENPLC_ROOT}/core/src/drivers/plugins/native/cjson/cJSON.c
     ${OPENPLC_ROOT}/core/src/drivers/plugins/native/plugin_logger.c
     # Exports set_image_sizes, which is how this plugin declares it
-    # understands per-table image sizes (RTOP-284). Without it the
-    # runtime keeps the image square for every run this plugin is in.
+    # understands per-table image sizes. Without it the runtime keeps the
+    # image square for every run this plugin is in.
     ${OPENPLC_ROOT}/core/src/drivers/plugins/native/plugin_image_sizes.c
 )
 
