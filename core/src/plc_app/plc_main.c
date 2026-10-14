@@ -18,8 +18,8 @@
 
 #include "../drivers/plugin_driver.h"
 #include "image_tables.h"
+#include "plc_boot.h"
 #include "plc_state_manager.h"
-#include "plc_switch.h"
 #include "plcapp_manager.h"
 #include "task_policy.h"
 #include "unix_socket.h"
@@ -156,40 +156,36 @@ int main(int argc, char *argv[])
         // Make plugin driver available to unix socket for PLUGIN_CMD routing
         unix_socket_set_plugin_driver(plugin_driver);
         log_info("[PLUGIN]: Plugin driver system created");
-        if (plugin_driver_load_config(plugin_driver, "./plugins.conf") == 0)
-        {
-            /* An image before the plugins see one, even though no program is
-             * loaded yet. plugin_driver_init() copies the base pointers and
-             * buffer_size into every plugin's args, and a plugin is entitled to
-             * a valid image from the moment it initialises -- never a NULL base
-             * pointer and never a zero size. The minimum is what
-             * image_tables_alloc() clamps to, per table: the smallest count
-             * that is not no image at all. NULL asks for exactly that, which
-             * says "no program has told me anything yet" rather than passing a
-             * zeroed struct that reads like a real answer. A program load
-             * reallocates it properly. */
-            pthread_mutex_t *itm = image_tables_mutex();
-            pthread_mutex_lock(itm);
-            const bool image_ok = image_tables_alloc(NULL);
-            pthread_mutex_unlock(itm);
+        /* An image before the plugins see one, even though no program is
+         * loaded yet. plugin_driver_init() copies the base pointers and
+         * buffer_size into every plugin's args, and a plugin is entitled to
+         * a valid image from the moment it initialises -- never a NULL base
+         * pointer and never a zero size. The minimum is what
+         * image_tables_alloc() clamps to, per table: the smallest count
+         * that is not no image at all. NULL asks for exactly that, which
+         * says "no program has told me anything yet" rather than passing a
+         * zeroed struct that reads like a real answer. A program load
+         * reallocates it properly. */
+        pthread_mutex_t *itm = image_tables_mutex();
+        pthread_mutex_lock(itm);
+        const bool image_ok = image_tables_alloc(NULL);
+        pthread_mutex_unlock(itm);
 
-            if (!image_ok)
-            {
-                /* Log AND STOP, which is the criterion. Falling through was
-                 * worse than it looked: with capacity 0 the ordering guard in
-                 * plugin_driver refuses the runtime args for every plugin, so
-                 * the runtime came up with nothing initialised and one line to
-                 * say why -- a runtime that looks alive and drives nothing. */
-                log_error("[PLUGIN]: could not allocate the boot image — refusing to start");
-                return EXIT_FAILURE;
-            }
-            plugin_driver_init(plugin_driver);
-            log_info("[PLUGIN]: All plugins initialized (not started)");
-        }
-        else
+        if (!image_ok)
         {
-            log_error("[PLUGIN]: Failed to load plugin configuration");
+            /* Log AND STOP, which is the criterion. Falling through was
+             * worse than it looked: with capacity 0 the ordering guard in
+             * plugin_driver refuses the runtime args for every plugin, so
+             * the runtime came up with nothing initialised and one line to
+             * say why -- a runtime that looks alive and drives nothing. */
+            log_error("[PLUGIN]: could not allocate the boot image — refusing to start");
+            return EXIT_FAILURE;
         }
+
+        // Includes the program's VPP plugins (not in safe mode), so a plugin
+        // owning the mode switch reports it before the auto-start below.
+        // Plugin run/stop requests stay held until plc_boot_autostart().
+        plc_boot_init_plugins(plugin_driver, !safe_mode);
 
         // Release the GIL through the driver (not PyEval_SaveThread
         // directly) so plugin_driver_destroy can restore this exact
@@ -234,19 +230,10 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // Auto-start (skipped in safe mode). The switch gate below reads
-    // the default (RUN) when no plugin has reported yet — a VPP that
-    // owns the switch is initialised DURING the start transition, so
-    // a device in STOP will start and movement-reconciliation stops it.
-    if (!safe_mode && !plc_switch_allows_run())
-    {
-        log_info("Hardware mode switch is in STOP - PLC left stopped");
-        log_info("Move the switch to RUN to start the PLC");
-    }
-    else if (!safe_mode && !plc_begin_transition(PLC_STATE_RUNNING))
-    {
-        log_error("Failed to initiate PLC start");
-    }
+    // Auto-start (skipped in safe mode). Every plugin, VPP included, has
+    // run init() above, so the switch gate holds the reported position;
+    // it reads the RUN default only when no plugin owns a switch.
+    plc_boot_autostart(safe_mode);
 
     while (keep_running)
     {
