@@ -13,6 +13,7 @@
 #include <string.h>
 
 TEST_SOURCE_FILE("core/src/drivers/plugins/native/cjson/cJSON.c")
+TEST_SOURCE_FILE("core/src/drivers/plugins/native/plugin_image_sizes.c")
 
 static const char *TMPFILE = "test_ethercat_iomap_tmp.json";
 

@@ -7,6 +7,8 @@
  */
 
 #include "ethercat_iomap.h"
+
+#include "../plugin_image_sizes.h"
 #include "etherdog_link.h"
 
 #include <ctype.h>
@@ -269,6 +271,37 @@ done:
 
 /* --- binding ------------------------------------------------------------------------------ */
 
+/* (direction, size) -> the image table that stores it.
+ *
+ * EtherCAT only ever emits %I and %Q, so there is no memory case. Spelled out
+ * rather than computed: the two enums are in unrelated orders and a cast
+ * between them lands writes inside another table's bounds. */
+static image_table_id_t ecat_table_for(iec_dir_t dir, iec_size_t size)
+{
+    const int in = (dir == IEC_DIR_INPUT);
+    switch (size) {
+    case IEC_SIZE_BIT: return in ? IMAGE_TABLE_BOOL_INPUT : IMAGE_TABLE_BOOL_OUTPUT;
+    case IEC_SIZE_BYTE: return in ? IMAGE_TABLE_BYTE_INPUT : IMAGE_TABLE_BYTE_OUTPUT;
+    case IEC_SIZE_WORD: return in ? IMAGE_TABLE_INT_INPUT : IMAGE_TABLE_INT_OUTPUT;
+    case IEC_SIZE_DWORD: return in ? IMAGE_TABLE_DINT_INPUT : IMAGE_TABLE_DINT_OUTPUT;
+    case IEC_SIZE_LWORD: return in ? IMAGE_TABLE_LINT_INPUT : IMAGE_TABLE_LINT_OUTPUT;
+    }
+    return IMAGE_TABLE_COUNT;
+}
+
+/* How far THIS location's own table reaches.
+ *
+ * args->buffer_size is the smallest of the fourteen on a per-table run, so
+ * bounding against it refuses every entry above the shortest table and takes
+ * the whole bus down. Falls back to it only when no runtime ever delivered the
+ * sizes, where it is the length every table has. */
+static uint32_t ecat_table_reach(const iec_location_t *loc, const plugin_runtime_args_t *args)
+{
+    if (!plugin_image_sizes_known())
+        return args->buffer_size > 0 ? (uint32_t)args->buffer_size : 0u;
+    return plugin_image_table_capacity(ecat_table_for(loc->direction, loc->size));
+}
+
 static void *resolve_plc_ptr(const iec_location_t *loc, plugin_runtime_args_t *args)
 {
     int i = loc->byte_index;
@@ -417,9 +450,10 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
                 snprintf(err, err_size, "%s: layout offset out of range", me->iec_location);
                 return ECAT_IOMAP_CONFIG_ERROR;
             }
-            if (me->loc.byte_index < 0 || me->loc.byte_index >= args->buffer_size) {
-                snprintf(err, err_size, "%s exceeds the image table size (%d)", me->iec_location,
-                         args->buffer_size);
+            const uint32_t reach = ecat_table_reach(&me->loc, args);
+            if (me->loc.byte_index < 0 || (uint32_t)me->loc.byte_index >= reach) {
+                snprintf(err, err_size, "%s is outside the %u element(s) that area has",
+                         me->iec_location, reach);
                 return ECAT_IOMAP_CONFIG_ERROR;
             }
 
