@@ -263,7 +263,7 @@ install_deps_apt() {
 # For yum-based distros (RHEL 7, CentOS 7, Amazon Linux)
 install_deps_yum() {
     yum install -y \
-        gcc gcc-c++ make cmake ccache \
+        gcc gcc-c++ make cmake ccache git \
         python3 python3-devel python3-pip python3-venv \
     && yum clean all
 }
@@ -271,7 +271,7 @@ install_deps_yum() {
 # For dnf-based distros (Fedora, RHEL 8+, CentOS Stream, Rocky Linux, AlmaLinux, Oracle Linux 8+)
 install_deps_dnf() {
     dnf install -y \
-        gcc gcc-c++ make cmake ccache \
+        gcc gcc-c++ make cmake ccache git \
         python3 python3-devel python3-pip python3-venv \
     && dnf clean all
 }
@@ -285,6 +285,7 @@ install_deps_pacman() {
         make \
         cmake \
         ccache \
+        git \
         pkgconf \
         python \
         python-pip \
@@ -295,7 +296,7 @@ install_deps_pacman() {
 install_deps_zypper() {
     zypper refresh && \
     zypper install -y \
-        gcc gcc-c++ make cmake ccache \
+        gcc gcc-c++ make cmake ccache git \
         python3 python3-devel python3-pip \
         pkg-config
 }
@@ -309,6 +310,7 @@ install_deps_apk() {
         make \
         cmake \
         ccache \
+        git \
         pkgconf \
         python3 python3-dev py3-pip
 }
