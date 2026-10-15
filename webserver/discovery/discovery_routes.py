@@ -412,7 +412,8 @@ def ethercat_scan_modules():
     Scan a modular coupler's 0xF050 module ident list.
 
     EtherDOG speaks `scan-modules` in terms of (master_index, slave_position); the master
-    index is the position of the master named `bus_name` in EtherDOG's `status` reply.
+    index is the position of the master named `bus_name` in EtherDOG's `status` reply. A bus
+    that is not loaded yet (a project not uploaded) is scanned through its `interface`.
 
     EtherDOG returns `{"status":"success","idents":["0x00001A0F","0x00001A10"]}`, one ident per
     slot in slot order; the reply lists them as `modules: [{slot, ident}, ...]` with slots from 1.
@@ -437,6 +438,10 @@ def ethercat_scan_modules():
             slave_position:
               type: integer
               example: 1
+            interface:
+              type: string
+              example: eth0
+              description: The bus's network interface, used when bus_name is not loaded
             timeout_ms:
               type: integer
               default: 5000
@@ -448,7 +453,7 @@ def ethercat_scan_modules():
       400:
         description: Invalid request parameters
       404:
-        description: No master named bus_name in the loaded EtherCAT configuration
+        description: No master named bus_name in the loaded EtherCAT configuration and no interface
       502:
         description: EtherDOG refused the scan or returned an unknown reply
     """
@@ -459,12 +464,24 @@ def ethercat_scan_modules():
     bus_name, slave_pos = parsed
     etherdog_timeout = _timeout_ms(data if isinstance(data, dict) else {}) / 1000.0 + 2.0
 
+    interface = data.get("interface") if isinstance(data, dict) else None
+    if interface is not None:
+        if not isinstance(interface, str):
+            return _bad_request("'interface' must be a string")
+        is_valid, error_msg = _validate_interface_name(interface)
+        if not is_valid:
+            return _bad_request(error_msg)
+
     etherdog = current_app.config["ETHERDOG_MANAGER"]
     master = _master_index(etherdog, bus_name)
     if isinstance(master, tuple):
-        return _slave_error(bus_name, slave_pos, master[0], master[1], modules=[])
+        if master[1] != 404 or interface is None:
+            return _slave_error(bus_name, slave_pos, master[0], master[1], modules=[])
+        params: dict[str, object] = {"interface": interface, "slave": slave_pos}
+    else:
+        params = {"master": master, "slave": slave_pos}
     result = etherdog.plugin_style_command(
-        {"command": "scan-modules", "params": {"master": master, "slave": slave_pos}},
+        {"command": "scan-modules", "params": params},
         timeout=etherdog_timeout,
     )
 

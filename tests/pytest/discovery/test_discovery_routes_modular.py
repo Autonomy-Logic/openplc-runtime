@@ -219,6 +219,57 @@ def test_unknown_bus_name_is_404_without_a_bus_command(app, client, path):
     assert app.config["ETHERDOG_MANAGER"].calls == [{"command": "status"}]
 
 
+def test_scan_of_a_bus_not_loaded_goes_through_its_interface(app, client):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager(
+        reply_by_command={"scan-modules": {"status": "success", "idents": ["0x00091F84"]}}
+    )
+    resp = client.post(
+        "/api/discovery/ethercat/scan-modules",
+        json={"bus_name": "new_bus", "slave_position": 2, "interface": "eth1"},
+        headers=_auth(app),
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["modules"] == [{"slot": 1, "ident": "0x00091F84"}]
+    assert app.config["ETHERDOG_MANAGER"].calls[-1] == {
+        "command": "scan-modules",
+        "params": {"interface": "eth1", "slave": 2},
+    }
+
+
+def test_a_loaded_bus_is_scanned_by_master_even_with_an_interface(app, client):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager(
+        reply_by_command={"scan-modules": {"status": "success", "idents": []}}
+    )
+    client.post(
+        "/api/discovery/ethercat/scan-modules",
+        json={"bus_name": "ethercat1", "slave_position": 1, "interface": "eth1"},
+        headers=_auth(app),
+    )
+    assert app.config["ETHERDOG_MANAGER"].calls[-1]["params"] == {"master": 1, "slave": 1}
+
+
+@pytest.mark.parametrize("interface", [5, "", "eth0; rm -rf /"])
+def test_scan_refuses_an_invalid_interface(app, client, interface):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager()
+    resp = client.post(
+        "/api/discovery/ethercat/scan-modules",
+        json={"bus_name": "new_bus", "slave_position": 1, "interface": interface},
+        headers=_auth(app),
+    )
+    assert resp.status_code == 400
+    assert app.config["ETHERDOG_MANAGER"].calls == []
+
+
+def test_scan_of_a_bus_not_loaded_still_502s_when_etherdog_is_down(app, client):
+    app.config["ETHERDOG_MANAGER"] = _FakeManager(reply_by_command={"status": {"error": "down"}})
+    resp = client.post(
+        "/api/discovery/ethercat/scan-modules",
+        json={"bus_name": "new_bus", "slave_position": 1, "interface": "eth1"},
+        headers=_auth(app),
+    )
+    assert resp.status_code == 502
+
+
 @pytest.mark.parametrize("path", ["scan-modules", "diagnostics"])
 def test_etherdog_status_failure_is_502(app, client, path):
     app.config["ETHERDOG_MANAGER"] = _FakeManager(
