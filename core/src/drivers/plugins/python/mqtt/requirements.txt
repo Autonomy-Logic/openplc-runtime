@@ -1,0 +1,9 @@
+# MQTT / Sparkplug B plugin dependencies (isolated venv ./venvs/mqtt)
+# Exact pins; artifact hashes and licences are recorded with the transport spike lock.
+paho-mqtt==2.1.0
+protobuf==7.36.2
+# The credential vault needs cryptography; MSYS2/Cygwin cannot build it, so
+# secret-based authentication is unavailable there and anonymous still works.
+cryptography==50.0.1; sys_platform != 'cygwin'
+cffi==2.1.1; sys_platform != 'cygwin'
+pycparser==3.0; sys_platform != 'cygwin'

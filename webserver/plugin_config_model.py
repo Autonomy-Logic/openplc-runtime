@@ -300,7 +300,12 @@ class PluginsConfiguration:
         
         return issues
     
-    def update_plugins_from_config_dir(self, config_dir: str, copy_to_plugin_dirs: bool = False) -> tuple[int, List[str]]:
+    def update_plugins_from_config_dir(
+        self,
+        config_dir: str,
+        copy_to_plugin_dirs: bool = False,
+        exclude: frozenset[str] = frozenset(),
+    ) -> tuple[int, List[str]]:
         """
         Batch update plugins based on available configuration files in a directory.
         
@@ -310,6 +315,7 @@ class PluginsConfiguration:
         Args:
             config_dir: Directory containing configuration files
             copy_to_plugin_dirs: If True, copy config files to plugin directories instead of referencing directly
+            exclude: Plugin names left untouched; their caller manages enablement and config
             
         Returns:
             Tuple of (number_of_plugins_updated, list_of_update_messages)
@@ -333,6 +339,8 @@ class PluginsConfiguration:
         plugins_updated = 0
         
         for plugin in self.plugins:
+            if plugin.name in exclude:
+                continue
             old_enabled = plugin.enabled
             old_config_path = plugin.config_path
             

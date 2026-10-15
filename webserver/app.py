@@ -27,7 +27,7 @@ from typing import Callable, Final, Optional
 import flask
 import flask_login
 
-from webserver import project_snapshot
+from webserver import mqtt_config, project_snapshot
 from webserver.credentials import CertGen
 from webserver.debug_websocket import init_debug_websocket
 from webserver.discovery.discovery_routes import discovery_bp
@@ -36,6 +36,7 @@ from webserver.discovery.network_discovery import (
     responder as network_discovery_responder,
 )
 from webserver.logger import get_logger
+from webserver.mqtt_api import mqtt_bp, request_actor, set_plc_status_source
 from webserver.plcapp_management import (
     MAX_FILE_SIZE,
     BuildStatus,
@@ -44,6 +45,7 @@ from webserver.plcapp_management import (
     apply_vpp_plugin_conf,
     build_state,
     ensure_plc_stopped,
+    logical_zip_entries,
     run_compile,
     safe_extract,
     update_plugin_configurations,
@@ -388,6 +390,7 @@ def _handle_upload_file(data: dict) -> dict:
         }
 
     zip_file = flask.request.files["file"]
+    compile_started = False
 
     if zip_file.content_length > MAX_FILE_SIZE:
         build_state.status = BuildStatus.FAILED
@@ -422,6 +425,25 @@ def _handle_upload_file(data: dict) -> dict:
                 "CompilationStatus": build_state.status.name,
             }
 
+        # MQTT addresses this program: refuse a mismatch before the device changes.
+        mqtt_error = mqtt_config.validate_upload(
+            zip_file,
+            {name: info for info, name in logical_zip_entries(valid_files)},
+            request_actor(),
+        )
+        if mqtt_error is not None:
+            build_state.status = BuildStatus.FAILED
+            reason = (
+                f"MQTT configuration rejected: {mqtt_error['code']} at "
+                f"'{mqtt_error['pointer']}': {mqtt_error['message']}"
+            )
+            build_state.log(f"[ERROR] {reason}\n")
+            return {
+                "UploadFileFail": reason,
+                "CompilationStatus": build_state.status.name,
+                "MqttConfigError": mqtt_error,
+            }
+
         # The Editor stops the PLC before uploading; other clients may not. Nothing below may
         # run beside the old program: the EtherCAT bus configuration is staged next.
         stopped, was_running = ensure_plc_stopped(runtime_manager, timeout_s=PLC_STOP_TIMEOUT_S)
@@ -454,8 +476,8 @@ def _handle_upload_file(data: dict) -> dict:
         # baremetal where no webserver observes an upload.
         apply_retain_conf(extract_dir)
 
-        # Update built-in plugin configurations based on extracted config files
-        update_plugin_configurations(extract_dir)
+        # Update built-in plugin configurations from the extracted files; MQTT waits for the build
+        update_plugin_configurations(extract_dir, program_built=False)
 
         # The bus half of the EtherCAT configuration belongs to EtherDOG.
         busconfig = Path(extract_dir) / "conf" / "ethercat_busconfig.json"
@@ -483,6 +505,7 @@ def _handle_upload_file(data: dict) -> dict:
         )
 
         task_compile.start()
+        compile_started = True
 
         # A snapshot error is reported alongside, not as a failure: the new
         # program is live either way, and losing retrievability is less bad
@@ -507,6 +530,10 @@ def _handle_upload_file(data: dict) -> dict:
             "UploadFileFail": f"Unexpected error: {e}",
             "CompilationStatus": build_state.status.name,
         }
+    finally:
+        # A staged MQTT credential claimed by this upload dies with it.
+        if not compile_started:
+            mqtt_config.abandon_upload()
 
 
 def handle_plugin_command(data: dict) -> dict:
@@ -554,6 +581,8 @@ def run_https():
     # rest api register
     app_restapi.register_blueprint(restapi_bp, url_prefix="/api")
     app_restapi.register_blueprint(discovery_bp)
+    app_restapi.register_blueprint(mqtt_bp, url_prefix="/api/mqtt")
+    set_plc_status_source(runtime_manager.status_plc)
     register_callback_get(restapi_callback_get)
     register_callback_post(restapi_callback_post)
 
@@ -575,6 +604,8 @@ def run_https():
         except Exception:
             # logger.error("Error creating database tables: %s", e)
             pass
+
+    mqtt_config.sweep_staging()
 
     # On non-Linux platforms (MSYS2/Cygwin), patch Python SSL recv socket
     # to handle EAGAIN/EWOULDBLOCK errors that cause "Resource temporarily unavailable"
