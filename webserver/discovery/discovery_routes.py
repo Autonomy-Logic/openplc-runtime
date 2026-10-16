@@ -17,6 +17,7 @@ Endpoints:
 """
 
 import json
+import math
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
@@ -65,7 +66,7 @@ def _slave_request(data: dict[str, object]) -> tuple[str, int] | str:
 def _timeout_ms(data: dict[str, object]) -> int:
     """The request's `timeout_ms`, clamped to TIMEOUT_MS_MIN..TIMEOUT_MS_MAX."""
     value = data.get("timeout_ms")
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
         return TIMEOUT_MS_DEFAULT
     return int(min(max(value, TIMEOUT_MS_MIN), TIMEOUT_MS_MAX))
 
@@ -159,7 +160,7 @@ def ethercat_capabilities():
               example: ["ethercat.dynamic_alloc", "ethercat.scan_modules"]
             version:
               type: string
-              example: 0.5.0
+              example: 1.0.0
             message:
               type: string
     """
@@ -462,9 +463,9 @@ def ethercat_scan_modules():
     if isinstance(parsed, str):
         return _bad_request(parsed)
     bus_name, slave_pos = parsed
-    etherdog_timeout = _timeout_ms(data if isinstance(data, dict) else {}) / 1000.0 + 2.0
+    etherdog_timeout = _timeout_ms(data) / 1000.0 + 2.0
 
-    interface = data.get("interface") if isinstance(data, dict) else None
+    interface = data.get("interface")
     if interface is not None:
         if not isinstance(interface, str):
             return _bad_request("'interface' must be a string")
@@ -486,36 +487,20 @@ def ethercat_scan_modules():
     )
 
     if "error" in result:
-        return (
-            jsonify(
-                {
-                    "status": "error",
-                    "bus_name": bus_name,
-                    "slave_position": slave_pos,
-                    "message": result["error"],
-                    "modules": [],
-                }
-            ),
-            502,
-        )
+        return _slave_error(bus_name, slave_pos, result["error"], 502, modules=[])
 
     if result.get("status") != "success":
-        return (
-            jsonify(
-                {
-                    "status": "error",
-                    "bus_name": bus_name,
-                    "slave_position": slave_pos,
-                    "message": result.get("message", "scan-modules did not succeed"),
-                    "modules": [],
-                }
-            ),
+        return _slave_error(
+            bus_name,
+            slave_pos,
+            result.get("message", "scan-modules did not succeed"),
             502,
+            modules=[],
         )
 
     idents = result.get("idents") or []
     modules = [
-        {"slot": slot, "ident": str(ident)}
+        {"slot": slot, "ident": ident}
         for slot, ident in enumerate(idents, start=1)
         if isinstance(ident, str)
     ]
@@ -711,45 +696,19 @@ def ethercat_slave_diagnostics():
     )
 
     if "error" in result:
-        return (
-            jsonify(
-                {
-                    "status": "error",
-                    "bus_name": bus_name,
-                    "slave_position": slave_pos,
-                    "message": result["error"],
-                }
-            ),
-            502,
-        )
+        return _slave_error(bus_name, slave_pos, result["error"], 502)
 
     if result.get("status") != "success":
-        return (
-            jsonify(
-                {
-                    "status": "error",
-                    "bus_name": bus_name,
-                    "slave_position": slave_pos,
-                    "message": result.get("message", "diagnostics-slave did not succeed"),
-                }
-            ),
-            502,
+        return _slave_error(
+            bus_name, slave_pos, result.get("message", "diagnostics-slave did not succeed"), 502
         )
 
     coupler_raw = result.get("coupler")
     coupler_raw = coupler_raw if isinstance(coupler_raw, dict) else {}
     status_word = coupler_raw.get("status_word")
     if status_word is not None and not _is_uint(status_word, 0xFFFF):
-        return (
-            jsonify(
-                {
-                    "status": "error",
-                    "bus_name": bus_name,
-                    "slave_position": slave_pos,
-                    "message": "EtherDOG returned an invalid coupler status word",
-                }
-            ),
-            502,
+        return _slave_error(
+            bus_name, slave_pos, "EtherDOG returned an invalid coupler status word", 502
         )
     poll_at_ms = coupler_raw.get("poll_at_ms")
     modules_raw = result.get("modules")

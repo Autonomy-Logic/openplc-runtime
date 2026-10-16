@@ -478,7 +478,16 @@ def test_slave_position_outside_1_to_65535_is_refused(app, client, path, positio
 
 @pytest.mark.parametrize(
     ("timeout_ms", "etherdog_timeout"),
-    [(None, 7.0), (10, 2.1), (3000, 5.0), (10**9, 62.0), ("5000", 7.0), (True, 7.0)],
+    [
+        (None, 7.0),
+        (10, 2.1),
+        (3000, 5.0),
+        (10**9, 62.0),
+        ("5000", 7.0),
+        (True, 7.0),
+        (float("nan"), 7.0),
+        (float("inf"), 7.0),
+    ],
 )
 def test_scan_modules_timeout_is_clamped(app, client, timeout_ms, etherdog_timeout):
     app.config["ETHERDOG_MANAGER"] = _FakeManager(
@@ -487,7 +496,8 @@ def test_scan_modules_timeout_is_clamped(app, client, timeout_ms, etherdog_timeo
     body: dict[str, object] = {"bus_name": "ethercat0", "slave_position": 1}
     if timeout_ms is not None:
         body["timeout_ms"] = timeout_ms
-    client.post("/api/discovery/ethercat/scan-modules", json=body, headers=_auth(app))
+    resp = client.post("/api/discovery/ethercat/scan-modules", json=body, headers=_auth(app))
+    assert resp.status_code == 200
     assert app.config["ETHERDOG_MANAGER"].timeouts[-1] == pytest.approx(etherdog_timeout)
 
 
