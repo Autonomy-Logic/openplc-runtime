@@ -46,6 +46,42 @@ An upload whose single `conf/ethercat.json` (older Editors) describes masters is
 
 The webserver writes `/run/runtime/etherdog.json` (mode 0600), with the control endpoint, the per-boot token and the data transport. The plugin reads it on each connect. EtherDOG's log lines go to `log_runtime.socket`, so they show up in the runtime log with an `[ETHERDOG]` prefix.
 
+## Sizing
+
+The plugin has no fixed entry or image limit. The mapping's entries are allocated when the program
+loads, and the per-cycle transfer lists and frame buffers when the link comes up, from the layout
+EtherDOG reports; nothing is allocated in the cycle. A mapping that does not fit in memory is refused
+at load, naming the master and its entry count. The only bound is the data frame: 65483 bytes per
+master in each direction.
+
+## Discovery endpoints
+
+All under `/api/discovery`, JWT required.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /ethercat/status` | Whether EtherDOG answers |
+| `GET /ethercat/capabilities` | EtherDOG's features and version from its latest hello (`features` empty when it sends none) |
+| `GET /interfaces` | Network interfaces |
+| `POST /ethercat/scan` | Slaves on an interface |
+| `POST /ethercat/scan-modules` | A modular coupler's module idents (`0xF050`), as `modules: [{slot, ident}]` with slots from 1 |
+| `GET /ethercat/runtime-status` | Bus state and cycle metrics |
+| `GET /ethercat/diagnostics` | Master-wide diagnostics |
+| `POST /ethercat/diagnostics` | One coupler's status word and module status bytes |
+| `POST /ethercat/validate` | Check a configuration without applying it |
+| `POST /ethercat/test` | Probe one slave |
+
+Per-slave requests (`scan-modules`, `POST diagnostics`) take `{"bus_name", "slave_position"}`:
+`bus_name` selects the master of that name in the loaded busconfig (404 when there is none),
+`slave_position` is 1 to 65535, anything else is a 400. `scan-modules` also takes the bus's
+`interface`, used when `bus_name` is not loaded yet (a project not uploaded), and an optional
+`timeout_ms`, clamped to 100..60000 (default 5000). `POST diagnostics` answers
+`coupler.status_word` as a 16-bit integer or `null` when EtherDOG could not read it, and each module
+as `{slot, status_byte}` with `status_byte` 0..255 or `null`; a status word of any other type is a 502.
+
+The capabilities cache holds the latest hello of the running EtherDOG only: it is replaced by each
+hello and cleared when EtherDOG stops, restarts or is disabled.
+
 ## Timing
 
 `master.cycle_time_us` from the busconfig sets the bus cycle. The relay thread in `plc_main` has no timer of its own:
@@ -63,7 +99,8 @@ So the runtime exchanges data with EtherDOG once per bus cycle. On an SLM-RP4 wi
   - an entry has no matching PDO entry, or its direction or width differs;
   - one process data entry, or one IEC location, is mapped twice;
   - the layout lists the same entry in more than one PDO;
-  - a process image is larger than the 4096 bytes a data frame carries;
+  - one direction of a master's process image is larger than the 65483 bytes a data frame carries
+    (a loopback datagram less the frame header);
   - EtherDOG rejects the bus configuration.
 
 ## Building EtherDOG
@@ -73,4 +110,5 @@ So the runtime exchanges data with EtherDOG once per bus cycle. On an SLM-RP4 wi
 2. a checkout at `./etherdog`
 3. a clone of `$ETHERDOG_REPO` at `$ETHERDOG_REF`, into `third_party/etherdog`
 
-The source stays in the install. EtherDOG needs CMake 3.28 or newer, which `install.sh` already provides.
+`ETHERDOG_REF` defaults to the EtherDOG release tag this runtime is tested with (`v1.0.0`); set it to
+build another tag, branch or commit. The source stays in the install. EtherDOG needs CMake 3.28 or newer, which `install.sh` already provides.

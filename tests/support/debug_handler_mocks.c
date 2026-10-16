@@ -25,9 +25,8 @@ uint16_t (*ext_strucpp_debug_read)       (uint8_t, uint16_t, uint8_t *)  = NULL;
 uint8_t  (*ext_strucpp_debug_write)      (uint8_t, uint16_t,
                                           const uint8_t *, uint16_t)     = NULL;
 
-/* ext_strucpp_program_md5 lives in utils.c; just bring the declaration
- * in via the public header. */
-extern char *ext_strucpp_program_md5;
+/* Defined in utils.c; this weak copy links the tests that do not build utils.c. */
+__attribute__((weak)) char *ext_strucpp_program_md5 = NULL;
 
 /* -----------------------------------------------------------------------
  * State backing the fakes. Reset between tests.
