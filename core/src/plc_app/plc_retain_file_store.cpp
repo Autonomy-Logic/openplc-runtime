@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file plc_retain_file_store.cpp
  * @brief The runtime's own retain backend. See plc_retain_file_store.h.
@@ -6,6 +9,7 @@
 #include "plc_retain_file_store.h"
 
 #include "plc_retain.h"  // PLC_RETAIN_PROGRAM_ID_LEN — one definition for both sides
+#include "utils/rt_mutex.h"
 
 #include <atomic>
 #include <mutex>
@@ -40,15 +44,13 @@ static_assert(PROGRAM_ID_LEN == PLC_RETAIN_PROGRAM_ID_LEN,
               "identity the runtime hands to read() — a shorter or longer header would be "
               "indistinguishable from a torn write and every load would discard good values.");
 
-std::mutex           g_lock;
+RtMutex              g_lock;
 std::vector<uint8_t> g_pending;
 bool                 g_dirty = false;
 
-/* The running program's identity, taken from the last load() and committed
- * alongside the blob by every save(). Held rather than written at load time so
- * a read never mutates storage, and so identity and bytes always reach the disk
- * as one unit — a file whose header says "program A" is guaranteed to contain
- * program A's values. Empty until the first load(). */
+/* Program identity from the last load(); committed alongside the blob by
+ * every save() so identity and bytes reach disk as one unit. Empty until
+ * the first load() so a read never mutates storage. */
 std::string          g_program_md5;
 
 std::string       g_path;
@@ -107,27 +109,15 @@ void read_config(const char *config_path)
     g_enabled.store(enabled);
 }
 
-/**
- * Publish the blob.
- *
- * Write-and-rename, so a power loss mid-write leaves the PREVIOUS good blob
- * rather than a half-written one. The runtime's crc would catch a torn write
- * and fall back to initial values anyway, but losing the previous values as
- * well would be gratuitous.
- */
+/* Publish the blob via write-and-rename, so a power loss mid-write keeps
+ * the PREVIOUS good blob instead of a half-written one. */
 void commit(const uint8_t *buf, uint16_t len, const std::string &program_id)
 {
     const std::string tmp = g_path + ".tmp";
 
-    /* File layout: [PROGRAM_ID_LEN bytes of md5 hex][blob].
-     *
-     * The identity goes in the same file as the bytes, and the same
-     * write-and-rename publishes both, so the two can never disagree — a
-     * separate sidecar could be updated and then lost, leaving one program's
-     * values labelled with another's. A file that predates this header, or a
-     * torn one shorter than the header, simply fails the identity check on the
-     * next load and is discarded, which is the correct outcome for bytes whose
-     * owner cannot be established. */
+    /* File layout: [PROGRAM_ID_LEN bytes of md5 hex][blob]. Identity and
+     * bytes publish together in one rename, so they cannot disagree. A
+     * file shorter than the header fails identity check on load. */
 
     FILE *f = fopen(tmp.c_str(), "wb");
     if (!f)
@@ -165,12 +155,9 @@ void commit(const uint8_t *buf, uint16_t len, const std::string &program_id)
         return;
     }
 
-    /* fsync the DIRECTORY too. fsync on the file commits its contents; the
-     * rename that publishes them is a directory operation, and on ext4 it can
-     * still be lost to a power cut after the data is safely on disk. Without
-     * this the store can come back holding the previous blob even though the
-     * new one was written — the failure that looks like retain silently
-     * skipping an interval. */
+    /* fsync the DIRECTORY too: on ext4 the publishing rename can be lost
+     * to a power cut even after the file contents are on disk. Without
+     * this the store can come back holding the previous blob. */
     std::vector<char> dircopy(g_path.begin(), g_path.end());
     dircopy.push_back('\0');
     const int dirfd = open(dirname(dircopy.data()), O_RDONLY | O_DIRECTORY);
@@ -181,17 +168,13 @@ void commit(const uint8_t *buf, uint16_t len, const std::string &program_id)
     }
 }
 
-/** Remove the stored file and forget the buffered blob.
- *
- * Not gated on `enabled`: what is being discarded belongs to a PREVIOUS
- * program, and may have been written while the store was configured
- * differently. The identity is deliberately NOT cleared — the caller has just
- * set it to the program now running, and the next save has to label its bytes.
- */
+/* Remove the stored file and forget the buffered blob. Not gated on
+ * `enabled` — the bytes belong to a PREVIOUS program. Identity is NOT
+ * cleared: caller has just set it to the program now running. */
 void discard_stored()
 {
     {
-        std::lock_guard<std::mutex> guard(g_lock);
+        std::lock_guard<RtMutex> guard(g_lock);
         g_pending.clear();
         g_dirty = false;
     }
@@ -219,7 +202,7 @@ void flush_loop()
              * save() every cycle and must never wait on a disk write. The
              * identity is snapshotted with the bytes so the pair committed
              * below is the pair that was current at this instant. */
-            std::lock_guard<std::mutex> guard(g_lock);
+            std::lock_guard<RtMutex> guard(g_lock);
             if (!g_dirty) continue;
             snapshot    = g_pending;
             snapshot_id = g_program_md5;
@@ -251,7 +234,7 @@ void plc_retain_file_store_stop(void)
         if (g_flusher.joinable()) g_flusher.join();
 
         /* Final flush: a clean stop should not discard the last interval. */
-        std::lock_guard<std::mutex> guard(g_lock);
+        std::lock_guard<RtMutex> guard(g_lock);
         if (g_dirty && !g_pending.empty())
         {
             commit(g_pending.data(), (uint16_t)g_pending.size(), g_program_md5);
@@ -275,7 +258,7 @@ int plc_retain_file_store_save(const uint8_t *blob, uint16_t len)
 {
     if (!g_enabled.load() || !blob || len == 0 || len > RETAIN_MAX) return -1;
 
-    std::lock_guard<std::mutex> guard(g_lock);
+    std::lock_guard<RtMutex> guard(g_lock);
     /* Only mark dirty on an actual change. The runtime deliberately does not
      * diff — it cannot know what a write costs here — so doing it at this layer
      * is how a slow medium avoids rewriting an unchanged blob every interval. */
@@ -298,7 +281,7 @@ int plc_retain_file_store_load(const char *program_md5, uint16_t md5_len, uint8_
      * a store that just discarded a previous program's values still has to
      * label the new program's first commit. */
     {
-        std::lock_guard<std::mutex> guard(g_lock);
+        std::lock_guard<RtMutex> guard(g_lock);
         g_program_md5.assign(program_md5, md5_len);
     }
 
@@ -334,7 +317,7 @@ int plc_retain_file_store_load(const char *program_md5, uint16_t md5_len, uint8_
 
     /* Prime the in-memory copy so the first flush after start does not rewrite
      * a byte-identical file. */
-    std::lock_guard<std::mutex> guard(g_lock);
+    std::lock_guard<RtMutex> guard(g_lock);
     g_pending.assign(out, out + n);
     g_dirty = false;
     return 0;
@@ -346,7 +329,7 @@ int plc_retain_file_store_flush(void)
      * plc_retain_file_store_stop(): the PLC can be started again without the
      * daemon restarting, and joining the thread here would leave the next run
      * with nothing committing on a timer. */
-    std::lock_guard<std::mutex> guard(g_lock);
+    std::lock_guard<RtMutex> guard(g_lock);
     if (!g_dirty || g_pending.empty()) return 0;
     commit(g_pending.data(), (uint16_t)g_pending.size(), g_program_md5);
     g_dirty = false;

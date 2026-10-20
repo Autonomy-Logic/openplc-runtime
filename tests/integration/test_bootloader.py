@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""End-to-end tests for the RTOP-283 bootloader, run inside the test host.
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
+"""End-to-end tests for the openplc-bootloader, run inside the test host.
 
 These drive the real thing: a real Docker daemon, a real registry, real image
 pulls with real progress streaming, and the bootloader binary that ships. The
@@ -19,6 +22,7 @@ Standard library only -- the test host has python3 and nothing else.
 import json
 import os
 import shutil
+import socket
 import sqlite3
 import ssl
 import subprocess
@@ -31,6 +35,10 @@ REGISTRY = "localhost:5000"
 STUB_REPO = f"{REGISTRY}/openplc-stub"
 REAL_REPO = f"{REGISTRY}/openplc-runtime"
 
+# The real runtime release under test. The fallback is for a direct run and
+# must match harness.sh's REAL_BASE tag.
+REAL_VERSION = os.environ.get("REAL_TAG") or "v4.2.3"
+
 BOOTLOADER_IMAGE = "openplc-bootloader:test"
 BOOTLOADER_NAME = "openplc-bootloader"
 RUNTIME_NAME = "openplc-runtime"
@@ -39,11 +47,8 @@ STATE_DIR = "/var/lib/openplc-bootloader"
 DATA_DIR = "/var/lib/openplc-runtime"
 BOOTLOADER_URL = "https://127.0.0.1:8445"
 
-# From the shared auth vector (bootloader/internal/runtimeauth/runtimeauth_test.go
-# and tests/pytest/restapi/test_bootloader_auth_vector.py). Reusing it here
-# means the data directory can be seeded with a genuine werkzeug hash without
-# werkzeug being installed in the test host -- and it cross-checks the vector
-# in a real integration setting rather than only in unit tests.
+# Shared auth vector (also used by the Go and Python unit tests). Lets
+# this harness seed a werkzeug hash without werkzeug installed.
 PEPPER = "a" * 64
 JWT_SECRET = "b" * 64
 USERNAME = "operator"
@@ -192,6 +197,9 @@ def start_bootloader(extra_args: list[str] | None = None) -> None:
     args = [
         "docker", "run", "-d", "--name", BOOTLOADER_NAME,
         "--restart", "always", "--network", "host",
+        # Mirrors install.sh, kept in step by hand. --uts=host is what
+        # makes the recovery-mode reply name the device, not the container.
+        "--uts=host",
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-v", f"{STATE_DIR}:{STATE_DIR}",
         "-v", f"{DATA_DIR}:{DATA_DIR}:ro",
@@ -200,13 +208,8 @@ def start_bootloader(extra_args: list[str] | None = None) -> None:
     args += extra_args or ["-log-level=debug"]
     sh(*args)
 
-    # Wait for THIS bootloader to answer before returning.
-    #
-    # Without it a case starts polling while nothing is listening on 8445 yet,
-    # and the failures read as "ConnectionRefused" or -- worse -- as progress
-    # belonging to a different case, because a poll can land on a bootloader
-    # that has not been replaced yet. Confirming a fresh, responsive process
-    # removes both by construction.
+    # Wait for THIS bootloader to answer before returning so polls do
+    # not land on a previous instance.
     def responsive() -> bool:
         state = container_state(BOOTLOADER_NAME)
         if not state.get("State", {}).get("Running"):
@@ -343,6 +346,54 @@ def wait_update(token: str, expected: str, timeout: float = 180.0) -> dict:
 
 # --- cases ----------------------------------------------------------------
 
+DISCOVERY_PORT = 33333
+DISCOVERY_MAGIC = b"OPENPLC_DISCOVER_V1"
+
+
+def device_hostname() -> str:
+    """The test host's hostname, read from the kernel rather than a constant."""
+    return os.uname().nodename
+
+
+def set_device_hostname(name: str) -> None:
+    """Rename the device, as `hostnamectl set-hostname` would on a board."""
+    sh("hostname", name)
+
+
+def discovery_probe(timeout: float = 5.0) -> dict:
+    """Probe discovery and return the reply the editor would parse.
+
+    The wire protocol, not an HTTP endpoint: the name the editor shows comes
+    from this datagram.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    # Re-sent, as the editor does: a datagram may vanish. The interval clears
+    # the responder's 0.1s per-IP rate limit, which would drop the retries.
+    sock.settimeout(0.5)
+    deadline = time.time() + timeout
+    try:
+        while time.time() < deadline:
+            sock.sendto(DISCOVERY_MAGIC, ("127.0.0.1", DISCOVERY_PORT))
+            try:
+                data, _ = sock.recvfrom(4096)
+            except socket.timeout:
+                time.sleep(0.2)
+                continue
+            try:
+                return json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                # The port is a broadcast port; something else on it is not a
+                # failure, so keep listening rather than giving up.
+                continue
+        raise Failure(
+            f"nothing answered the discovery probe on UDP {DISCOVERY_PORT} "
+            f"within {timeout}s"
+        )
+    finally:
+        sock.close()
+
+
 CASES = []
 
 
@@ -366,6 +417,11 @@ def test_bootstrap_creates_and_supervises_the_runtime():
         raise Failure("the runtime must be privileged for hardware parity")
     if host["NetworkMode"] != "host":
         raise Failure(f"want host networking, got {host['NetworkMode']}")
+    # Without --uts=host, discovery reports a container id. Only the
+    # flag is checked here; what the runtime SEES is covered by the
+    # real-image test, since the stub is FROM scratch.
+    if host["UTSMode"] != "host":
+        raise Failure(f"want the host UTS namespace, got {host['UTSMode']!r}")
     if host["RestartPolicy"]["Name"] != "no":
         raise Failure("the bootloader owns restarts; docker must not")
     if "/dev:/dev" not in host["Binds"]:
@@ -757,12 +813,124 @@ def test_the_bootloader_replaces_itself_without_disturbing_the_runtime():
         raise Failure(f"the helper must never restart: {helper.get('HostConfig')}")
 
 
+def _bake_pre_fix_runtime_container(image: str, *, running: bool) -> str:
+    """Runtime container as a pre-fix bootloader made it. Returns its id."""
+    remove_container(RUNTIME_NAME)
+    sh("docker", "create", "--name", RUNTIME_NAME,
+       "--privileged", "--network", "host",
+       "-v", "/dev:/dev", "-v", f"{DATA_DIR}:{DATA_DIR}",
+       "-e", f"OPENPLC_PERSISTENT_DATA_DIR={DATA_DIR}",
+       image)
+    if running:
+        sh("docker", "start", RUNTIME_NAME)
+
+    legacy = container_state(RUNTIME_NAME)
+    if legacy["HostConfig"]["UTSMode"] == "host":
+        raise Failure("the legacy container was not built with a private namespace")
+    return legacy["Id"]
+
+
+@case
+def test_a_runtime_container_with_a_private_uts_namespace_is_replaced():
+    """Field-upgrade path for a runtime with a private UTS namespace.
+
+    Both states ship: a normal pre-fix install leaves it RUNNING, an SLM-RP4
+    image leaves it STOPPED and never started, which skips the graceful stop
+    in recreate().
+    """
+    for running in (True, False):
+        state = "running" if running else "stopped"
+        reset()
+        wait_healthy()
+        image = container_state(RUNTIME_NAME)["Config"]["Image"]
+
+        legacy_id = _bake_pre_fix_runtime_container(image, running=running)
+
+        sh("docker", "restart", BOOTLOADER_NAME)
+        wait_healthy(timeout=120)
+
+        current = container_state(RUNTIME_NAME)
+        if current["Id"] == legacy_id:
+            raise Failure(
+                f"({state}) the bootloader adopted a container that cannot report "
+                "the device hostname instead of replacing it"
+            )
+        if current["HostConfig"]["UTSMode"] != "host":
+            raise Failure(
+                f"({state}) the replacement must share the namespace, got "
+                f"{current['HostConfig']['UTSMode']!r}"
+            )
+
+        # And only once. Recreating on a configuration difference risks a
+        # device that replaces its runtime on every reconcile and never stays
+        # up.
+        replaced_id = current["Id"]
+        sh("docker", "restart", BOOTLOADER_NAME)
+        wait_healthy(timeout=120)
+        if container_state(RUNTIME_NAME)["Id"] != replaced_id:
+            raise Failure(
+                f"({state}) the corrected container must be adopted, not replaced again"
+            )
+
+
+@case
+def test_recovery_mode_discovery_reports_the_device_hostname():
+    """The bootloader answers discovery when the runtime is down, and
+    that reply has to name the board, not the container."""
+    reset(version="v1.0.0", extra_env=["STUB_FAIL=exit"])
+    wait_for("recovery mode", lambda: bootloader_state() == "recovery", timeout=120)
+
+    reply = discovery_probe()
+    if reply.get("service") != "openplc-bootloader":
+        raise Failure(f"want the bootloader answering in recovery, got {reply}")
+    if reply.get("hostname") != device_hostname():
+        raise Failure(
+            f"recovery discovery reports {reply.get('hostname')!r}, "
+            f"the device is {device_hostname()!r}"
+        )
+
+
+@case
+def test_lan_discovery_reports_the_device_hostname_and_follows_a_rename():
+    """The user-visible bug, end to end against the real runtime.
+
+    The rename half is what NetworkMode host alone cannot pass, since the
+    daemon resolves the hostname once at create time.
+    """
+    original = device_hostname()
+    try:
+        reset(repository=REAL_REPO, version=REAL_VERSION)
+        wait_healthy(timeout=300)
+
+        reply = discovery_probe(timeout=10)
+        if reply.get("service") != "openplc-runtime":
+            raise Failure(f"want the runtime answering, got {reply}")
+        if reply.get("hostname") != original:
+            raise Failure(
+                f"discovery reports {reply.get('hostname')!r}, "
+                f"the device is {original!r}"
+            )
+
+        renamed = "slm-rp4-renamed"
+        set_device_hostname(renamed)
+        # No restart, no recreate: a shared namespace makes gethostname() a
+        # live syscall, so the next probe must already carry the new name.
+        after = discovery_probe(timeout=10)
+        if after.get("hostname") != renamed:
+            raise Failure(
+                f"discovery did not follow the rename: reports "
+                f"{after.get('hostname')!r}, the device is now {renamed!r}"
+            )
+    finally:
+        set_device_hostname(original)
+
+
 @case
 def test_the_real_runtime_image_comes_up_under_the_bootloader():
     """Everything above uses the stub. This proves the real thing works: the
     actual OpenPLC runtime, started by the bootloader, reaching healthy and
     reporting the policy the editor keys off."""
-    reset(repository=REAL_REPO, version="v4.2.1")
+    reset(repository=REAL_REPO, version=REAL_VERSION)
     # Generous: the real runtime loads plugin venvs on a cold start, and the
     # image's own start-period is 90s.
     wait_healthy(timeout=300)
@@ -771,11 +939,9 @@ def test_the_real_runtime_image_comes_up_under_the_bootloader():
     if not served.get("runtimeVersion"):
         raise Failure(f"the real runtime must report a version, got {served}")
 
-    # The data-directory bug, checked against the real runtime rather than a
-    # field the stub invents. config.py resolves the persistent directory by
-    # container detection, so without the env override the runtime writes a
-    # fresh .env inside the container and ignores the mounted one -- losing
-    # users, the stored project, retain data and licences on every swap.
+    # Verify OPENPLC_PERSISTENT_DATA_DIR is set: without it the runtime
+    # defaults the persistent dir inside the container and ignores the
+    # mount, discarding users and licences on every swap.
     env = container_state(RUNTIME_NAME)["Config"]["Env"]
     if f"OPENPLC_PERSISTENT_DATA_DIR={DATA_DIR}" not in env:
         raise Failure(f"the runtime was not pointed at the mounted data dir: {env}")
@@ -788,6 +954,15 @@ def test_the_real_runtime_image_comes_up_under_the_bootloader():
         )
     if not os.path.exists(os.path.join(DATA_DIR, ".env")):
         raise Failure("the real runtime did not write .env into the mounted data dir")
+
+    # Assert UTS passthrough at the syscall the responder actually
+    # calls. Done on the real image rather than the stub, which has
+    # no userland to ask.
+    seen = sh("docker", "exec", RUNTIME_NAME, "hostname").strip()
+    if seen != device_hostname():
+        raise Failure(
+            f"the runtime sees hostname {seen!r}, the device is {device_hostname()!r}"
+        )
 
 
 # --- runner ---------------------------------------------------------------

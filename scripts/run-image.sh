@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # Run container mounting only source code (preserves built venv)
 # Named volume for persistent runtime data (DB, .env, etc)
 docker run --rm -it \

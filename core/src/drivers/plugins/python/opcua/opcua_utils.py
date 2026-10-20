@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """OPC-UA plugin utility functions."""
 
 import ctypes
@@ -17,10 +20,37 @@ try:
 except ImportError:
     from opcua_logging import log_info, log_warn, log_error
 
-
 # TIME-related datatypes that use IEC_TIMESPEC structure
 TIME_DATATYPES = frozenset(["TIME", "DATE", "TOD", "DT"])
 
+def default_for_opcua(datatype: str) -> Any:
+    """The OPC-UA-side representation of "nothing to report" for a type."""
+    t = (datatype or "").upper()
+    if t == "BOOL":
+        return False
+    if t in ("REAL", "LREAL", "FLOAT"):
+        return 0.0
+    if t == "STRING":
+        return ""
+    if t == "WSTRING":
+        return b""          # WSTRING is served as a ByteString, so bytes
+    return 0
+
+def default_for_plc(datatype: str) -> Any:
+    """The PLC-side representation, as the write path would encode it."""
+    t = (datatype or "").upper()
+    if t == "BOOL":
+        return 0
+    if t in ("REAL", "LREAL", "FLOAT"):
+        # Float, matching the c_float / c_double the write path encodes with.
+        return 0.0
+    if t == "STRING":
+        return ""
+    if t == "WSTRING":
+        return b""
+    if t in TIME_DATATYPES:
+        return (0, 0)
+    return 0
 
 def map_plc_to_opcua_type(plc_type: str) -> ua.VariantType:
     """Map plc datatype to OPC-UA VariantType."""
@@ -49,6 +79,11 @@ def map_plc_to_opcua_type(plc_type: str) -> ua.VariantType:
         "LREAL": ua.VariantType.Double, # IEC 61131-3 LREAL = 64-bit float
         # String type
         "STRING": ua.VariantType.String,
+        # WSTRING carried as opaque ByteString (UTF-16LE units) rather than
+        # UA String: transcoding to UTF-8 needs a scratch buffer and is
+        # lossy for lone surrogates. Must be mapped: the `.get` default
+        # below is `VariantType.Variant`, which asyncua cannot serialise.
+        "WSTRING": ua.VariantType.ByteString,
         # TIME-related types
         "TIME": ua.VariantType.Int64,   # Duration in milliseconds
         "TOD": ua.VariantType.DateTime, # Time of day as DateTime (current date + time)
@@ -57,7 +92,6 @@ def map_plc_to_opcua_type(plc_type: str) -> ua.VariantType:
     }
     mapped_type = type_mapping.get(plc_type.upper(), ua.VariantType.Variant)
     return mapped_type
-
 
 def timespec_to_milliseconds(tv_sec: int, tv_nsec: int) -> int:
     """
@@ -72,7 +106,6 @@ def timespec_to_milliseconds(tv_sec: int, tv_nsec: int) -> int:
     """
     return (tv_sec * 1000) + (tv_nsec // 1_000_000)
 
-
 def milliseconds_to_timespec(ms: int) -> tuple[int, int]:
     """
     Convert milliseconds to IEC_TIMESPEC format (tv_sec, tv_nsec).
@@ -86,7 +119,6 @@ def milliseconds_to_timespec(ms: int) -> tuple[int, int]:
     tv_sec = ms // 1000
     tv_nsec = (ms % 1000) * 1_000_000
     return (tv_sec, tv_nsec)
-
 
 def convert_value_for_opcua(datatype: str, value: Any) -> Any:
     """Convert PLC debug variable value to OPC-UA compatible format."""
@@ -140,16 +172,21 @@ def convert_value_for_opcua(datatype: str, value: Any) -> Any:
             return ctypes.c_uint64(clamped_value).value
 
         elif datatype.upper() in ["FLOAT", "REAL", "LREAL"]:
-            # debug_read_value casts the raw bytes to c_float / c_double, so
-            # what arrives here is the number itself, never its bit pattern.
-            # The MatIEC-era debug protocol did hand over raw integers, and the
-            # struct.unpack that decoded them outlived it -- on the STruC++
-            # debug surface it would turn an integer-valued REAL of 1 into
+            # debug_read_value already casts to c_float/c_double, so this
+            # receives the number itself, not its bit pattern. A legacy
+            # struct.unpack on the integer bits would turn REAL 1 into
             # 1.4e-45. Mirror of the write-side fix below.
             return float(value)
 
         elif datatype.upper() == "STRING":
             return str(value)
+
+        elif datatype.upper() == "WSTRING":
+            # Already UTF-16LE bytes from _decode_string; a str here can only
+            # come from a caller that built one, so encode it the same way.
+            if isinstance(value, (bytes, bytearray)):
+                return bytes(value)
+            return str(value).encode("utf-16-le")
 
         elif datatype.upper() == "TIME":
             # TIME values are stored as IEC_TIMESPEC (tv_sec, tv_nsec)
@@ -236,17 +273,7 @@ def convert_value_for_opcua(datatype: str, value: Any) -> Any:
     except (ValueError, TypeError, OverflowError) as e:
         # If conversion fails, return a safe default
         log_warn(f"Failed to convert value {value} to OPC-UA format for {datatype}: {e}")
-        if datatype.upper() == "BOOL":
-            return False
-        elif datatype.upper() in ["FLOAT", "REAL"]:
-            return 0.0
-        elif datatype.upper() == "STRING":
-            return ""
-        elif datatype.upper() in TIME_DATATYPES:
-            return 0
-        else:
-            return 0
-
+        return default_for_opcua(datatype)
 
 def convert_value_for_plc(datatype: str, value: Any) -> Any:
     """Convert OPC-UA value to PLC debug variable format."""
@@ -301,15 +328,20 @@ def convert_value_for_plc(datatype: str, value: Any) -> Any:
             return ctypes.c_uint64(clamped_value).value
 
         elif datatype.upper() in ["FLOAT", "REAL", "LREAL"]:
-            # debug_write_value packs this through c_float / c_double, so hand
-            # it the number. Packing the bit pattern here -- correct back when
-            # the debug protocol exchanged raw integers -- meant a client
-            # writing 42.0 stored 1109917696.0 in the PLC (forum thread
-            # "Error changing values via OPC UA").
+            # debug_write_value packs through c_float/c_double, so hand
+            # the number. Packing the integer bit-pattern would store
+            # 1109917696.0 for a client write of 42.0.
             return float(value)
 
         elif datatype.upper() == "STRING":
             return str(value)
+
+        elif datatype.upper() == "WSTRING":
+            # A ByteString arrives as bytes; a client that sent a UA String
+            # gets encoded to the same UTF-16LE the PLC stores.
+            if isinstance(value, (bytes, bytearray)):
+                return bytes(value)
+            return str(value).encode("utf-16-le")
 
         elif datatype.upper() == "TIME":
             # Convert OPC-UA milliseconds (Int64) to IEC_TIMESPEC tuple
@@ -365,20 +397,7 @@ def convert_value_for_plc(datatype: str, value: Any) -> Any:
     except (ValueError, TypeError, OverflowError) as e:
         # If conversion fails, log and return a safe default
         log_warn(f"Failed to convert value {value} to {datatype}, using default: {e}")
-        if datatype.upper() == "BOOL":
-            return 0
-        elif datatype.upper() in ["FLOAT", "REAL", "LREAL"]:
-            # Float default, matching the c_float / c_double the write path
-            # encodes with -- an int default would be a (harmless, but
-            # misleading) type mismatch.
-            return 0.0
-        elif datatype.upper() == "STRING":
-            return ""
-        elif datatype.upper() in TIME_DATATYPES:
-            return (0, 0)
-        else:
-            return 0
-
+        return default_for_plc(datatype)
 
 def infer_var_type(size: int) -> str:
     """
@@ -401,5 +420,8 @@ def infer_var_type(size: int) -> str:
     elif size == 127:
         # IEC_STRING: 1 byte len + 126 bytes body = 127 bytes
         return "STRING"
+    elif size == 253:
+        # IEC_WSTRING: 1 byte len + 126 * 2 bytes body = 253 bytes
+        return "WSTRING"
     else:
         return "UNKNOWN"

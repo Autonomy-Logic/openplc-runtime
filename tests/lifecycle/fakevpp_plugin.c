@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file fakevpp_plugin.c
  * @brief Test-only native plugin standing in for a board's VPP package.
@@ -13,7 +16,9 @@
  *      /tmp/fakevpp_switch) for the text "RUN" or "STOP" and drives the runtime
  *      exactly as the plugin contract prescribes: store the position first, then
  *      request the matching transition. Writing that file is the test's way of
- *      flipping a physical switch.
+ *      flipping a physical switch. With FAKEVPP_SWITCH_OWNER=1 it also requests
+ *      the matching transition from init() and watches from init() to cleanup(),
+ *      the way a board package that owns its switch does.
  *
  *   3. A RUNAWAY-FREE STOP. stop_loop()/cleanup() return promptly, so a slow
  *      teardown never confuses a slow start.
@@ -125,15 +130,54 @@ static void *watcher_thread(void *arg)
     return NULL;
 }
 
+/* FAKEVPP_SWITCH_OWNER=1: own the switch for the plugin's whole life, as a board
+ * package does: report and request from init(), watch from init() to cleanup(). */
+static int switch_owner(void)
+{
+    return env_long("FAKEVPP_SWITCH_OWNER", 0) != 0;
+}
+
+static int start_watcher(void)
+{
+    if (atomic_exchange(&g_running, 1) == 1)
+        return 0;
+    if (pthread_create(&g_watcher, NULL, watcher_thread, NULL) != 0)
+    {
+        atomic_store(&g_running, 0);
+        plog("warn", "failed to start the switch watcher");
+        return -1;
+    }
+    g_watcher_up = 1;
+    plog("info", "fake VPP switch watcher running");
+    return 0;
+}
+
 int init(void *args)
 {
-    g_args = (plugin_runtime_args_t *)args;
+    /* The runtime frees args when init() returns; keep a copy. */
+    static plugin_runtime_args_t args_copy;
+    g_args = NULL;
+    if (args)
+    {
+        memcpy(&args_copy, args, sizeof(args_copy));
+        g_args = &args_copy;
+    }
 
     /* Adopt whatever the switch file already says before anything else, so a test
      * can boot a device with the switch in STOP. */
     g_last_pos = read_switch_file();
     if (g_args && g_args->set_switch_position)
         g_args->set_switch_position(g_last_pos);
+
+    if (switch_owner())
+    {
+        if (g_last_pos == SWITCH_RUN && g_args && g_args->request_plc_start)
+            g_args->request_plc_start("fake mode switch is RUN at init");
+        else if (g_last_pos == SWITCH_STOP && g_args && g_args->request_plc_stop)
+            g_args->request_plc_stop("fake mode switch is STOP at init");
+        if (start_watcher() != 0)
+            return -1;
+    }
 
     const long slow_ms = env_long("FAKEVPP_INIT_MS", 2500);
     if (slow_ms > 0)
@@ -149,40 +193,23 @@ int init(void *args)
     return 0;
 }
 
-/* The watcher lives between start_loop and stop_loop, and NOT a moment longer.
- *
- * init() is the tempting place for it -- a real mode switch has to be watched
- * while the PLC is stopped too -- but the contract forbids threads there for a
- * concrete reason: plugin_driver_update_config tears every slot down and
- * re-dlopens it on each start, so a thread left running from init() ends up
- * executing code that has been unmapped. That is a SIGSEGV, and this fixture
- * earned one before being written this way. Everything the tests need still
- * works, because the runtime stops plugins only AFTER joining the PLC thread:
- * a flip during a stop is still seen. */
+/* Start the watcher here, not in init(): plugin_driver_update_config
+ * re-dlopens plugins per start, so a thread from init() runs code that
+ * has been unmapped (SIGSEGV). */
 int start_loop(void *args)
 {
     (void)args;
-    if (atomic_exchange(&g_running, 1) == 1)
+    if (switch_owner())
         return 0;
-    if (pthread_create(&g_watcher, NULL, watcher_thread, NULL) != 0)
-    {
-        atomic_store(&g_running, 0);
-        plog("warn", "failed to start the switch watcher");
-        return -1;
-    }
-    g_watcher_up = 1;
-    plog("info", "fake VPP switch watcher running");
-    return 0;
+    return start_watcher();
 }
 
 int stop_loop(void *args)
 {
     (void)args;
 
-    /* Optional slow teardown, BEFORE the watcher is joined, so the switch is
-     * still being watched while the stop is in flight. That is the only way to
-     * land a flip inside a stop transition on purpose: a stop is otherwise tens
-     * of milliseconds and there is nothing to aim at. */
+    /* Optional slow teardown BEFORE joining the watcher, so a switch
+     * flip can land inside a stop transition. */
     const long slow_ms = env_long("FAKEVPP_STOP_MS", 0);
     if (slow_ms > 0)
     {
@@ -192,6 +219,9 @@ int stop_loop(void *args)
         struct timespec t = { .tv_sec = slow_ms / 1000, .tv_nsec = (slow_ms % 1000) * 1000000L };
         nanosleep(&t, NULL);
     }
+
+    if (switch_owner())
+        return 0; /* the switch is watched while stopped too */
 
     if (atomic_exchange(&g_running, 0) == 1 && g_watcher_up)
     {

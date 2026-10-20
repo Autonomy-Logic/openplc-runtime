@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file plugin_types.h
  * @brief Common type definitions for OpenPLC plugins
@@ -15,7 +18,7 @@
 #ifndef PLUGIN_TYPES_H
 #define PLUGIN_TYPES_H
 
-#include "../lib/iec_types.h"
+#include "../lib/plc_image_types.h"
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -97,6 +100,10 @@ typedef uint8_t  (*plugin_debug_write_func_t)(uint8_t arr, uint16_t elem,
  * The call is non-blocking: the runtime spawns a worker thread for the
  * transition and returns immediately. `reason` is logged at error level.
  * Safe to call from any plugin thread.
+ *
+ * Start and stop requests from any plugin thread, including threads started
+ * by init(), are not acted on from boot-time plugin init until the boot
+ * auto-start has decided; it reads the switch position stored by then instead.
  */
 typedef void (*plugin_request_plc_stop_func_t)(const char *reason);
 
@@ -113,6 +120,10 @@ typedef void (*plugin_request_plc_stop_func_t)(const char *reason);
  * thread, including while the PLC is stopped: the runtime keeps every plugin
  * mapped across a stop, so this is how a hardware STOP -> RUN edge starts the
  * PLC again.
+ *
+ * Start and stop requests from any plugin thread, including threads started
+ * by init(), are not acted on from boot-time plugin init until the boot
+ * auto-start has decided; it reads the switch position stored by then instead.
  */
 typedef void (*plugin_request_plc_start_func_t)(const char *reason);
 
@@ -185,6 +196,18 @@ typedef int (*plugin_get_plc_state_func_t)(void);
  * Plugins read buffers under image_lock()/image_unlock() (flush-on-lock) and
  * write through journal_write_* (lock-free), keeping access race-free against
  * the PLC scan cycle.
+ *
+ * init() lifecycle, for plugins in plugins.conf and in a program's
+ * vpp_plugins.conf alike:
+ * - init() runs at power-on, before any program is loaded, and stays in effect
+ *   even if the PLC never starts (switch in STOP, safe mode excepted: VPP
+ *   plugins are not loaded there). It must not depend on program state.
+ * - Every PLC start then calls cleanup(), dlclose()s and re-dlopen()s the .so
+ *   and calls init() again, including the first start after power-on. Any
+ *   thread started in init() must be joined in cleanup(), and init() must
+ *   re-acquire whatever cleanup() released.
+ * - Start/stop requests from any plugin thread are not acted on from boot-time
+ *   init() until the boot auto-start has decided.
  */
 typedef struct
 {
@@ -204,20 +227,15 @@ typedef struct
     IEC_ULINT **lint_memory;
     IEC_BOOL *(*bool_memory)[8];
 
-    /* Flush-on-lock image read API for thread-safe buffer access.
-     *
-     * image_lock() takes the runtime's image mutex and drains the journal so
-     * the holder sees every committed write; image_unlock() releases it. Writes
-     * never take this lock -- use journal_write_* (lock-free). Prefer the bulk
-     * pattern for reads: lock, copy the region to a local buffer, unlock, then
-     * do any slow work (network, conversion) on the buffer OUTSIDE the lock. */
+    /* Flush-on-lock image read API. image_lock takes the mutex and
+     * drains the journal; image_unlock releases. Writes use
+     * journal_write_* (lock-free). Reads: lock, memcpy, unlock,
+     * then slow work OUTSIDE the lock. */
     void (*image_lock)(void);
     void (*image_unlock)(void);
 
-    /* STruC++ debugger variable-access surface.
-     * Replaces the MatIEC-era flat-index API (get_var_list /
-     * get_var_size / get_var_count). Plugins like OPC-UA receive
-     * pre-resolved (arr, elem) tuples from the editor in their
+    /* STruC++ debugger variable-access surface. Plugins (e.g. OPC-UA)
+     * receive pre-resolved (arr, elem) tuples from the editor in their
      * per-plugin config and forward them through these thunks. */
     plugin_debug_array_count_func_t debug_array_count;
     plugin_debug_elem_count_func_t  debug_elem_count;
@@ -246,6 +264,7 @@ typedef struct
     plugin_journal_write_dint_func_t journal_write_dint;
     plugin_journal_write_lint_func_t journal_write_lint;
 
+    /* Append-only below: compiled plugins bake in the offsets above. */
     /* Async request to stop the whole PLC — see plugin_request_plc_stop_func_t. */
     plugin_request_plc_stop_func_t request_plc_stop;
 
@@ -253,14 +272,6 @@ typedef struct
      * Populated when the runtime initializes the plugin; may be 0 if
      * symbols are not yet resolved (plugin must guard against zero). */
     unsigned long long base_tick_ns;
-
-    /* ---------------------------------------------------------------------
-     * Run/stop control. Appended at the end of the struct so plugin binaries
-     * compiled against an earlier layout keep their field offsets.
-     *
-     * A plugin that ignores all three behaves exactly as before: the switch
-     * position stays at its RUN default, so every start path is unguarded.
-     * ------------------------------------------------------------------- */
 
     /* Async request to run — see plugin_request_plc_start_func_t. */
     plugin_request_plc_start_func_t request_plc_start;

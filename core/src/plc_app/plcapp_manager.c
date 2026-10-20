@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 #include "plcapp_manager.h"
 #include <dirent.h>
 #include <dlfcn.h>

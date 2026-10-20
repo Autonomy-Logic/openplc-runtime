@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """UDP network discovery responder.
 
 Listens on UDP port 33333 for the magic string ``OPENPLC_DISCOVER_V1``
@@ -139,13 +142,9 @@ class NetworkDiscoveryResponder:
                 ip: ts for ip, ts in self._last_seen.items() if ts >= cutoff
             }
 
-        # Name and timestamp of the stored source project, when there is one.
-        # This is what lets a client populate its "Retrieve Project from PLC"
-        # picker without logging in to every device on the LAN first. Absent
-        # keys mean no stored project, so there is no separate flag.
-        #
-        # Deliberately just these two: they are exactly what the picker shows.
-        # Everything else about the stored project needs authentication.
+        # Stored project name and timestamp are advertised unauthenticated so
+        # the picker can populate without probing every device. Absent keys
+        # mean no stored project; everything else requires auth.
         payload = json.dumps(
             {
                 "service": "openplc-runtime",

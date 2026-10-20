@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """PR #162 review findings: one test per finding, run against a real runtime.
 
 Each test drives plc_main directly over its command socket, with the fake VPP
@@ -376,6 +379,90 @@ def test_shutdown_never_ran():
     set_switch("RUN")
 
 
+# ------------------------- power-on with a program-shipped switch owner
+class VppLayout:
+    """Move the fake VPP from plugins.conf to vpp_plugins.conf, as a program upload ships it."""
+
+    def __enter__(self):
+        with open("plugins.conf") as f:
+            self.saved = f.read()
+        lines = self.saved.splitlines(keepends=True)
+        with open("plugins.conf", "w") as f:
+            f.writelines(l for l in lines if not l.startswith("fakevpp,"))
+        with open("vpp_plugins.conf", "w") as f:
+            f.writelines(l for l in lines if l.startswith("fakevpp,"))
+        return self
+
+    def __exit__(self, *exc):
+        with open("plugins.conf", "w") as f:
+            f.write(self.saved)
+        try:
+            os.unlink("vpp_plugins.conf")
+        except OSError:
+            pass
+
+
+def wait_status(want, limit=25.0):
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        st = status()
+        if st == want:
+            return st
+        time.sleep(0.05)
+    return status()
+
+
+def test_boot_switch_vpp():
+    """A switch owner shipped in vpp_plugins.conf must gate the boot auto-start.
+
+    Pre-fix the VPP plugin was only initialised inside the start transition, so the
+    auto-start read the RUN default, the program loaded and scanned, and switch
+    reconciliation stopped it afterwards. The zero-scan oracle is that the program
+    was never loaded: no load in the journal and no mapping, since a program that
+    was never loaded never ran a cycle.
+    """
+    banner("power-on with the switch owner in vpp_plugins.conf")
+    owner = {"FAKEVPP_SWITCH_OWNER": "1"}
+    with VppLayout():
+        set_switch("STOP")
+        rt = Runtime("boot_stop", init_ms=100, env=owner)
+        time.sleep(3.0)                       # longer than a start takes here
+        st = status()
+        j = rt.journal()
+        record("boot", "STOP at power-on: PLC left STOPPED", st == "STATUS:STOPPED", st)
+        record("boot", "STOP at power-on: program never loaded (zero scans)",
+               "Loading PLC application" not in j and not rt.program_mapped())
+        record("boot", "STOP at power-on: no start/stop pair in the journal",
+               "TRANSITIONING_TO_RUN" not in j and "PLC State: RUNNING" not in j
+               and "correcting" not in j)
+        record("boot", "STOP at power-on: journal says why",
+               "Hardware mode switch is in STOP - PLC left stopped" in j)
+
+        set_switch("RUN")
+        st = wait_status("STATUS:RUNNING")
+        record("boot", "switch moved to RUN after boot starts the PLC",
+               st == "STATUS:RUNNING", st)
+        set_switch("STOP")
+        st = wait_status("STATUS:STOPPED")
+        record("boot", "switch moved back to STOP stops it", st == "STATUS:STOPPED", st)
+        rc, _ = rt.signal_and_wait(signal.SIGTERM)
+        record("boot", "STOP at power-on: clean shutdown", rc == 0, f"rc={rc}")
+        rt.kill()
+
+        set_switch("RUN")
+        rt = Runtime("boot_run", init_ms=100, env=owner)
+        st = wait_status("STATUS:RUNNING")
+        time.sleep(1.0)
+        j = rt.journal()
+        record("boot", "RUN at power-on: PLC RUNNING", status() == "STATUS:RUNNING", st)
+        starts = j.count("TRANSITIONING_TO_RUN")
+        record("boot", "RUN at power-on: exactly one start, no stop",
+               starts == 1 and "TRANSITIONING_TO_STOP" not in j, f"{starts} start(s)")
+        rc, _ = rt.signal_and_wait(signal.SIGTERM)
+        record("boot", "RUN at power-on: clean shutdown", rc == 0, f"rc={rc}")
+        rt.kill()
+
+
 # ----------------------------------------- finding 6 + the interlock guard
 def test_switch_readable_and_interlock():
     banner("finding 6 + interlock regression guard")
@@ -421,6 +508,7 @@ run("shutdown", test_shutdown_midstart, signal.SIGTERM, "SIGTERM")
 run("phantom", test_phantom_stop)
 run("switch", test_switch_intent)
 run("misc", test_switch_readable_and_interlock)
+run("bootswitch", test_boot_switch_vpp)
 
 print("\n=== summary")
 by_finding = {}

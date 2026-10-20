@@ -1,1 +1,4 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # EtherCAT Discovery Service

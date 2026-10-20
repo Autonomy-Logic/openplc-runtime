@@ -1,3 +1,0 @@
-[submodule "core/src/drivers/plugins/native/ethercat/libs/soem"]
-	path = core/src/drivers/plugins/native/ethercat/libs/soem
-	url = https://github.com/OpenEtherCATsociety/SOEM.git

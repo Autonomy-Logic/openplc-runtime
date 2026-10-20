@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Unit tests for the UDP network discovery responder."""
 
 from __future__ import annotations

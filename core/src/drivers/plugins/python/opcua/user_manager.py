@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 OPC UA User Manager.
 
@@ -30,7 +33,6 @@ PBKDF2_ITERATIONS = 600000  # OWASP recommendation for SHA256
 PBKDF2_HASH_NAME = "sha256"
 PBKDF2_SALT_LENGTH = 16
 
-
 def _pbkdf2_hash_password(password: str) -> str:
     """
     Hash a password using PBKDF2-HMAC-SHA256.
@@ -51,7 +53,6 @@ def _pbkdf2_hash_password(password: str) -> str:
     salt_b64 = base64.b64encode(salt).decode("ascii")
     hash_b64 = base64.b64encode(hash_bytes).decode("ascii")
     return f"pbkdf2:{PBKDF2_HASH_NAME}:{PBKDF2_ITERATIONS}${salt_b64}${hash_b64}"
-
 
 def _pbkdf2_verify_password(password: str, password_hash: str) -> bool:
     """
@@ -97,7 +98,6 @@ def _pbkdf2_verify_password(password: str, password_hash: str) -> bool:
     except Exception:
         return False
 
-
 def hash_password(password: str) -> str:
     """
     Hash a password using the best available method.
@@ -129,13 +129,12 @@ try:
 except ImportError:
     from opcua_logging import log_debug, log_error, log_info, log_warn
 
-from shared.plugin_config_decode.opcua_config_model import OpcuaConfig  # noqa: E402
+from shared.plugin_config_decode.opcua_config_model import OpcuaConfig, normalize_role  # noqa: E402
 
 # Rate limiting constants
 DEFAULT_MAX_ATTEMPTS = 5
 DEFAULT_LOCKOUT_DURATION_SECONDS = 300  # 5 minutes
 DEFAULT_ATTEMPT_WINDOW_SECONDS = 60  # 1 minute window for counting attempts
-
 
 @dataclass
 class AuthAttemptTracker:
@@ -145,7 +144,6 @@ class AuthAttemptTracker:
     first_attempt_time: float = 0.0
     lockout_until: float = 0.0
 
-
 @dataclass
 class RateLimitConfig:
     """Configuration for rate limiting."""
@@ -153,7 +151,6 @@ class RateLimitConfig:
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     lockout_duration_seconds: float = DEFAULT_LOCKOUT_DURATION_SECONDS
     attempt_window_seconds: float = DEFAULT_ATTEMPT_WINDOW_SECONDS
-
 
 class RateLimiter:
     """
@@ -283,7 +280,6 @@ class RateLimiter:
 
         return len(expired)
 
-
 class OpenPLCUserManager(UserManager):
     """
     Custom user manager for OpenPLC authentication.
@@ -328,8 +324,20 @@ class OpenPLCUserManager(UserManager):
         # Initialize rate limiter for brute-force protection
         self.rate_limiter = RateLimiter(rate_limit_config)
 
-        # Build user dictionaries
-        self.users = {user.username: user for user in config.users if user.type == "password"}
+        # Password user without a hash cannot authenticate; refuse it at
+        # load (once) rather than once per failed login.
+        _credentialled = []
+        for user in config.users:
+            if user.type != "password":
+                continue
+            if not getattr(user, "password_hash", None):
+                log_error(
+                    f"OPC-UA user '{user.username}' has no password hash and is REFUSED. "
+                    f"Set a password for it in the editor, or remove it."
+                )
+                continue
+            _credentialled.append(user)
+        self.users = {user.username: user for user in _credentialled}
         self.cert_users = {
             user.certificate_id: user for user in config.users if user.type == "certificate"
         }
@@ -341,6 +349,28 @@ class OpenPLCUserManager(UserManager):
                 self._user_roles[user.username] = str(user.role)
             elif user.type == "certificate" and user.certificate_id:
                 self._user_roles[f"cert:{user.certificate_id}"] = str(user.role)
+
+        # Anonymous role is per-profile, but anonymous auth carries no
+        # endpoint identity, so the first enabled Anonymous profile wins
+        # (list order). Warn once if more than one is configured.
+        anon_profiles = [
+            p for p in getattr(config.server, "security_profiles", [])
+            if getattr(p, "enabled", False) and "Anonymous" in getattr(p, "auth_methods", [])
+        ]
+        if len(anon_profiles) > 1:
+            winner = anon_profiles[0]
+            detail = ", ".join(
+                f"'{getattr(p, 'name', '?')}'(anonymous_role={getattr(p, 'anonymous_role', 'viewer')})"
+                for p in anon_profiles
+            )
+            log_warn(
+                "OPC-UA: more than one enabled security profile offers Anonymous "
+                f"[{detail}]. Anonymous sessions cannot be mapped to a specific "
+                f"endpoint, so the FIRST profile in list order wins — "
+                f"'{getattr(winner, 'name', '?')}' with anonymous_role "
+                f"'{getattr(winner, 'anonymous_role', 'viewer')}'. Configure a single "
+                "Anonymous profile in the editor to make this unambiguous."
+            )
 
         log_info(
             f"UserManager initialized: {len(self.users)} password users, "
@@ -515,22 +545,23 @@ class OpenPLCUserManager(UserManager):
         """
         Authenticate as anonymous user.
 
-        Anonymous role assignment is policy-driven by the user list:
+        Anonymous role assignment is EXPLICIT, taken from the profile's
+        ``anonymous_role`` field, which the editor defaults to the
+        least-privilege 'viewer' (read-only). An anonymous client carries no
+        identity, so what it may do is a deliberate configuration choice rather
+        than something inferred from whether users happen to exist. An
+        administrator raises the role to 'operator' or 'engineer' only to allow
+        unauthenticated writes.
 
-          - When no users are configured (config.users is empty), the
-            server is effectively single-tenant — there's no privilege
-            model to enforce, so anonymous gets the highest role
-            (engineer / Admin). This makes "drop in OPC-UA, set
-            insecure profile, click connect" work end-to-end without
-            needing to set up users just to get write access.
-          - When at least one user is configured, anonymous keeps the
-            read-only viewer role. The administrator opted into a
-            user model, so anonymous shouldn't bypass it.
+        Backward compatibility: projects authored before this field carry no
+        ``anonymous_role``; the config model defaults it to 'viewer', so an old
+        project's anonymous sessions become read-only. (This is a deliberate
+        security tightening from the previous "no users => engineer" heuristic;
+        anyone who relied on anonymous writes sets the role to engineer.)
 
-        Either way, per-variable permissions still apply. A variable
-        whose viewer permission is "rw" is writable by anyone; one
-        whose engineer permission is "r" is read-only even for the
-        engineer role.
+        Either way, per-variable permissions still apply. A variable whose
+        viewer permission is "rw" is writable by anyone; one whose engineer
+        permission is "r" is read-only even for the engineer role.
 
         Args:
             profile: The security profile
@@ -542,16 +573,16 @@ class OpenPLCUserManager(UserManager):
             log_warn("Anonymous authentication not allowed for this profile")
             return None, None
 
-        if len(self.config.users) == 0:
-            # No user model configured — give anonymous full role so
-            # writes work without having to set up users.
-            openplc_role = "engineer"
-            asyncua_role = UserRole.Admin
-        else:
-            # Users configured — anonymous is read-only viewer.
-            openplc_role = "viewer"
-            asyncua_role = UserRole.User
+        # Config-driven role (defaults to viewer), normalized here so
+        # casing/whitespace cannot silently degrade an anonymous session
+        # to viewer. normalize_role always returns a ROLE_MAPPING key.
+        openplc_role = normalize_role(getattr(profile, "anonymous_role", "viewer") or "viewer")
+        asyncua_role = self.ROLE_MAPPING[openplc_role]
 
+        log_debug(
+            f"Anonymous session on profile '{getattr(profile, 'name', '?')}' "
+            f"mapped to role '{openplc_role}'"
+        )
         return User(role=asyncua_role, name="anonymous"), openplc_role
 
     def _extract_cert_id(self, certificate: Any) -> Optional[str]:

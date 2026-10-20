@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # tests/pytest/test_logger_init.py
 def test_logger_initializes_correctly(test_logger):
     logger, buffer = test_logger

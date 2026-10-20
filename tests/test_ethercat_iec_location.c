@@ -1,13 +1,16 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file test_ethercat_iec_location.c
  * @brief Unit tests for ecat_io_parse_iec_location() — IEC 61131-3
  *        location string parser ("%IX0.3", "%QW3", etc.).
  */
 
-#include "ethercat_io.h"
+#include "ethercat_iomap.h"
 #include "unity.h"
 
-TEST_SOURCE_FILE("core/src/drivers/plugins/native/ethercat/cjson/cJSON.c")
+TEST_SOURCE_FILE("core/src/drivers/plugins/native/cjson/cJSON.c")
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -159,4 +162,21 @@ void test_iec_location_OnlyPercent_ShouldFail(void)
 {
     iec_location_t loc;
     TEST_ASSERT_EQUAL_INT(-1, ecat_io_parse_iec_location("%", &loc));
+}
+
+/* ---- Invalid: byte index out of range ---- */
+
+void test_iec_location_ByteIndexBeyondIntRange_ShouldFail(void)
+{
+    iec_location_t loc;
+    TEST_ASSERT_EQUAL_INT(-1, ecat_io_parse_iec_location("%QX4294967295.0", &loc));
+    TEST_ASSERT_EQUAL_INT(-1, ecat_io_parse_iec_location("%QX99999999999999999999.0", &loc));
+}
+
+void test_iec_location_ByteIndexAboveJournalRange_ShouldFail(void)
+{
+    iec_location_t loc;
+    TEST_ASSERT_EQUAL_INT(-1, ecat_io_parse_iec_location("%IW65536", &loc));
+    TEST_ASSERT_EQUAL_INT(0, ecat_io_parse_iec_location("%IW65535", &loc));
+    TEST_ASSERT_EQUAL_INT(65535, loc.byte_index);
 }

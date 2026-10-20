@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Unit tests for EtherCAT discovery module."""
 
 from webserver.discovery.ethercat_discovery import (

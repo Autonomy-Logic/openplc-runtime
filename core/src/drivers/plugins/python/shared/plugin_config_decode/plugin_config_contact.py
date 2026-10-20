@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 Base protocol configuration abstract class for OpenPLC Python plugins.
 """
@@ -8,7 +11,6 @@ from abc import ABC
 class PluginConfigError(Exception):
     """Custom exception for plugin configuration errors."""
     pass
-
 
 class PluginConfigContract(ABC):
     """

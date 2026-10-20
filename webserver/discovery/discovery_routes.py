@@ -1,14 +1,23 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Flask Blueprint for Discovery REST endpoints.
 
 Endpoints:
-    GET  /api/discovery/interfaces          - List network interfaces (common)
-    GET  /api/discovery/ethercat/status     - Check if EtherCAT discovery service is available
-    POST /api/discovery/ethercat/scan       - Scan network for EtherCAT slaves (via SOEM plugin)
-    POST /api/discovery/ethercat/validate   - Validate EtherCAT configuration
-    POST /api/discovery/ethercat/test       - Test connection to specific EtherCAT slave
+    GET  /api/discovery/interfaces              - List network interfaces (common)
+    GET  /api/discovery/ethercat/status         - Check if EtherCAT discovery service is available
+    GET  /api/discovery/ethercat/capabilities   - EtherDOG features captured on hello
+    POST /api/discovery/ethercat/scan           - Scan network for EtherCAT slaves (via EtherDOG)
+    POST /api/discovery/ethercat/scan-modules   - Scan a modular coupler's 0xF050 module list
+    GET  /api/discovery/ethercat/runtime-status - Bus status from EtherDOG
+    GET  /api/discovery/ethercat/diagnostics    - Master-wide diagnostics from EtherDOG
+    POST /api/discovery/ethercat/diagnostics    - Per-slave coupler + module diagnostics
+    POST /api/discovery/ethercat/validate       - Validate EtherCAT configuration
+    POST /api/discovery/ethercat/test           - Test connection to specific EtherCAT slave
 """
 
 import json
+import math
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
@@ -20,6 +29,77 @@ from webserver.discovery.ethercat_discovery import (
 )
 
 discovery_bp = Blueprint("discovery", __name__, url_prefix="/api/discovery")
+
+
+def _with_plugin_state(result: dict) -> dict:
+    """Add the Editor's "plugin_state" key next to EtherDOG's per-master "state"."""
+    for master in result.get("masters", []):
+        if isinstance(master, dict) and "state" in master:
+            master.setdefault("plugin_state", master["state"])
+    return result
+
+
+SLAVE_POSITION_MIN = 1
+SLAVE_POSITION_MAX = 65535
+TIMEOUT_MS_MIN = 100
+TIMEOUT_MS_MAX = 60000
+TIMEOUT_MS_DEFAULT = 5000
+
+
+def _slave_request(data: dict[str, object]) -> tuple[str, int] | str:
+    """The (bus_name, slave_position) of a per-slave request, or the reason it is invalid."""
+    bus_name = data.get("bus_name")
+    slave_pos = data.get("slave_position")
+    if not isinstance(bus_name, str) or not bus_name:
+        return "Missing or invalid 'bus_name'"
+    if (
+        not isinstance(slave_pos, int)
+        or isinstance(slave_pos, bool)
+        or not SLAVE_POSITION_MIN <= slave_pos <= SLAVE_POSITION_MAX
+    ):
+        return (
+            f"'slave_position' must be an integer from {SLAVE_POSITION_MIN} to {SLAVE_POSITION_MAX}"
+        )
+    return bus_name, slave_pos
+
+
+def _timeout_ms(data: dict[str, object]) -> int:
+    """The request's `timeout_ms`, clamped to TIMEOUT_MS_MIN..TIMEOUT_MS_MAX."""
+    value = data.get("timeout_ms")
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        return TIMEOUT_MS_DEFAULT
+    return int(min(max(value, TIMEOUT_MS_MIN), TIMEOUT_MS_MAX))
+
+
+def _is_uint(value: object, maximum: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= maximum
+
+
+def _bad_request(message: str):
+    return jsonify({"status": "error", "message": message}), 400
+
+
+def _master_index(etherdog, bus_name: str) -> int | tuple[str, int]:
+    """EtherDOG's index of the master named ``bus_name``, or (message, HTTP status)."""
+    status = etherdog.plugin_style_command({"command": "status"}, timeout=5.0)
+    if "error" in status:
+        return f"EtherDOG status unavailable: {status['error']}", 502
+    masters = status.get("masters")
+    for index, master in enumerate(masters if isinstance(masters, list) else []):
+        if isinstance(master, dict) and master.get("name") == bus_name:
+            return index
+    return f"Bus '{bus_name}' is not in the loaded EtherCAT configuration", 404
+
+
+def _slave_error(bus_name: str, slave_pos: int, message: str, code: int, **extra: object):
+    body: dict[str, object] = {
+        "status": "error",
+        "bus_name": bus_name,
+        "slave_position": slave_pos,
+        "message": message,
+    }
+    body.update(extra)
+    return jsonify(body), code
 
 
 @discovery_bp.route("/ethercat/status", methods=["GET"])
@@ -45,16 +125,71 @@ def ethercat_status():
               type: string
               description: Status message
     """
-    # Discovery is built into the runtime via the native EtherCAT plugin (SOEM).
-    # Verify the runtime is actually reachable before reporting available.
-    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+    # Discovery is served by EtherDOG, the EtherCAT master service.
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
+    result = etherdog.plugin_style_command({"command": "status"}, timeout=5.0)
+    if "error" in result:
+        return jsonify({"available": False, "message": f"EtherDOG unavailable: {result['error']}"})
+    return jsonify({"available": True, "message": "Discovery service is ready (EtherDOG)"})
 
-    ping_response = runtime_manager.ping()
-    if ping_response and ping_response.startswith("PING:OK"):
-        return jsonify(
-            {"available": True, "message": "Discovery service is ready (native SOEM plugin)"}
+
+@discovery_bp.route("/ethercat/capabilities", methods=["GET"])
+@jwt_required()
+def ethercat_capabilities():
+    """
+    Return the features and version from the running EtherDOG's hello.
+
+    A `status` roundtrip is sent first, so the hello is the current process's.
+    ---
+    tags:
+      - EtherCAT
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Feature set retrieved
+        schema:
+          type: object
+          properties:
+            available:
+              type: boolean
+            features:
+              type: array
+              items:
+                type: string
+              example: ["ethercat.dynamic_alloc", "ethercat.scan_modules"]
+            version:
+              type: string
+              example: 1.0.0
+            message:
+              type: string
+    """
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
+    probe = etherdog.plugin_style_command({"command": "status"}, timeout=5.0)
+    if "error" in probe:
+        return (
+            jsonify(
+                {
+                    "available": False,
+                    "features": [],
+                    "version": None,
+                    "message": probe["error"],
+                }
+            ),
+            200,
         )
-    return jsonify({"available": False, "message": "PLC runtime is not reachable"})
+    features, version = etherdog.get_last_hello()
+    return (
+        jsonify(
+            {
+                "available": True,
+                "features": features if features is not None else [],
+                "version": version,
+                "message": "ok",
+            }
+        ),
+        200,
+    )
 
 
 @discovery_bp.route("/interfaces", methods=["GET"])
@@ -92,13 +227,9 @@ def network_interfaces():
       500:
         description: Error retrieving interfaces
     """
-    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
 
-    result = runtime_manager.send_plugin_command(
-        "ethercat",
-        json.dumps({"command": "list-interfaces"}),
-        timeout=5.0,
-    )
+    result = etherdog.plugin_style_command({"command": "list-interfaces"}, timeout=5.0)
 
     if "error" in result:
         return (
@@ -240,13 +371,11 @@ def ethercat_scan():
     if not is_valid:
         return jsonify({"status": "error", "message": error_msg}), 400
 
-    # Route scan through the native EtherCAT plugin via unix socket
-    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+    # Scans go straight to EtherDOG, so they work with no program loaded.
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
 
-    result = runtime_manager.send_plugin_command(
-        "ethercat",
-        json.dumps({"command": "scan", "params": {"interface": interface}}),
-        timeout=10.0,
+    result = etherdog.plugin_style_command(
+        {"command": "scan", "params": {"interface": interface}}, timeout=10.0
     )
 
     if "error" in result:
@@ -277,11 +406,123 @@ def ethercat_scan():
     )
 
 
+@discovery_bp.route("/ethercat/scan-modules", methods=["POST"])
+@jwt_required()
+def ethercat_scan_modules():
+    """
+    Scan a modular coupler's 0xF050 module ident list.
+
+    EtherDOG speaks `scan-modules` in terms of (master_index, slave_position); the master
+    index is the position of the master named `bus_name` in EtherDOG's `status` reply. A bus
+    that is not loaded yet (a project not uploaded) is scanned through its `interface`.
+
+    EtherDOG returns `{"status":"success","idents":["0x00001A0F","0x00001A10"]}`, one ident per
+    slot in slot order; the reply lists them as `modules: [{slot, ident}, ...]` with slots from 1.
+    ---
+    tags:
+      - EtherCAT
+    security:
+      - BearerAuth: []
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - bus_name
+            - slave_position
+          properties:
+            bus_name:
+              type: string
+              example: ethercat0
+            slave_position:
+              type: integer
+              example: 1
+            interface:
+              type: string
+              example: eth0
+              description: The bus's network interface, used when bus_name is not loaded
+            timeout_ms:
+              type: integer
+              default: 5000
+              minimum: 100
+              maximum: 60000
+    responses:
+      200:
+        description: Module list retrieved, one entry per occupied slot, slots from 1
+      400:
+        description: Invalid request parameters
+      404:
+        description: No master named bus_name in the loaded EtherCAT configuration and no interface
+      502:
+        description: EtherDOG refused the scan or returned an unknown reply
+    """
+    data = request.get_json(silent=True)
+    parsed = _slave_request(data if isinstance(data, dict) else {})
+    if isinstance(parsed, str):
+        return _bad_request(parsed)
+    bus_name, slave_pos = parsed
+    etherdog_timeout = _timeout_ms(data) / 1000.0 + 2.0
+
+    interface = data.get("interface")
+    if interface is not None:
+        if not isinstance(interface, str):
+            return _bad_request("'interface' must be a string")
+        is_valid, error_msg = _validate_interface_name(interface)
+        if not is_valid:
+            return _bad_request(error_msg)
+
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
+    master = _master_index(etherdog, bus_name)
+    if isinstance(master, tuple):
+        if master[1] != 404 or interface is None:
+            return _slave_error(bus_name, slave_pos, master[0], master[1], modules=[])
+        params: dict[str, object] = {"interface": interface, "slave": slave_pos}
+    else:
+        params = {"master": master, "slave": slave_pos}
+    result = etherdog.plugin_style_command(
+        {"command": "scan-modules", "params": params},
+        timeout=etherdog_timeout,
+    )
+
+    if "error" in result:
+        return _slave_error(bus_name, slave_pos, result["error"], 502, modules=[])
+
+    if result.get("status") != "success":
+        return _slave_error(
+            bus_name,
+            slave_pos,
+            result.get("message", "scan-modules did not succeed"),
+            502,
+            modules=[],
+        )
+
+    idents = result.get("idents") or []
+    modules = [
+        {"slot": slot, "ident": ident}
+        for slot, ident in enumerate(idents, start=1)
+        if isinstance(ident, str)
+    ]
+
+    return (
+        jsonify(
+            {
+                "status": "success",
+                "bus_name": bus_name,
+                "slave_position": slave_pos,
+                "modules": modules,
+            }
+        ),
+        200,
+    )
+
+
 @discovery_bp.route("/ethercat/runtime-status", methods=["GET"])
 @jwt_required()
 def ethercat_runtime_status():
     """
-    Get the current EtherCAT runtime status from the native plugin.
+    Get the current EtherCAT bus status from EtherDOG.
     ---
     tags:
       - EtherCAT
@@ -345,24 +586,20 @@ def ethercat_runtime_status():
       503:
         description: Runtime not available
     """
-    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
 
-    result = runtime_manager.send_plugin_command(
-        "ethercat",
-        json.dumps({"command": "status"}),
-        timeout=5.0,
-    )
+    result = etherdog.plugin_style_command({"command": "status"}, timeout=5.0)
 
     if "error" in result:
         return jsonify({"status": "error", "message": result["error"]}), 503
-    return jsonify(result), 200
+    return jsonify(_with_plugin_state(result)), 200
 
 
 @discovery_bp.route("/ethercat/diagnostics", methods=["GET"])
 @jwt_required()
 def ethercat_diagnostics():
     """
-    Get detailed EtherCAT diagnostic information from the native plugin.
+    Get detailed EtherCAT diagnostic information from EtherDOG.
     ---
     tags:
       - EtherCAT
@@ -391,17 +628,109 @@ def ethercat_diagnostics():
       503:
         description: Runtime not available
     """
-    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
 
-    result = runtime_manager.send_plugin_command(
-        "ethercat",
-        json.dumps({"command": "diagnostics"}),
-        timeout=5.0,
-    )
+    result = etherdog.plugin_style_command({"command": "diagnostics"}, timeout=5.0)
 
     if "error" in result:
         return jsonify({"status": "error", "message": result["error"]}), 503
-    return jsonify(result), 200
+    return jsonify(_with_plugin_state(result)), 200
+
+
+@discovery_bp.route("/ethercat/diagnostics", methods=["POST"])
+@jwt_required()
+def ethercat_slave_diagnostics():
+    """
+    Per-slave diagnostics for a modular coupler.
+
+    Returns the coupler's ETG.5001 device-state word and the per-slot module
+    status bytes. Forwards to EtherDOG's `diagnostics-slave` command, which
+    performs the SDO reads against the live bus.
+    ---
+    tags:
+      - EtherCAT
+    security:
+      - BearerAuth: []
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - bus_name
+            - slave_position
+          properties:
+            bus_name:
+              type: string
+              example: ethercat0
+            slave_position:
+              type: integer
+              example: 1
+    responses:
+      200:
+        description: >
+          Per-slave diagnostics retrieved. `coupler.status_word` is a 16-bit integer, or null
+          when EtherDOG could not read it; each module has a 1-based `slot` and a `status_byte`
+          (0..255, or null when unread).
+      400:
+        description: Invalid request parameters
+      404:
+        description: No master named bus_name in the loaded EtherCAT configuration
+      502:
+        description: EtherDOG refused the diagnostics read or returned an unknown reply
+    """
+    data = request.get_json(silent=True)
+    parsed = _slave_request(data if isinstance(data, dict) else {})
+    if isinstance(parsed, str):
+        return _bad_request(parsed)
+    bus_name, slave_pos = parsed
+
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
+    master = _master_index(etherdog, bus_name)
+    if isinstance(master, tuple):
+        return _slave_error(bus_name, slave_pos, master[0], master[1])
+    result = etherdog.plugin_style_command(
+        {"command": "diagnostics-slave", "params": {"master": master, "slave": slave_pos}},
+        timeout=10.0,
+    )
+
+    if "error" in result:
+        return _slave_error(bus_name, slave_pos, result["error"], 502)
+
+    if result.get("status") != "success":
+        return _slave_error(
+            bus_name, slave_pos, result.get("message", "diagnostics-slave did not succeed"), 502
+        )
+
+    coupler_raw = result.get("coupler")
+    coupler_raw = coupler_raw if isinstance(coupler_raw, dict) else {}
+    status_word = coupler_raw.get("status_word")
+    if status_word is not None and not _is_uint(status_word, 0xFFFF):
+        return _slave_error(
+            bus_name, slave_pos, "EtherDOG returned an invalid coupler status word", 502
+        )
+    poll_at_ms = coupler_raw.get("poll_at_ms")
+    modules_raw = result.get("modules")
+    modules = [
+        {"slot": m["slot"], "status_byte": m.get("status_byte")}
+        for m in (modules_raw if isinstance(modules_raw, list) else [])
+        if isinstance(m, dict)
+        and _is_uint(m.get("slot"), SLAVE_POSITION_MAX)
+        and m["slot"] >= 1
+        and (m.get("status_byte") is None or _is_uint(m.get("status_byte"), 0xFF))
+    ]
+
+    response = {
+        "status": "success",
+        "bus_name": bus_name,
+        "slave_position": slave_pos,
+        "coupler": {"status_word": status_word},
+        "modules": modules,
+    }
+    if isinstance(poll_at_ms, (int, float)):
+        response["coupler"]["poll_at_ms"] = poll_at_ms
+    return jsonify(response), 200
 
 
 @discovery_bp.route("/ethercat/validate", methods=["POST"])
@@ -602,16 +931,10 @@ def ethercat_test():
     if not is_valid:
         return jsonify({"status": "error", "message": error_msg}), 400
 
-    runtime_manager = current_app.config["RUNTIME_MANAGER"]
+    etherdog = current_app.config["ETHERDOG_MANAGER"]
 
-    result = runtime_manager.send_plugin_command(
-        "ethercat",
-        json.dumps(
-            {
-                "command": "test",
-                "params": {"interface": interface, "position": position},
-            }
-        ),
+    result = etherdog.plugin_style_command(
+        {"command": "test", "params": {"interface": interface, "position": position}},
         timeout=10.0,
     )
 

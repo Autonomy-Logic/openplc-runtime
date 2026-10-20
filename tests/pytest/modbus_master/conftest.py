@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 # tests/conftest.py
 import pytest
 from unittest.mock import MagicMock

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 #ifndef PLC_STATE_MANAGER_H
 #define PLC_STATE_MANAGER_H
 
@@ -18,32 +21,18 @@
 #include <atomic>
 typedef std::atomic<long>               plc_atomic_long_t;
 typedef std::atomic<uint_least64_t>     plc_atomic_u64_t;
+typedef std::atomic<int_least64_t>      plc_atomic_i64_t;
 extern "C" {
 #else
 #include <stdatomic.h>
 typedef atomic_long                     plc_atomic_long_t;
 typedef atomic_uint_least64_t           plc_atomic_u64_t;
+typedef atomic_int_least64_t            plc_atomic_i64_t;
 #endif
 
-/**
- * Runtime states.
- *
- * The two TRANSITIONING values are APPENDED, never inserted: the first five are
- * wire-visible (FC 0x46 reports them, and plugin_get_plc_state maps them for
- * vendor status indicators), so renumbering would quietly change what boards
- * report.
- *
- * RUNNING means running -- it is published at the moment the dispatcher is about
- * to release the first scan, not when a start is requested. Everything in
- * between is a TRANSITIONING state, and because both compare unequal to
- * PLC_STATE_RUNNING, every loop that gates on RUNNING treats them correctly
- * without modification: a stop's teardown still gets its exit signal, and a
- * half-started PLC cannot scan.
- *
- * The direction is carried (rather than one flat TRANSITIONING) so that any code
- * found to need the target state before it lands can test for the specific
- * direction instead of having to reintroduce a premature RUNNING.
- */
+/* Runtime states. TRANSITIONING values APPEND, never insert: the
+ * first five are wire-visible (FC 0x46). RUNNING is published at
+ * first-scan release, not at request. Both TRANSITIONING != RUNNING. */
 typedef enum
 {
     PLC_STATE_INIT,
@@ -55,18 +44,6 @@ typedef enum
     PLC_STATE_TRANSITIONING_TO_STOP
 } PLCState;
 
-/* -----------------------------------------------------------------------
- * Per-IEC-task execution context.
- *
- * One PlcTaskCtx per task declared in the user's CONFIGURATION. Lives
- * for the duration of a loaded program; freed on stop.
- *
- * Per-thread state — crash_jmp, crash_sig, holding_mutex — must NOT be
- * shared across threads. Each task thread owns its own context
- * exclusively once spawned; the runtime stashes a __thread pointer to
- * the active ctx so the signal handler can siglongjmp to the right
- * recovery point.
- * --------------------------------------------------------------------- */
 typedef struct PlcTaskCtx
 {
     size_t                idx;                /* index into plc_tasks[] */
@@ -78,27 +55,7 @@ typedef struct PlcTaskCtx
     pthread_t             thread;
     char                  name[32];
 
-    /* -------------------------------------------------------------------------
-     * GCD master-tick dispatcher plumbing.
-     *
-     * The dispatcher releases this worker by posting `go`; the worker blocks on
-     * sem_wait(go) between scans. `divisor` = interval_ns / base_tick_ns, so the
-     * worker is due on master tick N iff N % divisor == 0.
-     *
-     * Binary release + overrun detection use released/completed: the dispatcher
-     * bumps `released` and posts only when released == completed (worker idle);
-     * if released > completed at a due tick the worker is still in its previous
-     * scan (overrun) and is NOT re-posted, so activations never queue. The
-     * worker bumps `completed` at the end of each scan.
-     *
-     * `time_at_dispatch` is stamped by the dispatcher at release and applied by
-     * the worker via ext_strucpp_set_current_time() before run() — giving each
-     * task a scan-stable IEC TIME() snapshot (§ scheduler design doc).
-     *
-     * `alive` (1/0): a worker that hits an unrecoverable fault sets this to 0
-     * and returns; the dispatcher then never releases it again (the faulted task
-     * drops out of the schedule while the others keep running).
-     * --------------------------------------------------------------------- */
+    
     sem_t                 go;
     uint64_t              divisor;
     int64_t               time_at_dispatch;
@@ -106,41 +63,29 @@ typedef struct PlcTaskCtx
     plc_atomic_long_t     released;
     plc_atomic_long_t     completed;
     plc_atomic_long_t     overrun_count;
+    plc_atomic_long_t     stuck_ticks;     /* consecutive due ticks found still in one scan */
+    plc_atomic_long_t     exited;          /* 1 once the thread function has returned */
+    plc_atomic_i64_t      release_ns;      /* CLOCK_MONOTONIC time of the last release */
 
     sigjmp_buf            crash_jmp;
     volatile sig_atomic_t crash_sig;
     volatile sig_atomic_t holding_mutex;   /* image-tables mutex held (crash unlock) */
+    volatile sig_atomic_t in_body;         /* inside IEC program code, where the abort may jump out */
 
-    plc_atomic_long_t     heartbeat;
     plc_atomic_u64_t      local_tick;
 
-    /* Per-task scan/cycle/latency tracker. Each task thread updates its
-     * own tracker around its scan body; the STATS handler walks all
-     * trackers to emit per-task entries. Replaces the old single global
-     * plc_timing_stats from scan_cycle_manager.c which only tracked the
-     * fastest task. */
+    /* Per-task scan/cycle/latency tracker. The task thread updates it
+     * around its scan body; STATS walks all trackers for per-task entries. */
     scan_cycle_tracker_t  tracker;
 } PlcTaskCtx;
 
 extern PlcTaskCtx *plc_tasks;
 extern size_t      plc_task_count;
 
-/* Lifecycle lock for plc_tasks / plc_task_count.
- *
- * The plc_cycle_thread owns the array — it allocates after walking the
- * configuration (load) and frees after joining task threads (stop).
- * Concurrently, the unix-socket thread services STATS by iterating the
- * array under format_timing_stats_response. The TRANSITIONING state gates new
- * commands but doesn't bracket an in-flight STATS call: a plugin-initiated
- * stop can fire mid-iteration, free plc_tasks, and the STATS reader
- * dereferences freed memory.
- *
- * Readers (STATS) hold this lock for the duration of the iteration.
- * The writer (plc_cycle_thread) holds it while allocating, while
- * publishing the count, and while freeing. STOP itself doesn't need the
- * lock: task threads exit via plc_state observation; the lock only
- * brackets the array swap. Held briefly enough that adding latency to
- * STATS during a STOP transition is acceptable. */
+/* Lifecycle lock for plc_tasks / plc_task_count. plc_cycle_thread owns
+ * the array; without this lock a plugin STOP could free plc_tasks
+ * while STATS iterates. Readers hold it for the walk; writer holds
+ * it around alloc, publish and free. */
 void plc_tasks_reader_lock(void);
 void plc_tasks_reader_unlock(void);
 
@@ -207,20 +152,46 @@ void plc_publish_final_state(PLCState final_state);
  */
 bool plc_publish_running_if_claimed(void);
 
+/**
+ * @brief Longest a stop may take before the watchdog exits the process.
+ *
+ * PLC_TASK_STUCK_PERIODS times the longest task interval of the loaded program,
+ * plus the outputs-off settle time and PLC_STOP_TEARDOWN_ALLOWANCE_MS.
+ */
+int64_t plc_stop_budget_ms(void);
+
+/**
+ * @brief Drive every output to 0 with no program loaded.
+ *
+ * Used on the safe-mode boot after a watchdog exit: loads and starts the configured
+ * plugins (including VPP board plugins), runs the same outputs-off sequence as a
+ * stop, then stops the plugins again. The caller must hold a claimed stop.
+ *
+ * @return true when the plugins were brought up and the zeroed outputs were pushed
+ */
+bool plc_outputs_off_without_program(void);
+
+/**
+ * @brief CLOCK_MONOTONIC release time (ns) of the oldest first scan still running, or 0.
+ *
+ * Read by the watchdog to bound first scans, which the dispatcher does not count.
+ */
+int64_t plc_first_scan_pending_since_ns(void);
+
+/**
+ * @brief Ask the dispatcher to trip on the oldest first scan still running.
+ *
+ * Called by the watchdog when that scan exceeds PLC_FIRST_SCAN_TIMEOUT_MS. The
+ * dispatcher then stops the PLC exactly as for a stuck task.
+ */
+void plc_request_first_scan_trip(void);
+
 /** @brief True while a transition is in flight (either direction). */
 bool plc_state_is_transitioning(void);
 
-/* How long a state change may plausibly take before something is wrong.
- *
- * ONE bound, two consumers, deliberately ordered: transition_worker stops waiting
- * to observe the landing at PLC_TRANSITION_LANDING_TIMEOUT_MS, and the watchdog
- * forces ERROR strictly later. Two independent numbers is how the watchdog came to
- * fire 30 s before the runtime itself had given up -- ending a transition while its
- * worker was still executing it.
- *
- * Generous on purpose: a start brings plugins up (SPI base scans, fieldbus probes,
- * certificate generation) and a stop joins task threads. The bound is here to catch
- * a transition that will never finish, not to police a slow one. */
+/* transition_worker stops waiting for a landing at PLC_TRANSITION_LANDING_TIMEOUT_MS.
+ * The watchdog forces ERROR on a start stuck past PLC_TRANSITION_STUCK_TIMEOUT_MS; a
+ * stuck stop is bounded by plc_stop_budget_ms() and ends in watchdog_fatal_exit(). */
 #define PLC_TRANSITION_LANDING_TIMEOUT_MS 90000
 #define PLC_TRANSITION_STUCK_TIMEOUT_MS   (PLC_TRANSITION_LANDING_TIMEOUT_MS + 30000)
 

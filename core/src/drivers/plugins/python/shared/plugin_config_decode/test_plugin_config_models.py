@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 Test suite for Plugin Configuration Models
 Updated to reflect changes in ModbusMasterConfig and PluginConfigContract.
@@ -193,7 +196,6 @@ def test_modbus_io_point_config_from_dict():
         return False
         
     return True
-
 
 def test_modbus_config_error_handling():
     """Test ModbusMasterConfig error handling with invalid files or data."""

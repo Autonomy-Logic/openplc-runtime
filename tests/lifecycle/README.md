@@ -35,7 +35,7 @@ sources, since `Makefile.strucpp` lists it as an explicit prerequisite:
 #define PROGRAM_MD5 "<md5 of program.st>"
 ```
 
-Run one group at a time with `SUITE_ONLY=crash|shutdown|phantom|switch|misc`, and
+Run one group at a time with `SUITE_ONLY=crash|shutdown|phantom|switch|misc|bootswitch`, and
 get a backtrace out of a crash with `SUITE_GDB=1` (needs `gdb` in the image).
 
 ## What the pieces are for
@@ -60,14 +60,18 @@ untestable while every test still passes.
 reason is concrete: `plugin_driver_update_config` rebuilds every slot on each
 start, which `dlclose`s the `.so`, so a thread left running from `init()` returns
 into an unmapped page. This fixture segfaulted that way before it was written to
-use `start_loop`/`stop_loop`.
+use `start_loop`/`stop_loop`. The exception is a thread that `cleanup()` joins, which
+runs before the `dlclose`: `FAKEVPP_SWITCH_OWNER=1` watches the switch that way, as
+the switch contract in `plugin_types.h` asks of a board package.
 
 ## Coverage, and what is still argued rather than observed
 
 Covered: graceful shutdown with the PLC never started (both signals); shutdown
 during a start; a stop whose transition worker cannot be spawned; a mode-switch
 flip during a teardown; `SWITCH` answered mid-transition; and 25 rapid start/stop
-pairs as a wedge guard.
+pairs as a wedge guard; power-on with the switch owner shipped in
+`vpp_plugins.conf`, in STOP (left stopped, program never mapped, then started by a
+flip to RUN) and in RUN (exactly one start).
 
 Not covered:
 
@@ -75,8 +79,9 @@ Not covered:
   transition is honoured, but the branch that hands the movement record back only
   runs when the corrective transition is *refused* by a request that slipped in
   first — a race that cannot be forced without a hook in the runtime.
-- **The watchdog forcing ERROR on a stuck transition.** Needs a transition that
-  outlives `PLC_TRANSITION_STUCK_TIMEOUT_MS` (2 minutes), so it belongs in a slow
-  opt-in run rather than here.
-- **A runaway IEC task.** Terminating one needs the forced-abort ladder that does
-  not exist yet; today a program with an unbounded loop wedges the stop.
+- **The watchdog forcing ERROR on a stuck start.** Needs a start that outlives
+  `PLC_TRANSITION_STUCK_TIMEOUT_MS` (2 minutes), so it belongs in a slow opt-in run
+  rather than here.
+- **A runaway IEC task.** The stuck-task watchdog (see "Watchdog System" in
+  `docs/ARCHITECTURE.md`) is not exercised here; its tests are the host tests under
+  `tests/host/` and end-to-end runs against real uploaded programs.

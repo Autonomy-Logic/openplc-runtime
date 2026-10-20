@@ -1,25 +1,18 @@
 #!/usr/bin/env bash
-# Integration harness for the RTOP-283 bootloader.
-#
-# Runs a Debian container with its own Docker daemon (see Dockerfile.testhost),
-# stands up a registry inside it, and seeds that registry with runtime images.
-# The bootloader then does real pulls over a real registry, so the update path
-# -- including progress streaming and layer reuse -- is exercised rather than
-# stubbed.
-#
-# What this harness cannot cover, and what the device round is for: hardware.
-# There is no /dev/spidev6.0 or /dev/gpiochip0 here, so VPP plugin behaviour
-# and real SCHED_FIFO latency must be validated on an SLM-RP4.
-#
-# Usage:
-#   ./harness.sh up      # build and start the test host
-#   ./harness.sh seed    # load images and fill the inner registry
-#   ./harness.sh shell   # interactive shell on the test host
-#   ./harness.sh down    # tear everything down
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
+# Bootloader integration harness. Runs a Debian container with its own
+# Docker daemon and inner registry so the bootloader does real pulls.
+# Usage: ./harness.sh {up|seed|test [filter]|shell|down}
 set -euo pipefail
 
 HOST_CONTAINER=openplc-testhost
 HOST_IMAGE=openplc-testhost:latest
+
+# The device's hostname. Set explicitly: on Docker's container-id default
+# a correct reply and a UTS-namespace leak both look like hex.
+DEVICE_HOSTNAME="${DEVICE_HOSTNAME:-slm-rp4-testhost}"
 DOCKER_VOLUME=openplc-testhost-docker
 REGISTRY=localhost:5000
 
@@ -27,18 +20,12 @@ REGISTRY=localhost:5000
 STUB_REPO="$REGISTRY/openplc-stub"
 REAL_REPO="$REGISTRY/openplc-runtime"
 
-# Base for the end-to-end case against a real runtime.
-#
-# A published image by default, so this harness reproduces anywhere. It used to
-# default to a tag that existed only on the author's machine, which meant the
-# reported pass count could not be reproduced by anyone else -- and quietly
-# meant the repository's own Dockerfile was never exercised.
-#
-# REAL_BASE=build builds from the repository Dockerfile instead. Slower by
-# minutes (it is a full source install), and the only setting that covers the
-# Dockerfile itself -- which is where `./install.sh` silently switching to the
-# container path broke the release build.
-REAL_BASE="${REAL_BASE:-ghcr.io/autonomy-logic/openplc-runtime:v4.2.1}"
+# Default to a published image so the harness reproduces anywhere.
+# REAL_BASE=build runs the full source install from the Dockerfile.
+REAL_BASE="${REAL_BASE:-ghcr.io/autonomy-logic/openplc-runtime:v4.2.3}"
+
+# The tag the inner registry serves. Exported so the suite reads it once.
+export REAL_TAG="${REAL_BASE##*:}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -63,14 +50,11 @@ cmd_up() {
     docker volume create "$DOCKER_VOLUME" >/dev/null
 
     log "starting the test host"
-    # Privileged because it runs a Docker daemon. The repo is mounted
-    # read-only so image builds inside can use it as a build context without
-    # any risk of a test writing to the working tree.
-    # The runtime and bootloader run with --network host INSIDE this
-    # container, so publishing here is what lets a browser on the developer's
-    # machine reach them -- which is how the editor and web UI get tested
-    # against a real device without one on the desk.
+    # Privileged for the inner Docker daemon. Repo mounted read-only.
+    # Ports published so a browser on the dev machine can reach the
+    # host-networked runtime and bootloader inside.
     docker run -d --name "$HOST_CONTAINER" --privileged \
+        --hostname "$DEVICE_HOSTNAME" \
         -p 8443:8443 -p 8445:8445 \
         -v "$DOCKER_VOLUME":/var/lib/docker \
         -v "$REPO_ROOT":/workspace:ro \
@@ -80,6 +64,7 @@ cmd_up() {
     for _ in $(seq 1 120); do
         if inner docker info >/dev/null 2>&1; then
             log "inner daemon ready: $(inner docker version --format '{{.Server.Version}}')"
+            log "device hostname: $(inner hostname)"
             return 0
         fi
         sleep 0.5
@@ -103,14 +88,9 @@ transfer() {
     docker save "$image" | inner_stdin docker load >/dev/null
 }
 
-# build_into_host builds an image from this repo and loads it into the inner
-# daemon, ALWAYS fresh -- these are the artefacts under test, so a stale copy
-# would quietly test the previous commit.
-#
-# buildx with `--output type=docker` rather than `docker build` + `docker save`:
-# Docker 29 exports a buildx-built image as an OCI layout, and the inner
-# daemon rejects that with "does not contain a manifest.json". This output type
-# writes the legacy docker-archive both daemons agree on.
+# build_into_host builds an image from this repo and loads it into the
+# inner daemon, always fresh. buildx with --output type=docker emits
+# the legacy archive both daemons accept.
 build_into_host() {
     local image="$1" context="$2" dockerfile="$3"
     shift 3
@@ -166,7 +146,7 @@ cmd_seed() {
         # The only path that covers the Dockerfile. Its `RUN ./install.sh` has
         # to reach the source build; when install.sh started defaulting to the
         # container path, nothing here noticed and the release build broke.
-        inner docker build -q -t "$REAL_REPO:v4.2.1" /workspace >/dev/null
+        inner docker build -q -t "$REAL_REPO:$REAL_TAG" /workspace >/dev/null
     else
         log "building the real runtime image from $REAL_BASE"
         # A thin layer over a published runtime, carrying the webserver files
@@ -178,9 +158,9 @@ COPY webserver/restapi.py webserver/app.py /workdir/webserver/
 HEALTHCHECK --interval=10s --timeout=10s --start-period=90s --retries=3 \\
     CMD curl -kfsS https://127.0.0.1:8443/api/version >/dev/null || exit 1
 EOF
-docker build -q -f /tmp/real.Dockerfile -t $REAL_REPO:v4.2.1 /workspace >/dev/null"
+docker build -q -f /tmp/real.Dockerfile -t $REAL_REPO:$REAL_TAG /workspace >/dev/null"
     fi
-    inner docker push -q "$REAL_REPO:v4.2.1" >/dev/null
+    inner docker push -q "$REAL_REPO:$REAL_TAG" >/dev/null
 
     log "registry contents:"
     inner curl -fsS "http://$REGISTRY/v2/_catalog" | tr -d '\n'; echo
@@ -192,6 +172,12 @@ docker build -q -f /tmp/real.Dockerfile -t $REAL_REPO:v4.2.1 /workspace >/dev/nu
 
 cmd_shell() {
     exec docker exec -it "$HOST_CONTAINER" bash
+}
+
+# cmd_test runs the suite with REAL_TAG carried in.
+cmd_test() {
+    exec docker exec -e "REAL_TAG=$REAL_TAG" "$HOST_CONTAINER" \
+        python3 /workspace/tests/integration/test_bootloader.py "$@"
 }
 
 cmd_down() {
@@ -207,7 +193,8 @@ cmd_down() {
 case "${1:-}" in
     up)    cmd_up ;;
     seed)  cmd_seed ;;
+    test)  shift; cmd_test "$@" ;;
     shell) cmd_shell ;;
     down)  cmd_down ;;
-    *)     die "usage: $0 {up|seed|shell|down}" ;;
+    *)     die "usage: $0 {up|seed|test|shell|down}" ;;
 esac

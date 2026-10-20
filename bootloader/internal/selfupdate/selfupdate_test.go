@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 package selfupdate
 
 import (
@@ -12,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/dockerapi"
+	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimespec"
 )
 
 type fakeDocker struct {
@@ -304,6 +308,10 @@ func TestTheChildReplacesTheParentPreservingItsConfiguration(t *testing.T) {
 	if host["NetworkMode"] != "host" {
 		t.Errorf("want host networking preserved, got %v", host["NetworkMode"])
 	}
+	if host["UTSMode"] != runtimespec.UTSModeHost {
+		t.Errorf("want the host UTS namespace so recovery discovery names the "+
+			"device, got %v", host["UTSMode"])
+	}
 	if host["RestartPolicy"].(map[string]any)["Name"] != "always" {
 		t.Errorf("the replacement must come back at boot, got %v", host["RestartPolicy"])
 	}
@@ -375,6 +383,35 @@ func TestTheChildRecreatesEvenIfTheParentIsAlreadyGone(t *testing.T) {
 	if host["RestartPolicy"].(map[string]any)["Name"] != "always" {
 		t.Error("the fallback must still come back at boot")
 	}
+	if host["UTSMode"] != runtimespec.UTSModeHost {
+		t.Errorf("the fallback must share the host UTS namespace, got %v", host["UTSMode"])
+	}
+}
+
+// A parent with a private UTS namespace must not pass it on.
+func TestAParentWithAPrivateUTSNamespaceDoesNotPassItOn(t *testing.T) {
+	// "" is Docker's private default; "private" covers the set-not-defaulted
+	// field an earlier revision inherited.
+	for _, parentUTS := range []string{"", "private"} {
+		docker := newFake()
+		parent := parentContainer()
+		parent.HostConfig.UTSMode = parentUTS
+		docker.containers["openplc-bootloader"] = parent
+		setChildEnv(t, "openplc-bootloader", "ghcr.io/x/bootloader:bootloader-v1.1.0")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := Execute(ctx, docker, quietLogger()); err != nil {
+			cancel()
+			t.Fatalf("parent %q: execute: %v", parentUTS, err)
+		}
+		cancel()
+
+		host := hostConfig(t, docker.created["openplc-bootloader"])
+		if host["UTSMode"] != runtimespec.UTSModeHost {
+			t.Errorf("parent %q: the replacement must share the host UTS namespace, got %v",
+				parentUTS, host["UTSMode"])
+		}
+	}
 }
 
 func TestTheChildRefusesWithoutItsInstructions(t *testing.T) {
@@ -435,13 +472,7 @@ func TestTheRuntimeContainerIsNeverTouched(t *testing.T) {
 	}
 }
 
-// A create that fails must leave the device with the bootloader it has.
-//
-// The parent used to be force-removed first. If the create was then rejected
-// -- an invalid HostConfig on an older daemon, a full disk, an image pruned
-// between the pull and the create -- the helper exited with RestartPolicy: no
-// and the device had no bootloader at all, on hardware that by this feature's
-// own framing has no SSH.
+// A create that fails must leave the old bootloader running.
 func TestAFailedCreateLeavesTheOldBootloaderRunning(t *testing.T) {
 	docker := newFake()
 	docker.containers["openplc-bootloader"] = parentContainer()

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 Contract-version gate + canonical per-leaf size for the OPC-UA config.
 

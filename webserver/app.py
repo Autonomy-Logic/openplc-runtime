@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 import sys
 
 # Parse --print-debug argument before any logger imports
@@ -13,8 +16,11 @@ import json
 import os
 import platform
 import shutil
+import signal
 import ssl
+import tempfile
 import threading
+import zipfile
 from pathlib import Path
 from typing import Callable, Final, Optional
 
@@ -25,6 +31,7 @@ from webserver import project_snapshot
 from webserver.credentials import CertGen
 from webserver.debug_websocket import init_debug_websocket
 from webserver.discovery.discovery_routes import discovery_bp
+from webserver.etherdog_manager import EtherDogManager, legacy_ethercat_config_in_use
 from webserver.discovery.network_discovery import (
     responder as network_discovery_responder,
 )
@@ -36,6 +43,7 @@ from webserver.plcapp_management import (
     apply_retain_conf,
     apply_vpp_plugin_conf,
     build_state,
+    ensure_plc_stopped,
     run_compile,
     safe_extract,
     update_plugin_configurations,
@@ -56,18 +64,19 @@ logger, _ = get_logger("logger", use_buffer=True)
 app = flask.Flask(__name__)
 app.secret_key = str(os.urandom(16))
 
-# A backstop at the HTTP layer, under everything the routes do.
-#
-# Individual handlers check their own parts, but those checks run after Werkzeug
-# has already parsed (and spooled to disk) the request. This bounds the whole
-# body first, so an oversized upload is refused as 413 before any of it is
-# stored. Sized to hold the largest legitimate request -- a program zip and a
-# project snapshot together -- plus room for the multipart framing.
+# HTTP body cap applied before Werkzeug spools the request to disk, so
+# per-route checks never run on bytes that were already stored. Sized for
+# a program zip plus a project snapshot plus multipart framing.
 app.config["MAX_CONTENT_LENGTH"] = (
     MAX_FILE_SIZE + project_snapshot.MAX_SNAPSHOT_BYTES + (8 * 1024 * 1024)
 )
 login_manager = flask_login.LoginManager()
 login_manager.init_app(app)
+
+# EtherDOG first: plc_main's EtherCAT plugin reads the session file it writes, and a PLC that
+# auto-starts at boot needs the bus configured before its plugins start.
+etherdog_manager = EtherDogManager()
+etherdog_manager.start()
 
 runtime_manager = RuntimeManager(
     runtime_path="./build/plc_main",
@@ -87,6 +96,7 @@ network_discovery_responder.start()
 # without triggering a re-import of this module (which would create
 # a duplicate RuntimeManager when run with python -m webserver.app).
 app_restapi.config["RUNTIME_MANAGER"] = runtime_manager
+app_restapi.config["ETHERDOG_MANAGER"] = etherdog_manager
 
 BASE_DIR: Final[Path] = Path(__file__).parent
 CERT_FILE: Final[Path] = (BASE_DIR / "certOPENPLC.pem").resolve()
@@ -169,10 +179,8 @@ def handle_status(data: dict) -> dict:
 
     result: dict = {"status": response}
 
-    # Mode-switch position, so the editor can block a start before sending it
-    # rather than relying on the runtime's refusal alone. Additive: the existing
-    # `status` key is untouched, and an older editor simply ignores this field.
-    # A runtime with no switch-aware plugin always reports "run".
+    # Mode-switch position. Additive key: an older editor ignores it, and a
+    # runtime with no switch-aware plugin reports "run".
     switch_position = parse_switch_position(runtime_manager.switch_plc())
     if switch_position is not None:
         result["switchPosition"] = switch_position
@@ -288,18 +296,9 @@ def stage_project_snapshot() -> str:
     except project_snapshot.SnapshotError as e:
         return f"Snapshot ignored: {e}"
 
-    # Bounded read, before the bytes exist rather than after.
-    #
-    # `stage()` also enforces the cap, but only once the whole part is already
-    # in memory -- and this route is authenticated without an admin gate, so any
-    # account on the device could post an arbitrarily large `snapshot` field and
-    # have it spooled to disk and then pulled into RAM before anything refused
-    # it. On the hardware this runtime targets that is a disk-fill followed by
-    # an OOM.
-    #
-    # `content_length` on a multipart part is client-supplied and often absent,
-    # so it is a fast path and not the guard. Reading one byte past the cap and
-    # stopping is what actually bounds this, whatever the client claimed.
+    # Guard the size BEFORE the bytes are read into memory: stage() also caps,
+    # but only after the part is already in RAM. Read one byte past the cap
+    # to detect overshoot; declared content_length is a hint, not the guard.
     declared = snapshot_file.content_length
     if declared and declared > project_snapshot.MAX_SNAPSHOT_BYTES:
         return (
@@ -326,7 +325,53 @@ def stage_project_snapshot() -> str:
     return ""
 
 
+# First versions that split the EtherCAT configuration into busconfig and iomapping
+ETHERDOG_MIN_RUNTIME_VERSION = "4.3.0"
+ETHERDOG_MIN_EDITOR_VERSION = "4.3.2"
+
+# How long an upload waits for a running PLC to stop
+PLC_STOP_TIMEOUT_S = 30.0
+
+
+def _upload_has_legacy_ethercat(zip_file, valid_files) -> bool:
+    """True when the upload's conf/ethercat.json (pre-split format) describes EtherCAT masters."""
+    names = [
+        info.filename
+        for info in valid_files
+        if info.filename == "conf/ethercat.json" or info.filename.endswith("/conf/ethercat.json")
+    ]
+    if not names:
+        return False
+    try:
+        with zipfile.ZipFile(zip_file, "r") as zf:
+            text = zf.read(names[0]).decode("utf-8", errors="replace")
+    except (zipfile.BadZipFile, KeyError, OSError) as e:
+        logger.warning("Could not inspect conf/ethercat.json in the upload: %s", e)
+        return False
+    with tempfile.TemporaryDirectory() as tmp:
+        conf = Path(tmp)
+        (conf / "ethercat.json").write_text(text, encoding="utf-8")
+        return legacy_ethercat_config_in_use(conf)
+
+
+# One upload at a time: from the busy check until the compile thread starts, an upload replaces
+# core/generated and the EtherCAT bus configuration.
+_upload_lock = threading.Lock()
+
+
 def handle_upload_file(data: dict) -> dict:
+    if not _upload_lock.acquire(blocking=False):
+        return {
+            "UploadFileFail": "Another upload is in progress, please wait",
+            "CompilationStatus": build_state.status.name,
+        }
+    try:
+        return _handle_upload_file(data)
+    finally:
+        _upload_lock.release()
+
+
+def _handle_upload_file(data: dict) -> dict:
     if build_state.status == BuildStatus.COMPILING:
         return {
             "UploadFileFail": "Runtime is compiling another program, please wait",
@@ -363,16 +408,36 @@ def handle_upload_file(data: dict) -> dict:
 
         extract_dir = "core/generated"
 
-        # Point of no return: past here the program on the device is being
-        # replaced, so the stored project snapshot must go with it. Clearing
-        # here rather than on arrival means a rejected upload (bad zip, too
-        # large, runtime busy) leaves the previous program AND its snapshot
-        # untouched, which is the pair that is actually still true.
-        #
-        # An upload carrying no snapshot therefore erases the stored one --
-        # that is the point. Older editors, openplc-cli and any third-party
-        # client keep working, and the device stops advertising a project it
-        # is no longer running.
+        # Programs built before the EtherCAT configuration split carry one ethercat.json that
+        # the runtime no longer reads. Refuse them before anything on the device changes.
+        if _upload_has_legacy_ethercat(zip_file, valid_files):
+            build_state.status = BuildStatus.FAILED
+            return {
+                "UploadFileFail": (
+                    "This program was built with an Editor that writes the old EtherCAT "
+                    "configuration (conf/ethercat.json), which runtime "
+                    f"{ETHERDOG_MIN_RUNTIME_VERSION} and newer no longer read. Rebuild it with "
+                    f"OpenPLC Editor {ETHERDOG_MIN_EDITOR_VERSION} or newer."
+                ),
+                "CompilationStatus": build_state.status.name,
+            }
+
+        # The Editor stops the PLC before uploading; other clients may not. Nothing below may
+        # run beside the old program: the EtherCAT bus configuration is staged next.
+        stopped, was_running = ensure_plc_stopped(runtime_manager, timeout_s=PLC_STOP_TIMEOUT_S)
+        if not stopped:
+            build_state.status = BuildStatus.FAILED
+            return {
+                "UploadFileFail": "The running PLC could not be stopped; upload cancelled",
+                "CompilationStatus": build_state.status.name,
+            }
+        if was_running:
+            build_state.log("[WARNING] The PLC was running; stopped it before the upload\n")
+
+        # Clear the stored snapshot together with the program it describes.
+        # Done here (not on arrival) so a rejected upload leaves program and
+        # snapshot both untouched. An upload with no snapshot therefore
+        # erases the stored one.
         project_snapshot.clear()
 
         if os.path.exists(extract_dir):
@@ -383,23 +448,18 @@ def handle_upload_file(data: dict) -> dict:
         # Apply VPP plugin conf from upload (copy if present, delete if not)
         apply_vpp_plugin_conf(extract_dir)
 
-        # Persistent storage settings, same present/absent contract as the VPP
-        # conf above: the project owns them, so an upload that carries
-        # retain.conf installs it and one that does not removes the device's
-        # copy. That absent case is what lets a target whose VPP owns retention
-        # switch the built-in file store off simply by not configuring it.
-        #
-        # Nothing clears retained VALUES here. The store itself decides, at
-        # program start, whether what it holds belongs to the program now
-        # running — it compares the program MD5 it stored against the one the
-        # runtime hands it. Doing it there rather than here is what makes the
-        # two platforms behave identically: baremetal has no webserver to
-        # observe an upload, and a device flashed or provisioned by any other
-        # route still reaches the right answer.
+        # Project owns retain.conf: an upload with it installs; without it
+        # removes the device's copy. Retained VALUES are not cleared here;
+        # the store compares program MD5 at start, which also works on
+        # baremetal where no webserver observes an upload.
         apply_retain_conf(extract_dir)
 
         # Update built-in plugin configurations based on extracted config files
         update_plugin_configurations(extract_dir)
+
+        # The bus half of the EtherCAT configuration belongs to EtherDOG.
+        busconfig = Path(extract_dir) / "conf" / "ethercat_busconfig.json"
+        etherdog_manager.apply_busconfig(busconfig if busconfig.exists() else None)
 
         # ?clean=1 — wired from the editor's "Clean build and upload" UI
         # option. Forces a full recompile by wiping core/build/ and the
@@ -407,14 +467,9 @@ def handle_upload_file(data: dict) -> dict:
         # don't pass this flag, so behaviour for them is unchanged.
         clean_build = flask.request.args.get("clean") == "1"
 
-        # Stage the snapshot only once the program itself is safely in place.
-        # run_compile's `finally` is what promotes or discards a staged
-        # snapshot, so staging before the extract would leave one stranded if
-        # the extract threw -- the compile thread never starts, nothing
-        # discards it, and the NEXT successful build would promote a snapshot
-        # belonging to an upload that never landed. The clear() above has
-        # already erased the old one either way, which is correct: the program
-        # it described is gone.
+        # Stage AFTER the extract succeeded: run_compile's finally promotes or
+        # discards. Staging earlier risks leaving a snapshot behind if the
+        # extract throws before the compile thread starts.
         snapshot_error = stage_project_snapshot()
 
         # Start compilation in a separate thread
@@ -429,10 +484,9 @@ def handle_upload_file(data: dict) -> dict:
 
         task_compile.start()
 
-        # The program upload itself succeeded. A snapshot that could not be
-        # stored is reported alongside rather than as a failure: the device is
-        # running the new program either way, and failing the upload over the
-        # optional half of it would be worse than losing retrievability.
+        # A snapshot error is reported alongside, not as a failure: the new
+        # program is live either way, and losing retrievability is less bad
+        # than refusing the upload over the optional half.
         return {
             "UploadFileFail": "",
             "CompilationStatus": build_state.status.name,
@@ -486,7 +540,17 @@ def restapi_callback_post(argument: str, data: dict) -> dict:
     return handler(data)
 
 
+def _stop_on_signal(signum: int, _frame: object) -> None:
+    # Same shutdown path as Ctrl+C, so EtherDOG zeroes the outputs and plc_main stops cleanly
+    signal.signal(signum, signal.SIG_IGN)  # a repeat must not interrupt the cleanup
+    raise KeyboardInterrupt(f"signal {signum}")
+
+
 def run_https():
+    for sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
+        if sig is not None:
+            signal.signal(sig, _stop_on_signal)
+
     # rest api register
     app_restapi.register_blueprint(restapi_bp, url_prefix="/api")
     app_restapi.register_blueprint(discovery_bp)
@@ -502,12 +566,10 @@ def run_https():
             # users.role column in place; no-op once present).
             apply_user_schema_migrations()
             db.session.commit()
-            # Rescue a device left with accounts but no admin. Unlike the
-            # schema migration above this is a DATA repair, and it has to run
-            # separately: the migration only fires when the role column is
-            # missing, so a database that already has one keeps whatever values
-            # it holds -- including none of them being 'admin'. Without an
-            # admin there is no API path back to having one.
+            # Data repair for a device with accounts but no admin. Runs
+            # separately from the schema migration (which only fires when the
+            # role column is missing). Without an admin there is no API path
+            # back to having one.
             repair_missing_admin()
             # logger.info("Database tables created successfully.")
         except Exception:
@@ -565,6 +627,7 @@ def run_https():
         # logger.info("HTTP server stopped by KeyboardInterrupt")
         pass
     finally:
+        etherdog_manager.stop()
         logger.info("Runtime manager stopped")
         runtime_manager.stop()
         network_discovery_responder.stop()

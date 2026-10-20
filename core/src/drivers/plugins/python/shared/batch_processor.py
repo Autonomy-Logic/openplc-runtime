@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 Batch Processor for OpenPLC Python Plugin System
 
@@ -22,7 +25,6 @@ except ImportError:
     from component_interfaces import IBatchProcessor
     from buffer_accessor import GenericBufferAccessor
     from mutex_manager import MutexManager
-
 
 class BatchProcessor(IBatchProcessor):
     """

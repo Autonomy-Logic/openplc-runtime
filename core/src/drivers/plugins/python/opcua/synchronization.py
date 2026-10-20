@@ -1,10 +1,12 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 OPC-UA ↔ PLC synchronization — request-driven.
 
-Replaces the old unconditional bidirectional poll (which read every
-writable node every cycle and wrote it back to the PLC — OpenPLC
-bug #2: OPC-UA fighting the program for readwrite variables). The
-model is now:
+Replaces the old unconditional bidirectional poll, which read every
+writable node every cycle and wrote it back to the PLC — making the
+server fight the program for readwrite variables. The model is now:
 
   - READS (client → server): a per-node value_callback returns the
     LIVE PLC value via args.debug_read at read time. No staleness, no
@@ -52,6 +54,7 @@ try:
     from .opcua_utils import (
         convert_value_for_opcua,
         convert_value_for_plc,
+        default_for_plc,
         map_plc_to_opcua_type,
     )
 except ImportError:
@@ -66,15 +69,14 @@ except ImportError:
     from opcua_utils import (
         convert_value_for_opcua,
         convert_value_for_plc,
+        default_for_plc,
         map_plc_to_opcua_type,
     )
-
 
 # Address tuple type alias for clarity.
 Addr = Tuple[int, int]
 
 _VALUE_ATTR = ua.AttributeIds.Value
-
 
 class SynchronizationManager:
     """Request-driven OPC-UA ↔ PLC value bridge (see module docstring)."""
@@ -183,14 +185,10 @@ class SynchronizationManager:
                      "falling back to push-only sync")
             return
 
-        # A value_setter is installed on EVERY node — not only readwrite
-        # ones. Reason: write_attribute_value() clears value_callback when no
-        # setter is present (its else-branch), so our subscription push to a
-        # readonly node would otherwise kill that node's live-read callback.
-        # The setter forwards to the PLC only for readwrite nodes; on readonly
-        # nodes it is a no-op (client writes are already denied upstream by the
-        # PreWrite permission callback), but it keeps value_callback alive
-        # across pushes.
+        # Install value_setter on EVERY node. write_attribute_value()
+        # clears value_callback when no setter is present, so a push
+        # to a readonly node would kill its live-read. Readonly setter
+        # is a no-op; PreWrite already denies client writes.
         for (arr, elem), node in self.variable_nodes.items():
             nodeid = node.node.nodeid
             try:
@@ -245,20 +243,37 @@ class SynchronizationManager:
 
         def callback(nodeid: Any, attr: Any) -> ua.DataValue:
             try:
+                # A failed read is reported BAD, not a default stamped Good:
+                # the client must be able to distinguish "value is empty"
+                # from "server cannot read it".
+                failed = False
                 if length > 0:
                     values = []
                     for i in range(length):
                         v = debug_read_value(self.args, base_arr, base_elem + i, datatype)
                         if v is None:
+                            failed = True
                             v = self._get_default_value(datatype)
                         values.append(convert_value_for_opcua(datatype, v))
                     variant = ua.Variant(values, expected_type)
                 else:
                     v = debug_read_value(self.args, base_arr, base_elem, datatype)
                     if v is None:
+                        failed = True
                         v = self._get_default_value(datatype)
                     variant = ua.Variant(convert_value_for_opcua(datatype, v), expected_type)
                 now = datetime.now(timezone.utc)
+                if failed:
+                    # BadNoDataAvailable rather than BadInternalError: the
+                    # address space is sound, the runtime just has nothing to
+                    # give for this leaf right now (no program loaded, or the
+                    # coordinates are out of bounds for the running one).
+                    return ua.DataValue(
+                        Value=variant,
+                        StatusCode_=ua.StatusCode(ua.StatusCodes.BadNoDataAvailable),
+                        SourceTimestamp=now,
+                        ServerTimestamp=now,
+                    )
                 return ua.DataValue(
                     Value=variant,
                     StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
@@ -326,6 +341,9 @@ class SynchronizationManager:
             plc_value = int(tv_sec) * 1_000_000_000 + int(tv_nsec)
         ok = debug_write_value(self.args, addr[0], addr[1], datatype, plc_value)
         if not ok:
+            # KNOWN LIMITATION: client is still told Good. asyncua's
+            # value_setter has no per-value StatusCode channel; raising
+            # would fault the whole multi-value Write.
             log_error(f"debug_write({addr[0]}, {addr[1]}) failed")
 
     # -----------------------------------------------------------------
@@ -410,12 +428,17 @@ class SynchronizationManager:
         except Exception:
             return True
 
-    async def _push_value(self, node: VariableNode, variant: ua.Variant) -> None:
+    async def _push_value(
+        self,
+        node: VariableNode,
+        variant: ua.Variant,
+        status: Any = ua.StatusCodes.Good,
+    ) -> None:
         """Push one variant via write_attribute_value, tagging the DataValue
         so our own value_setter ignores it."""
         data_value = ua.DataValue(
             Value=variant,
-            StatusCode_=ua.StatusCode(ua.StatusCodes.Good),
+            StatusCode_=ua.StatusCode(status),
             SourceTimestamp=self._cycle_timestamp,
             ServerTimestamp=datetime.now(timezone.utc),
         )
@@ -433,15 +456,24 @@ class SynchronizationManager:
     async def _push_array_node(
         self, node: VariableNode, base_arr: int, base_elem: int
     ) -> None:
+        # Any element that failed to read marks the whole array BAD —
+        # OPC-UA has no per-element status on a plain array value, and
+        # pushing default-filled Good would hide the failure.
         length = node.array_length or 0
         values = []
+        failed = False
         for i in range(length):
             v = debug_read_value(self.args, base_arr, base_elem + i, node.datatype)
             if v is None:
+                failed = True
                 v = self._get_default_value(node.datatype)
             values.append(convert_value_for_opcua(node.datatype, v))
         expected_type = map_plc_to_opcua_type(node.datatype)
-        await self._push_value(node, ua.Variant(values, expected_type))
+        await self._push_value(
+            node,
+            ua.Variant(values, expected_type),
+            status=ua.StatusCodes.BadNoDataAvailable if failed else ua.StatusCodes.Good,
+        )
 
     # -----------------------------------------------------------------
     # Helpers
@@ -449,14 +481,13 @@ class SynchronizationManager:
 
     @staticmethod
     def _get_default_value(datatype: str) -> Any:
-        dtype = (datatype or "").upper()
-        if dtype == "BOOL":
-            return False
-        if dtype in ("REAL", "LREAL"):
-            return 0.0
-        if dtype == "STRING":
-            return ""
-        return 0
+        """Placeholder for a leaf that could not be read.
+
+        Always paired with a Bad status — see the read callback and
+        `_push_array_node`. Kept as a one-line shim rather than inlined so
+        every substitution still reads as "I am making this up".
+        """
+        return default_for_plc(datatype)
 
     @staticmethod
     def _extract_opcua_value(opcua_value: Any) -> Any:

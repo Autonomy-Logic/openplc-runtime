@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Autonomy®
+
 /**
  * @file vpp_plugin_seal.h
  * @brief Last-metre integrity check for VPP plugin shared objects.

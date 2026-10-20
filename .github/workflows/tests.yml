@@ -100,6 +100,24 @@ jobs:
             --ignore=tests/pytest/modbus_master \
             --ignore=tests/pytest/modbus_slave
 
+      # Plugin suites that DO pass, run explicitly.
+      #
+      # The blanket --ignore above is about suites that are red on the base
+      # branch, but it also swallowed new plugin tests written against a green
+      # bar -- so a PR could add a suite, watch the page go green, and have
+      # nothing of its own run. That is worse than no gate, because it looks
+      # like one.
+      #
+      # Named one file at a time on purpose: adding a suite here is a deliberate
+      # act that says "this one passes on a clean checkout", and it cannot drag
+      # in the red ones by accident. Delete this step when the blanket ignore
+      # goes and everything under tests/pytest/plugins runs again.
+      - name: pytest (plugin suites known green)
+        run: |
+          pytest -q \
+            tests/pytest/plugins/opcua/test_string_types.py \
+            tests/pytest/plugins/opcua/test_read_status.py
+
   shell:
     name: Installer scripts
     runs-on: ubuntu-latest

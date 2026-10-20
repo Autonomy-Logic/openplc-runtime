@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Authentication and authorization on the debug WebSocket.
 
 Why this file exists

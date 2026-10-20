@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """
 Tests for Modbus TCP gateway support: multiple slaves behind one IP:port.
 

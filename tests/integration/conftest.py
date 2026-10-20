@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Autonomy®
+
 """Keep the destructive integration suite out of a bare ``pytest`` run.
 
 ``pytest.ini`` sets ``testpaths = tests`` and ``python_files = test_*.py``, so
