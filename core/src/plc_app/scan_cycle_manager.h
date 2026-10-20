@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Autonomy®
 
 #ifndef SCAN_CYCLE_MANAGER_H

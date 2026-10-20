@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 Autonomy®
 
 """Tests for the webserver-level VPP license debug FCs (0x48/0x49/0x4A).

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Autonomy®
 
 // Host test: image_tables_zero_outputs clears every output slot and nothing else.

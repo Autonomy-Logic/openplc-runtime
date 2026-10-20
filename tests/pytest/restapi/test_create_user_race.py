@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 Autonomy®
 
 """Regression test for the first-admin bootstrap TOCTOU race.

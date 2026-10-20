@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 Autonomy®
 
 """EtherDOG supervision helpers: legacy upload detection, command transport, route shaping."""

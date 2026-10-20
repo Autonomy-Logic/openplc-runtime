@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 Autonomy®
 
 """Tests for VPP device-license delivery via apply_vpp_plugin_conf.

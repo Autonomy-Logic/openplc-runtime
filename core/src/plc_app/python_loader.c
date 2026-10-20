@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Autonomy®
 
 // Loader for function blocks written in Python; they talk to the PLC
