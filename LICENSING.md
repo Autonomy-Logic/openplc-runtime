@@ -1,6 +1,6 @@
 # Licensing
 
-OpenPLC Runtime is dual-licensed. You can use it under the **GNU General Public License v3** or under a **commercial licence** from Autonomy.
+OpenPLC Runtime is dual-licensed. You can use it under the **GNU General Public License v3** or under a **commercial licence** from Autonomy Logic Inc.
 
 ## GPLv3
 
@@ -8,7 +8,7 @@ The GPLv3 terms are in [LICENSE](LICENSE). Under the GPLv3 you may use, study, m
 
 ## Commercial licence
 
-The commercial licence lets you use OpenPLC Runtime without the GPLv3 obligations. If you are using OpenPLC Runtime in a commercial setting, you will need a commercial licence.
+The commercial licence lets you use OpenPLC Runtime without the GPLv3 obligations. If you are using OpenPLC Runtime in a commercial setting, you may need a commercial licence.
 
 Licences can be bought from the OpenPLC Editor (desktop or web) when you upload a program to the device. A licence is bound to the hardware it was bought for.
 
@@ -20,4 +20,4 @@ Some components keep their own licences, for example the S7comm plugin, which is
 
 ## Contributing
 
-Contributions require a signed Contributor License Agreement, so that every contribution can be offered under both licences. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions require agreeing to the [Contributor License Agreement](CLA.md), by ticking its checkbox on the pull request, so that every contribution can be offered under both licences. See [CONTRIBUTING.md](CONTRIBUTING.md).
