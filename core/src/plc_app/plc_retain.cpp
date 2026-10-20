@@ -21,6 +21,7 @@ extern "C" {
 #include "utils/utils.h"  // ext_strucpp_program_md5 — the program's identity
 }
 
+#include "../lib/strucpp_abi.hpp"
 #include "debug_write_journal.h"
 #include "image_tables.h"
 #include "plc_retain_file_store.h"
@@ -36,12 +37,22 @@ constexpr size_t RETAIN_BUFFER_MAX = 64 * 1024;
 std::vector<uint8_t> g_buffer;
 std::atomic<bool>    g_active{false};
 
-/* Restore via runtime_external_write (not direct IECVar poke): routes a
- * located leaf through the image journal so copy_in won't revert it.
+unsigned g_restored_leaves = 0;
+unsigned g_refused_leaves  = 0;
+
+/* Restore via runtime_external_write_now (not direct IECVar poke): routes a
+ * located leaf through the image journal so copy_in won't revert it, and
+ * applies at once so every value is in place for the first scan.
  * DBGW_OP_WRITE, never a force — a restore must not pin the slot. */
 uint8_t retain_write_leaf(uint8_t arr, uint16_t elem, const uint8_t *bytes, uint16_t len)
 {
-    return runtime_external_write(arr, elem, (uint8_t)DBGW_OP_WRITE, bytes, len) == 0 ? 0x7E : 0x82;
+    if (runtime_external_write_now(arr, elem, (uint8_t)DBGW_OP_WRITE, bytes, len) == 0)
+    {
+        ++g_restored_leaves;
+        return strucpp::debug::STATUS_OK;
+    }
+    ++g_refused_leaves;
+    return strucpp::debug::STATUS_DATA_TOO_LARGE;
 }
 
 /* Uniform store record (name + 3 fn pointers). Past init() every path
@@ -177,10 +188,22 @@ void plc_retain_read(void)
         return;
     }
 
+    g_restored_leaves = 0;
+    g_refused_leaves  = 0;
     const uint8_t res = ext_strucpp_retain_unpack(g_buffer.data(), got, retain_write_leaf);
     if (res == 0)
     {
-        log_info("Retain: restored %u bytes of retained variables", (unsigned)got);
+        if (g_refused_leaves == 0)
+        {
+            log_info("Retain: restored %u bytes of retained variables (%u values)", (unsigned)got,
+                     g_restored_leaves);
+        }
+        else
+        {
+            log_warn("Retain: restored %u of %u retained values — %u could not be written and "
+                     "start at their initial values",
+                     g_restored_leaves, g_restored_leaves + g_refused_leaves, g_refused_leaves);
+        }
         return;
     }
 
