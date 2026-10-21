@@ -34,12 +34,11 @@ uint8_t  (*ext_strucpp_debug_write)      (uint8_t, uint16_t,
  * suite has been unbuildable on development for that reason; the suite does
  * not run in CI, so nothing said so.
  *
- * Defining them in the mock is the right side to fix: this file exists to
- * stand in for the runtime's globals, and no target links both it and utils.c.
- * The write stub accepts and drops -- nothing here asserts on the
- * external-write queue. */
-char         *ext_strucpp_program_md5 = NULL;
-unsigned long scan_counter            = 0;
+ * ext_strucpp_program_md5 is weak so the EtherCAT C tests, which do pull in
+ * both this file and utils.c, link without a duplicate-symbol error. The write
+ * stub accepts and drops -- nothing here asserts on the external-write queue. */
+__attribute__((weak)) char *ext_strucpp_program_md5 = NULL;
+unsigned long               scan_counter            = 0;
 
 int runtime_external_write(uint8_t arr, uint16_t elem, uint8_t op, const uint8_t *bytes, uint16_t len)
 {

@@ -536,10 +536,10 @@ void *plc_cycle_thread(void *arg)
     pthread_mutex_unlock(itm);
 
     /* Retained variables. init() decides capability; read() loads values
-     * for THIS program and discards a prior program's bytes. Must run
-     * after located-variable binding so image slots exist. */
+     * for THIS program and discards a prior program's bytes. init() needs
+     * the located-variable binding above, read() the journal_init() below
+     * that clears the image journal a located leaf restores through. */
     plc_retain_init();
-    plc_retain_read();
 
     journal_buffer_ptrs_t journal_ptrs = {
         .bool_input  = g_image.bool_input,
@@ -600,6 +600,11 @@ void *plc_cycle_thread(void *arg)
         return NULL;
     }
     log_info("Journal buffer initialized");
+
+    /* No task or plugin runs yet: the only window where direct writes are safe. */
+    debug_write_journal_set_direct_window(true);
+    plc_retain_read();
+    debug_write_journal_set_direct_window(false);
 
     if (plugin_driver)
     {
