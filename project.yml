@@ -24,7 +24,6 @@
 :defines:
   :test:
     - TEST
-    - BUFFER_SIZE=128 # Define BUFFER_SIZE used by image_tables.h
     - MAX_PLUGINS=16   # Define MAX_PLUGINS used by plugin_driver.h
     - UNITY_INCLUDE_DOUBLE # Enable double support in Unity
 

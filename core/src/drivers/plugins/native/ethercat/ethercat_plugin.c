@@ -30,6 +30,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../plugin_image_sizes.h"
 #include "cJSON.h"
 #include "etherdog_link.h"
 #include "ethercat_iomap.h"
@@ -453,6 +454,18 @@ int init(void *args)
         snprintf(g_session_file, sizeof(g_session_file), "%s", override);
 
     edl_init(&g_link);
+
+    /* What this plugin was told, not the single figure: on a per-table run
+     * buffer_size is the SMALLEST of the fourteen and says nothing about the
+     * areas this bus reaches. */
+    if (!plugin_image_sizes_known())
+        plugin_logger_info(&g_logger, "Image sizes: not delivered (square run)");
+    else
+        plugin_logger_info(&g_logger, "Image sizes: bits in %u/%u, words in %u/%u",
+                           plugin_image_table_capacity(IMAGE_TABLE_BOOL_INPUT),
+                           plugin_image_table_capacity(IMAGE_TABLE_BOOL_OUTPUT),
+                           plugin_image_table_capacity(IMAGE_TABLE_INT_INPUT),
+                           plugin_image_table_capacity(IMAGE_TABLE_INT_OUTPUT));
 
     /* Initialized even when disabled (for command forwarding): no mapping file is not an error. */
     const char *path = g_args.plugin_specific_config_file_path;

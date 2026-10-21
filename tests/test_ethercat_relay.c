@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 TEST_SOURCE_FILE("core/src/drivers/plugins/native/cjson/cJSON.c")
+TEST_SOURCE_FILE("core/src/drivers/plugins/native/plugin_image_sizes.c")
 TEST_SOURCE_FILE("core/src/drivers/plugins/native/plugin_logger.c")
 TEST_SOURCE_FILE("core/src/drivers/plugins/native/ethercat/etherdog_link.c")
 TEST_SOURCE_FILE("core/src/drivers/plugins/native/ethercat/ethercat_iomap.c")

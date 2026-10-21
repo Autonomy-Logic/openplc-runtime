@@ -40,6 +40,7 @@ from webserver.plcapp_management import (
     MAX_FILE_SIZE,
     BuildStatus,
     analyze_zip,
+    apply_image_conf,
     apply_retain_conf,
     apply_vpp_plugin_conf,
     build_state,
@@ -453,6 +454,16 @@ def _handle_upload_file(data: dict) -> dict:
         # the store compares program MD5 at start, which also works on
         # baremetal where no webserver observes an upload.
         apply_retain_conf(extract_dir)
+
+        # I/O image sizes, same route and the same present/absent handling --
+        # but for a different reason, which is worth not conflating. A missing
+        # retain.conf above is an instruction ("switch the store off"); a
+        # missing image.conf says nothing, because the runtime can always size
+        # the image from the located variables of the program it just loaded.
+        # The device's copy is removed anyway, because a STALE one is worse than
+        # none: the previous project's sizes would otherwise keep memory
+        # reserved for a program that is no longer here.
+        apply_image_conf(extract_dir)
 
         # Update built-in plugin configurations based on extracted config files
         update_plugin_configurations(extract_dir)
