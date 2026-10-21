@@ -98,8 +98,8 @@ int journal_write_lint(journal_buffer_type_t, uint16_t, uint64_t)
     ++g_journal_writes;
     return g_journal_result;
 }
-void journal_force_set(journal_buffer_type_t, uint16_t, uint8_t, uint64_t) {}
-void journal_force_clear(journal_buffer_type_t, uint16_t, uint8_t) {}
+int journal_force_set(journal_buffer_type_t, uint16_t, uint8_t, uint64_t) { return 0; }
+int journal_force_clear(journal_buffer_type_t, uint16_t, uint8_t) { return 0; }
 }
 
 // ---------------------------------------------------------------------------
