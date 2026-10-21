@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Autonomy®
+
 """`image.conf` has three implementations. This is the only one CI can check.
 
 The file format is written in three places and read in a fourth:

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Autonomy®
+
 """Every plugin the runtime ships has to declare per-table image sizes.
 
 The runtime keeps the image SQUARE for any run in which even one loaded plugin
