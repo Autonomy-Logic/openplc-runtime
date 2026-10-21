@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Autonomy®
+
 """I/O image sizes for the program now installed.
 
 WHO OWNS THESE SIZES

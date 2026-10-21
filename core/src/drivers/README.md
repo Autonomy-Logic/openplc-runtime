@@ -747,7 +747,7 @@ void plugin_driver_destroy(plugin_driver_t *driver);
 
 ## License
 
-This plugin system is part of the OpenPLC Runtime and is licensed under the MIT License (see the top-level `LICENSE`). Plugins can carry their own license: the S7comm plugin is LGPLv3 or later, matching the Snap7 library it links.
+This plugin system is part of the OpenPLC Runtime and is dual-licensed under GPLv3 or a commercial licence (see the top-level `LICENSE` and `LICENSING.md`). Plugins can carry their own license: the S7comm plugin is LGPLv3 or later, matching the Snap7 library it links.
 
 ## Contributing
 

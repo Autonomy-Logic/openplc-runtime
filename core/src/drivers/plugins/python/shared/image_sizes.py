@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Autonomy®
+
 """The fourteen image table lengths, for a Python plugin.
 
 Importing ``set_image_sizes`` from here into a plugin module does two things at

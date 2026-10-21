@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Autonomy®
+
 /*
  * Host test for the external-write paths of debug_write_journal.cpp.
  *

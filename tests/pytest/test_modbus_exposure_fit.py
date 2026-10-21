@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Autonomy®
+
 """How the Modbus slave fits its declared exposure to the image.
 
 These sit in ``tests/pytest`` rather than ``tests/pytest/modbus_slave`` on

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Autonomy®
+
 """Behavioural tests for installing the I/O image sizes from an upload.
 
 The sizes belong to the project and are derived rather than chosen, so the

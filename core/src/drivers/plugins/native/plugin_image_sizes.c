@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Autonomy®
+
 #include "plugin_image_sizes.h"
 
 #include <string.h>
