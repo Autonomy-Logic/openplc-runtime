@@ -13,6 +13,7 @@ packages = ["webserver"]
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["*_pb2.py"]
 
 [tool.ruff.format]
 # Use double quotes for strings (same as black)
@@ -26,3 +27,4 @@ line-ending = "lf"
 
 [tool.black]
 line-length = 100
+extend-exclude = '_pb2\.py$'

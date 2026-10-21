@@ -10,3 +10,8 @@ pytest-flask
 pre-commit
 psutil; sys_platform != "cygwin"
 pyserial>=3.5
+# MQTT credential vault in the webserver; same pins as the MQTT plugin venv.
+# MSYS2/Cygwin cannot build it, so secret-based MQTT authentication is unavailable there.
+cryptography==50.0.1; sys_platform != "cygwin"
+cffi==2.1.1; sys_platform != "cygwin"
+pycparser==3.0; sys_platform != "cygwin"

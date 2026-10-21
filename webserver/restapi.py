@@ -1005,6 +1005,13 @@ def restapi_plc_post(command):
                 - SUCCESS
                 - FAILED
               description: Current compilation status
+            MqttConfigError:
+              type: object
+              description: |
+                Present only when conf/mqtt.json was rejected before any change
+                on the device: code, category, message and JSON pointer. Category
+                is "configuration", or "credential" for a staged credential that is
+                expired, already used, another user's or for another program.
       500:
         description: No handler registered or execution error
     """

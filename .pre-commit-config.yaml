@@ -1,3 +1,4 @@
+exclude: '_pb2\.py$'
 repos:
   - repo: https://github.com/pycqa/pylint
     rev: v3.3.8

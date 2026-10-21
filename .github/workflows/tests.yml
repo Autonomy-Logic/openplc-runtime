@@ -116,7 +116,23 @@ jobs:
         run: |
           pytest -q \
             tests/pytest/plugins/opcua/test_string_types.py \
-            tests/pytest/plugins/opcua/test_read_status.py
+            tests/pytest/plugins/opcua/test_read_status.py \
+            tests/pytest/plugins/mqtt/test_contract_names.py \
+            tests/pytest/plugins/mqtt/test_contract_fixtures.py \
+            tests/pytest/plugins/mqtt/test_runtime_config.py \
+            tests/pytest/plugins/mqtt/test_plugin_entry.py \
+            tests/pytest/plugins/mqtt/test_credentials_vault.py \
+            tests/pytest/plugins/mqtt/test_credentials_tls.py \
+            tests/pytest/plugins/mqtt/test_reader_values.py \
+            tests/pytest/plugins/mqtt/test_reader.py \
+            tests/pytest/plugins/mqtt/test_reader_ctypes.py \
+            tests/pytest/plugins/mqtt/test_publisher_supervisor.py \
+            tests/pytest/plugins/mqtt/test_publisher_transport.py \
+            tests/pytest/plugins/mqtt/test_publisher_lifecycle.py \
+            tests/pytest/plugins/mqtt/test_publisher_generic.py \
+            tests/pytest/plugins/mqtt/test_sparkplug_codec.py \
+            tests/pytest/plugins/mqtt/test_publisher_sparkplug.py \
+            tests/pytest/plugins/mqtt/test_status_channel.py
 
   shell:
     name: Installer scripts
