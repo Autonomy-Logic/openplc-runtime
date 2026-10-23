@@ -1,6 +1,8 @@
 import pytest
 from unittest.mock import patch
 
+from pymodbus.constants import ExcCodes
+
 # Import the datablock class under test
 from core.src.drivers.plugins.python.modbus_slave.simple_modbus import (
     OpenPLCInputRegistersDataBlock
@@ -157,14 +159,12 @@ def test_datablock_read_out_of_range(runtime_args):
     ):
         db = OpenPLCInputRegistersDataBlock(runtime_args, num_registers=4)
 
-        # Request Modbus addresses 3..5 -> internal indices 2,3,4
-        vals = db.getValues(3, 3)
-        # index 2 -> 30, index 3 -> 40, index 4 -> out-of-range -> 0
-        assert vals == [30, 40, 0]
+        # Modbus addresses 3..5 -> internal indices 2,3,4, and index 4 does not exist.
+        # A request is answered as a whole, so the whole read is refused.
+        assert db.getValues(3, 3) == ExcCodes.ILLEGAL_ADDRESS
 
-        # index 4 is out of range for the datablock itself (num_registers=4)
-        # it correctly returns 0 without calling the SBA mock.
-        # REMOVED ASSERTION: assert any(e[0] == "read_oor" and e[1] == 4 for e in sba.trace)
+        # The same read, kept inside the range, still works.
+        assert db.getValues(3, 2) == [30, 40]
 
 
 def test_read_zero_length(runtime_args):
@@ -179,9 +179,7 @@ def test_read_negative_index(runtime_args):
     ):
         db = OpenPLCInputRegistersDataBlock(runtime_args, num_registers=4)
 
-        # negative start produces zeros per module behavior
-        vals = db.getValues(-5, 2)
-        assert vals == [0, 0]
+        assert db.getValues(-5, 2) == ExcCodes.ILLEGAL_ADDRESS
 
 
 def test_read_past_modbus_block_size(runtime_args):
@@ -191,8 +189,7 @@ def test_read_past_modbus_block_size(runtime_args):
     ):
         db = OpenPLCInputRegistersDataBlock(runtime_args, num_registers=4)
 
-        vals = db.getValues(10, 3)
-        assert vals == [0, 0, 0]
+        assert db.getValues(10, 3) == ExcCodes.ILLEGAL_ADDRESS
 
 
 def test_overlapping_reads_consistent(runtime_args):
