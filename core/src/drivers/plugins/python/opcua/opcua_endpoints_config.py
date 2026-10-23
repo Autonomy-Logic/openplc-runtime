@@ -7,7 +7,7 @@ This module provides utilities to configure endpoints that work with different c
 """
 import socket
 from urllib.parse import urlparse
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 try:
     import psutil
@@ -197,6 +197,20 @@ def normalize_endpoint_url(endpoint_url: str) -> str:
         return f"{parsed.scheme}://localhost:{parsed.port}{parsed.path}"
 
     return endpoint_url
+
+def bind_address_for(endpoint_url: str) -> Optional[Tuple[str, int]]:
+    """
+    Socket address the server must listen on, when it differs from the endpoint host.
+
+    normalize_endpoint_url() swaps 0.0.0.0 for one reachable address so clients
+    get a usable endpoint URL, but asyncua listens on the endpoint host. For an
+    all-interfaces endpoint this returns ("0.0.0.0", port) so the listener keeps
+    every interface; for any other endpoint it returns None (listen on its host).
+    """
+    parsed = urlparse(endpoint_url)
+    if parsed.hostname == "0.0.0.0" and parsed.port is not None:
+        return ("0.0.0.0", parsed.port)
+    return None
 
 def create_multiple_endpoints(base_endpoint: str) -> List[str]:
     """Create multiple endpoint variations for better connectivity."""

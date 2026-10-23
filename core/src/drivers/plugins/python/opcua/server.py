@@ -29,7 +29,11 @@ if _parent_dir not in sys.path:
 try:
     from .opcua_logging import log_info, log_warn, log_error, log_debug
     from .opcua_security import OpcuaSecurityManager
-    from .opcua_endpoints_config import normalize_endpoint_url, suggest_client_endpoints
+    from .opcua_endpoints_config import (
+        bind_address_for,
+        normalize_endpoint_url,
+        suggest_client_endpoints,
+    )
     from .address_space import AddressSpaceBuilder
     from .synchronization import SynchronizationManager
     from .user_manager import OpenPLCUserManager
@@ -38,7 +42,11 @@ try:
 except ImportError:
     from opcua_logging import log_info, log_warn, log_error, log_debug
     from opcua_security import OpcuaSecurityManager
-    from opcua_endpoints_config import normalize_endpoint_url, suggest_client_endpoints
+    from opcua_endpoints_config import (
+        bind_address_for,
+        normalize_endpoint_url,
+        suggest_client_endpoints,
+    )
     from address_space import AddressSpaceBuilder
     from synchronization import SynchronizationManager
     from user_manager import OpenPLCUserManager
@@ -199,6 +207,11 @@ class OpcuaServerManager:
                 self.server.set_endpoint(normalized_endpoint)
                 self._client_endpoints = suggest_client_endpoints(normalized_endpoint)
                 log_debug(f"Server endpoint set to: {normalized_endpoint}")
+                # The advertised URL names one address; still listen where configured.
+                bind_address = bind_address_for(self.config.server.endpoint_url)
+                if bind_address is not None:
+                    self.server.socket_address = bind_address
+                    log_debug(f"Listening on {bind_address[0]}:{bind_address[1]}")
             except Exception as e:
                 log_warn(f"Endpoint normalization failed, using raw URL: {e}")
                 self.server.set_endpoint(self.config.server.endpoint_url)

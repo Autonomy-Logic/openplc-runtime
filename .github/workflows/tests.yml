@@ -116,7 +116,8 @@ jobs:
         run: |
           pytest -q \
             tests/pytest/plugins/opcua/test_string_types.py \
-            tests/pytest/plugins/opcua/test_read_status.py
+            tests/pytest/plugins/opcua/test_read_status.py \
+            tests/pytest/plugins/opcua/test_endpoint_bind.py
 
   shell:
     name: Installer scripts
