@@ -50,6 +50,12 @@ MODBUS_MAX_ADDRESSES = 65536
 # the datastore API and ModbusDeviceContext.getValues calls the block directly.
 # Measured before the fix: every address up to 65000 answered zero.
 
+
+def out_of_range(address, count, limit):
+    """A Modbus request is answered as a whole, so one address past the range fails all of it."""
+    return address < 0 or count < 0 or address + count > limit
+
+
 # Default segmentation configuration (matches v3 behavior)
 DEFAULT_HOLDING_REG_CONFIG = {
     "qw_count": 1024,  # %QW - int_output (addresses 0-1023)
@@ -122,8 +128,12 @@ class OpenPLCDeviceContext(ModbusDeviceContext):
 
         For FC5/FC6, the written values are cached with the current asyncio task ID
         so that the subsequent getValues() call can return the correct echo value.
+        A write the datastore refused is not cached, so the echo cannot confirm it.
         """
-        # Cache values for FC5/FC6 echo response
+        result = super().setValues(func_code, address, values)
+        if result is not None:
+            return result
+
         if func_code in self._ECHO_FUNCTION_CODES:
             try:
                 task_id = id(asyncio.current_task())
@@ -134,7 +144,7 @@ class OpenPLCDeviceContext(ModbusDeviceContext):
                 # No running event loop - skip caching (shouldn't happen in normal operation)
                 pass
 
-        return super().setValues(func_code, address, values)
+        return None
 
     def getValues(self, func_code, address, count=1):
         """
@@ -197,6 +207,9 @@ class OpenPLCCoilsDataBlock(ModbusSparseDataBlock):
         """Get coil values from OpenPLC bool_output using SafeBufferAccess"""
         address = address - 1  # Modbus addresses are 0-based
 
+        if out_of_range(address, count, self.num_coils):
+            return ExcCodes.ILLEGAL_ADDRESS
+
         if not self.safe_buffer_access.is_valid:
             if logger:
                 logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
@@ -239,10 +252,13 @@ class OpenPLCCoilsDataBlock(ModbusSparseDataBlock):
         """
         address = address - 1  # Modbus addresses are 0-based
 
+        if out_of_range(address, len(values), self.num_coils):
+            return ExcCodes.ILLEGAL_ADDRESS
+
         if not self.safe_buffer_access.is_valid:
             if logger:
                 logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
-            return
+            return None
 
         # Journal writes are thread-safe, no mutex needed
         for i, value in enumerate(values):
@@ -285,7 +301,7 @@ class OpenPLCDiscreteInputsDataBlock(ModbusSparseDataBlock):
 
         # Outside the image: exception 02, never a plausible zero -- a client
         # cannot tell a real 0 from an address the device does not have.
-        if address < 0 or address + count > self.num_inputs:
+        if out_of_range(address, count, self.num_inputs):
             return ExcCodes.ILLEGAL_ADDRESS
 
         if not self.safe_buffer_access.is_valid:
@@ -351,7 +367,7 @@ class OpenPLCInputRegistersDataBlock(ModbusSparseDataBlock):
 
         # Outside the image: exception 02, never a plausible zero -- a client
         # cannot tell a real 0 from an address the device does not have.
-        if address < 0 or address + count > self.num_registers:
+        if out_of_range(address, count, self.num_registers):
             return ExcCodes.ILLEGAL_ADDRESS
 
         if not self.safe_buffer_access.is_valid:
@@ -411,6 +427,9 @@ class OpenPLCHoldingRegistersDataBlock(ModbusSparseDataBlock):
         """Get holding register values from OpenPLC int_output using SafeBufferAccess"""
         address = address - 1  # Modbus addresses are 0-based
 
+        if out_of_range(address, count, self.num_registers):
+            return ExcCodes.ILLEGAL_ADDRESS
+
         if not self.safe_buffer_access.is_valid:
             if logger:
                 logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
@@ -448,10 +467,13 @@ class OpenPLCHoldingRegistersDataBlock(ModbusSparseDataBlock):
         """
         address = address - 1  # Modbus addresses are 0-based
 
+        if out_of_range(address, len(values), self.num_registers):
+            return ExcCodes.ILLEGAL_ADDRESS
+
         if not self.safe_buffer_access.is_valid:
             if logger:
                 logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
-            return
+            return None
 
         # Journal writes are thread-safe, no mutex needed
         for i, value in enumerate(values):
@@ -521,6 +543,9 @@ class OpenPLCSegmentedCoilsDataBlock(ModbusSparseDataBlock):
         """Get coil values from appropriate OpenPLC buffer based on address segmentation"""
         address = address - 1  # Modbus addresses are 1-based
 
+        if out_of_range(address, count, self.total_bits):
+            return ExcCodes.ILLEGAL_ADDRESS
+
         if not self.safe_buffer_access.is_valid:
             if logger:
                 logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
@@ -574,13 +599,13 @@ class OpenPLCSegmentedCoilsDataBlock(ModbusSparseDataBlock):
 
         # Outside the image: exception 02, never a plausible zero -- a client
         # cannot tell a real 0 from an address the device does not have.
-        if address < 0 or address + len(values) > self.total_bits:
+        if out_of_range(address, len(values), self.total_bits):
             return ExcCodes.ILLEGAL_ADDRESS
 
         if not self.safe_buffer_access.is_valid:
             if logger:
                 logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
-            return
+            return None
 
         # Journal writes are thread-safe, no mutex needed
         for i, value in enumerate(values):
@@ -745,6 +770,9 @@ class OpenPLCSegmentedHoldingRegistersDataBlock(ModbusSparseDataBlock):
         """Get holding register values from appropriate OpenPLC buffer based on address segmentation"""
         address = address - 1  # Modbus addresses are 1-based
 
+        if out_of_range(address, count, self.total_registers):
+            return ExcCodes.ILLEGAL_ADDRESS
+
         if not self.safe_buffer_access.is_valid:
             if logger:
                 logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
@@ -825,13 +853,13 @@ class OpenPLCSegmentedHoldingRegistersDataBlock(ModbusSparseDataBlock):
 
         # Outside the image: exception 02, never a plausible zero -- a client
         # cannot tell a real 0 from an address the device does not have.
-        if address < 0 or address + len(values) > self.total_registers:
+        if out_of_range(address, len(values), self.total_registers):
             return ExcCodes.ILLEGAL_ADDRESS
 
         if not self.safe_buffer_access.is_valid:
             if logger:
                 logger.error(f"Safe buffer access not valid: {self.safe_buffer_access.error_msg}")
-            return
+            return None
 
         # Mutex needed for read-modify-write consistency on partial DINT/LINT updates
         self.safe_buffer_access.acquire_mutex()
