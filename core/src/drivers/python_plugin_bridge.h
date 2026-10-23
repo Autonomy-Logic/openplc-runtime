@@ -13,6 +13,11 @@
 #pragma GCC diagnostic ignored "-Wcpp"
 #endif
 
+// pyconfig.h defines these unconditionally. A libc header seen earlier may have set other values
+// (glibc with POSIX.1-2024: 202405L / 800), and the redefinition is an error under -Werror.
+#undef _POSIX_C_SOURCE
+#undef _XOPEN_SOURCE
+
 #include <Python.h>
 
 #if defined(__GNUC__)
