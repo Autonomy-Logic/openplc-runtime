@@ -504,6 +504,32 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
                 except OSError as exc:
                     build_state.log(f"[WARNING] VPP: could not migrate {p.name}.license: {exc}\n")
 
+            # Copy other conf/<name>.* siblings; .json and .license are handled above.
+            try:
+                conf_entries = os.listdir(conf_dir)
+            except OSError:
+                conf_entries = []
+            sibling_prefix = f"{p.name}."
+            for sibling_name in conf_entries:
+                if not sibling_name.startswith(sibling_prefix):
+                    continue
+                if sibling_name == f"{p.name}.json" or sibling_name == f"{p.name}.license":
+                    continue
+                src_sibling = os.path.join(conf_dir, sibling_name)
+                if not os.path.isfile(src_sibling):
+                    continue
+                dest_sibling = os.path.join(str(VPP_DATA_DIR), sibling_name)
+                if not is_inside_root(dest_sibling, str(VPP_DATA_DIR)):
+                    build_state.log(
+                        f"[WARNING] VPP: sibling dest '{dest_sibling}' escapes the persistent dir, skipping\n"
+                    )
+                    continue
+                try:
+                    shutil.copy2(src_sibling, dest_sibling)
+                    build_state.log(f"[INFO] VPP: copied {sibling_name} to {dest_sibling}\n")
+                except OSError as exc:
+                    build_state.log(f"[WARNING] VPP: could not copy {sibling_name}: {exc}\n")
+
         # Persist the rewritten config_path values so the C loader AND the
         # 0x49/0x4A handlers (via _license_path) read the persistent location,
         # not the build/vpp one the editor emitted.

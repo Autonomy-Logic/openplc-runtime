@@ -254,7 +254,7 @@ typedef struct
     plugin_debug_set_func_t         debug_set;
     plugin_debug_write_func_t       debug_write;
 
-    /* Plugin configuration */
+    /* conf/<plugin>.* siblings are copied next to this file */
     char plugin_specific_config_file_path[256];
 
     /* THE SMALLEST TABLE, NOT THE ONLY ONE.
