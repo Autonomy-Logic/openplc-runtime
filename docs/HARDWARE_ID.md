@@ -58,11 +58,39 @@ Other rules:
 ## Usage
 
 ```
-scripts/hardware-id.sh             # prints the ID; exit status 2 when none can be derived
-scripts/hardware-id.sh --elements  # prints "<kind> <element hash>" per element
+scripts/hardware-id.sh               # prints the ID; exit status 2 when none can be derived
+scripts/hardware-id.sh --elements    # prints "<kind> <element hash>" per element
+scripts/hardware-id.sh --record      # prints the record (below)
+scripts/hardware-id.sh --store FILE  # writes the record to FILE unless FILE already holds one
 ```
 
 `OPENPLC_HWID_ROOT` replaces `/` for every read. It exists for tests only.
+
+## Record and storage
+
+The record is the ID line followed by one `<kind> <element hash>` line per element. It is computed
+once, at installation, and never replaced: `--store` (`hw2_store` in the embedded block) leaves an
+existing record alone, so a reinstall on the same hardware keeps it and a wiped device recomputes
+the same one.
+
+| Install | Who computes it | Record |
+| --- | --- | --- |
+| Native (`install.sh --native`) | `install.sh` | `/var/lib/openplc-runtime/hardware-id` |
+| Container (`scripts/install-docker.sh`) | `install-docker.sh`, on the host | `<data dir>/hardware-id`, default `/var/lib/openplc-runtime/hardware-id` |
+| vPLC | orchestrator-agent's installer, on the host | `/etc/openplc-runtime/hardware-id` inside the container, read-only |
+
+A runtime installed before the record existed computes it on start when none is stored, but only
+where it sees the host hardware: natively, or in the bootloader's privileged container. A vPLC never
+computes one.
+
+The runtime advertises the record on `GET /api/hardware-id` (any authenticated user):
+
+```json
+{"hardwareId": "hw2:…", "source": "device", "elements": [{"kind": "serial", "hash": "…"}]}
+```
+
+`source` is `orchestrator` in a vPLC. Without an ID, `hardwareId` and `source` are null and
+`elements` is empty.
 
 ## Test vectors
 

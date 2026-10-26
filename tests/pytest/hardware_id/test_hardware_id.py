@@ -253,3 +253,57 @@ def test_arm_cpu_uses_first_core_registers(tmp_path: pathlib.Path) -> None:
     root = build(tmp_path, vector("raspberry-pi"))
     cpu = [line for line in run(root, "--elements").out.splitlines() if line.startswith("cpu ")]
     assert cpu == [f"cpu {element_hash('cpu', '0x41|0xd08')}"]
+
+
+def _block(path: pathlib.Path) -> str:
+    text = path.read_text()
+    start = text.index("# BEGIN hardware-id v2")
+    end = text.index("# END hardware-id v2") + len("# END hardware-id v2\n")
+    return text[start:end]
+
+
+def test_docker_installer_embeds_the_canonical_block() -> None:
+    assert _block(REPO / "scripts" / "install-docker.sh") == _block(SCRIPT)
+
+
+def test_record_is_the_id_then_the_elements(tmp_path: pathlib.Path) -> None:
+    root = build(tmp_path, vector("raspberry-pi"))
+    lines = run(root, "--record").out.splitlines()
+    assert lines[0] == vector("raspberry-pi")["id"]
+    assert lines[1:] == run(root, "--elements").out.splitlines()
+
+
+def _store(root: pathlib.Path, target: pathlib.Path) -> int:
+    """Calls hw2_store from a shell with the installers' strict options."""
+    script = f'set -euo pipefail; source "{SCRIPT}"; hw2_store "{target}"'
+    env = dict(os.environ, OPENPLC_HWID_ROOT=str(root))
+    return subprocess.run(["bash", "-c", script], env=env, check=False).returncode
+
+
+def test_store_writes_the_record_under_strict_mode(tmp_path: pathlib.Path) -> None:
+    root = build(tmp_path / "root", vector("x86-industrial-pc"))
+    target = tmp_path / "hardware-id"
+    assert _store(root, target) == 0
+    assert target.read_text() == run(root, "--record").out
+    assert oct(target.stat().st_mode & 0o777) == "0o644"
+
+
+def test_store_never_replaces_a_record(tmp_path: pathlib.Path) -> None:
+    root = build(tmp_path / "root", vector("x86-industrial-pc"))
+    target = tmp_path / "hardware-id"
+    target.write_text("hw2:" + "0" * 64 + "\n")
+    assert _store(root, target) == 0
+    assert target.read_text() == "hw2:" + "0" * 64 + "\n"
+
+
+def test_store_leaves_nothing_without_an_id(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "hardware-id"
+    assert _store(tmp_path / "empty", target) == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_store_cli(tmp_path: pathlib.Path) -> None:
+    root = build(tmp_path / "root", vector("raspberry-pi"))
+    target = tmp_path / "hardware-id"
+    assert run(root, "--store", str(target)).code == 0
+    assert target.read_text().splitlines()[0] == vector("raspberry-pi")["id"]

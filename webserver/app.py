@@ -27,7 +27,7 @@ from typing import Callable, Final, Optional
 import flask
 import flask_login
 
-from webserver import project_snapshot
+from webserver import hardware_id, project_snapshot
 from webserver.credentials import CertGen
 from webserver.debug_websocket import init_debug_websocket
 from webserver.discovery.discovery_routes import discovery_bp
@@ -569,6 +569,8 @@ def run_https():
     register_callback_post(restapi_callback_post)
 
     socketio = init_debug_websocket(app_restapi, runtime_manager.runtime_socket)
+
+    hardware_id.ensure_stored()
 
     with app_restapi.app_context():
         try:

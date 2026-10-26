@@ -5,8 +5,10 @@
 # Hardware ID v2 reader (spec: docs/HARDWARE_ID.md). Canonical copy: installers embed the
 # block between the BEGIN/END markers verbatim, and their parity checks compare it byte for byte.
 #
-# Usage: hardware-id.sh             print the ID (hw2:<64 hex>), exit 2 when none can be derived
-#        hardware-id.sh --elements  print "<kind> <element hash>" lines
+# Usage: hardware-id.sh               print the ID (hw2:<64 hex>), exit 2 when none can be derived
+#        hardware-id.sh --elements    print "<kind> <element hash>" lines
+#        hardware-id.sh --record      print the ID line followed by the element lines
+#        hardware-id.sh --store FILE  write the record to FILE unless FILE already holds one
 # OPENPLC_HWID_ROOT replaces / for every read (tests only).
 
 # BEGIN hardware-id v2
@@ -167,19 +169,46 @@ hw2_elements() {
     [ "$strong" -eq 1 ]
 }
 
+hw2_id_of() { printf 'hw2:%s\n' "$(printf '%s\n' "$1" | cut -d' ' -f2 | sort | hw2_sha256)"; }
+
 # Prints hw2:<64 hex>; returns 1 when no ID can be derived.
 hw2_id() {
     local elements
     elements="$(hw2_elements)" || return 1
-    printf 'hw2:%s\n' "$(printf '%s\n' "$elements" | cut -d' ' -f2 | sort | hw2_sha256)"
+    hw2_id_of "$elements"
+}
+
+# Prints the ID line followed by the element lines; returns 1 when no ID can be derived.
+hw2_record() {
+    local elements
+    elements="$(hw2_elements)" || return 1
+    hw2_id_of "$elements"
+    printf '%s\n' "$elements"
+}
+
+# Writes the record to $1 atomically; an existing record is never replaced.
+hw2_store() {
+    local tmp
+    [ -s "$1" ] && return 0
+    tmp="$1.tmp.$$"
+    if hw2_record >"$tmp"; then
+        chmod 644 "$tmp" && mv -f "$tmp" "$1"
+    else
+        rm -f "$tmp"
+        return 1
+    fi
 }
 # END hardware-id v2
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     set -u
-    if [ "${1:-}" = "--elements" ]; then
-        hw2_elements || exit 2
-    else
-        hw2_id || exit 2
-    fi
+    case "${1:-}" in
+        --elements) hw2_elements || exit 2 ;;
+        --record) hw2_record || exit 2 ;;
+        --store)
+            [ -n "${2:-}" ] || { echo "usage: $0 --store FILE" >&2; exit 64; }
+            hw2_store "$2" || exit 2
+            ;;
+        *) hw2_id || exit 2 ;;
+    esac
 fi
