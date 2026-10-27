@@ -64,6 +64,9 @@ scripts/hardware-id.sh --record      # prints the record (below)
 scripts/hardware-id.sh --store FILE  # writes the record to FILE unless FILE already holds one
 ```
 
+Run it as root. On x86 the DMI `product_uuid` and `board_serial` files are readable by root only,
+so an unprivileged run sees only the CPU and derives no ID. Every installer runs as root.
+
 `OPENPLC_HWID_ROOT` replaces `/` for every read. It exists for tests only.
 
 ## Record and storage
