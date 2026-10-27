@@ -113,6 +113,24 @@ int main()
     image_tables_zero_outputs();
     CHECK(true, "zeroing with no image allocated does not crash");
 
+    // image_tables_seed_image_from_members pre-load: strucpp accessors are
+    // null, so the seed must be a safe no-op. The full seeding path is covered
+    // end-to-end against a loaded program.
+    if (!image_tables_alloc(&sizes))
+    {
+        std::printf("  FAIL  image_tables_alloc (seed case)\n");
+        return 1;
+    }
+    image_tables_seed_image_from_members();
+    CHECK(true, "seed with no strucpp binding does not crash");
+    bool all_zero = true;
+    for (uint32_t i = 0; i < sizes.elements[IMAGE_TABLE_INT_MEMORY]; ++i)
+        all_zero &= g_image.int_memory[i] == nullptr || *g_image.int_memory[i] == 0;
+    for (uint32_t i = 0; i < sizes.elements[IMAGE_TABLE_INT_OUTPUT]; ++i)
+        all_zero &= g_image.int_output[i] == nullptr || *g_image.int_output[i] == 0;
+    CHECK(all_zero, "seed with no strucpp binding writes nothing to the image");
+    image_tables_free();
+
     if (g_failures == 0)
         std::printf("all cases passed\n");
     return g_failures == 0 ? 0 : 1;
