@@ -160,6 +160,8 @@ State management: `core/src/plc_app/plc_state_manager.cpp`
   the WebSocket side is `webserver/debug_websocket.py`
 - **Watchdog**: `core/src/plc_app/utils/watchdog.c` - health monitoring
 - **Image tables**: `core/src/plc_app/image_tables.cpp` - I/O buffer management
+- **Hardware ID v2**: `scripts/hardware-id.sh` (canonical bash reader; installers embed its marked
+  block verbatim), `webserver/hardware_id.py`, `GET /api/hardware-id`. Spec: `docs/HARDWARE_ID.md`
 
 ## Code Style
 

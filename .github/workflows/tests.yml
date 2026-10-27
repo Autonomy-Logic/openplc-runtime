@@ -127,7 +127,7 @@ jobs:
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -S warning install.sh scripts/install-docker.sh \
+          shellcheck -S warning install.sh scripts/install-docker.sh scripts/hardware-id.sh \
             windows/provision-msys2.sh tests/integration/harness.sh
 
       # The Windows installer ships a compiled runtime inside an MSYS2 tree, so

@@ -641,6 +641,11 @@ else
         mkdir -p /var/lib/openplc-runtime
         chmod 755 /var/lib/openplc-runtime
         log_info "Created persistent data directory at /var/lib/openplc-runtime"
+        if bash "$OPENPLC_DIR/scripts/hardware-id.sh" --store /var/lib/openplc-runtime/hardware-id; then
+            log_info "Hardware ID: $(head -n 1 /var/lib/openplc-runtime/hardware-id)"
+        else
+            log_warning "No hardware ID can be derived on this device; runtime licences cannot be bound to it."
+        fi
     fi
 fi
 

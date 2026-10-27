@@ -23,7 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import webserver.config
-from webserver import project_snapshot
+from webserver import hardware_id, project_snapshot
 from webserver.logger import get_logger
 from webserver.version import MIN_EDITOR_VERSION, RUNTIME_VERSION
 
@@ -792,6 +792,58 @@ def get_project_snapshot():
         yield b'"}'
 
     return current_app.response_class(stream(), mimetype="application/json")
+
+
+@restapi_bp.route("/hardware-id", methods=["GET"])
+@jwt_required()
+def get_hardware_id():
+    """Return the hardware ID v2 this runtime is bound to, with its element hashes.
+
+    Any authenticated user. ``hardwareId`` is null when no ID can be derived on
+    this device. ``source`` is ``device`` for an ID computed on this hardware and
+    ``orchestrator`` for the host ID orchestrator-agent placed in a vPLC.
+    ---
+    tags:
+      - Runtime
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Hardware ID retrieved
+        schema:
+          type: object
+          properties:
+            hardwareId:
+              type: string
+              description: hw2 followed by 64 lowercase hex characters, or null
+            source:
+              type: string
+              description: device or orchestrator, or null
+            elements:
+              type: array
+              items:
+                type: object
+                properties:
+                  kind:
+                    type: string
+                  hash:
+                    type: string
+      401:
+        description: Authentication required
+    """
+    record = hardware_id.current()
+    if record is None:
+        return jsonify({"hardwareId": None, "source": None, "elements": []}), 200
+    return (
+        jsonify(
+            {
+                "hardwareId": record.value,
+                "source": record.source,
+                "elements": [{"kind": e.kind, "hash": e.hash} for e in record.elements],
+            }
+        ),
+        200,
+    )
 
 
 @restapi_bp.route("/login", methods=["POST"])
