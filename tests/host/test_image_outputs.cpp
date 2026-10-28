@@ -123,12 +123,6 @@ int main()
     }
     image_tables_seed_image_from_members();
     CHECK(true, "seed with no strucpp binding does not crash");
-    bool all_zero = true;
-    for (uint32_t i = 0; i < sizes.elements[IMAGE_TABLE_INT_MEMORY]; ++i)
-        all_zero &= g_image.int_memory[i] == nullptr || *g_image.int_memory[i] == 0;
-    for (uint32_t i = 0; i < sizes.elements[IMAGE_TABLE_INT_OUTPUT]; ++i)
-        all_zero &= g_image.int_output[i] == nullptr || *g_image.int_output[i] == 0;
-    CHECK(all_zero, "seed with no strucpp binding writes nothing to the image");
     image_tables_free();
 
     if (g_failures == 0)

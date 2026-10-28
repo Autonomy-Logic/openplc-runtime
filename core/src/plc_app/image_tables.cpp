@@ -919,17 +919,19 @@ extern "C" void image_tables_copy_config_globals_out(void)
 }
 
 // Image is calloc'd, so without this the first scan's copy_in reads 0 and
-// wipes every member the ctor set. Walks every located leaf (program-local
-// AND config-scope) and drains the journal, so plc_retain_read runs over an
-// image already carrying the declared initial values.
+// wipes every member the ctor set. Walks every located output/memory leaf
+// (program-local AND config-scope; %I is skipped by copy_out_one because
+// inputs belong to the field) and drains the journal, so plc_retain_read
+// runs over an image already carrying the declared initial values.
 extern "C" void image_tables_seed_image_from_members(void)
 {
     if (!ext_strucpp_get_located_vars) return;
     const strucpp::LocatedVar *lv = ext_strucpp_get_located_vars();
-    pthread_mutex_lock(&g_image_tables_mutex);
+    pthread_mutex_t *mtx = image_tables_mutex();
+    pthread_mutex_lock(mtx);
     for (uint32_t k = 0; k < g_located_count; ++k) copy_out_one(lv, k);
     journal_apply_and_clear();
-    pthread_mutex_unlock(&g_image_tables_mutex);
+    pthread_mutex_unlock(mtx);
 }
 
 // ---------------------------------------------------------------------------

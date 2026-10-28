@@ -299,9 +299,10 @@ extern "C"
     void image_tables_copy_config_globals_in(void);
     void image_tables_copy_config_globals_out(void);
 
-    /* Seeds the image with every located leaf's ctor-initialised value, so a
-     * declared `:= <literal>` is visible from the first scan. plc_retain_read
-     * overrides retained slots on top. Takes the image-tables mutex itself. */
+    /* Seeds the image with every located output/memory leaf's ctor-initialised
+     * value, so a declared `:= <literal>` is visible from the first scan. %I is
+     * not touched -- inputs belong to the field. plc_retain_read overrides
+     * retained slots on top. Takes the image-tables mutex itself. */
     void image_tables_seed_image_from_members(void);
 
     /* NULL until symbols_init() succeeds; cleared by image_tables_clear_null_pointers(). */
