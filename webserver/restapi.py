@@ -23,7 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import webserver.config
-from webserver import hardware_id, project_snapshot
+from webserver import hardware_id, project_snapshot, runtime_license
 from webserver.logger import get_logger
 from webserver.version import MIN_EDITOR_VERSION, RUNTIME_VERSION
 
@@ -844,6 +844,53 @@ def get_hardware_id():
         ),
         200,
     )
+
+
+@restapi_bp.route("/runtime-license", methods=["POST"])
+@jwt_required()
+def upload_runtime_license():
+    """Store a commercial runtime licence issued by Autonomy Edge for this device.
+
+    Any authenticated user. The body is the licence file exactly as Edge serves
+    it. It is stored only when its signature verifies and its hardware ID is this
+    device's (in a vPLC, the host's, and orchestrator-agent then assigns a seat).
+    ---
+    tags:
+      - Runtime
+    security:
+      - BearerAuth: []
+    consumes:
+      - application/json
+    responses:
+      200:
+        description: Licence stored
+        schema:
+          type: object
+          properties:
+            orderId:
+              type: string
+            license:
+              type: string
+              description: commercial or gpl, as /api/status reports it now
+      400:
+        description: Not a licence for this device, or its signature does not verify
+      401:
+        description: Authentication required
+      413:
+        description: Body larger than 4 KiB
+      500:
+        description: The licence verified but could not be written
+    """
+    limit = runtime_license.MAX_LICENSE_BYTES
+    if request.content_length is not None and request.content_length > limit:
+        return jsonify({"error": f"Licence is larger than {limit} bytes"}), 413
+    raw = request.stream.read(limit + 1)
+    if len(raw) > limit:
+        return jsonify({"error": f"Licence is larger than {limit} bytes"}), 413
+    result = runtime_license.store(raw)
+    if not result.ok:
+        return jsonify({"error": result.error}), 500 if result.internal else 400
+    return jsonify({"orderId": result.order_id, "license": runtime_license.status()}), 200
 
 
 @restapi_bp.route("/login", methods=["POST"])
