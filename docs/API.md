@@ -171,9 +171,13 @@ Authorization: Bearer <token>
 **Response:**
 ```json
 {
-  "status": "RUNNING"
+  "status": "RUNNING",
+  "license": "gpl"
 }
 ```
+
+`license` is `commercial` when the runtime holds a commercial runtime licence for this hardware
+(see [Runtime Licence](#runtime-licence)), and `gpl` otherwise. It only reports; nothing is limited.
 
 **Possible Status Values:**
 - `"EMPTY"` - No PLC program loaded
@@ -343,6 +347,58 @@ Authorization: Bearer <token>
 - `INFO` - General informational messages
 - `WARNING` - Warning messages
 - `ERROR` - Error messages
+
+---
+
+## Runtime Licence
+
+OpenPLC Runtime is free under the GPLv3. A commercial licence is a JSON file Autonomy Edge signs for
+one hardware ID v2 ([HARDWARE_ID.md](HARDWARE_ID.md)). The runtime stores it, checks its signature
+and reports the result in the `license` key of `/api/status`. It never contacts Edge and never
+limits anything: the editor fetches licences and uploads them.
+
+### Upload Runtime Licence
+
+```http
+POST /api/runtime-license
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"fmt":1,"product":"com.autonomy.openplc-runtime","hardware_id":"hw2:...","seats":2,
+ "order_id":"...","issued_at":"2026-10-28T12:00:00.000Z","key_id":0,"sig":"..."}
+```
+
+Any authenticated user. The body is the licence file exactly as Edge serves it, at most 4 KiB.
+
+**Response (200):**
+```json
+{"orderId": "...", "license": "commercial"}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 400 | Not a runtime licence, no hardware ID on this device, licence for another hardware ID, or its signature does not verify |
+| 401 | Authentication required |
+| 413 | Body larger than 4 KiB |
+| 500 | The licence verified but could not be written |
+
+**Verification:** ECDSA P-256 over SHA-256 of the payload without `sig`, keys sorted, no
+whitespace, UTF-8. `sig` is the raw r and s (64 bytes) in base64. The public key is selected by
+`key_id` from the keys built into the runtime (`TRUSTED_KEYS` in `webserver/runtime_license.py`).
+`OPENPLC_RUNTIME_LICENSE_DEV_KEY=<key_id>:<x||y hex>` adds a development key; never set it in
+production. The check runs the `openssl` command line.
+
+**Where licences live:**
+- On its own hardware: `licenses/<order_id>.license` in the persistent data directory. Any stored
+  licence that verifies for this device makes the status `commercial`.
+- In a vPLC (hardware ID injected by orchestrator-agent): uploads go to
+  `/var/lib/openplc-runtime/licenses/`, where the agent collects the host's licences. Only the seat
+  file the agent writes to `/etc/openplc-runtime/runtime.license` (`{fmt, vplc, license}`) counts:
+  `commercial` when the licence inside verifies for the host's hardware ID. Its `vplc` name is not
+  compared, since a vPLC cannot see its container name.
+
+The status is computed at start, logged once, and recomputed only when a licence, the seat file or
+the hardware ID record changes.
 
 ---
 

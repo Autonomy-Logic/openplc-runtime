@@ -27,7 +27,7 @@ from typing import Callable, Final, Optional
 import flask
 import flask_login
 
-from webserver import hardware_id, project_snapshot
+from webserver import hardware_id, project_snapshot, runtime_license
 from webserver.credentials import CertGen
 from webserver.debug_websocket import init_debug_websocket
 from webserver.discovery.discovery_routes import discovery_bp
@@ -176,9 +176,9 @@ def parse_switch_position(switch_response: Optional[str]) -> Optional[str]:
 def handle_status(data: dict) -> dict:
     response = runtime_manager.status_plc()
     if response is None:
-        return {"status": "No response from runtime"}
+        return {"status": "No response from runtime", "license": runtime_license.status()}
 
-    result: dict = {"status": response}
+    result: dict = {"status": response, "license": runtime_license.status()}
 
     # Mode-switch position. Additive key: an older editor ignores it, and a
     # runtime with no switch-aware plugin reports "run".
@@ -571,6 +571,7 @@ def run_https():
     socketio = init_debug_websocket(app_restapi, runtime_manager.runtime_socket)
 
     hardware_id.ensure_stored()
+    runtime_license.log_startup_status()
 
     with app_restapi.app_context():
         try:
