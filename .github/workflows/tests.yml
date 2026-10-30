@@ -114,9 +114,11 @@ jobs:
       # goes and everything under tests/pytest/plugins runs again.
       - name: pytest (plugin suites known green)
         run: |
-          pytest -q \
+          pytest -q -rs \
             tests/pytest/plugins/opcua/test_string_types.py \
-            tests/pytest/plugins/opcua/test_read_status.py
+            tests/pytest/plugins/opcua/test_read_status.py \
+            tests/pytest/plugins/test_vpp_license_delivery.py \
+            tests/pytest/plugins/test_vpp_sibling_delivery.py
 
   shell:
     name: Installer scripts

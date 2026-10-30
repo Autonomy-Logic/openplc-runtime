@@ -446,6 +446,10 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
         # config_path is the single source of truth for the .so, so this is
         # what carries config+license out of the wipe-on-update build/ tree.
         conf_dir = os.path.join(generated_dir, "conf")
+        try:
+            conf_entries = os.listdir(conf_dir)
+        except OSError:
+            conf_entries = []
         vpp_conf_plugins = PluginsConfiguration.from_file(VPP_CONF_DEST)
         rewrote_paths = False
         for p in vpp_conf_plugins.plugins:
@@ -505,15 +509,12 @@ def apply_vpp_plugin_conf(generated_dir: str = "core/generated") -> None:
                     build_state.log(f"[WARNING] VPP: could not migrate {p.name}.license: {exc}\n")
 
             # Copy other conf/<name>.* siblings; .json and .license are handled above.
-            try:
-                conf_entries = os.listdir(conf_dir)
-            except OSError:
-                conf_entries = []
             sibling_prefix = f"{p.name}."
+            handled_siblings = {f"{p.name}.json", f"{p.name}.license"}
             for sibling_name in conf_entries:
                 if not sibling_name.startswith(sibling_prefix):
                     continue
-                if sibling_name == f"{p.name}.json" or sibling_name == f"{p.name}.license":
+                if sibling_name in handled_siblings:
                     continue
                 src_sibling = os.path.join(conf_dir, sibling_name)
                 if not os.path.isfile(src_sibling):
