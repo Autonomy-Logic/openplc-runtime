@@ -117,6 +117,7 @@ jobs:
           pytest -q -rs \
             tests/pytest/plugins/opcua/test_string_types.py \
             tests/pytest/plugins/opcua/test_read_status.py \
+            tests/pytest/plugins/opcua/test_logger_lifetime.py \
             tests/pytest/plugins/test_vpp_license_delivery.py \
             tests/pytest/plugins/test_vpp_sibling_delivery.py
 
