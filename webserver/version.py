@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """Runtime version exposed at /api/version and via the
@@ -48,7 +48,7 @@ from pathlib import Path
 # Advisory floor advertised at /api/capabilities as minEditorVersion. The
 # editor enforces it; the runtime only advertises. Raise ONLY when an older
 # editor would produce a bundle this runtime mis-compiles.
-MIN_EDITOR_VERSION = "4.1.0"
+MIN_EDITOR_VERSION = "4.3.3"
 
 
 def _resolve_runtime_version() -> str:

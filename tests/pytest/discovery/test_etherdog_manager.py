@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """EtherDOG supervision helpers: legacy upload detection, command transport, route shaping."""
@@ -61,11 +61,16 @@ def test_ethercat_plugin_reads_iomapping_file(tmp_path: Path) -> None:
 
 
 class FakeEtherDog:
-    """Unix-socket server that records each command and echoes it back."""
+    """Unix-socket server that records each command and echoes it back.
 
-    def __init__(self, path: str) -> None:
+    ``hello_reply``, when set, overrides the reply sent to the ``hello`` command so
+    tests can simulate a features array or an older EtherDOG's bare success.
+    """
+
+    def __init__(self, path: str, hello_reply: dict | None = None) -> None:
         self.path = path
         self.received: list[str] = []
+        self.hello_reply = hello_reply
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.bind(path)
         self.sock.listen(4)
@@ -82,7 +87,10 @@ class FakeEtherDog:
                 for line in f:
                     command = json.loads(line)["command"]
                     self.received.append(command)
-                    f.write(json.dumps({"status": "success", "echo": command}) + "\n")
+                    if command == "hello" and self.hello_reply is not None:
+                        f.write(json.dumps(self.hello_reply) + "\n")
+                    else:
+                        f.write(json.dumps({"status": "success", "echo": command}) + "\n")
                     f.flush()
 
     def close(self) -> None:
@@ -380,6 +388,75 @@ def test_second_start_does_not_start_a_second_supervisor(run_dir: Path, monkeypa
         manager._running = False
         if manager._process is not None:
             manager._process.kill()
+
+
+def test_command_captures_hello_features_and_version(run_dir: Path) -> None:
+    hello = {
+        "status": "success",
+        "name": "EtherDOG",
+        "version": "0.5.0",
+        "protocol": 1,
+        "features": [
+            "ethercat.dynamic_alloc",
+            "ethercat.sdo_byte_string",
+            "ethercat.sdo_complete_access",
+            "ethercat.scan_modules",
+        ],
+    }
+    server = FakeEtherDog(str(run_dir / "etherdog.socket"), hello_reply=hello)
+    try:
+        manager = _manager(run_dir)
+        assert manager.get_last_hello() == (None, None)
+        manager.command({"command": "status"})
+        features, version = manager.get_last_hello()
+        assert features == [
+            "ethercat.dynamic_alloc",
+            "ethercat.sdo_byte_string",
+            "ethercat.sdo_complete_access",
+            "ethercat.scan_modules",
+        ]
+        assert version == "0.5.0"
+    finally:
+        server.close()
+
+
+def test_each_hello_replaces_the_cached_features(run_dir: Path) -> None:
+    """A hello without features or version (an older EtherDOG) clears the cache: the
+    capability gate must not see features of a process that is no longer there."""
+    older = {"status": "success"}
+    newer = {
+        "status": "success",
+        "name": "EtherDOG",
+        "version": "1.0.0",
+        "features": ["ethercat.dynamic_alloc"],
+    }
+    server = FakeEtherDog(str(run_dir / "etherdog.socket"), hello_reply=newer)
+    try:
+        manager = _manager(run_dir)
+        manager.command({"command": "status"})
+        assert manager.get_last_hello() == (["ethercat.dynamic_alloc"], "1.0.0")
+        server.hello_reply = older
+        manager.command({"command": "status"})
+        assert manager.get_last_hello() == (None, None)
+    finally:
+        server.close()
+
+
+def test_stop_and_disable_clear_the_cached_hello(run_dir: Path) -> None:
+    hello = {"status": "success", "version": "1.0.0", "features": ["ethercat.scan_modules"]}
+    server = FakeEtherDog(str(run_dir / "etherdog.socket"), hello_reply=hello)
+    try:
+        manager = _manager(run_dir)
+        manager.command({"command": "status"})
+        assert manager.get_last_hello()[1] == "1.0.0"
+        manager.stop()
+        assert manager.get_last_hello() == (None, None)
+        manager.command({"command": "status"})
+        assert manager.get_last_hello()[1] == "1.0.0"
+        manager._disable("test")
+        assert manager.get_last_hello() == (None, None)
+    finally:
+        server.close()
 
 
 def test_stop_during_leftover_cleanup_spawns_nothing(run_dir: Path, monkeypatch) -> None:

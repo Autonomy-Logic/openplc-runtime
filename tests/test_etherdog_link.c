@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 /**
@@ -245,6 +245,8 @@ void test_send_outputs_encodes_header(void)
     lk.server_len[0] = 0; /* connected pair: no destination needed */
 
     const uint8_t out[3] = { 1, 2, 3 };
+    TEST_ASSERT_EQUAL_INT(-1, edl_send_outputs(&lk, 0, out, sizeof(out), true)); /* no buffer yet */
+    TEST_ASSERT_EQUAL_INT(0, edl_reserve_outputs(&lk, sizeof(out)));
     TEST_ASSERT_EQUAL_INT(0, edl_send_outputs(&lk, 0, out, sizeof(out), true));
     uint8_t buf[64];
     ssize_t n = recv(peer, buf, sizeof(buf), 0);
@@ -259,5 +261,18 @@ void test_send_outputs_encodes_header(void)
     TEST_ASSERT_EQUAL_MEMORY(out, buf + EDL_FRAME_HEADER, 3);
 
     TEST_ASSERT_EQUAL_INT(-1, edl_send_outputs(&lk, 1, out, sizeof(out), true)); /* not open */
-    TEST_ASSERT_EQUAL_INT(-1, edl_send_outputs(&lk, 0, out, EDL_MAX_PAYLOAD + 1, true));
+    TEST_ASSERT_EQUAL_INT(-1, edl_send_outputs(&lk, 0, out, sizeof(out) + 1, true)); /* over reserve */
+}
+
+void test_reserve_outputs_is_bounded_by_the_frame_and_freed_on_close(void)
+{
+    TEST_ASSERT_EQUAL_INT(-1, edl_reserve_outputs(&lk, (size_t)EDL_MAX_PAYLOAD + 1));
+    TEST_ASSERT_EQUAL_INT(0, edl_reserve_outputs(&lk, 20000));
+    TEST_ASSERT_NOT_NULL(lk.tx_frame);
+    TEST_ASSERT_EQUAL_UINT(20000, lk.tx_payload_cap);
+    TEST_ASSERT_EQUAL_INT(0, edl_reserve_outputs(&lk, 10));
+    TEST_ASSERT_EQUAL_UINT(20000, lk.tx_payload_cap);
+    edl_close(&lk);
+    TEST_ASSERT_NULL(lk.tx_frame);
+    TEST_ASSERT_EQUAL_UINT(0, lk.tx_payload_cap);
 }

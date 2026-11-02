@@ -346,6 +346,10 @@ Authorization: Bearer <token>
 
 ---
 
+## EtherCAT Discovery Endpoints
+
+The `/api/discovery/ethercat/*` endpoints are listed in [ETHERCAT.md](ETHERCAT.md#discovery-endpoints).
+
 ## Error Handling
 
 ### HTTP Status Codes

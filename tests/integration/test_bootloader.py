@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """End-to-end tests for the openplc-bootloader, run inside the test host.

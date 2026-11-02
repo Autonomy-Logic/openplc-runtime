@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 /**
@@ -19,8 +19,13 @@
 
 #define EDL_MAX_MASTERS 4
 #define EDL_FRAME_HEADER 24
-#define EDL_MAX_PAYLOAD 4096
-/** Largest control reply accepted, far above any real bus (a full 4 KB image is about 13 MB). */
+/**
+ * Largest payload one data datagram carries: what fits a loopback UDP datagram (65507 bytes)
+ * after the frame header, within the header's 16-bit length field. A master whose process image
+ * exceeds it in one direction is refused when the mapping is bound.
+ */
+#define EDL_MAX_PAYLOAD (65507u - EDL_FRAME_HEADER)
+/** Largest control reply accepted, far above any real bus. */
 #define EDL_MAX_REPLY (64u * 1024u * 1024u)
 
 /** Default location of the session file the webserver writes before starting plc_main. */
@@ -46,6 +51,8 @@ typedef struct {
     uint64_t session[EDL_MAX_MASTERS];
     uint32_t tx_seq[EDL_MAX_MASTERS];
     bool open[EDL_MAX_MASTERS];
+    uint8_t *tx_frame; /* output frame buffer, sized by edl_reserve_outputs */
+    size_t tx_payload_cap;
 } edl_link_t;
 
 /** edl_read_session: the webserver disabled EtherDOG; @p err holds the reason. */
@@ -82,7 +89,16 @@ int edl_recv_inputs(edl_link_t *link, uint8_t *buf, size_t buf_size, int timeout
                     int *master_out, uint8_t *flags_out, const uint8_t **payload_out,
                     size_t *len_out);
 
-/** Send one output frame to @p master. @p valid false asks EtherDOG for the safe state. */
+/**
+ * @brief Size the output frame buffer for payloads up to @p max_payload bytes.
+ * @return 0, or -1 when @p max_payload exceeds EDL_MAX_PAYLOAD or memory runs out
+ */
+int edl_reserve_outputs(edl_link_t *link, size_t max_payload);
+
+/**
+ * Send one output frame to @p master. @p valid false asks EtherDOG for the safe state.
+ * @p len must not exceed the size given to edl_reserve_outputs.
+ */
 int edl_send_outputs(edl_link_t *link, int master, const uint8_t *payload, size_t len,
                      bool valid);
 

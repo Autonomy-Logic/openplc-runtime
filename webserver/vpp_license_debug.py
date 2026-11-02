@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """VPP device-license debug function codes (0x48/0x49/0x4A), resolved at the

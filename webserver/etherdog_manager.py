@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """Supervises EtherDOG, the EtherCAT master service, and talks to it.
@@ -149,6 +149,10 @@ class EtherDogManager:
         # Serialises start, spawn and stop; separate from _lock, which apply_busconfig holds.
         self._lifecycle = threading.Lock()
         self._stopping = threading.Event()
+        # Features and version from the latest EtherDOG hello; cleared whenever the process changes.
+        self._hello_lock = threading.Lock()
+        self._last_features: list[str] | None = None
+        self._last_hello_version: str | None = None
 
     # --- process lifecycle -------------------------------------------------------------
 
@@ -190,6 +194,7 @@ class EtherDogManager:
     def stop(self) -> None:
         self._stopping.set()
         self._running = False
+        self._clear_hello()
         with self._lifecycle:
             proc = self._process
         if proc is not None and proc.poll() is None:
@@ -211,6 +216,7 @@ class EtherDogManager:
 
     def _disable(self, reason: str, kind: EtherDogErrorKind | None = None) -> None:
         self._running = False
+        self._clear_hello()
         self._disabled_reason = reason
         self._disabled_kind = kind
         logger.warning("%s. EtherCAT is disabled; the runtime continues without it.", reason)
@@ -249,6 +255,7 @@ class EtherDogManager:
         ]
         self._output.clear()
         self._ready = False
+        self._clear_hello()
         with self._lifecycle:
             # A stop() during the leftover cleanup or a restart must not leave a new process
             if self._stopping.is_set():
@@ -359,6 +366,7 @@ class EtherDogManager:
                 reply = json.loads(reader.readline() or "{}")
                 if "error" in reply:
                     raise EtherDogUnavailable(reply["error"])
+                self._capture_hello(reply)
                 sock.sendall(json.dumps(request).encode() + b"\n")
                 line = reader.readline()
         except (OSError, ValueError) as e:
@@ -383,6 +391,33 @@ class EtherDogManager:
         except EtherDogUnavailable as e:
             logger.warning("EtherDOG command %s failed: %s", request.get("command"), e)
             return {"error": e.public_message}
+
+    def _capture_hello(self, reply: dict[str, object]) -> None:
+        """Record the hello's features and version. Each hello replaces both: a field the
+        EtherDOG did not send is recorded as None, never kept from an earlier process."""
+        features_raw = reply.get("features")
+        features = (
+            [f for f in features_raw if isinstance(f, str)]
+            if isinstance(features_raw, list)
+            else None
+        )
+        version_raw = reply.get("version")
+        version = version_raw if isinstance(version_raw, str) else None
+        with self._hello_lock:
+            self._last_features = features
+            self._last_hello_version = version
+
+    def _clear_hello(self) -> None:
+        with self._hello_lock:
+            self._last_features = None
+            self._last_hello_version = None
+
+    def get_last_hello(self) -> tuple[list[str] | None, str | None]:
+        """Features and version from the current EtherDOG's latest hello, or (None, None)
+        when none has been received since it started."""
+        with self._hello_lock:
+            features = list(self._last_features) if self._last_features is not None else None
+            return features, self._last_hello_version
 
     # --- bus configuration -----------------------------------------------------------------
 

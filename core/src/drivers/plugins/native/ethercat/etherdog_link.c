@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 /**
@@ -386,12 +386,26 @@ int edl_recv_inputs(edl_link_t *link, uint8_t *buf, size_t buf_size, int timeout
     return 1;
 }
 
+int edl_reserve_outputs(edl_link_t *link, size_t max_payload)
+{
+    if (max_payload > EDL_MAX_PAYLOAD)
+        return -1;
+    if (link->tx_frame != NULL && link->tx_payload_cap >= max_payload)
+        return 0;
+    uint8_t *frame = realloc(link->tx_frame, EDL_FRAME_HEADER + max_payload);
+    if (frame == NULL)
+        return -1;
+    link->tx_frame = frame;
+    link->tx_payload_cap = max_payload;
+    return 0;
+}
+
 int edl_send_outputs(edl_link_t *link, int master, const uint8_t *payload, size_t len, bool valid)
 {
     if (link->data_fd < 0 || master < 0 || master >= EDL_MAX_MASTERS || !link->open[master] ||
-        len > EDL_MAX_PAYLOAD)
+        link->tx_frame == NULL || len > link->tx_payload_cap)
         return -1;
-    uint8_t frame[EDL_FRAME_HEADER + EDL_MAX_PAYLOAD];
+    uint8_t *frame = link->tx_frame;
     frame[0] = 'E';
     frame[1] = 'D';
     frame[2] = 'O';
@@ -426,5 +440,8 @@ void edl_close(edl_link_t *link)
     link->rbuf = NULL;
     link->rcap = 0;
     link->rlen = 0;
+    free(link->tx_frame);
+    link->tx_frame = NULL;
+    link->tx_payload_cap = 0;
     memset(link->open, 0, sizeof(link->open));
 }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 // _GNU_SOURCE is required for pthread_setaffinity_np and CPU_SET macros

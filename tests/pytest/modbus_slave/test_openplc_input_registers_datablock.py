@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 import pytest
@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 # Import the datablock class under test
 from core.src.drivers.plugins.python.modbus_slave.simple_modbus import (
-    OpenPLCInputRegistersDataBlock
+    ExcCodes,
+    OpenPLCInputRegistersDataBlock,
 )
 
 
@@ -160,14 +161,14 @@ def test_datablock_read_out_of_range(runtime_args):
     ):
         db = OpenPLCInputRegistersDataBlock(runtime_args, num_registers=4)
 
-        # Request Modbus addresses 3..5 -> internal indices 2,3,4
-        vals = db.getValues(3, 3)
-        # index 2 -> 30, index 3 -> 40, index 4 -> out-of-range -> 0
-        assert vals == [30, 40, 0]
+        # Modbus addresses 3..5 -> internal indices 2,3,4; index 4 is past the
+        # four registers this block has. The whole request is refused rather
+        # than part-answered: a zero in the tail is indistinguishable from a
+        # real one.
+        assert db.getValues(3, 3) == ExcCodes.ILLEGAL_ADDRESS
 
-        # index 4 is out of range for the datablock itself (num_registers=4)
-        # it correctly returns 0 without calling the SBA mock.
-        # REMOVED ASSERTION: assert any(e[0] == "read_oor" and e[1] == 4 for e in sba.trace)
+        # Entirely inside, same block, still answers.
+        assert db.getValues(3, 2) == [30, 40]
 
 
 def test_read_zero_length(runtime_args):
@@ -182,9 +183,7 @@ def test_read_negative_index(runtime_args):
     ):
         db = OpenPLCInputRegistersDataBlock(runtime_args, num_registers=4)
 
-        # negative start produces zeros per module behavior
-        vals = db.getValues(-5, 2)
-        assert vals == [0, 0]
+        assert db.getValues(-5, 2) == ExcCodes.ILLEGAL_ADDRESS
 
 
 def test_read_past_modbus_block_size(runtime_args):
@@ -194,8 +193,9 @@ def test_read_past_modbus_block_size(runtime_args):
     ):
         db = OpenPLCInputRegistersDataBlock(runtime_args, num_registers=4)
 
-        vals = db.getValues(10, 3)
-        assert vals == [0, 0, 0]
+        # The image behind it is longer (8), but the block was configured for
+        # four: the exposure is what is answered, not the image.
+        assert db.getValues(10, 3) == ExcCodes.ILLEGAL_ADDRESS
 
 
 def test_overlapping_reads_consistent(runtime_args):

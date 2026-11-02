@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 /* Queue of external write/force requests; dispatcher drains at the
@@ -6,6 +6,7 @@
  * routes each: GLOBAL → IECVar; LOCATED → journal_write_* / force. */
 #include "debug_write_journal.h"
 
+#include "../lib/strucpp_abi.hpp" /* strucpp::debug::STATUS_OK */
 #include "image_tables.h"  /* ext_strucpp_debug_set / _write / _locate */
 #include "journal_buffer.h" /* journal_write_* / journal_force_set/clear  */
 #include "utils/rt_mutex.h"
@@ -25,6 +26,7 @@ namespace {
  * for the widest debug value (the WSTRING wire width). */
 constexpr size_t   DBGW_MAX_ENTRIES = 128;
 constexpr uint16_t DBGW_MAX_BYTES   = 256;
+constexpr uint8_t DBGW_STATUS_OK = strucpp::debug::STATUS_OK;
 
 struct DbgwEntry {
     uint8_t  arr;
@@ -38,6 +40,8 @@ DbgwEntry           g_dbgw[DBGW_MAX_ENTRIES];
 std::atomic<size_t> g_dbgw_count{0};
 pthread_mutex_t     g_dbgw_lock = PTHREAD_MUTEX_INITIALIZER;
 bool                g_overflow_logged = false;
+std::atomic<bool>   g_direct_window{false};
+std::atomic<bool>   g_direct_refusal_logged{false};
 
 __attribute__((constructor)) void dbgw_lock_init_pi(void)
 {
@@ -99,71 +103,107 @@ uint64_t decode_value(const uint8_t *b, uint16_t len, uint8_t size)
 }
 
 /* Enqueue a located WRITE into the image journal (applied at the next image
- * drain; transient — program logic / the driver own the slot). */
-void journal_write_located(journal_buffer_type_t type, uint8_t size,
-                           uint16_t idx, uint8_t bit, uint64_t v)
+ * drain; transient — program logic / the driver own the slot). Returns the
+ * journal's result: 0 when queued. */
+int journal_write_located(journal_buffer_type_t type, uint8_t size,
+                          uint16_t idx, uint8_t bit, uint64_t v)
 {
     switch (size) {
-    case SZ_BIT:   journal_write_bool(type, idx, bit, (v & 1) != 0); break;
-    case SZ_BYTE:  journal_write_byte(type, idx, (uint8_t)v);        break;
-    case SZ_WORD:  journal_write_int(type, idx, (uint16_t)v);        break;
-    case SZ_DWORD: journal_write_dint(type, idx, (uint32_t)v);       break;
-    case SZ_LWORD: journal_write_lint(type, idx, v);                 break;
-    default: break;
+    case SZ_BIT:   return journal_write_bool(type, idx, bit, (v & 1) != 0);
+    case SZ_BYTE:  return journal_write_byte(type, idx, (uint8_t)v);
+    case SZ_WORD:  return journal_write_int(type, idx, (uint16_t)v);
+    case SZ_DWORD: return journal_write_dint(type, idx, (uint32_t)v);
+    case SZ_LWORD: return journal_write_lint(type, idx, v);
+    default:       return -1;
     }
 }
 
-/* Apply one drained entry to a LOCATED variable. */
-void apply_located(const DbgwEntry *e, uint8_t area, uint8_t size,
-                   uint16_t byte_index, uint8_t bit_index)
+/* Apply one write/force/unforce to a LOCATED variable. Returns false when the
+ * slot is unmappable or the op is unknown. */
+bool apply_located(uint8_t arr, uint16_t elem, uint8_t op, const uint8_t *bytes,
+                   uint16_t len, uint8_t area, uint8_t size, uint16_t byte_index,
+                   uint8_t bit_index)
 {
     journal_buffer_type_t jt;
     if (!located_journal_type(area, size, &jt)) {
-        return; /* unmappable (e.g. %MB) — copy_out can't emit it either */
+        return false; /* unmappable (e.g. %MB) — copy_out can't emit it either */
     }
-    const uint64_t val = decode_value(e->bytes, e->len, size);
+    const uint64_t val = decode_value(bytes, len, size);
 
-    switch (e->op) {
+    switch (op) {
     case DBGW_OP_WRITE:
-        journal_write_located(jt, size, byte_index, bit_index, val);
-        break;
+        return journal_write_located(jt, size, byte_index, bit_index, val) == 0;
     case DBGW_OP_FORCE:
-        /* Program view: pin the IECVar so get() returns the forced value. */
+        /* IMAGE FIRST, AND ONLY THEN THE PROGRAM VIEW.
+         *
+         * These two pins have to agree or the debugger lies. The image slot
+         * can refuse -- the address is outside the table, or the forced-slot
+         * map was never allocated -- while `ext_strucpp_debug_set` always
+         * accepts, because the IECVar exists whatever the image is sized to.
+         * Pinning the IECVar first therefore showed the variable as FORCED in
+         * the editor and over OPC UA while the image slot took nothing, so the
+         * program kept driving it and the displayed value was fiction. A
+         * refusal the user is told is a success is worse than the refusal.
+         *
+         * There is no channel back to the requester from here: the write was
+         * enqueued by `runtime_external_write`, which already returned to the
+         * caller a cycle ago. Leaving the variable visibly unforced is the
+         * only honest signal this path still owns, and it is the one the
+         * person who asked for the force is looking at. */
+        if (journal_force_set(jt, byte_index, bit_index, val) != 0)
+            return false;
         if (ext_strucpp_debug_set)
-            ext_strucpp_debug_set(e->arr, e->elem, true, e->bytes, e->len);
-        /* Image view: seed + pin the slot; copy_out and plugin writes drop. */
-        journal_force_set(jt, byte_index, bit_index, val);
-        break;
+            ext_strucpp_debug_set(arr, elem, true, bytes, len);
+        return true;
     case DBGW_OP_UNFORCE:
-        if (ext_strucpp_debug_set)
-            ext_strucpp_debug_set(e->arr, e->elem, false, nullptr, 0);
+        /* Unforce releases both regardless. A refused clear means the slot
+         * could not have been forced in the first place, and leaving the
+         * IECVar pinned because of it would strand the variable forced with
+         * no way to release it. */
         journal_force_clear(jt, byte_index, bit_index);
-        break;
+        if (ext_strucpp_debug_set)
+            ext_strucpp_debug_set(arr, elem, false, nullptr, 0);
+        return true;
     default:
-        break;
+        return false;
     }
 }
 
-/* Apply one drained entry to a GLOBAL / program-internal leaf via the IECVar
- * debug exports (the OPC-UA bug #3 case). */
-void apply_global(const DbgwEntry *e)
+/* Apply one write/force/unforce to a GLOBAL / program-internal leaf via the
+ * IECVar debug exports (the OPC-UA bug #3 case). Returns false when the .so
+ * lacks the export or refuses the value. */
+bool apply_global(uint8_t arr, uint16_t elem, uint8_t op, const uint8_t *bytes,
+                  uint16_t len)
 {
-    switch (e->op) {
+    switch (op) {
     case DBGW_OP_WRITE:
-        if (ext_strucpp_debug_write)
-            ext_strucpp_debug_write(e->arr, e->elem, e->bytes, e->len);
-        break;
+        return ext_strucpp_debug_write &&
+               ext_strucpp_debug_write(arr, elem, bytes, len) == DBGW_STATUS_OK;
     case DBGW_OP_FORCE:
-        if (ext_strucpp_debug_set)
-            ext_strucpp_debug_set(e->arr, e->elem, true, e->bytes, e->len);
-        break;
+        return ext_strucpp_debug_set &&
+               ext_strucpp_debug_set(arr, elem, true, bytes, len) == DBGW_STATUS_OK;
     case DBGW_OP_UNFORCE:
-        if (ext_strucpp_debug_set)
-            ext_strucpp_debug_set(e->arr, e->elem, false, nullptr, 0);
-        break;
+        return ext_strucpp_debug_set &&
+               ext_strucpp_debug_set(arr, elem, false, nullptr, 0) == DBGW_STATUS_OK;
     default:
-        break;
+        return false;
     }
+}
+
+/* Route one write by the leaf's classification, exactly as the drain does. */
+bool apply_entry(uint8_t arr, uint16_t elem, uint8_t op, const uint8_t *bytes,
+                 uint16_t len)
+{
+    uint8_t  area = 0, size = 0, bit_index = 0;
+    uint16_t byte_index = 0;
+    const bool located =
+        ext_strucpp_debug_locate &&
+        ext_strucpp_debug_locate(arr, elem, &area, &size, &byte_index, &bit_index) != 0;
+
+    if (located) {
+        return apply_located(arr, elem, op, bytes, len, area, size, byte_index, bit_index);
+    }
+    return apply_global(arr, elem, op, bytes, len);
 }
 
 } // namespace
@@ -176,8 +216,8 @@ extern "C" int runtime_external_write(uint8_t arr, uint16_t elem, uint8_t op,
     if (n >= DBGW_MAX_ENTRIES) {
         pthread_mutex_unlock(&g_dbgw_lock);
         if (!g_overflow_logged) {
-            log_warn("[debug-write] queue full (%zu) — external write dropped; "
-                     "applied next cycle once it drains", DBGW_MAX_ENTRIES);
+            log_warn("[debug-write] queue full (%zu) — external write dropped and not "
+                     "retried; further drops this cycle are not logged", DBGW_MAX_ENTRIES);
             g_overflow_logged = true;
         }
         return -1;
@@ -204,23 +244,28 @@ extern "C" void debug_write_journal_drain(void)
     size_t n = g_dbgw_count.load(std::memory_order_relaxed);
     for (size_t i = 0; i < n; ++i) {
         const DbgwEntry *e = &g_dbgw[i];
-
-        uint8_t  area = 0, size = 0, bit_index = 0;
-        uint16_t byte_index = 0;
-        const bool located =
-            ext_strucpp_debug_locate &&
-            ext_strucpp_debug_locate(e->arr, e->elem, &area, &size,
-                                     &byte_index, &bit_index) != 0;
-
-        if (located) {
-            apply_located(e, area, size, byte_index, bit_index);
-        } else {
-            apply_global(e);
-        }
+        apply_entry(e->arr, e->elem, e->op, e->bytes, e->len);
     }
     g_dbgw_count.store(0, std::memory_order_release);
     g_overflow_logged = false;
     pthread_mutex_unlock(&g_dbgw_lock);
+}
+
+extern "C" int runtime_external_write_now(uint8_t arr, uint16_t elem, uint8_t op,
+                                          const uint8_t *bytes, uint16_t len)
+{
+    if (!g_direct_window.load(std::memory_order_acquire)) {
+        if (!g_direct_refusal_logged.exchange(true)) {
+            log_error("[debug-write] direct write refused: no direct window is open");
+        }
+        return -1;
+    }
+    return apply_entry(arr, elem, op, bytes, len) ? 0 : -1;
+}
+
+extern "C" void debug_write_journal_set_direct_window(bool open)
+{
+    g_direct_window.store(open, std::memory_order_release);
 }
 
 extern "C" void debug_write_journal_reset(void)

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 /**
@@ -7,6 +7,8 @@
  */
 
 #include "ethercat_iomap.h"
+
+#include "../plugin_image_sizes.h"
 #include "etherdog_link.h"
 
 #include <ctype.h>
@@ -178,9 +180,16 @@ static int check_duplicates(const ecat_iomap_t *map, const ecat_iomap_master_t *
     return 0;
 }
 
+void ecat_iomap_free(ecat_iomap_t *map)
+{
+    for (int i = 0; i < ECAT_IOMAP_MAX_MASTERS; i++)
+        free(map->masters[i].entries);
+    memset(map, 0, sizeof(*map));
+}
+
 int ecat_iomap_load(const char *path, ecat_iomap_t *map, char *err, size_t err_size)
 {
-    memset(map, 0, sizeof(*map));
+    ecat_iomap_free(map);
     char *text = read_file(path, err, err_size);
     if (text == NULL)
         return -1;
@@ -226,15 +235,18 @@ int ecat_iomap_load(const char *path, ecat_iomap_t *map, char *err, size_t err_s
             }
         }
         snprintf(mm->name, sizeof(mm->name), "%s", name->valuestring);
+        int declared = cJSON_GetArraySize(entries);
+        mm->entries = calloc(declared > 0 ? (size_t)declared : 1u, sizeof(*mm->entries));
+        if (mm->entries == NULL) {
+            snprintf(err, err_size, "%s: out of memory for master '%s' (%d entries)", path,
+                     mm->name, declared);
+            goto done;
+        }
+        mm->entry_cap = declared;
 
         const cJSON *e;
         cJSON_ArrayForEach(e, entries)
         {
-            if (mm->entry_count >= ECAT_IOMAP_MAX_ENTRIES) {
-                snprintf(err, err_size, "%s: master '%s' has more than %d entries", path,
-                         mm->name, ECAT_IOMAP_MAX_ENTRIES);
-                goto done;
-            }
             ecat_iomap_entry_t *me = &mm->entries[mm->entry_count];
             const cJSON *slave = cJSON_GetObjectItemCaseSensitive(e, "slave");
             const cJSON *index = cJSON_GetObjectItemCaseSensitive(e, "index");
@@ -264,10 +276,43 @@ int ecat_iomap_load(const char *path, ecat_iomap_t *map, char *err, size_t err_s
 
 done:
     cJSON_Delete(root);
+    if (rc != 0)
+        ecat_iomap_free(map);
     return rc;
 }
 
 /* --- binding ------------------------------------------------------------------------------ */
+
+/* (direction, size) -> the image table that stores it.
+ *
+ * EtherCAT only ever emits %I and %Q, so there is no memory case. Spelled out
+ * rather than computed: the two enums are in unrelated orders and a cast
+ * between them lands writes inside another table's bounds. */
+static image_table_id_t ecat_table_for(iec_dir_t dir, iec_size_t size)
+{
+    const int in = (dir == IEC_DIR_INPUT);
+    switch (size) {
+    case IEC_SIZE_BIT: return in ? IMAGE_TABLE_BOOL_INPUT : IMAGE_TABLE_BOOL_OUTPUT;
+    case IEC_SIZE_BYTE: return in ? IMAGE_TABLE_BYTE_INPUT : IMAGE_TABLE_BYTE_OUTPUT;
+    case IEC_SIZE_WORD: return in ? IMAGE_TABLE_INT_INPUT : IMAGE_TABLE_INT_OUTPUT;
+    case IEC_SIZE_DWORD: return in ? IMAGE_TABLE_DINT_INPUT : IMAGE_TABLE_DINT_OUTPUT;
+    case IEC_SIZE_LWORD: return in ? IMAGE_TABLE_LINT_INPUT : IMAGE_TABLE_LINT_OUTPUT;
+    }
+    return IMAGE_TABLE_COUNT;
+}
+
+/* How far THIS location's own table reaches.
+ *
+ * args->buffer_size is the smallest of the fourteen on a per-table run, so
+ * bounding against it refuses every entry above the shortest table and takes
+ * the whole bus down. Falls back to it only when no runtime ever delivered the
+ * sizes, where it is the length every table has. */
+static uint32_t ecat_table_reach(const iec_location_t *loc, const plugin_runtime_args_t *args)
+{
+    if (!plugin_image_sizes_known())
+        return args->buffer_size > 0 ? (uint32_t)args->buffer_size : 0u;
+    return plugin_image_table_capacity(ecat_table_for(loc->direction, loc->size));
+}
 
 static void *resolve_plc_ptr(const iec_location_t *loc, plugin_runtime_args_t *args)
 {
@@ -334,16 +379,24 @@ static const cJSON *find_layout_entry(const cJSON *lm, const ecat_iomap_entry_t 
 static int read_image_bytes(const cJSON *lm, const char *field, uint32_t *out)
 {
     const cJSON *v = cJSON_GetObjectItemCaseSensitive(lm, field);
-    if (!cJSON_IsNumber(v) || v->valuedouble < 0 || v->valuedouble > EDL_MAX_PAYLOAD)
+    if (!cJSON_IsNumber(v) || v->valuedouble < 0 || v->valuedouble > (double)EDL_MAX_PAYLOAD)
         return -1;
     *out = (uint32_t)v->valuedouble;
     return 0;
 }
 
-int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime_args_t *args,
-                    ecat_bound_map_t *out, char *err, size_t err_size)
+void ecat_iomap_unbind(ecat_bound_map_t *bound)
 {
-    memset(out, 0, sizeof(*out));
+    for (int i = 0; i < ECAT_IOMAP_MAX_MASTERS; i++) {
+        free(bound->masters[i].inputs);
+        free(bound->masters[i].outputs);
+    }
+    memset(bound, 0, sizeof(*bound));
+}
+
+static int bind_masters(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime_args_t *args,
+                        ecat_bound_map_t *out, char *err, size_t err_size)
+{
 
     for (int mi = 0; mi < map->master_count; mi++) {
         const ecat_iomap_master_t *mm = &map->masters[mi];
@@ -374,8 +427,16 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
             read_image_bytes(lm, "input_bytes", &bm->input_bytes) != 0) {
             snprintf(err, err_size,
                      "master '%s': the layout's process image size is missing or larger than the "
-                     "%d bytes a data frame carries",
-                     mm->name, EDL_MAX_PAYLOAD);
+                     "%u bytes a data frame carries",
+                     mm->name, (unsigned)EDL_MAX_PAYLOAD);
+            return ECAT_IOMAP_CONFIG_ERROR;
+        }
+        size_t slots = mm->entry_count > 0 ? (size_t)mm->entry_count : 1u;
+        bm->inputs = calloc(slots, sizeof(*bm->inputs));
+        bm->outputs = calloc(slots, sizeof(*bm->outputs));
+        if (bm->inputs == NULL || bm->outputs == NULL) {
+            snprintf(err, err_size, "master '%s': out of memory for %d mapped entries", mm->name,
+                     mm->entry_count);
             return ECAT_IOMAP_CONFIG_ERROR;
         }
 
@@ -417,9 +478,10 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
                 snprintf(err, err_size, "%s: layout offset out of range", me->iec_location);
                 return ECAT_IOMAP_CONFIG_ERROR;
             }
-            if (me->loc.byte_index < 0 || me->loc.byte_index >= args->buffer_size) {
-                snprintf(err, err_size, "%s exceeds the image table size (%d)", me->iec_location,
-                         args->buffer_size);
+            const uint32_t reach = ecat_table_reach(&me->loc, args);
+            if (me->loc.byte_index < 0 || (uint32_t)me->loc.byte_index >= reach) {
+                snprintf(err, err_size, "%s is outside the %u element(s) that area has",
+                         me->iec_location, reach);
                 return ECAT_IOMAP_CONFIG_ERROR;
             }
 
@@ -432,11 +494,6 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
                 .journal_bit = me->loc.size == IEC_SIZE_BIT ? me->loc.bit_index : 0,
             };
             int *count = is_output ? &bm->output_count : &bm->input_count;
-            if (*count >= ECAT_IOMAP_MAX_ENTRIES) {
-                snprintf(err, err_size, "master '%s' has more than %d %s entries", mm->name,
-                         ECAT_IOMAP_MAX_ENTRIES, is_output ? "output" : "input");
-                return ECAT_IOMAP_CONFIG_ERROR;
-            }
             if (is_output) {
                 if (x.plc_ptr == NULL)
                     continue; /* location not declared in the program */
@@ -451,6 +508,16 @@ int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime
         return -1;
     }
     return 0;
+}
+
+int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime_args_t *args,
+                    ecat_bound_map_t *out, char *err, size_t err_size)
+{
+    ecat_iomap_unbind(out);
+    int rc = bind_masters(map, layout, args, out, err, err_size);
+    if (rc != 0)
+        ecat_iomap_unbind(out);
+    return rc;
 }
 
 /* --- per-cycle copies ----------------------------------------------------------------------- */

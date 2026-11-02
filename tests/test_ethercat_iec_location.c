@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 /**
@@ -11,6 +11,7 @@
 #include "unity.h"
 
 TEST_SOURCE_FILE("core/src/drivers/plugins/native/cjson/cJSON.c")
+TEST_SOURCE_FILE("core/src/drivers/plugins/native/plugin_image_sizes.c")
 
 void setUp(void) {}
 void tearDown(void) {}

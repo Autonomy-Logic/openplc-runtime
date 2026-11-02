@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 /**
@@ -22,7 +22,6 @@
 #include "plugin_types.h"
 
 #define ECAT_IOMAP_MAX_MASTERS 4
-#define ECAT_IOMAP_MAX_ENTRIES 2048
 #define ECAT_IOMAP_NAME_LEN 64
 /** Highest byte index a location may use; the runtime's journal indexes are 16-bit. */
 #define ECAT_IOMAP_MAX_BYTE_INDEX 65535
@@ -58,8 +57,9 @@ typedef struct {
 
 typedef struct {
     char name[ECAT_IOMAP_NAME_LEN];
-    ecat_iomap_entry_t entries[ECAT_IOMAP_MAX_ENTRIES];
+    ecat_iomap_entry_t *entries; /* heap, entry_count used of entry_cap */
     int entry_count;
+    int entry_cap;
 } ecat_iomap_master_t;
 
 typedef struct {
@@ -81,9 +81,9 @@ typedef struct {
     bool active;
     uint32_t output_bytes;
     uint32_t input_bytes;
-    ecat_xfer_t inputs[ECAT_IOMAP_MAX_ENTRIES];
+    ecat_xfer_t *inputs; /* heap, allocated by ecat_iomap_bind */
     int input_count;
-    ecat_xfer_t outputs[ECAT_IOMAP_MAX_ENTRIES];
+    ecat_xfer_t *outputs;
     int output_count;
 } ecat_bound_master_t;
 
@@ -94,8 +94,14 @@ typedef struct {
     int not_ready_count;
 } ecat_bound_map_t;
 
-/** Load and validate the mapping file. Returns 0, or -1 with @p err naming the problem. */
+/**
+ * Load and validate the mapping file into @p map, which must be zeroed or previously loaded
+ * (its old entries are freed). Returns 0, or -1 with @p err naming the problem.
+ */
 int ecat_iomap_load(const char *path, ecat_iomap_t *map, char *err, size_t err_size);
+
+/** Free the entries of a loaded mapping and zero it. */
+void ecat_iomap_free(ecat_iomap_t *map);
 
 /**
  * @brief Join the mapping with EtherDOG's layout reply and resolve PLC pointers.
@@ -109,11 +115,16 @@ int ecat_iomap_load(const char *path, ecat_iomap_t *map, char *err, size_t err_s
  * @return 0 on success, -1 on failure (including when no mapped master is operational).
  */
 /**
- * Join the mapping with EtherDOG's layout. Returns 0, -1 when a mapped master is missing or not
- * operational yet, or ECAT_IOMAP_CONFIG_ERROR when the mapping cannot bind to this layout.
+ * Join the mapping with EtherDOG's layout into @p out, which must be zeroed or previously bound
+ * (its old lists are freed). Returns 0, -1 when a mapped master is missing or not operational
+ * yet, or ECAT_IOMAP_CONFIG_ERROR when the mapping cannot bind to this layout. On failure @p out
+ * holds nothing to free.
  */
 int ecat_iomap_bind(const ecat_iomap_t *map, const cJSON *layout, plugin_runtime_args_t *args,
                     ecat_bound_map_t *out, char *err, size_t err_size);
+
+/** Free the transfer lists of a bound map and zero it. */
+void ecat_iomap_unbind(ecat_bound_map_t *bound);
 
 /** Publish one input frame into the %I image through the journal (lock-free). */
 void ecat_iomap_publish_inputs(const ecat_bound_master_t *m, const uint8_t *payload,

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """
@@ -35,18 +35,30 @@ from shared import (
     SafeLoggingAccess,
     safe_extract_runtime_args_from_capsule,
 )
+
+# Importing set_image_sizes is not a formality: the name has to exist in THIS
+# module for the runtime to find it, and its presence is how this plugin
+# declares it understands per-table image sizes. The runtime keeps
+# the image SQUARE for any run in which even one loaded plugin lacks it -- and
+# this plugin ships in plugins_default.conf, so without this line per-table
+# sizing never activates on a stock device.
+#
+# Nothing else is needed here: this plugin bounds through SafeBufferAccess ->
+# BufferValidator, which already validates against the table each buffer lives
+# in rather than against the single figure.
+from shared.image_sizes import set_image_sizes  # noqa: F401
 from shared.plugin_config_decode.opcua_config_model import OpcuaConfig
 
 # Import local modules (use absolute imports for runtime compatibility)
 try:
     # Try relative imports first (when loaded as package)
     from .config import load_config
-    from .opcua_logging import get_logger, log_debug, log_error, log_info, log_warn
+    from .opcua_logging import get_logger, log_debug, log_error, log_info, log_warn, reset_logger
     from .server import OpcuaServerManager
 except ImportError:
     # Fall back to absolute imports (when loaded directly by runtime)
     from config import load_config
-    from opcua_logging import get_logger, log_debug, log_error, log_info, log_warn
+    from opcua_logging import get_logger, log_debug, log_error, log_info, log_warn, reset_logger
     from server import OpcuaServerManager
 
 # Plugin state
@@ -114,6 +126,8 @@ def init(args_capsule) -> bool:
     """
     global _runtime_args
 
+    # The previous load's runtime args are freed; logging through them crashes.
+    reset_logger()
     log_info("OPC UA Plugin initializing...")
 
     try:
@@ -279,6 +293,9 @@ def cleanup() -> bool:
     except Exception as e:
         log_error(f"Cleanup error: {e}")
         return False
+
+    finally:
+        reset_logger()
 
 def _cancel_all_tasks(loop):
     """Cancel all running tasks on the event loop.

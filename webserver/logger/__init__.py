@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 # logger/__init__.py
@@ -13,7 +13,7 @@ from .config import LoggerConfig
 __all__ = ["get_logger", "LogParser", "BufferHandler", "JsonFormatter", "HumanReadableFormatter"]
 __version__ = "0.1"
 __author__ = "Autonomy"
-__license__ = "MIT"
+__license__ = "GPL-3.0-only"
 __description__ = "RestAPI interface for runtime core"
 
 # Single global buffer for all logs

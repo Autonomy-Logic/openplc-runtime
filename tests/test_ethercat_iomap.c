@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 /**
@@ -7,12 +7,14 @@
  */
 
 #include "ethercat_iomap.h"
+#include "etherdog_link.h"
 #include "unity.h"
 
 #include <stdio.h>
 #include <string.h>
 
 TEST_SOURCE_FILE("core/src/drivers/plugins/native/cjson/cJSON.c")
+TEST_SOURCE_FILE("core/src/drivers/plugins/native/plugin_image_sizes.c")
 
 static const char *TMPFILE = "test_ethercat_iomap_tmp.json";
 
@@ -101,6 +103,8 @@ void setUp(void)
 
 void tearDown(void)
 {
+    ecat_iomap_unbind(&bound);
+    ecat_iomap_free(&map);
     remove(TMPFILE);
 }
 
@@ -315,16 +319,34 @@ static void write_mapping_with(int count)
     fclose(fp);
 }
 
-void test_load_accepts_the_entry_limit_and_rejects_one_more(void)
+void test_load_has_no_entry_limit(void)
 {
     char err[256];
-    write_mapping_with(ECAT_IOMAP_MAX_ENTRIES);
+    write_mapping_with(5000);
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)), err);
-    TEST_ASSERT_EQUAL_INT(2048, map.masters[0].entry_count);
+    TEST_ASSERT_EQUAL_INT(5000, map.masters[0].entry_count);
+}
 
-    write_mapping_with(ECAT_IOMAP_MAX_ENTRIES + 1);
+void test_reloading_replaces_the_entries(void)
+{
+    char err[256];
+    write_mapping_with(300);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)), err);
+    write_mapping_with(2);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)), err);
+    TEST_ASSERT_EQUAL_INT(1, map.master_count);
+    TEST_ASSERT_EQUAL_INT(2, map.masters[0].entry_count);
+}
+
+void test_a_failed_load_leaves_nothing_loaded(void)
+{
+    char err[256];
+    write_mapping_with(3);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)), err);
+    write_mapping("{\"slave\":0,\"index\":\"0x6000\",\"subindex\":1,\"iec_location\":\"%IX0.0\"}");
     TEST_ASSERT_EQUAL_INT(-1, ecat_iomap_load(TMPFILE, &map, err, sizeof(err)));
-    TEST_ASSERT_NOT_NULL(strstr(err, "more than 2048 entries"));
+    TEST_ASSERT_EQUAL_INT(0, map.master_count);
+    TEST_ASSERT_NULL(map.masters[0].entries);
 }
 
 /* --- review: image sizes and duplicates ----------------------------------------------------- */
@@ -349,13 +371,24 @@ static int bind_layout(const char *layout_text, const char *entries, char *err, 
 void test_bind_rejects_an_image_larger_than_a_data_frame(void)
 {
     char err[256] = "";
-    int rc = bind_layout(LAYOUT_SIZES("\"output_bytes\":4097,", "\"input_bytes\":1,"), ONE_INPUT, err,
-                         sizeof(err));
+    int rc = bind_layout(LAYOUT_SIZES("\"output_bytes\":65484,", "\"input_bytes\":1,"), ONE_INPUT,
+                         err, sizeof(err));
     TEST_ASSERT_EQUAL_INT(ECAT_IOMAP_CONFIG_ERROR, rc);
-    TEST_ASSERT_NOT_NULL(strstr(err, "4096 bytes"));
-    rc = bind_layout(LAYOUT_SIZES("\"output_bytes\":0,", "\"input_bytes\":8192,"), ONE_INPUT, err,
+    TEST_ASSERT_NOT_NULL(strstr(err, "65483 bytes"));
+    TEST_ASSERT_NULL(bound.masters[0].inputs);
+    rc = bind_layout(LAYOUT_SIZES("\"output_bytes\":0,", "\"input_bytes\":70000,"), ONE_INPUT, err,
                      sizeof(err));
     TEST_ASSERT_EQUAL_INT(ECAT_IOMAP_CONFIG_ERROR, rc);
+}
+
+void test_bind_accepts_images_beyond_4096_bytes(void)
+{
+    char err[256] = "";
+    int rc = bind_layout(LAYOUT_SIZES("\"output_bytes\":10000,", "\"input_bytes\":20000,"), ONE_INPUT,
+                         err, sizeof(err));
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, rc, err);
+    TEST_ASSERT_EQUAL_UINT32(20000, bound.masters[0].input_bytes);
+    TEST_ASSERT_EQUAL_INT(1, bound.masters[0].input_count);
 }
 
 void test_bind_rejects_a_missing_image_size(void)
@@ -368,7 +401,7 @@ void test_bind_rejects_a_missing_image_size(void)
 void test_bind_accepts_an_image_of_exactly_one_data_frame(void)
 {
     char err[256] = "";
-    int rc = bind_layout(LAYOUT_SIZES("\"output_bytes\":4096,", "\"input_bytes\":4096,"), ONE_INPUT,
+    int rc = bind_layout(LAYOUT_SIZES("\"output_bytes\":65483,", "\"input_bytes\":65483,"), ONE_INPUT,
                          err, sizeof(err));
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, rc, err);
 }
@@ -378,7 +411,7 @@ void test_collect_outputs_refuses_a_length_beyond_a_data_frame(void)
     uint8_t payload[8] = { 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA };
     ecat_bound_master_t m;
     memset(&m, 0, sizeof(m));
-    ecat_iomap_collect_outputs(&m, payload, 8192);
+    ecat_iomap_collect_outputs(&m, payload, (size_t)EDL_MAX_PAYLOAD + 1);
     TEST_ASSERT_EQUAL_HEX8(0xAA, payload[0]);
 }
 

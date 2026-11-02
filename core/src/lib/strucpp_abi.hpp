@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 // Runtime-side mirror of the strucpp ABI the loaded .so exposes.
@@ -87,6 +87,15 @@ struct ConfigurationInstance {
     virtual ResourceInstance *get_resources()    = 0;
     virtual size_t            get_resource_count() const = 0;
 };
+
+// ---------------------------------------------------------------------------
+// Debug status codes (mirror of strucpp::debug, debug_dispatch.hpp)
+// ---------------------------------------------------------------------------
+
+namespace debug {
+constexpr uint8_t STATUS_OK             = 0x7E;
+constexpr uint8_t STATUS_DATA_TOO_LARGE = 0x82;
+}  // namespace debug
 
 }  // namespace strucpp
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 /* STruC++ debugger PDU handler. Codes 0x41-0x45 are Modbus-style for

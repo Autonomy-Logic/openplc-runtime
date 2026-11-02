@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 /* Serialized external write/force path. Writers ENQUEUE from any
@@ -7,6 +7,7 @@
 #ifndef DEBUG_WRITE_JOURNAL_H
 #define DEBUG_WRITE_JOURNAL_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -26,6 +27,13 @@ typedef enum {
  * the next dispatcher drain. */
 int runtime_external_write(uint8_t arr, uint16_t elem, uint8_t op,
                            const uint8_t *bytes, uint16_t len);
+
+/* Immediate write with the drain's routing; refused (-1) outside an open direct window. */
+int runtime_external_write_now(uint8_t arr, uint16_t elem, uint8_t op,
+                               const uint8_t *bytes, uint16_t len);
+
+/* Open/close the direct window. Only while no IEC task can run and after journal_init(). */
+void debug_write_journal_set_direct_window(bool open);
 
 /*
  * Drain + apply all queued external writes. MUST be called only by the

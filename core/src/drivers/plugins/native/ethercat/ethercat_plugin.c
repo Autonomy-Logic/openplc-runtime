@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 /**
@@ -30,6 +30,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../plugin_image_sizes.h"
 #include "cJSON.h"
 #include "etherdog_link.h"
 #include "ethercat_iomap.h"
@@ -57,6 +58,10 @@ static edl_link_t g_link;
 static bool g_linked = false;
 static bool g_have_map = false;
 static int g_relay_priority = DEFAULT_RELAY_PRIORITY;
+/* Relay buffers, sized at link up from the bound process images */
+static uint8_t *g_rx_frame;
+static size_t g_rx_frame_size;
+static uint8_t *g_out_payload;
 
 /* Last input flags per master, to log bus state changes once. -1: none seen yet. */
 static int g_last_flags[EDL_MAX_MASTERS];
@@ -144,6 +149,42 @@ static void warn_unmapped_masters(const cJSON *layout)
     }
 }
 
+static void free_relay_buffers(void)
+{
+    free(g_rx_frame);
+    free(g_out_payload);
+    g_rx_frame = NULL;
+    g_out_payload = NULL;
+    g_rx_frame_size = 0;
+}
+
+/* Allocate the relay's frame and output buffers for the largest bound image in each direction. */
+static int size_relay_buffers(char *err, size_t err_size)
+{
+    size_t max_in = 0;
+    size_t max_out = 0;
+    for (int i = 0; i < ECAT_IOMAP_MAX_MASTERS; i++) {
+        const ecat_bound_master_t *m = &g_bound.masters[i];
+        if (!m->active)
+            continue;
+        if (m->input_bytes > max_in)
+            max_in = m->input_bytes;
+        if (m->output_bytes > max_out)
+            max_out = m->output_bytes;
+    }
+    free_relay_buffers();
+    g_rx_frame_size = EDL_FRAME_HEADER + max_in;
+    g_rx_frame = malloc(g_rx_frame_size);
+    g_out_payload = malloc(max_out > 0 ? max_out : 1u);
+    if (g_rx_frame == NULL || g_out_payload == NULL || edl_reserve_outputs(&g_link, max_out) != 0) {
+        free_relay_buffers();
+        snprintf(err, err_size, "out of memory for the relay buffers (%zu input, %zu output bytes)",
+                 max_in, max_out);
+        return -1;
+    }
+    return 0;
+}
+
 /* Bring the link up: connect, configure and start the bus, bind the layout, open the data session. */
 static int link_up(char *err, size_t err_size)
 {
@@ -200,6 +241,10 @@ static int link_up(char *err, size_t err_size)
     snprintf(dir_buf, sizeof(dir_buf), "%s", g_session_file);
     if (edl_open_data(&g_link, &session, dirname(dir_buf), err, err_size) != 0)
         goto fail;
+    if (size_relay_buffers(err, err_size) != 0) {
+        rc = LINK_CONFIG_ERROR;
+        goto fail;
+    }
 
     for (int i = 0; i < ECAT_IOMAP_MAX_MASTERS; i++) {
         const ecat_bound_master_t *m = &g_bound.masters[i];
@@ -223,6 +268,7 @@ fail:
         free(resp);
     }
     edl_close(&g_link);
+    free_relay_buffers();
     g_linked = false;
     return rc;
 }
@@ -239,6 +285,7 @@ static void link_down(bool stop_bus)
         free(resp);
     }
     edl_close(&g_link);
+    free_relay_buffers();
     g_linked = false;
 }
 
@@ -312,8 +359,6 @@ static void *relay_thread(void *arg)
     pthread_setname_np(pthread_self(), "ecat-relay");
     bool realtime = false;
 
-    uint8_t frame[EDL_FRAME_HEADER + EDL_MAX_PAYLOAD];
-    uint8_t outputs[EDL_MAX_PAYLOAD];
     uint64_t last_rx[ECAT_IOMAP_MAX_MASTERS] = { 0 };
     char err[512];
     char last_err[512] = "";
@@ -357,8 +402,8 @@ static void *relay_thread(void *arg)
         uint8_t flags = 0;
         const uint8_t *payload = NULL;
         size_t len = 0;
-        int rc = edl_recv_inputs(&g_link, frame, sizeof(frame), RECV_TIMEOUT_MS, &master, &flags,
-                                 &payload, &len);
+        int rc = edl_recv_inputs(&g_link, g_rx_frame, g_rx_frame_size, RECV_TIMEOUT_MS, &master,
+                                 &flags, &payload, &len);
         const ecat_bound_master_t *m = rc > 0 ? &g_bound.masters[master] : NULL;
         if (m != NULL && m->active)
             last_rx[master] = now_ms();
@@ -386,9 +431,9 @@ static void *relay_thread(void *arg)
             ecat_iomap_publish_inputs(m, payload, len, &g_args);
 
         g_args.image_lock();
-        ecat_iomap_collect_outputs(m, outputs, m->output_bytes);
+        ecat_iomap_collect_outputs(m, g_out_payload, m->output_bytes);
         g_args.image_unlock();
-        edl_send_outputs(&g_link, master, outputs, m->output_bytes, true);
+        edl_send_outputs(&g_link, master, g_out_payload, m->output_bytes, true);
     }
     return NULL;
 }
@@ -409,6 +454,18 @@ int init(void *args)
         snprintf(g_session_file, sizeof(g_session_file), "%s", override);
 
     edl_init(&g_link);
+
+    /* What this plugin was told, not the single figure: on a per-table run
+     * buffer_size is the SMALLEST of the fourteen and says nothing about the
+     * areas this bus reaches. */
+    if (!plugin_image_sizes_known())
+        plugin_logger_info(&g_logger, "Image sizes: not delivered (square run)");
+    else
+        plugin_logger_info(&g_logger, "Image sizes: bits in %u/%u, words in %u/%u",
+                           plugin_image_table_capacity(IMAGE_TABLE_BOOL_INPUT),
+                           plugin_image_table_capacity(IMAGE_TABLE_BOOL_OUTPUT),
+                           plugin_image_table_capacity(IMAGE_TABLE_INT_INPUT),
+                           plugin_image_table_capacity(IMAGE_TABLE_INT_OUTPUT));
 
     /* Initialized even when disabled (for command forwarding): no mapping file is not an error. */
     const char *path = g_args.plugin_specific_config_file_path;
@@ -482,6 +539,9 @@ void stop_loop(void)
 void cleanup(void)
 {
     stop_loop();
+    ecat_iomap_unbind(&g_bound);
+    ecat_iomap_free(&g_map);
+    g_have_map = false;
 }
 
 /**
