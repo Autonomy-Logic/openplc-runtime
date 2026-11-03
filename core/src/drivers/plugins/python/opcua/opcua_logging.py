@@ -113,6 +113,10 @@ def get_logger() -> OpcuaLogger:
     """Get the singleton logger instance."""
     return OpcuaLogger.get_instance()
 
+def reset_logger() -> None:
+    """Drop the runtime log callbacks, which belong to the runtime args of one load."""
+    OpcuaLogger.reset()
+
 def log_info(message: str) -> None:
     """Log an informational message."""
     get_logger().info(message)

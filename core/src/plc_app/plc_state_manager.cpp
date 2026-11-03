@@ -601,6 +601,12 @@ void *plc_cycle_thread(void *arg)
     }
     log_info("Journal buffer initialized");
 
+    /* Seed the image with the ctor-initialised value of every located leaf
+     * before plc_retain_read overrides retained slots on top -- without this
+     * seed, copy_in on the first scan reads the calloc'd zero back into every
+     * member and the declared `:= <literal>` never reaches the outside. */
+    image_tables_seed_image_from_members();
+
     /* No task or plugin runs yet: the only window where direct writes are safe. */
     debug_write_journal_set_direct_window(true);
     plc_retain_read();
