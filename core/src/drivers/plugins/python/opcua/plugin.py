@@ -53,12 +53,12 @@ from shared.plugin_config_decode.opcua_config_model import OpcuaConfig
 try:
     # Try relative imports first (when loaded as package)
     from .config import load_config
-    from .opcua_logging import get_logger, log_debug, log_error, log_info, log_warn
+    from .opcua_logging import get_logger, log_debug, log_error, log_info, log_warn, reset_logger
     from .server import OpcuaServerManager
 except ImportError:
     # Fall back to absolute imports (when loaded directly by runtime)
     from config import load_config
-    from opcua_logging import get_logger, log_debug, log_error, log_info, log_warn
+    from opcua_logging import get_logger, log_debug, log_error, log_info, log_warn, reset_logger
     from server import OpcuaServerManager
 
 # Plugin state
@@ -126,6 +126,8 @@ def init(args_capsule) -> bool:
     """
     global _runtime_args
 
+    # The previous load's runtime args are freed; logging through them crashes.
+    reset_logger()
     log_info("OPC UA Plugin initializing...")
 
     try:
@@ -291,6 +293,9 @@ def cleanup() -> bool:
     except Exception as e:
         log_error(f"Cleanup error: {e}")
         return False
+
+    finally:
+        reset_logger()
 
 def _cancel_all_tasks(loop):
     """Cancel all running tasks on the event loop.
