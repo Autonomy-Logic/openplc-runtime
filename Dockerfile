@@ -1,6 +1,46 @@
 # syntax=docker/dockerfile:1
 
+FROM debian:bookworm-slim AS builder
+
+WORKDIR /workdir
+
+COPY . .
+
+RUN chmod +x install.sh scripts/* start_openplc.sh && \
+    rm -rf build/ venvs/ .venv/
+
+# --native, because install.sh now defaults to installing Docker and
+# compiling nothing -- and there is no engine to install inside a build
+# layer. Without this the image build fails at the installer's curl check.
+RUN ./install.sh --native
+
+RUN rm -rf build/CMakeFiles build/CMakeCache.txt build/Makefile build/cmake_install.cmake build/core \
+        core/src/drivers/plugins/native/*/build third_party
+
 FROM debian:bookworm-slim
+
+# g++ depends on the sanitizer runtimes; uploaded programs never link them.
+RUN printf '%s\n' \
+        'path-exclude=/usr/share/doc/*' \
+        'path-include=/usr/share/doc/*/copyright' \
+        'path-exclude=/usr/share/man/*' \
+        'path-exclude=/usr/share/info/*' \
+        'path-exclude=/usr/share/locale/*' \
+        'path-exclude=/usr/lib/*/lib*san.so*' \
+        'path-exclude=/usr/lib/gcc/*/*/lib*san*' \
+        > /etc/dpkg/dpkg.cfg.d/runtime-slim && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        python3 libpython3.11 \
+        g++ make ccache \
+        ethtool openssl ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workdir
+
+COPY --from=builder /workdir /workdir
+
+RUN mkdir -p /var/run/runtime && chmod 775 /var/run/runtime
 
 # Runtime version baked in at build time (mirrors strucpp + editor —
 # the value is the GitHub release tag, passed by .github/workflows/
@@ -8,27 +48,6 @@ FROM debian:bookworm-slim
 # (the v4.1.x runtime ships STruC++; older runtimes ship MatIEC).
 ARG RUNTIME_VERSION=dev
 ENV RUNTIME_VERSION=${RUNTIME_VERSION}
-
-WORKDIR /workdir
-
-# Copy source code
-COPY . .
-
-# Setup runtime directory and permissions
-RUN mkdir -p /var/run/runtime && \
-    chmod +x install.sh scripts/* start_openplc.sh
-
-# Clean any existing build artifacts to ensure clean Docker build
-RUN rm -rf build/ venvs/ .venv/ 2>/dev/null || true
-
-# Run installation script
-# --native, because install.sh now defaults to installing Docker and
-# compiling nothing -- and there is no engine to install inside a build
-# layer. Without this the image build fails at the installer's curl check.
-RUN ./install.sh --native
-
-# Clean up apt cache to reduce image size (Docker-specific optimization)
-RUN rm -rf /var/lib/apt/lists/*
 
 # Expose webserver port
 EXPOSE 8443
