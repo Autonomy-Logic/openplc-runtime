@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """
@@ -35,20 +35,31 @@ from shared import (
     SafeLoggingAccess,
     safe_extract_runtime_args_from_capsule,
 )
+
+# Importing set_image_sizes is not a formality: the name has to exist in THIS
+# module for the runtime to find it, and its presence is how this plugin
+# declares it understands per-table image sizes. The runtime keeps
+# the image SQUARE for any run in which even one loaded plugin lacks it -- and
+# this plugin ships in plugins_default.conf, so without this line per-table
+# sizing never activates on a stock device.
+#
+# Nothing else is needed here: this plugin bounds through SafeBufferAccess ->
+# BufferValidator, which already validates against the table each buffer lives
+# in rather than against the single figure.
+from shared.image_sizes import set_image_sizes  # noqa: F401
 from shared.plugin_config_decode.opcua_config_model import OpcuaConfig
 
 # Import local modules (use absolute imports for runtime compatibility)
 try:
     # Try relative imports first (when loaded as package)
     from .config import load_config
-    from .opcua_logging import get_logger, log_debug, log_error, log_info, log_warn
+    from .opcua_logging import get_logger, log_debug, log_error, log_info, log_warn, reset_logger
     from .server import OpcuaServerManager
 except ImportError:
     # Fall back to absolute imports (when loaded directly by runtime)
     from config import load_config
-    from opcua_logging import get_logger, log_debug, log_error, log_info, log_warn
+    from opcua_logging import get_logger, log_debug, log_error, log_info, log_warn, reset_logger
     from server import OpcuaServerManager
-
 
 # Plugin state
 _runtime_args = None
@@ -58,7 +69,6 @@ _server_manager: Optional[OpcuaServerManager] = None
 _server_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
 _loop: Optional[asyncio.AbstractEventLoop] = None
-
 
 class _PermissionDenialFilter(logging.Filter):
     """Quiet asyncua's "Error while processing message" traceback when
@@ -98,11 +108,9 @@ class _PermissionDenialFilter(logging.Filter):
                     return False  # drop the record
         return True
 
-
 def _install_asyncua_log_filter() -> None:
     """Install the permission-denial filter on asyncua's processor logger."""
     logging.getLogger("asyncua.server.uaprocessor").addFilter(_PermissionDenialFilter())
-
 
 def init(args_capsule) -> bool:
     """
@@ -118,6 +126,8 @@ def init(args_capsule) -> bool:
     """
     global _runtime_args
 
+    # The previous load's runtime args are freed; logging through them crashes.
+    reset_logger()
     log_info("OPC UA Plugin initializing...")
 
     try:
@@ -141,7 +151,6 @@ def init(args_capsule) -> bool:
     except Exception as e:
         log_error(f"Initialization error: {e}")
         return False
-
 
 def start_loop() -> bool:
     """
@@ -200,7 +209,6 @@ def start_loop() -> bool:
         log_error(f"Failed to start server: {e}")
         return False
 
-
 def stop_loop() -> bool:
     """
     Stop the OPC UA server.
@@ -255,7 +263,6 @@ def stop_loop() -> bool:
         log_error(f"Error stopping server: {e}")
         return False
 
-
 def cleanup() -> bool:
     """
     Clean up plugin resources.
@@ -287,6 +294,8 @@ def cleanup() -> bool:
         log_error(f"Cleanup error: {e}")
         return False
 
+    finally:
+        reset_logger()
 
 def _cancel_all_tasks(loop):
     """Cancel all running tasks on the event loop.
@@ -295,7 +304,6 @@ def _cancel_all_tasks(loop):
     """
     for task in asyncio.all_tasks(loop):
         task.cancel()
-
 
 def _run_server_thread() -> None:
     """
@@ -341,7 +349,6 @@ def _run_server_thread() -> None:
         log_error(f"Server thread error: {e}")
     finally:
         _loop = None
-
 
 # For backwards compatibility, also export as module-level functions
 # that match the old plugin interface

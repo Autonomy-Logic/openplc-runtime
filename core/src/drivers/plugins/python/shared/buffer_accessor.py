@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 # pylint: disable=R0913,R0917
@@ -27,7 +27,6 @@ except ImportError:
     from buffer_validator import BufferValidator
     from component_interfaces import IBufferAccessor
     from mutex_manager import MutexManager
-
 
 class GenericBufferAccessor(IBufferAccessor):
     """

@@ -1,21 +1,10 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
-/*
- * debug_handler_mocks.c — implementation of the test-side debugger ABI
- * fakes. See debug_handler_mocks.h for the contract.
- *
- * These functions are wired into the runtime by overwriting the
- * ext_strucpp_debug_* function pointers (declared extern in
- * image_tables.h, defined in image_tables.cpp) and the program-MD5
- * char* pointer (declared in utils.h, defined in utils.c).
- *
- * Because the runtime declares those externs in C++ (image_tables.cpp)
- * and we install from C, the declarations are reproduced here under
- * `extern "C"`-equivalent linkage. The installed function pointer
- * signatures must match exactly — a mismatch silently corrupts the
- * call frame.
- */
+/* Implementation of the test-side debugger ABI fakes. The runtime's
+ * ext_strucpp_debug_* function pointers and the program-MD5 char*
+ * are overwritten to point here. Signatures must match exactly or
+ * the call frame is silently corrupted. */
 
 #include "debug_handler_mocks.h"
 
@@ -24,21 +13,9 @@
 #include <stdint.h>
 #include <string.h>
 
-/* The runtime's normal home for these is image_tables.cpp (function
- * pointers) and utils.c (md5 char *). image_tables.cpp pulls in the
- * full strucpp ABI and a lot of C++ infrastructure that's irrelevant
- * to the debugger wire-protocol tests, so we provide the storage here
- * in test-support land instead. Ceedling resolves the externs in
- * debug_handler.c against these definitions and never compiles
- * image_tables.cpp.
- *
- * scan_counter (referenced by debug_handler.c for the tick field of
- * GET / GET_LIST responses) is owned by utils.c — that file is small
- * and gets pulled in normally.
- *
- * If a future test ever wants the real image_tables.cpp definitions,
- * gate this block with #ifndef MOCK_DEBUG_OWNS_EXTERNS or split it
- * into a separate support file. */
+/* Storage for the externs in debug_handler.c, so Ceedling can link
+ * without pulling in image_tables.cpp (full strucpp ABI).
+ * scan_counter comes from utils.c. */
 uint8_t  (*ext_strucpp_debug_array_count)(void)                          = NULL;
 uint16_t (*ext_strucpp_debug_elem_count) (uint8_t)                       = NULL;
 uint16_t (*ext_strucpp_debug_size)       (uint8_t, uint16_t)             = NULL;
@@ -48,9 +25,30 @@ uint16_t (*ext_strucpp_debug_read)       (uint8_t, uint16_t, uint8_t *)  = NULL;
 uint8_t  (*ext_strucpp_debug_write)      (uint8_t, uint16_t,
                                           const uint8_t *, uint16_t)     = NULL;
 
-/* ext_strucpp_program_md5 lives in utils.c; just bring the declaration
- * in via the public header. */
-extern char *ext_strucpp_program_md5;
+/* ext_strucpp_program_md5, scan_counter and runtime_external_write are DEFINED
+ * here, not just declared.
+ *
+ * The first two live in utils.c and the third in debug_write_journal.cpp, and
+ * no test target compiles any of those files -- so every link of a target that
+ * pulls in debug_handler.c failed on undefined references. The whole Ceedling
+ * suite has been unbuildable on development for that reason; the suite does
+ * not run in CI, so nothing said so.
+ *
+ * ext_strucpp_program_md5 is weak so the EtherCAT C tests, which do pull in
+ * both this file and utils.c, link without a duplicate-symbol error. The write
+ * stub accepts and drops -- nothing here asserts on the external-write queue. */
+__attribute__((weak)) char *ext_strucpp_program_md5 = NULL;
+unsigned long               scan_counter            = 0;
+
+int runtime_external_write(uint8_t arr, uint16_t elem, uint8_t op, const uint8_t *bytes, uint16_t len)
+{
+    (void)arr;
+    (void)elem;
+    (void)op;
+    (void)bytes;
+    (void)len;
+    return 0;
+}
 
 /* -----------------------------------------------------------------------
  * State backing the fakes. Reset between tests.

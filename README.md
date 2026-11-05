@@ -287,7 +287,7 @@ The installation script will:
 3. Create Python virtual environment at `venvs/runtime/`
 4. Install Python dependencies
 5. Compile the PLC runtime core with CMake
-6. Build native plugins (e.g., EtherCAT, S7comm)
+6. Build native plugins (e.g., EtherCAT client, S7comm) and EtherDOG, the EtherCAT master service
 7. Install and start a systemd service (`openplc-runtime`) when systemd is available
 
 ### Manual Build
@@ -514,7 +514,14 @@ For deterministic real-time performance:
 
 ## License
 
-See LICENSE file for details.
+OpenPLC Runtime is dual-licensed:
+
+- **GPLv3**: free for everyone, under the terms in [LICENSE](LICENSE).
+- **Commercial licence**: for users who want to use OpenPLC Runtime without the obligations of the GPLv3.
+
+If you are using OpenPLC Runtime in a commercial setting, you may need a commercial licence. Licences can be bought from the OpenPLC Editor (desktop or web) when you upload a program to the device.
+
+See [LICENSING.md](LICENSING.md) for the details and how to obtain a commercial licence. Contributions require agreeing to the [Contributor License Agreement](CLA.md) by ticking its checkbox on the pull request; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Support
 

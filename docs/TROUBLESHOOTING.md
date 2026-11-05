@@ -198,11 +198,16 @@ The OpenPLC Editor handles self-signed certificates automatically. If you're usi
    ```bash
    ls -la /var/run/runtime/restapi.db
    ```
-2. Reset database (WARNING: deletes all users):
+2. Reset database (WARNING: deletes all users and reopens the first-user
+   bootstrap window):
    ```bash
    sudo rm /var/run/runtime/restapi.db
    sudo ./start_openplc.sh
    ```
+   The runtime holds a `bootstrap_marker` row inside `restapi.db` to prevent
+   a second admin being created once the first exists. Clearing individual
+   tables will leave this sentinel in place and keep bootstrap closed;
+   full recovery requires removing the entire `restapi.db` file.
 3. Check .env file exists:
    ```bash
    ls -la /var/run/runtime/.env

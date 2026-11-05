@@ -1,9 +1,9 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 /**
  * @file plc_retain.h
- * @brief Retain-variable persistence — the runtime's half (NODE-94).
+ * @brief Retain-variable persistence — the runtime's half.
  *
  * The runtime MARSHALS and the platform STORES, exactly as on baremetal. The
  * marshalling itself lives inside the loaded .so (STruC++'s `iec_retain.hpp`,

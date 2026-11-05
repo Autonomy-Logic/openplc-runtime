@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """
@@ -31,7 +31,6 @@ The plugin name is automatically prefixed to all messages, e.g.:
 from datetime import datetime, timezone
 from typing import Optional
 from .safe_logging_access import SafeLoggingAccess
-
 
 class PluginLogger:
     """

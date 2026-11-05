@@ -187,6 +187,7 @@ sudo ./build/plc_main
 - `--print-logs` - Print logs to stdout in addition to socket
 - `--print-debug` - Enable debug-level logging
 - `--safe-mode` - Start in safe mode
+- `--fault` - With `--safe-mode`: report ERROR at boot (used after a watchdog exit, code 42)
 
 ### Development Mode
 

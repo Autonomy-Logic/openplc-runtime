@@ -288,6 +288,10 @@ docker run -p 8443:8443 ...            # All interfaces
 - User accounts
 - Hashed passwords
 - Session data
+- `bootstrap_marker`: one-row sentinel inserted alongside the first admin
+  so a lost `users` table cannot reopen the first-user bootstrap window.
+  Full recovery of first-user bootstrap therefore requires removing the
+  entire `restapi.db` file, not clearing individual tables.
 
 **Protection:**
 - File system permissions
@@ -423,7 +427,6 @@ Planned security enhancements:
 - Database encryption at rest
 - Certificate management UI
 - Two-factor authentication
-- Role-based access control
 
 ## Compliance Considerations
 

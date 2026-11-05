@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """Modbus Master plugin type definitions."""
@@ -6,14 +6,12 @@
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 
-
 @dataclass
 class ModbusConnectionConfig:
     """Configuration for Modbus TCP connection."""
     host: str
     port: int
     timeout_ms: int
-
 
 @dataclass
 class ModbusIOPoint:
@@ -25,7 +23,6 @@ class ModbusIOPoint:
     iec_location: Any  # IECAddress object
     cycle_time_ms: int
 
-
 @dataclass
 class ModbusDeviceConfig:
     """Configuration for a Modbus slave device."""
@@ -34,7 +31,6 @@ class ModbusDeviceConfig:
     port: int
     timeout_ms: int
     io_points: List[ModbusIOPoint]
-
 
 @dataclass
 class BufferAccessDetails:

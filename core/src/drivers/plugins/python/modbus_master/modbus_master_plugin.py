@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 import os
@@ -23,6 +23,17 @@ from shared import (
 )
 
 # Import the configuration model
+# Importing set_image_sizes is not a formality: the name has to exist in THIS
+# module for the runtime to find it, and its presence is how this plugin
+# declares it understands per-table image sizes. The runtime keeps the image
+# SQUARE for any run in which even one loaded plugin lacks it -- and
+# this plugin ships in plugins_default.conf, so without this line per-table
+# sizing never activates on a stock device.
+#
+# Nothing else is needed here: this plugin bounds through SafeBufferAccess ->
+# BufferValidator, which already validates against the table each buffer lives
+# in rather than against the single figure.
+from shared.image_sizes import set_image_sizes  # noqa: F401
 from shared.plugin_config_decode.modbus_master_config_model import (
     ERROR_HANDLING_SET_TO_ZERO,
     ModbusMasterConfig,
@@ -71,7 +82,6 @@ logger: PluginLogger = None
 slave_threads: List[threading.Thread] = []
 # pylint: enable=invalid-name
 
-
 def queue_zero_fill_on_failure(point: Any, read_results_to_update: List[Any]) -> bool:
     """
     Queue a zeroed payload for a read point whose group asks for it.
@@ -94,12 +104,12 @@ def queue_zero_fill_on_failure(point: Any, read_results_to_update: List[Any]) ->
     )
     return True
 
-
 class ModbusSlaveDevice(threading.Thread):
     """
     Handles a single Modbus TCP device with its own connection.
     For RTU devices, use ModbusRtuBusHandler instead.
     """
+
     def __init__(self, device_config: Any, sba: SafeBufferAccess, plugin_logger: PluginLogger):
         super().__init__(daemon=True)
         self.device_config = device_config
@@ -113,9 +123,11 @@ class ModbusSlaveDevice(threading.Thread):
             host=device_config.host,
             port=device_config.port,
             timeout_ms=device_config.timeout_ms,
-            slave_id=device_config.slave_id
+            slave_id=device_config.slave_id,
         )
-        self.name = f"ModbusSlave-{device_config.name}-TCP-{device_config.host}:{device_config.port}"
+        self.name = (
+            f"ModbusSlave-{device_config.name}-TCP-{device_config.host}:{device_config.port}"
+        )
 
         # Calculate GCD of all I/O point cycle times for this device
         self.gcd_cycle_time_ms = calculate_gcd_of_cycle_times(device_config.io_points)
@@ -142,7 +154,9 @@ class ModbusSlaveDevice(threading.Thread):
 
         # Connect with infinite retry
         if not self.connection_manager.connect_with_retry(self._stop_event):
-            self.logger.info(f"[{self.name}] Thread stopped before connection could be established.")
+            self.logger.info(
+                f"[{self.name}] Thread stopped before connection could be established."
+            )
             return
 
         # Initialize cycle counter
@@ -293,10 +307,9 @@ class ModbusSlaveDevice(threading.Thread):
                                 f"for read updates: {lock_msg}"
                             )
 
-                # 2. WRITE OPERATIONS - Process only I/O points that are due for polling this cycle
-                # OPTIMIZATION: Batch all write preparations under a single mutex acquisition
-                # to minimize mutex hold time. Read all raw IEC values at once, then convert
-                # and write to Modbus outside the mutex.
+                # WRITES - process only points due this cycle. Batch all
+                # raw IEC reads under one image_lock; convert and send
+                # to Modbus outside the lock to minimise hold time.
 
                 # Phase 1: Collect all write points that are due this cycle
                 write_points_due = []
@@ -371,23 +384,25 @@ class ModbusSlaveDevice(threading.Thread):
                         if point.fc == 5:  # Write Single Coil
                             if len(values_to_write) > 0:
                                 response = self.connection_manager.client.write_coil(
-                                    address, values_to_write[0], device_id=self.connection_manager.slave_id
+                                    address,
+                                    values_to_write[0],
+                                    device_id=self.connection_manager.slave_id,
                                 )
                             else:
                                 self.logger.error(
-                                    f"[{self.name}] No data to write "
-                                    f"for FC 5, offset {address}"
+                                    f"[{self.name}] No data to write " f"for FC 5, offset {address}"
                                 )
                                 continue
                         elif point.fc == 6:  # Write Single Register
                             if len(values_to_write) > 0:
                                 response = self.connection_manager.client.write_register(
-                                    address, values_to_write[0], device_id=self.connection_manager.slave_id
+                                    address,
+                                    values_to_write[0],
+                                    device_id=self.connection_manager.slave_id,
                                 )
                             else:
                                 self.logger.error(
-                                    f"[{self.name}] No data to write "
-                                    f"for FC 6, offset {address}"
+                                    f"[{self.name}] No data to write " f"for FC 6, offset {address}"
                                 )
                                 continue
                         elif point.fc == 15:  # Write Multiple Coils
@@ -460,7 +475,6 @@ class ModbusSlaveDevice(threading.Thread):
         self.logger.info(f"[{self.name}] Stop signal received.")
         self._stop_event.set()
 
-
 class ModbusBusHandler(threading.Thread):
     """
     Handles multiple Modbus devices that share ONE connection, multiplexed by
@@ -481,10 +495,10 @@ class ModbusBusHandler(threading.Thread):
 
     def __init__(
         self,
-        transport: str,            # "tcp" or "rtu"
-        connection_config: dict,   # tcp: {host, port, timeout_ms};
-                                   # rtu: {serial_port, baud_rate, parity, stop_bits, data_bits, timeout_ms}
-        devices: List[Any],        # List of ModbusDeviceConfig sharing this connection
+        transport: str,  # "tcp" or "rtu"
+        connection_config: dict,  # tcp: {host, port, timeout_ms};
+        # rtu: {serial_port, baud_rate, parity, stop_bits, data_bits, timeout_ms}
+        devices: List[Any],  # List of ModbusDeviceConfig sharing this connection
         sba: SafeBufferAccess,
         plugin_logger: PluginLogger,
     ):
@@ -525,17 +539,23 @@ class ModbusBusHandler(threading.Thread):
         self.all_io_points = []
         for device in devices:
             for point in device.io_points:
-                self.all_io_points.append({
-                    "point": point,
-                    "slave_id": device.slave_id,
-                    "device_name": device.name,
-                })
+                self.all_io_points.append(
+                    {
+                        "point": point,
+                        "slave_id": device.slave_id,
+                        "device_name": device.name,
+                    }
+                )
 
         # Calculate GCD of all IO point cycle times across all devices on this bus
         all_cycle_times = [p.cycle_time_ms for d in devices for p in d.io_points]
-        self.gcd_cycle_time_ms = calculate_gcd_of_cycle_times(
-            [type('obj', (object,), {'cycle_time_ms': ct})() for ct in all_cycle_times]
-        ) if all_cycle_times else 1000
+        self.gcd_cycle_time_ms = (
+            calculate_gcd_of_cycle_times(
+                [type("obj", (object,), {"cycle_time_ms": ct})() for ct in all_cycle_times]
+            )
+            if all_cycle_times
+            else 1000
+        )
 
         device_names = ", ".join([d.name for d in devices])
         self.logger.info(
@@ -558,7 +578,9 @@ class ModbusBusHandler(threading.Thread):
 
         # Connect with infinite retry
         if not self.connection_manager.connect_with_retry(self._stop_event):
-            self.logger.info(f"[{self.name}] Thread stopped before connection could be established.")
+            self.logger.info(
+                f"[{self.name}] Thread stopped before connection could be established."
+            )
             return
 
         # Initialize cycle counter
@@ -858,10 +880,8 @@ class ModbusBusHandler(threading.Thread):
         self.logger.info(f"[{self.name}] Stop signal received.")
         self._stop_event.set()
 
-
 # Backward-compatible alias: the bus handler used to be RTU-only.
 ModbusRtuBusHandler = ModbusBusHandler
-
 
 def group_rtu_devices_by_bus(devices: List[Any]) -> dict:
     """
@@ -911,7 +931,6 @@ def group_rtu_devices_by_bus(devices: List[Any]) -> dict:
 
     return buses
 
-
 def group_tcp_devices_by_endpoint(devices: List[Any]) -> dict:
     """
     Group TCP devices by (host, port) endpoint.
@@ -957,7 +976,6 @@ def group_tcp_devices_by_endpoint(devices: List[Any]) -> dict:
 
     return endpoints
 
-
 def init(args_capsule):
     """
     Initialize the Modbus Master plugin.
@@ -986,7 +1004,6 @@ def init(args_capsule):
         logger.error(f"Error during initialization: {e}")
         traceback.print_exc()
         return False
-
 
 def start_loop():
     """
@@ -1037,10 +1054,9 @@ def start_loop():
 
         logger.info(f"Found {len(tcp_devices)} TCP device(s) and {len(rtu_devices)} RTU device(s)")
 
-        # Group TCP devices by (host, port). A lone device on an endpoint keeps
-        # the simple one-thread-per-device path; multiple devices on one endpoint
-        # (a Modbus gateway / TCP-to-RTU converter) share a single TCP connection
-        # and are multiplexed by slave/unit ID via ModbusBusHandler.
+        # Group TCP devices by (host, port). One device → one thread;
+        # multiple on one endpoint (a Modbus gateway) share a TCP
+        # connection, multiplexed by unit ID via ModbusBusHandler.
         if tcp_devices:
             tcp_endpoints = group_tcp_devices_by_endpoint(tcp_devices)
             logger.info(f"TCP devices grouped into {len(tcp_endpoints)} endpoint(s)")
@@ -1050,7 +1066,9 @@ def start_loop():
                 try:
                     if len(endpoint_devices) == 1:
                         device_config = endpoint_devices[0]
-                        device_thread = ModbusSlaveDevice(device_config, safe_buffer_accessor, logger)
+                        device_thread = ModbusSlaveDevice(
+                            device_config, safe_buffer_accessor, logger
+                        )
                         device_thread.start()
                         slave_threads.append(device_thread)
                         logger.info(
@@ -1115,7 +1133,6 @@ def start_loop():
         traceback.print_exc()
         return False
 
-
 def stop_loop():
     """
     Stop the main loop and all running device threads.
@@ -1167,7 +1184,6 @@ def stop_loop():
         traceback.print_exc()
         return False
 
-
 def cleanup():
     """
     Clean up resources before plugin unload.
@@ -1199,7 +1215,6 @@ def cleanup():
         logger.error(f"Error during cleanup: {e}")
         traceback.print_exc()
         return False
-
 
 if __name__ == "__main__":
     # Test mode for development purposes.

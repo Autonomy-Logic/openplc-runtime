@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """
@@ -19,7 +19,6 @@ import sys
 from datetime import datetime
 
 from asyncua import Client, ua
-
 
 class SubscriptionHandler:
     """
@@ -61,7 +60,6 @@ class SubscriptionHandler:
     def event_notification(self, event):
         """Called when an event is received."""
         print(f"Event received: {event}")
-
 
 async def test_subscriptions(endpoint_url: str):
     """
@@ -220,7 +218,6 @@ async def test_subscriptions(endpoint_url: str):
             if handler.last_notification_time:
                 print(f"Last notification at: {handler.last_notification_time}")
 
-
 async def main():
     """Main entry point."""
     # Default endpoint
@@ -231,7 +228,6 @@ async def main():
         endpoint_url = sys.argv[1]
 
     await test_subscriptions(endpoint_url)
-
 
 if __name__ == "__main__":
     try:

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 import threading
@@ -45,10 +45,7 @@ def assert_block_zeroed(block, size):
     assert block.getValues(0, size) == [0] * size
 
 
-# -----------------------------------------------------------------------
-# Fake SafeBufferAccess used to observe locking behavior.
-# We patch simple_modbus.SafeBufferAccess to return this object inside blocks
-# -----------------------------------------------------------------------
+# Fake SafeBufferAccess that observes locking behaviour.
 class ObservingSafeBufferAccess:
     """
     Test double for SafeBufferAccess that matches the REAL method signatures used
@@ -133,7 +130,6 @@ class ObservingSafeBufferAccess:
         return (int(self.args.analog_output[index]) & 0xFFFF, "Success")
 
 
-
 # -----------------------------------------------------------------------
 # Data Block tests (use ObservingSafeBufferAccess patched in)
 # -----------------------------------------------------------------------
@@ -198,10 +194,12 @@ def test_input_registers_out_of_range(runtime_args):
     with patch(f"{MODULE}.SafeBufferAccess", new=ObservingSafeBufferAccess):
         blk = simple_modbus.OpenPLCInputRegistersDataBlock(runtime_args, num_registers=4)
 
-        # read partially inside/partially outside -> out-of-range fields are zero
-        # Ensure that for a very large start we get zeros
-        got = blk.getValues(10, 3)
-        assert got == [0, 0, 0]
+        # Wholly past the four registers configured: refused, not zero-filled.
+        assert blk.getValues(10, 3) == simple_modbus.ExcCodes.ILLEGAL_ADDRESS
+
+        # Straddling the end is refused too -- a part-answer would put a
+        # plausible zero where the device has nothing.
+        assert blk.getValues(3, 3) == simple_modbus.ExcCodes.ILLEGAL_ADDRESS
 
 
 # -----------------------------------------------------------------------

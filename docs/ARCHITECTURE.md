@@ -84,10 +84,11 @@ EMPTY → INIT → RUNNING ⟷ STOPPED → ERROR
 
 1. **Main Thread**: Initialization and signal handling
 2. **Unix Socket Thread**: Accepts and processes commands
-3. **PLC Cycle Thread**: Executes scan cycles with real-time priority
-4. **Stats Thread**: Logs performance metrics
-5. **Watchdog Thread**: Monitors heartbeat and terminates on hang
-6. **Log Thread**: Manages log socket connection
+3. **PLC Cycle Thread / Dispatcher**: Loads the program, then runs the GCD master-tick dispatcher at SCHED_FIFO 98
+4. **Task Threads**: One per IEC TASK, SCHED_FIFO 49 - IEC priority (IEC 0..48, clamped)
+5. **Stats Thread**: Logs performance metrics
+6. **Watchdog Thread**: SCHED_FIFO 99; bounds stops and detects a stalled dispatcher
+7. **Log Thread**: Manages log socket connection
 
 ## Real-Time Execution
 
@@ -156,14 +157,40 @@ docker run -v openplc-runtime-data:/var/run/runtime ...
 
 ## Watchdog System
 
-The watchdog monitors PLC health by tracking the `plc_heartbeat` atomic variable:
+Three layers, from the gentlest to the last resort. The numbers below are the
+defaults of the constants in `core/src/plc_app/task_policy.h`.
 
-- **Update Frequency**: Every scan cycle
-- **Timeout**: 2 seconds without update
-- **Action**: Terminates process if PLC becomes unresponsive
-- **State Awareness**: Only monitors during RUNNING state
+1. **Stuck task (dispatcher).** A task found still in the same scan on 10
+   consecutive due ticks (10 of its own periods) trips the dispatcher. It claims a
+   stop, drains every task, and the stop lands in ERROR. The count resets whenever
+   the task is found idle, so a task whose scans finish within 10 periods never
+   trips. Ticks replayed after a late dispatcher count as missed periods too.
+   A task's first scan (initialisation, e.g. Python function block start-up) is
+   not counted; the main watchdog trips it only if it runs past 10 s.
+2. **Drain and abort (dispatcher).** On every stop each in-flight scan may run until
+   10 periods after its release (10 s for a first scan). A task still inside IEC
+   program code then gets `SIGUSR2`, whose handler jumps to the task's recovery
+   point. A stop that aborted a task lands in ERROR. On every stop, plugin writes
+   are fenced off (the journal is closed), all `%Q` outputs are written to 0 and
+   pushed by a final I/O cycle, and held for 500 ms before plugins stop. Runtime
+   code reached from IEC bodies that must not be interrupted (the Python block
+   loader) blocks `SIGUSR2`; user C function blocks are not protected, and an abort
+   landing inside one that holds a C-library lock ends in layer 3.
+3. **Process exit (watchdog thread, FIFO 99).** If an aborted task does not exit
+   within 2 s, a stop exceeds max(10 x the longest task interval, 10 s) + 30.5 s,
+   or the dispatcher has not ticked for max(10 base ticks, 1 s), the runtime calls
+   `_exit(42)` after writing `/run/runtime/watchdog_fault`. The webserver restarts
+   the runtime with `--safe-mode --fault` (the marker forces the same when the exit
+   code is not visible). That boot reports ERROR, does not load the program, and
+   first starts the configured plugins just long enough to drive all outputs to 0.
+   If that step itself hangs, the next exit records it in the marker and the
+   following boot skips it, relying on the hardware safe-state watchdog.
 
-**Implementation:** `core/src/plc_app/utils/watchdog.c`
+All runtime mutexes that can take it use `PTHREAD_PRIO_INHERIT`, and state reads
+are lock free, so a starved normal-priority thread cannot block the dispatcher or
+the watchdog on a single CPU.
+
+**Implementation:** `core/src/plc_app/utils/watchdog.c`, `core/src/plc_app/plc_state_manager.cpp`
 
 ## Performance Monitoring
 
@@ -188,7 +215,7 @@ Stats are logged every 5 seconds via the stats thread.
 - Signal handling for SIGINT (graceful shutdown)
 - State transitions validated before execution
 - Plugin failures isolated from core runtime
-- Watchdog ensures process termination on hang
+- Watchdog stops a stuck program, and exits for a safe-mode restart when it cannot
 
 ## Directory Structure
 

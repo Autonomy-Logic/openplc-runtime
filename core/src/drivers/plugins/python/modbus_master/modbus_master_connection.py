@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """Modbus Master plugin connection management utilities."""
@@ -10,7 +10,6 @@ from pymodbus.client import ModbusTcpClient, ModbusSerialClient
 
 TransportType = Literal["tcp", "rtu"]
 ParityType = Literal["N", "E", "O"]
-
 
 class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
     """Manages Modbus TCP and RTU connections with retry logic."""

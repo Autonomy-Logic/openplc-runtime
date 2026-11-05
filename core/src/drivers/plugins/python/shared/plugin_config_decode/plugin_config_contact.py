@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """
@@ -11,7 +11,6 @@ from abc import ABC
 class PluginConfigError(Exception):
     """Custom exception for plugin configuration errors."""
     pass
-
 
 class PluginConfigContract(ABC):
     """

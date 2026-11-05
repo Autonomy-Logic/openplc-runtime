@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
-# Start the inner Docker daemon, then hand over to the command.
-#
-# The daemon has to be up before anything else runs, and "up" means the socket
-# answers -- not merely that dockerd was spawned. Racing it is the classic way
-# an integration harness fails intermittently and gets blamed on the code under
-# test.
+# Start the inner Docker daemon (wait for the socket to answer), then
+# hand over to the command.
 set -euo pipefail
 
 log() { printf '[testhost] %s\n' "$*" >&2; }

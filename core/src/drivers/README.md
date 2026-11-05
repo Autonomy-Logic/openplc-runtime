@@ -18,6 +18,7 @@ The plugin system provides a flexible architecture for integrating external hard
 core/src/drivers/
 ├── plugin_driver.c/h          # Main plugin driver system
 ├── plugin_config.c/h          # Configuration file parsing
+├── plugin_plc_requests.c/h    # Plugin run/stop requests and mode-switch report
 ├── python_plugin_bridge.h     # Python plugin integration
 ├── CMakeLists.txt             # Build configuration
 ├── plugins/
@@ -746,7 +747,7 @@ void plugin_driver_destroy(plugin_driver_t *driver);
 
 ## License
 
-This plugin system is part of the OpenPLC Runtime project and follows the same licensing terms (typically GPLv3 or later).
+This plugin system is part of the OpenPLC Runtime and is dual-licensed under GPLv3 or a commercial licence (see the top-level `LICENSE` and `LICENSING.md`). Plugins can carry their own license: the S7comm plugin is LGPLv3 or later, matching the Snap7 library it links.
 
 ## Contributing
 

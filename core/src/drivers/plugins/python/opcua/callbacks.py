@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """
@@ -31,7 +31,6 @@ except ImportError:
     from opcua_logging import log_info, log_warn, log_error, log_debug
 
 from shared.plugin_config_decode.opcua_config_model import VariablePermissions
-
 
 class PermissionCallbackHandler:
     """

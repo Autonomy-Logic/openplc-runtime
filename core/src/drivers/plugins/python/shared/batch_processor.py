@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """
@@ -25,7 +25,6 @@ except ImportError:
     from component_interfaces import IBatchProcessor
     from buffer_accessor import GenericBufferAccessor
     from mutex_manager import MutexManager
-
 
 class BatchProcessor(IBatchProcessor):
     """

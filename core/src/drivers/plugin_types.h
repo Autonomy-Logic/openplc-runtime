@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 /**
@@ -19,6 +19,16 @@
 #define PLUGIN_TYPES_H
 
 #include "../lib/plc_image_types.h"
+/* The image table identities, so a plugin receiving the sizes array can name
+ * the entries it indexes rather than counting positions.
+ * Publishing a type costs no ABI: no struct gains a field and no offset
+ * moves, which is what CON06 guarantees pre-compiled plugins.
+ *
+ * A plugin built against an OLDER runtime will not find this header, so
+ * anything that must work on both — a VPP package, which ships and is built
+ * independently of the runtime on the device — carries its own constants and
+ * keeps them in the order documented there. */
+#include "../plc_app/image_table_id.h"
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -100,6 +110,10 @@ typedef uint8_t  (*plugin_debug_write_func_t)(uint8_t arr, uint16_t elem,
  * The call is non-blocking: the runtime spawns a worker thread for the
  * transition and returns immediately. `reason` is logged at error level.
  * Safe to call from any plugin thread.
+ *
+ * Start and stop requests from any plugin thread, including threads started
+ * by init(), are not acted on from boot-time plugin init until the boot
+ * auto-start has decided; it reads the switch position stored by then instead.
  */
 typedef void (*plugin_request_plc_stop_func_t)(const char *reason);
 
@@ -116,6 +130,10 @@ typedef void (*plugin_request_plc_stop_func_t)(const char *reason);
  * thread, including while the PLC is stopped: the runtime keeps every plugin
  * mapped across a stop, so this is how a hardware STOP -> RUN edge starts the
  * PLC again.
+ *
+ * Start and stop requests from any plugin thread, including threads started
+ * by init(), are not acted on from boot-time plugin init until the boot
+ * auto-start has decided; it reads the switch position stored by then instead.
  */
 typedef void (*plugin_request_plc_start_func_t)(const char *reason);
 
@@ -188,6 +206,18 @@ typedef int (*plugin_get_plc_state_func_t)(void);
  * Plugins read buffers under image_lock()/image_unlock() (flush-on-lock) and
  * write through journal_write_* (lock-free), keeping access race-free against
  * the PLC scan cycle.
+ *
+ * init() lifecycle, for plugins in plugins.conf and in a program's
+ * vpp_plugins.conf alike:
+ * - init() runs at power-on, before any program is loaded, and stays in effect
+ *   even if the PLC never starts (switch in STOP, safe mode excepted: VPP
+ *   plugins are not loaded there). It must not depend on program state.
+ * - Every PLC start then calls cleanup(), dlclose()s and re-dlopen()s the .so
+ *   and calls init() again, including the first start after power-on. Any
+ *   thread started in init() must be joined in cleanup(), and init() must
+ *   re-acquire whatever cleanup() released.
+ * - Start/stop requests from any plugin thread are not acted on from boot-time
+ *   init() until the boot auto-start has decided.
  */
 typedef struct
 {
@@ -207,20 +237,15 @@ typedef struct
     IEC_ULINT **lint_memory;
     IEC_BOOL *(*bool_memory)[8];
 
-    /* Flush-on-lock image read API for thread-safe buffer access.
-     *
-     * image_lock() takes the runtime's image mutex and drains the journal so
-     * the holder sees every committed write; image_unlock() releases it. Writes
-     * never take this lock -- use journal_write_* (lock-free). Prefer the bulk
-     * pattern for reads: lock, copy the region to a local buffer, unlock, then
-     * do any slow work (network, conversion) on the buffer OUTSIDE the lock. */
+    /* Flush-on-lock image read API. image_lock takes the mutex and
+     * drains the journal; image_unlock releases. Writes use
+     * journal_write_* (lock-free). Reads: lock, memcpy, unlock,
+     * then slow work OUTSIDE the lock. */
     void (*image_lock)(void);
     void (*image_unlock)(void);
 
-    /* STruC++ debugger variable-access surface.
-     * Replaces the MatIEC-era flat-index API (get_var_list /
-     * get_var_size / get_var_count). Plugins like OPC-UA receive
-     * pre-resolved (arr, elem) tuples from the editor in their
+    /* STruC++ debugger variable-access surface. Plugins (e.g. OPC-UA)
+     * receive pre-resolved (arr, elem) tuples from the editor in their
      * per-plugin config and forward them through these thunks. */
     plugin_debug_array_count_func_t debug_array_count;
     plugin_debug_elem_count_func_t  debug_elem_count;
@@ -229,10 +254,39 @@ typedef struct
     plugin_debug_set_func_t         debug_set;
     plugin_debug_write_func_t       debug_write;
 
-    /* Plugin configuration */
+    /* Plugin configuration; conf/<plugin>.* ride-along files land in dirname() of this path */
     char plugin_specific_config_file_path[256];
 
-    /* Buffer size information */
+    /* THE SMALLEST TABLE, NOT THE ONLY ONE.
+     *
+     * The fourteen image tables no longer share a length. This field cannot
+     * say that -- CON06 guarantees pre-compiled plugins keep their field
+     * offsets, so it does not move -- and it is now the MINIMUM of the
+     * fourteen rather than the length they all happened to have.
+     *
+     * The minimum is the only safe answer for a consumer that still reads one
+     * number: bounding by it refuses an index that would have run off the end
+     * of the shortest table, where bounding by the largest would have read
+     * past every table below it. Under-permissive, never over.
+     *
+     * A plugin that wants the truth exports `set_image_sizes` (plugin_driver.h)
+     * and receives all fourteen before its init() runs. When every loaded
+     * plugin does, the image is allocated per table; when any does not, it is
+     * kept square for that run and this field is again the length they all
+     * have.
+     *
+     * Not marked deprecated yet, and the reason is not what an earlier draft
+     * of this comment claimed. The runtime core does build with -Werror
+     * (core/src/CMakeLists.txt), but the plugins do not: they are configured
+     * by their own cmake invocation and the VPP packages by a plain Makefile,
+     * so the attribute would produce warnings there, not a build failure.
+     *
+     * It is deferred because the field is still the RIGHT thing to read: on a
+     * square run it is the length every table has, and it is the only bound a
+     * plugin that has not adopted set_image_sizes can use. Deprecating it now
+     * would warn at correct code, including in packages that ship
+     * independently and must keep working against older runtimes. The
+     * attribute goes in once the symbol is universal. */
     int buffer_size;
     int bits_per_buffer;
 
@@ -249,6 +303,7 @@ typedef struct
     plugin_journal_write_dint_func_t journal_write_dint;
     plugin_journal_write_lint_func_t journal_write_lint;
 
+    /* Append-only below: compiled plugins bake in the offsets above. */
     /* Async request to stop the whole PLC — see plugin_request_plc_stop_func_t. */
     plugin_request_plc_stop_func_t request_plc_stop;
 
@@ -256,14 +311,6 @@ typedef struct
      * Populated when the runtime initializes the plugin; may be 0 if
      * symbols are not yet resolved (plugin must guard against zero). */
     unsigned long long base_tick_ns;
-
-    /* ---------------------------------------------------------------------
-     * Run/stop control. Appended at the end of the struct so plugin binaries
-     * compiled against an earlier layout keep their field offsets.
-     *
-     * A plugin that ignores all three behaves exactly as before: the switch
-     * position stays at its RUN default, so every start path is unguarded.
-     * ------------------------------------------------------------------- */
 
     /* Async request to run — see plugin_request_plc_start_func_t. */
     plugin_request_plc_start_func_t request_plc_start;

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """
@@ -17,7 +17,6 @@ try:
 except ImportError:
     # Fall back to absolute imports (when testing standalone)
     from component_interfaces import IBufferType
-
 
 class BoolBufferType(IBufferType):
     """Boolean buffer type (1-bit values accessed via bit indexing)"""
@@ -42,7 +41,6 @@ class BoolBufferType(IBufferType):
     def ctype_class(self) -> type:
         return ctypes.c_uint8
 
-
 class ByteBufferType(IBufferType):
     """Byte buffer type (8-bit unsigned integer)"""
 
@@ -65,7 +63,6 @@ class ByteBufferType(IBufferType):
     @property
     def ctype_class(self) -> type:
         return ctypes.c_uint8
-
 
 class IntBufferType(IBufferType):
     """Integer buffer type (16-bit unsigned integer)"""
@@ -90,7 +87,6 @@ class IntBufferType(IBufferType):
     def ctype_class(self) -> type:
         return ctypes.c_uint16
 
-
 class DintBufferType(IBufferType):
     """Double integer buffer type (32-bit unsigned integer)"""
 
@@ -114,7 +110,6 @@ class DintBufferType(IBufferType):
     def ctype_class(self) -> type:
         return ctypes.c_uint32
 
-
 class LintBufferType(IBufferType):
     """Long integer buffer type (64-bit unsigned integer)"""
 
@@ -137,7 +132,6 @@ class LintBufferType(IBufferType):
     @property
     def ctype_class(self) -> type:
         return ctypes.c_uint64
-
 
 class BufferTypes:
     """
@@ -221,10 +215,8 @@ class BufferTypes:
         """Check if a buffer name exists"""
         return buffer_name in self._buffer_mappings
 
-
 # Singleton instance
 _buffer_types_instance = None  # pylint: disable=C0103
-
 
 def get_buffer_types() -> BufferTypes:
     """Get the singleton BufferTypes instance"""

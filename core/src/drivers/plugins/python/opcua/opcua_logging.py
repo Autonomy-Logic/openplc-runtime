@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """
@@ -11,7 +11,6 @@ runtime logging system while providing fallback to standard output.
 from datetime import datetime, timezone
 from typing import Optional, Callable
 import sys
-
 
 class OpcuaLogger:
     """
@@ -109,27 +108,26 @@ class OpcuaLogger:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] [DEBUG] [OPCUA] {message}", file=sys.stdout)
 
-
 # Module-level convenience functions
 def get_logger() -> OpcuaLogger:
     """Get the singleton logger instance."""
     return OpcuaLogger.get_instance()
 
+def reset_logger() -> None:
+    """Drop the runtime log callbacks, which belong to the runtime args of one load."""
+    OpcuaLogger.reset()
 
 def log_info(message: str) -> None:
     """Log an informational message."""
     get_logger().info(message)
 
-
 def log_warn(message: str) -> None:
     """Log a warning message."""
     get_logger().warn(message)
 
-
 def log_error(message: str) -> None:
     """Log an error message."""
     get_logger().error(message)
-
 
 def log_debug(message: str) -> None:
     """Log a debug message."""

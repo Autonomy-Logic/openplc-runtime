@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """
@@ -196,7 +196,6 @@ def test_modbus_io_point_config_from_dict():
         return False
         
     return True
-
 
 def test_modbus_config_error_handling():
     """Test ModbusMasterConfig error handling with invalid files or data."""

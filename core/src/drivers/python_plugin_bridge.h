@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
 #ifndef __PYTHON_PLUGIN_BRIDGE_H
@@ -30,6 +30,10 @@ typedef struct
     PyObject *pFuncStart;
     PyObject *pFuncStop;
     PyObject *pFuncCleanup;
+    /* Optional: set_image_sizes(sizes). NULL when the module does not define
+     * it, which declares that it does not understand per-table image sizes
+     *. See plugin_driver.h for why presence is the declaration. */
+    PyObject *pFuncSetImageSizes;
     PyObject *args_capsule; // Capsule containing plugin_runtime_args_t for lifetime management
 } python_binds_t;
 

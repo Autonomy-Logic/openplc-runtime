@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
 """OPC-UA plugin type definitions."""
@@ -6,7 +6,6 @@
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 from asyncua.common.node import Node
-
 
 @dataclass
 class VariableNode:
@@ -24,7 +23,6 @@ class VariableNode:
     is_array_element: bool = False
     array_index: Optional[int] = None  # 0..length-1 within the array
     array_length: Optional[int] = None  # Length of array (for array nodes only)
-
 
 @dataclass
 class VariableMetadata:
