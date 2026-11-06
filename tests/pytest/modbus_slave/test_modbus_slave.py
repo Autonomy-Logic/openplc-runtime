@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.src.drivers.plugins.python.modbus_slave import simple_modbus
+from pymodbus.constants import ExcCodes
 from pymodbus.datastore import ModbusSparseDataBlock
 
 
@@ -42,7 +43,7 @@ def runtime_args():
 def assert_block_zeroed(block, size):
     """Ensure the ModbusSparseDataBlock-like block returns zeros for fresh region."""
     assert isinstance(block, ModbusSparseDataBlock)
-    assert block.getValues(0, size) == [0] * size
+    assert block.getValues(1, size) == [0] * size
 
 
 # Fake SafeBufferAccess that observes locking behaviour.
@@ -156,16 +157,13 @@ def test_coils_read_write_and_locking(runtime_args):
         assert sba.release_count >= 1
 
 
-def test_coils_invalid_ranges_return_zero(runtime_args):
+def test_coils_invalid_ranges_are_refused(runtime_args):
     with patch(f"{MODULE}.SafeBufferAccess", new=ObservingSafeBufferAccess):
         block = simple_modbus.OpenPLCCoilsDataBlock(runtime_args, num_coils=8)
 
-        # read beyond range -> zeros expected (your code prints and returns zeros)
-        out = block.getValues(1000, 3)
-        assert out == [0, 0, 0]
+        assert block.getValues(1000, 3) == ExcCodes.ILLEGAL_ADDRESS
 
-        # write beyond range should not crash and should not mutate in-range values
-        block.setValues(1000, [1, 1])
+        assert block.setValues(1000, [1, 1]) == ExcCodes.ILLEGAL_ADDRESS
         assert runtime_args.bool_output.count(1) == 0
 
 
