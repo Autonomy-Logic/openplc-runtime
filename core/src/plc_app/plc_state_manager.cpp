@@ -344,6 +344,7 @@ static void plc_task_body(PlcTaskCtx *ctx)
         }
 
         scan_cycle_tracker_end(&ctx->tracker);
+        ctx->first_scan_done.store(true, std::memory_order_release);
 
         ctx->local_tick.fetch_add(1, std::memory_order_relaxed);
         /* Signal scan completion LAST (release order): the dispatcher reads
@@ -381,7 +382,7 @@ static int64_t task_stuck_limit_ns(const PlcTaskCtx *c)
 
 static bool task_first_scan_done(const PlcTaskCtx *c)
 {
-    return c->completed.load(std::memory_order_acquire) > 0;
+    return c->first_scan_done.load(std::memory_order_acquire);
 }
 
 /* How long the current scan may run after its release before the teardown aborts it. */
@@ -792,6 +793,7 @@ void *plc_cycle_thread(void *arg)
                 ctx->exited.store(0,        std::memory_order_relaxed);
                 ctx->release_ns.store(0,    std::memory_order_relaxed);
                 ctx->scheduled_ns.store(0,  std::memory_order_relaxed);
+                ctx->first_scan_done.store(false, std::memory_order_relaxed);
                 ctx->in_body = 0;
 
                 if (scan_cycle_tracker_init(&ctx->tracker, ctx->interval_ns) != 0)
@@ -1000,8 +1002,9 @@ void *plc_cycle_thread(void *arg)
                 if (!c->alive.load(std::memory_order_acquire)) continue;
                 if ((master_tick % c->divisor) != 0) continue;
 
-                long r  = c->released.load(std::memory_order_relaxed);
-                long cc = c->completed.load(std::memory_order_acquire);
+                const bool first_done = task_first_scan_done(c);
+                long r                = c->released.load(std::memory_order_relaxed);
+                long cc               = c->completed.load(std::memory_order_acquire);
                 if (r == cc)
                 {
                     /* Worker idle (caught up) → stamp time, count it in flight,
@@ -1024,7 +1027,7 @@ void *plc_cycle_thread(void *arg)
                      * task simply runs at a lower effective rate; the others are
                      * unaffected. Rate-limit the log. */
                     /* Ticks, not wall time: replayed ticks after a late dispatcher are missed deadlines too. */
-                    if (plc_task_skip_is_counted(cc))
+                    if (plc_task_skip_is_counted(first_done))
                     {
                         long st = c->stuck_ticks.fetch_add(1, std::memory_order_relaxed) + 1;
                         if (st >= PLC_TASK_STUCK_PERIODS && stuck_idx == SIZE_MAX)

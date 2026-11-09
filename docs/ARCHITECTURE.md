@@ -219,8 +219,11 @@ microseconds):
 
 Every metric except Scan Count and Tick Count starts from the second sample after each PLC start:
 the first scan, which may run long while the program initialises, the first tick and the first
-`cycle_start` are left out of all of them. A metric with no sample yet is `null`. The statistics are
-returned by the `STATS` command on the Unix socket and by `GET /api/status?include_stats=true`.
+`cycle_start` are left out of all of them. Until a task has a Scan Time, a Cycle Time and a Cycle
+Latency sample, normally when its third scan starts, every min, max and average of that task is
+`null`, Dispatch Delay and Wake Latency included, while its Scan Count and Overruns show the real
+counts. A dispatcher metric with no sample yet is `null`. The statistics are returned by the `STATS`
+command on the Unix socket and by `GET /api/status?include_stats=true`.
 
 ## Error Handling
 

@@ -571,8 +571,11 @@ tasks (min, max and average, in microseconds):
 
 Every metric starts from the second sample after each PLC start; the first scan, the first tick and
 the first `cycle_start` are left out of all of them. `scan_count` counts every scan and `tick_count`
-every tick, the first included. A metric with no sample yet is `null`. Outside a run the `tasks`
-array is empty and the `dispatcher` object has `tick_count` 0 and `null` metrics.
+every tick, the first included. Until a task has a scan time, a cycle time and a cycle latency
+sample, normally when its third scan starts, every min, max and average of that task is `null`,
+`dispatch_delay_*` and `wake_latency_*` included, while its `scan_count` and `overruns` show the
+real counts. A dispatcher metric with no sample yet is `null`. Outside a run the `tasks` array is
+empty and the `dispatcher` object has `tick_count` 0 and `null` metrics.
 
 Example, one task:
 

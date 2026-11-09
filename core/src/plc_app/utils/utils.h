@@ -36,7 +36,12 @@ extern char *ext_strucpp_program_md5;
  * @brief Current CLOCK_MONOTONIC time in nanoseconds.
  * @return nanoseconds since an arbitrary fixed point
  */
-int64_t monotonic_ns(void);
+static inline int64_t monotonic_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
 
 /**
  * @brief Normalize a timespec structure

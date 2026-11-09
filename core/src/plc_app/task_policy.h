@@ -82,10 +82,10 @@ extern "C"
      * @brief Whether a due tick that finds the task still in a scan counts as an
      * overrun and a stuck tick.
      *
-     * @param completed_scans scans the task has completed since the PLC started
-     * @return true when at least one scan has completed
+     * @param first_scan_done whether the task's first scan had finished before the tick
+     * @return true once the first scan has finished
      */
-    bool plc_task_skip_is_counted(long completed_scans);
+    bool plc_task_skip_is_counted(bool first_scan_done);
 
 #ifdef __cplusplus
 }

@@ -6,28 +6,15 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #include "plc_state_manager.h"
 #include "scan_cycle_manager.h"
 #include "utils/utils.h"
 
-// CLOCK_MONOTONIC matches clock_nanosleep's clock in sleep_until().
-// CLOCK_MONOTONIC_RAW would drift against the sleep clock through NTP
-// slew and cause false overruns after ~30-60 minutes.
-#define OPENPLC_CLOCK CLOCK_MONOTONIC
-
 // EWMA window (us) for time-based averages. Matches the editor's 2 s poll
 // so the displayed avg tracks recent drift and does not freeze like a
 // Welford historical mean would after ~10^7 cycles.
 #define EWMA_TARGET_WINDOW_US 2000000
-
-static int64_t ts_now_ns(void)
-{
-    struct timespec ts;
-    clock_gettime(OPENPLC_CLOCK, &ts);
-    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
-}
 
 static int64_t ewma_window(int64_t interval_ns)
 {
@@ -130,13 +117,13 @@ void scan_cycle_tracker_start(scan_cycle_tracker_t *tracker, int64_t scheduled_n
                               int64_t release_ns)
 {
     if (!tracker) return;
-    scan_cycle_tracker_start_at(tracker, scheduled_ns, release_ns, ts_now_ns());
+    scan_cycle_tracker_start_at(tracker, scheduled_ns, release_ns, monotonic_ns());
 }
 
 void scan_cycle_tracker_end(scan_cycle_tracker_t *tracker)
 {
     if (!tracker) return;
-    scan_cycle_tracker_end_at(tracker, ts_now_ns());
+    scan_cycle_tracker_end_at(tracker, monotonic_ns());
 }
 
 bool scan_cycle_tracker_snapshot(scan_cycle_tracker_t *tracker, plc_timing_stats_t *out)
@@ -244,7 +231,7 @@ static int append_task_entry(char *buffer, size_t buffer_size, size_t offset,
     {
         written = snprintf(buffer + offset, buffer_size - offset,
                            "{\"name\":\"%s\","
-                           "\"scan_count\":0,"
+                           "\"scan_count\":%" PRId64 ","
                            "\"scan_time_min\":null,"
                            "\"scan_time_max\":null,"
                            "\"scan_time_avg\":null,"
@@ -254,14 +241,14 @@ static int append_task_entry(char *buffer, size_t buffer_size, size_t offset,
                            "\"cycle_latency_min\":null,"
                            "\"cycle_latency_max\":null,"
                            "\"cycle_latency_avg\":null,"
-                           "\"overruns\":0,"
+                           "\"overruns\":%" PRId64 ","
                            "\"dispatch_delay_min\":null,"
                            "\"dispatch_delay_max\":null,"
                            "\"dispatch_delay_avg\":null,"
                            "\"wake_latency_min\":null,"
                            "\"wake_latency_max\":null,"
                            "\"wake_latency_avg\":null}",
-                           name);
+                           name, s->scan_count, s->overruns);
     }
     else
     {
