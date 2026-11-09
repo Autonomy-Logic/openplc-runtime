@@ -28,26 +28,21 @@ void tearDown(void)
     scan_cycle_tracker_cleanup(&tracker);
 }
 
-/* Busy-wait for at least `us` microseconds of CLOCK_MONOTONIC time. */
-static void busy_sleep_us(uint64_t us)
-{
-    struct timespec t0, now;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-    do
-    {
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        uint64_t dt = (uint64_t)(now.tv_sec - t0.tv_sec) * 1000000ull +
-                      (uint64_t)(now.tv_nsec - t0.tv_nsec) / 1000ull;
-        if (dt >= us) break;
-    } while (1);
-}
-
 /* Current CLOCK_MONOTONIC time in nanoseconds. */
 static int64_t monotonic_now_ns(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
+/* Busy-wait for at least `us` microseconds of CLOCK_MONOTONIC time. */
+static void busy_sleep_us(int64_t us)
+{
+    const int64_t t0 = monotonic_now_ns();
+    while (monotonic_now_ns() - t0 < us * 1000LL)
+    {
+    }
 }
 
 /* Drives one scan with literal CLOCK_MONOTONIC stamps in nanoseconds. */
@@ -563,7 +558,7 @@ void test_stats_response_appends_decomposition_and_dispatcher_object(void)
         "\"cycle_latency_avg\":10,\"overruns\":0,\"dispatch_delay_min\":2,"
         "\"dispatch_delay_max\":6,\"dispatch_delay_avg\":2,\"wake_latency_min\":8,"
         "\"wake_latency_max\":24,\"wake_latency_avg\":8},"
-        "{\"name\":\"init\",\"scan_count\":0,\"scan_time_min\":null,\"scan_time_max\":null,"
+        "{\"name\":\"init\",\"scan_count\":2,\"scan_time_min\":null,\"scan_time_max\":null,"
         "\"scan_time_avg\":null,\"cycle_time_min\":null,\"cycle_time_max\":null,"
         "\"cycle_time_avg\":null,\"cycle_latency_min\":null,\"cycle_latency_max\":null,"
         "\"cycle_latency_avg\":null,\"overruns\":0,\"dispatch_delay_min\":null,"
@@ -635,6 +630,102 @@ void test_stats_response_reports_dispatcher_metrics_null_independently(void)
     TEST_ASSERT_EQUAL((int)strlen(expected_after_reset), written_after_reset);
     TEST_ASSERT_EQUAL_STRING(expected_ticks_only, ticks_only);
     TEST_ASSERT_EQUAL((int)strlen(expected_ticks_only), written_ticks_only);
+}
+
+/* Scans whose second one ends 1 ms past its next tick, interval 10 ms. */
+static const int64_t second_scan_overrun_scans[2][4] = {
+    {1000000000LL, 1000001000LL, 1000010000LL, 1002010000LL},
+    {1010000000LL, 1012000000LL, 1013000000LL, 1021000000LL},
+};
+
+/* Scans with no scheduled stamp, so no latency sample is ever taken, interval 10 ms. */
+static const int64_t unstamped_scans[4][4] = {
+    {0, 1000001000LL, 1000010000LL, 1002010000LL},
+    {0, 1010001000LL, 1010010000LL, 1012010000LL},
+    {0, 1020001000LL, 1020010000LL, 1022010000LL},
+    {0, 1030001000LL, 1030010000LL, 1032010000LL},
+};
+
+/* STATS response with one task whose metrics are all null, after a dispatcher reset. */
+#define NULL_METRICS_RESPONSE(name, scan_count, overruns)                                          \
+    "STATS:{\"tasks\":["                                                                           \
+    "{\"name\":\"" name "\",\"scan_count\":" scan_count ",\"scan_time_min\":null,"                 \
+    "\"scan_time_max\":null,\"scan_time_avg\":null,\"cycle_time_min\":null,"                       \
+    "\"cycle_time_max\":null,\"cycle_time_avg\":null,\"cycle_latency_min\":null,"                  \
+    "\"cycle_latency_max\":null,\"cycle_latency_avg\":null,\"overruns\":" overruns ","             \
+    "\"dispatch_delay_min\":null,\"dispatch_delay_max\":null,\"dispatch_delay_avg\":null,"         \
+    "\"wake_latency_min\":null,\"wake_latency_max\":null,\"wake_latency_avg\":null}"               \
+    "],\"dispatcher\":{\"tick_count\":0,\"wake_jitter_min\":null,\"wake_jitter_max\":null,"        \
+    "\"wake_jitter_avg\":null,\"cycle_start_time_min\":null,\"cycle_start_time_max\":null,"        \
+    "\"cycle_start_time_avg\":null}}\n"
+
+/* Formats the STATS response for one task that ran `n` of `scans`; returns the bytes written. */
+static int format_single_task_response(const char *name, int64_t interval_ns,
+                                       const int64_t (*scans)[4], size_t n, char *buffer,
+                                       size_t buffer_size)
+{
+    TEST_ASSERT_EQUAL(0, dispatcher_stats_init(&plc_dispatcher_stats));
+    dispatcher_stats_reset(&plc_dispatcher_stats, interval_ns);
+
+    static PlcTaskCtx task;
+    memset(&task, 0, sizeof(task));
+    snprintf(task.name, sizeof(task.name), "%s", name);
+    TEST_ASSERT_EQUAL(0, scan_cycle_tracker_init(&task.tracker, interval_ns));
+    for (size_t i = 0; i < n; ++i)
+        run_scan(&task.tracker, scans[i][0], scans[i][1], scans[i][2], scans[i][3]);
+
+    plc_tasks      = &task;
+    plc_task_count = 1;
+    memset(buffer, 0, buffer_size);
+    int written = format_timing_stats_response(buffer, buffer_size);
+    plc_tasks      = NULL;
+    plc_task_count = 0;
+    scan_cycle_tracker_cleanup(&task.tracker);
+    return written;
+}
+
+void test_stats_entry_after_one_scan_reports_that_scan_with_null_metrics(void)
+{
+    static const char expected[] = NULL_METRICS_RESPONSE("init", "1", "0");
+    char buffer[4096];
+    int written = format_single_task_response("init", 10000000LL, slow_first_scans, 1, buffer,
+                                              sizeof(buffer));
+
+    TEST_ASSERT_EQUAL_STRING(expected, buffer);
+    TEST_ASSERT_EQUAL((int)strlen(expected), written);
+}
+
+void test_stats_entry_before_a_cycle_time_sample_reports_real_overruns(void)
+{
+    static const char expected[] = NULL_METRICS_RESPONSE("init", "2", "1");
+    char buffer[4096];
+    int written = format_single_task_response("init", 10000000LL, second_scan_overrun_scans, 2,
+                                              buffer, sizeof(buffer));
+
+    TEST_ASSERT_EQUAL_STRING(expected, buffer);
+    TEST_ASSERT_EQUAL((int)strlen(expected), written);
+}
+
+void test_stats_entry_without_a_latency_sample_reports_every_scan_with_null_metrics(void)
+{
+    static const char expected[] = NULL_METRICS_RESPONSE("unstamped", "4", "0");
+    char buffer[4096];
+    int written = format_single_task_response("unstamped", 10000000LL, unstamped_scans, 4, buffer,
+                                              sizeof(buffer));
+
+    TEST_ASSERT_EQUAL_STRING(expected, buffer);
+    TEST_ASSERT_EQUAL((int)strlen(expected), written);
+}
+
+void test_stats_entry_of_a_task_with_no_scan_reports_zero_counts_and_null_metrics(void)
+{
+    static const char expected[] = NULL_METRICS_RESPONSE("idle", "0", "0");
+    char buffer[4096];
+    int written = format_single_task_response("idle", 10000000LL, slow_first_scans, 0, buffer,
+                                              sizeof(buffer));
+
+    TEST_ASSERT_EQUAL_STRING(expected, buffer);
+    TEST_ASSERT_EQUAL((int)strlen(expected), written);
 }
 
 void test_clock_wrappers_measure_against_the_given_scheduled_stamp(void)

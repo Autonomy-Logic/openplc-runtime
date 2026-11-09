@@ -5,8 +5,8 @@
 
 #include "task_policy.h"
 
-#include <climits>
 #include <cstdio>
+#include <type_traits>
 
 static int g_failures = 0;
 
@@ -47,10 +47,10 @@ int main()
     CHECK(PLC_FIFO_DISPATCHER > PLC_FIFO_TASK_MAX, "dispatcher above every task");
 
     std::printf("task_policy: busy-tick accounting\n");
-    CHECK(!plc_task_skip_is_counted(0), "skip during the first scan is not counted");
-    CHECK(plc_task_skip_is_counted(1), "skip after one completed scan is counted");
-    CHECK(plc_task_skip_is_counted(LONG_MAX), "skip after LONG_MAX completed scans is counted");
-    CHECK(!plc_task_skip_is_counted(-1), "negative completed count is not counted");
+    CHECK((std::is_same<decltype(&plc_task_skip_is_counted), bool (*)(bool)>::value),
+          "skip policy takes the first-scan-done flag, not a scan counter");
+    CHECK(!plc_task_skip_is_counted(false), "skip before the first scan is done is not counted");
+    CHECK(plc_task_skip_is_counted(true), "skip after the first scan is done is counted");
 
     if (g_failures == 0)
         std::printf("all cases passed\n");
