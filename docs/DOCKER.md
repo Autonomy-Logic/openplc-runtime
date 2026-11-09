@@ -72,7 +72,7 @@ A bump is manual and takes two PRs:
 
 1. **Base PR.** Change `base/Dockerfile` and/or `base/VERSION`. Once it is merged, the base workflow
    publishes the new tag and prints the product's `FROM` line, with tag and digest, in its job summary.
-2. **Product pin PR.** Set that `FROM` line in `Dockerfile`.
+2. **Product pin PR.** Set that `FROM` line in both the `builder` stage and the final stage of `Dockerfile`.
 
 A quarterly review looks at the bases; it forces no bump.
 
