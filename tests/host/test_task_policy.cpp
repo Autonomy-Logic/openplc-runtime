@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
-// Host test: IEC TASK priority to SCHED_FIFO mapping.
+// Host test: IEC TASK priority to SCHED_FIFO mapping and busy-tick overrun accounting.
 
 #include "task_policy.h"
 
+#include <climits>
 #include <cstdio>
 
 static int g_failures = 0;
@@ -44,6 +45,12 @@ int main()
     }
     CHECK(PLC_FIFO_WATCHDOG > PLC_FIFO_DISPATCHER, "watchdog above dispatcher");
     CHECK(PLC_FIFO_DISPATCHER > PLC_FIFO_TASK_MAX, "dispatcher above every task");
+
+    std::printf("task_policy: busy-tick accounting\n");
+    CHECK(!plc_task_skip_is_counted(0), "skip during the first scan is not counted");
+    CHECK(plc_task_skip_is_counted(1), "skip after one completed scan is counted");
+    CHECK(plc_task_skip_is_counted(LONG_MAX), "skip after LONG_MAX completed scans is counted");
+    CHECK(!plc_task_skip_is_counted(-1), "negative completed count is not counted");
 
     if (g_failures == 0)
         std::printf("all cases passed\n");
