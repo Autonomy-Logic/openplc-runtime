@@ -22,7 +22,8 @@ packages and the toolchain.
 
 - **Base image:** `ghcr.io/autonomy-logic/openplc-runtime-base`, public on ghcr.
 - **Source:** `base/Dockerfile` and `base/VERSION` in this repository, built by a `base` job in
-  `.github/workflows/docker.yml` modelled on the `bootloader` job.
+  `.github/workflows/docker.yml`. From the `bootloader` job it takes the `VERSION` read and the registry
+  existence check, without the `latest` tag, and it adds a QEMU step because the base is a multi-arch apt build.
 - **Tag scheme and family:** `<debian>-<N>`. The target family is trixie (`trixie-<N>`); the fallback is
   bookworm (`bookworm-<N>`).
 - **Upstream pin:** `base/Dockerfile` starts `FROM debian:<family>-slim@sha256:...`.
@@ -31,8 +32,8 @@ packages and the toolchain.
   `ca-certificates`, `curl`).
 - **Where the product pins it:** the `builder` stage and the final stage of `Dockerfile`, each with
   `FROM ghcr.io/autonomy-logic/openplc-runtime-base:<tag>@sha256:<digest>`.
-- **Product layer order:** the single `COPY . .` of the `builder` stage is split by rate of change: plugin
-  venvs, then the compiled core, then the webserver, scripts and sources, then the metadata.
+- **Product layer order:** the final stage's single `COPY --from=builder /workdir /workdir` is split by rate of
+  change: plugin venvs, then the compiled core, then the webserver, scripts and sources, then the metadata.
 
 **Status:** the base is not introduced yet. `Dockerfile` still builds both stages from the floating tag
 `debian:bookworm-slim`. The concrete tag and digest are recorded here when the base is introduced.
