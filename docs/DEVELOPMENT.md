@@ -548,13 +548,17 @@ valgrind --leak-check=full --show-leak-kinds=all ./build/plc_main
 
 ### Timing Analysis
 
-Runtime tracks detailed timing statistics:
-- Scan time (PLC logic execution)
-- Cycle time (total including sleep)
-- Cycle latency (deviation from target)
-- Overruns (cycles exceeding target)
+The runtime tracks timing statistics per IEC task (min, max and average, in microseconds):
+- Scan time: duration of the scan body
+- Cycle time: from one scan start to the next scan start
+- Cycle latency: scan start minus the scheduled tick that released the scan; never negative
+- Overruns: scans that ended after their next scheduled tick, one per scan
 
-View stats in runtime logs every 5 seconds.
+Every metric starts from the second cycle after each PLC start; the first scan is left out of all of
+them. `scan_count` counts every scan, the first included.
+
+Read them with the `STATS` command on `/run/runtime/plc_runtime.socket`, with
+`GET /api/status?include_stats=true`, or in the editor's Scan Cycle Statistics panel.
 
 ## Documentation
 

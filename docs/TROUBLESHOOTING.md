@@ -465,8 +465,8 @@ Variable index out of range
 #### Scan Cycle Overruns
 
 **Symptoms:**
-- Logs show "Overruns: X"
-- Timing statistics show high latency
+- Logs show `[task <name>] scan overrun #N`, counted from the second scan on
+- The `overruns` field of the task's timing statistics grows, and latency is high
 
 **Solution:**
 1. Increase scan cycle time in PLC program

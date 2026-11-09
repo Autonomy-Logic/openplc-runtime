@@ -22,11 +22,20 @@
 // Welford historical mean would after ~10^7 cycles.
 #define EWMA_TARGET_WINDOW_US 2000000
 
-static uint64_t ts_now_us(void)
+static int64_t ts_now_ns(void)
 {
     struct timespec ts;
     clock_gettime(OPENPLC_CLOCK, &ts);
-    return (uint64_t)ts.tv_sec * 1000000ull + ts.tv_nsec / 1000;
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
+static void record_sample(int64_t sample_us, int64_t *min, int64_t *max, int64_t *sum,
+                          int64_t *samples, int64_t avg_window)
+{
+    if (sample_us < *min) *min = sample_us;
+    if (sample_us > *max) *max = sample_us;
+    *sum += sample_us - *sum / avg_window;
+    ++*samples;
 }
 
 int scan_cycle_tracker_init(scan_cycle_tracker_t *tracker, int64_t interval_ns)
@@ -52,66 +61,71 @@ void scan_cycle_tracker_cleanup(scan_cycle_tracker_t *tracker)
     pthread_mutex_destroy(&tracker->mutex);
 }
 
-void scan_cycle_tracker_start(scan_cycle_tracker_t *tracker)
+void scan_cycle_tracker_start_at(scan_cycle_tracker_t *tracker, int64_t scheduled_ns,
+                                 int64_t release_ns, int64_t now_ns)
 {
     if (!tracker) return;
-    uint64_t now_us = ts_now_us();
 
     pthread_mutex_lock(&tracker->mutex);
 
-    if (tracker->stats.scan_count == 0)
+    plc_timing_stats_t *s = &tracker->stats;
+    s->scan_count++;
+    const bool stamps_valid =
+        scheduled_ns > 0 && scheduled_ns <= release_ns && release_ns <= now_ns;
+
+    if (s->scan_count >= 3)
     {
-        // First cycle: seed `last_start_us` and the next `expected_start_us`
-        // anchor; skip latency/cycle-time math for this iteration.
-        tracker->expected_start_us = now_us + (uint64_t)(tracker->interval_ns / 1000);
-        tracker->last_start_us     = now_us;
-        tracker->stats.scan_count++;
-        pthread_mutex_unlock(&tracker->mutex);
-        return;
+        record_sample((now_ns - tracker->last_start_ns) / 1000, &s->cycle_time_min,
+                      &s->cycle_time_max, &tracker->cycle_time_sum, &tracker->cycle_time_samples,
+                      tracker->avg_window);
+    }
+    if (s->scan_count >= 2 && stamps_valid)
+    {
+        record_sample((now_ns - scheduled_ns) / 1000, &s->cycle_latency_min, &s->cycle_latency_max,
+                      &tracker->cycle_latency_sum, &tracker->cycle_latency_samples,
+                      tracker->avg_window);
     }
 
-    // Cycle time: actual elapsed since previous start
-    int64_t cycle_time_us = (int64_t)(now_us - tracker->last_start_us);
-    plc_timing_stats_t *s = &tracker->stats;
-    if (cycle_time_us < s->cycle_time_min) s->cycle_time_min = cycle_time_us;
-    if (cycle_time_us > s->cycle_time_max) s->cycle_time_max = cycle_time_us;
-    tracker->cycle_time_sum +=
-        cycle_time_us - tracker->cycle_time_sum / tracker->avg_window;
+    tracker->last_start_ns     = now_ns;
+    tracker->last_scheduled_ns = scheduled_ns;
+    tracker->last_stamps_valid = stamps_valid;
 
-    // Cycle latency: how far past the projected wakeup we landed
-    int64_t latency_us = (int64_t)(now_us - tracker->expected_start_us);
-    if (latency_us < s->cycle_latency_min) s->cycle_latency_min = latency_us;
-    if (latency_us > s->cycle_latency_max) s->cycle_latency_max = latency_us;
-    tracker->cycle_latency_sum +=
-        latency_us - tracker->cycle_latency_sum / tracker->avg_window;
-
-    tracker->last_start_us = now_us;
-    tracker->expected_start_us += (uint64_t)(tracker->interval_ns / 1000);
-
-    s->scan_count++;
     pthread_mutex_unlock(&tracker->mutex);
+}
+
+void scan_cycle_tracker_end_at(scan_cycle_tracker_t *tracker, int64_t now_ns)
+{
+    if (!tracker) return;
+
+    pthread_mutex_lock(&tracker->mutex);
+
+    plc_timing_stats_t *s = &tracker->stats;
+    if (s->scan_count >= 2)
+    {
+        record_sample((now_ns - tracker->last_start_ns) / 1000, &s->scan_time_min,
+                      &s->scan_time_max, &tracker->scan_time_sum, &tracker->scan_time_samples,
+                      tracker->avg_window);
+        if (tracker->last_stamps_valid &&
+            now_ns - tracker->last_scheduled_ns > tracker->interval_ns)
+        {
+            s->overruns++;
+        }
+    }
+
+    pthread_mutex_unlock(&tracker->mutex);
+}
+
+void scan_cycle_tracker_start(scan_cycle_tracker_t *tracker, int64_t scheduled_ns,
+                              int64_t release_ns)
+{
+    if (!tracker) return;
+    scan_cycle_tracker_start_at(tracker, scheduled_ns, release_ns, ts_now_ns());
 }
 
 void scan_cycle_tracker_end(scan_cycle_tracker_t *tracker)
 {
     if (!tracker) return;
-    uint64_t now_us = ts_now_us();
-
-    pthread_mutex_lock(&tracker->mutex);
-
-    int64_t scan_time_us = (int64_t)(now_us - tracker->last_start_us);
-    plc_timing_stats_t *s = &tracker->stats;
-    if (scan_time_us < s->scan_time_min) s->scan_time_min = scan_time_us;
-    if (scan_time_us > s->scan_time_max) s->scan_time_max = scan_time_us;
-    tracker->scan_time_sum +=
-        scan_time_us - tracker->scan_time_sum / tracker->avg_window;
-
-    if (now_us > tracker->expected_start_us)
-    {
-        s->overruns++;
-    }
-
-    pthread_mutex_unlock(&tracker->mutex);
+    scan_cycle_tracker_end_at(tracker, ts_now_ns());
 }
 
 bool scan_cycle_tracker_snapshot(scan_cycle_tracker_t *tracker, plc_timing_stats_t *out)
@@ -122,8 +136,10 @@ bool scan_cycle_tracker_snapshot(scan_cycle_tracker_t *tracker, plc_timing_stats
     out->scan_time_avg     = tracker->scan_time_sum     / tracker->avg_window;
     out->cycle_time_avg    = tracker->cycle_time_sum    / tracker->avg_window;
     out->cycle_latency_avg = tracker->cycle_latency_sum / tracker->avg_window;
+    const bool valid = tracker->scan_time_samples > 0 && tracker->cycle_time_samples > 0 &&
+                       tracker->cycle_latency_samples > 0;
     pthread_mutex_unlock(&tracker->mutex);
-    return out->scan_count > 0;
+    return valid;
 }
 
 // Forward declaration to avoid pulling plc_state_manager.h into the

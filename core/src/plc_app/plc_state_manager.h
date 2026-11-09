@@ -66,6 +66,8 @@ typedef struct PlcTaskCtx
     plc_atomic_long_t     stuck_ticks;     /* consecutive due ticks found still in one scan */
     plc_atomic_long_t     exited;          /* 1 once the thread function has returned */
     plc_atomic_i64_t      release_ns;      /* CLOCK_MONOTONIC time of the last release */
+    /* CLOCK_MONOTONIC deadline of the tick of the last release */
+    plc_atomic_i64_t      scheduled_ns;
 
     sigjmp_buf            crash_jmp;
     volatile sig_atomic_t crash_sig;

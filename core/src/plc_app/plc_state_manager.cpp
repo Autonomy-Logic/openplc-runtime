@@ -283,7 +283,8 @@ static void plc_task_body(PlcTaskCtx *ctx)
         if (ext_strucpp_set_current_time)
             ext_strucpp_set_current_time(ctx->time_at_dispatch);
 
-        scan_cycle_tracker_start(&ctx->tracker);
+        scan_cycle_tracker_start(&ctx->tracker, ctx->scheduled_ns.load(std::memory_order_acquire),
+                                 ctx->release_ns.load(std::memory_order_acquire));
 
         /* Short locked window drains located inputs into the image, then
          * the body runs against .so storage directly. Shared globals have
@@ -790,6 +791,7 @@ void *plc_cycle_thread(void *arg)
                 ctx->stuck_ticks.store(0,   std::memory_order_relaxed);
                 ctx->exited.store(0,        std::memory_order_relaxed);
                 ctx->release_ns.store(0,    std::memory_order_relaxed);
+                ctx->scheduled_ns.store(0,  std::memory_order_relaxed);
                 ctx->in_body = 0;
 
                 if (scan_cycle_tracker_init(&ctx->tracker, ctx->interval_ns) != 0)
@@ -926,6 +928,8 @@ void *plc_cycle_thread(void *arg)
     {
         /* ---- Phase B: the tick (runs at the absolute deadline) ---- */
         const int64_t master_time = (int64_t)master_tick * (int64_t)base_ns;
+        const int64_t tick_deadline_ns =
+            (int64_t)next_tick.tv_sec * 1000000000LL + (int64_t)next_tick.tv_nsec;
 
         watchdog_feed();
 
@@ -997,6 +1001,7 @@ void *plc_cycle_thread(void *arg)
                      * the worker's matching worker_scan_done() can never drive
                      * g_tasks_running negative. */
                     c->stuck_ticks.store(0, std::memory_order_relaxed);
+                    c->scheduled_ns.store(tick_deadline_ns, std::memory_order_release);
                     c->release_ns.store(monotonic_ns(), std::memory_order_release);
                     c->time_at_dispatch = master_time;
                     c->released.store(r + 1, std::memory_order_relaxed);
@@ -1011,19 +1016,19 @@ void *plc_cycle_thread(void *arg)
                      * task simply runs at a lower effective rate; the others are
                      * unaffected. Rate-limit the log. */
                     /* Ticks, not wall time: replayed ticks after a late dispatcher are missed deadlines too. */
-                    if (task_first_scan_done(c))
+                    if (plc_task_skip_is_counted(c->completed.load(std::memory_order_acquire)))
                     {
                         long st = c->stuck_ticks.fetch_add(1, std::memory_order_relaxed) + 1;
                         if (st >= PLC_TASK_STUCK_PERIODS && stuck_idx == SIZE_MAX)
                             stuck_idx = i;
+                        long oc = c->overrun_count.fetch_add(1, std::memory_order_relaxed) + 1;
+                        if (oc == 1 || (oc % 50) == 0)
+                            log_warn("[task %s] scan overrun #%ld: body exceeds its "
+                                     "%lld ms period — running at reduced rate, "
+                                     "other tasks unaffected",
+                                     c->name, oc,
+                                     (long long)(c->interval_ns / 1000000));
                     }
-                    long oc = c->overrun_count.fetch_add(1, std::memory_order_relaxed) + 1;
-                    if (oc == 1 || (oc % 50) == 0)
-                        log_warn("[task %s] scan overrun #%ld: body exceeds its "
-                                 "%lld ms period — running at reduced rate, "
-                                 "other tasks unaffected",
-                                 c->name, oc,
-                                 (long long)(c->interval_ns / 1000000));
                 }
             }
 

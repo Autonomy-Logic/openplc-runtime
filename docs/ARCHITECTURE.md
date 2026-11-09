@@ -86,9 +86,8 @@ EMPTY → INIT → RUNNING ⟷ STOPPED → ERROR
 2. **Unix Socket Thread**: Accepts and processes commands
 3. **PLC Cycle Thread / Dispatcher**: Loads the program, then runs the GCD master-tick dispatcher at SCHED_FIFO 98
 4. **Task Threads**: One per IEC TASK, SCHED_FIFO 49 - IEC priority (IEC 0..48, clamped)
-5. **Stats Thread**: Logs performance metrics
-6. **Watchdog Thread**: SCHED_FIFO 99; bounds stops and detects a stalled dispatcher
-7. **Log Thread**: Manages log socket connection
+5. **Watchdog Thread**: SCHED_FIFO 99; bounds stops and detects a stalled dispatcher
+6. **Log Thread**: Manages log socket connection
 
 ## Real-Time Execution
 
@@ -101,7 +100,8 @@ The PLC cycle thread runs with SCHED_FIFO priority to ensure deterministic timin
 
 **Timing Configuration:**
 - Scan cycle duration: Defined per task by the task interval in the compiled program configuration
-- Timing stats tracked: min/max/avg scan time, cycle time, latency, overruns
+- Timing stats tracked per task, from the second cycle on: min/max/avg scan time, cycle time and
+  latency against the scheduled tick, and overruns (see [Performance Monitoring](#performance-monitoring))
 
 ## Plugin System
 
@@ -194,15 +194,17 @@ the watchdog on a single CPU.
 
 ## Performance Monitoring
 
-The runtime tracks detailed timing statistics:
+The runtime tracks timing statistics per IEC task (min, max and average, in microseconds):
 
-- **Scan Count**: Total cycles executed
-- **Scan Time**: Time spent executing PLC logic
-- **Cycle Time**: Total time per cycle (including sleep)
-- **Cycle Latency**: Deviation from target timing
-- **Overruns**: Cycles that exceeded target duration
+- **Scan Count**: Scans executed, the first included
+- **Scan Time**: Duration of the scan body
+- **Cycle Time**: From one scan start to the next scan start
+- **Cycle Latency**: Scan start minus the scheduled tick that released the scan; never negative
+- **Overruns**: Scans that ended after their next scheduled tick, one per scan
 
-Stats are logged every 5 seconds via the stats thread.
+Every metric except Scan Count starts from the second cycle after each PLC start: the first scan,
+which may run long while the program initialises, is left out of all of them. The statistics are
+returned by the `STATS` command on the Unix socket and by `GET /api/status?include_stats=true`.
 
 ## Error Handling
 

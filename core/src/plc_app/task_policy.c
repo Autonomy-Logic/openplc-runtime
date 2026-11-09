@@ -21,3 +21,8 @@ int plc_task_fifo_priority(int iec_priority, bool *clamped)
         *clamped = out;
     return PLC_FIFO_TASK_MAX - p;
 }
+
+bool plc_task_skip_is_counted(long completed_scans)
+{
+    return completed_scans > 0;
+}
