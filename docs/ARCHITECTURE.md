@@ -100,8 +100,10 @@ The PLC cycle thread runs with SCHED_FIFO priority to ensure deterministic timin
 
 **Timing Configuration:**
 - Scan cycle duration: Defined per task by the task interval in the compiled program configuration
-- Timing stats tracked per task, from the second cycle on: min/max/avg scan time, cycle time and
-  latency against the scheduled tick, and overruns (see [Performance Monitoring](#performance-monitoring))
+- Timing stats tracked per task, from the second cycle on: min/max/avg scan time, cycle time,
+  latency against the scheduled tick with its dispatch delay and wake latency, and overruns; and for
+  the dispatcher, its wake jitter and the duration of the plugins' `cycle_start` hooks (see
+  [Performance Monitoring](#performance-monitoring))
 
 ## Plugin System
 
@@ -201,9 +203,21 @@ The runtime tracks timing statistics per IEC task (min, max and average, in micr
 - **Cycle Time**: From one scan start to the next scan start
 - **Cycle Latency**: Scan start minus the scheduled tick that released the scan; never negative
 - **Overruns**: Scans that ended after their next scheduled tick, one per scan
+- **Dispatch Delay** (`dispatch_delay`): The task's release by the dispatcher minus the scheduled tick
+- **Wake Latency** (`wake_latency`): Scan start minus the task's release; for each scan,
+  `cycle_latency = dispatch_delay + wake_latency`
 
-Every metric except Scan Count starts from the second cycle after each PLC start: the first scan,
-which may run long while the program initialises, is left out of all of them. The statistics are
+The top-level `dispatcher` object tracks the dispatcher thread (min, max and average, in
+microseconds):
+
+- **Tick Count** (`tick_count`): Base ticks since the dispatcher started, the first included
+- **Wake Jitter** (`wake_jitter`): The dispatcher's wake time minus the tick deadline, per base tick
+- **Cycle Start Time** (`cycle_start_time`): Duration of the native plugins' `cycle_start` hooks,
+  per task-bearing tick
+
+Every metric except Scan Count and Tick Count starts from the second sample after each PLC start:
+the first scan, which may run long while the program initialises, the first tick and the first
+`cycle_start` are left out of all of them. A metric with no sample yet is `null`. The statistics are
 returned by the `STATS` command on the Unix socket and by `GET /api/status?include_stats=true`.
 
 ## Error Handling

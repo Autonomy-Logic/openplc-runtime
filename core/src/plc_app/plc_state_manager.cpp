@@ -916,6 +916,7 @@ void *plc_cycle_thread(void *arg)
     log_info("GCD master-tick dispatcher running (base tick %llu ns)",
              (unsigned long long)base_ns);
     watchdog_dispatcher_started((int64_t)base_ns);
+    dispatcher_stats_reset(&plc_dispatcher_stats, (int64_t)base_ns);
 
     uint64_t master_tick      = 0;
     bool     cycle_end_pending = false;   /* a frame's cycle_end not yet fired */
@@ -930,6 +931,7 @@ void *plc_cycle_thread(void *arg)
         const int64_t master_time = (int64_t)master_tick * (int64_t)base_ns;
         const int64_t tick_deadline_ns =
             (int64_t)next_tick.tv_sec * 1000000000LL + (int64_t)next_tick.tv_nsec;
+        dispatcher_stats_record_tick(&plc_dispatcher_stats, tick_deadline_ns, monotonic_ns());
 
         watchdog_feed();
 
@@ -973,7 +975,13 @@ void *plc_cycle_thread(void *arg)
                 if (plugin_driver) plugin_driver_cycle_end(plugin_driver);
                 cycle_end_pending = false;
             }
-            if (plugin_driver) plugin_driver_cycle_start(plugin_driver);
+            if (plugin_driver)
+            {
+                const int64_t cycle_start_begin_ns = monotonic_ns();
+                plugin_driver_cycle_start(plugin_driver);
+                dispatcher_stats_record_cycle_start(&plc_dispatcher_stats, cycle_start_begin_ns,
+                                                    monotonic_ns());
+            }
 
             /* Prime config-scope shared globals from the input image.
              * Guarded by quiescence (no overrunning task is in run())
@@ -1136,6 +1144,7 @@ void *plc_cycle_thread(void *arg)
     }
 
     watchdog_dispatcher_stopped();
+    dispatcher_stats_reset(&plc_dispatcher_stats, (int64_t)base_ns);
     g_first_scan_since_ns.store(0, std::memory_order_release);
     reap_task_threads();
     plc_outputs_off();

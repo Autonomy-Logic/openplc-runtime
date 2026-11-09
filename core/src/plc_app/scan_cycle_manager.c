@@ -29,6 +29,13 @@ static int64_t ts_now_ns(void)
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
 
+static int64_t ewma_window(int64_t interval_ns)
+{
+    const int64_t interval_us = interval_ns / 1000;
+    const int64_t window      = (interval_us > 0) ? (EWMA_TARGET_WINDOW_US / interval_us) : 1;
+    return (window < 1) ? 1 : window;
+}
+
 static void record_sample(int64_t sample_us, int64_t *min, int64_t *max, int64_t *sum,
                           int64_t *samples, int64_t avg_window)
 {
@@ -42,15 +49,13 @@ int scan_cycle_tracker_init(scan_cycle_tracker_t *tracker, int64_t interval_ns)
 {
     if (!tracker) return -1;
     memset(tracker, 0, sizeof(*tracker));
-    tracker->stats.scan_time_min     = INT64_MAX;
-    tracker->stats.cycle_time_min    = INT64_MAX;
-    tracker->stats.cycle_latency_min = INT64_MAX;
-    tracker->interval_ns             = interval_ns;
-
-    int64_t interval_us = interval_ns / 1000;
-    tracker->avg_window =
-        (interval_us > 0) ? (EWMA_TARGET_WINDOW_US / interval_us) : 1;
-    if (tracker->avg_window < 1) tracker->avg_window = 1;
+    tracker->stats.scan_time_min      = INT64_MAX;
+    tracker->stats.cycle_time_min     = INT64_MAX;
+    tracker->stats.cycle_latency_min  = INT64_MAX;
+    tracker->stats.dispatch_delay_min = INT64_MAX;
+    tracker->stats.wake_latency_min   = INT64_MAX;
+    tracker->interval_ns              = interval_ns;
+    tracker->avg_window               = ewma_window(interval_ns);
 
     return init_rt_mutex(&tracker->mutex);
 }
@@ -83,6 +88,12 @@ void scan_cycle_tracker_start_at(scan_cycle_tracker_t *tracker, int64_t schedule
     {
         record_sample((now_ns - scheduled_ns) / 1000, &s->cycle_latency_min, &s->cycle_latency_max,
                       &tracker->cycle_latency_sum, &tracker->cycle_latency_samples,
+                      tracker->avg_window);
+        record_sample((release_ns - scheduled_ns) / 1000, &s->dispatch_delay_min,
+                      &s->dispatch_delay_max, &tracker->dispatch_delay_sum,
+                      &tracker->dispatch_delay_samples, tracker->avg_window);
+        record_sample((now_ns - release_ns) / 1000, &s->wake_latency_min, &s->wake_latency_max,
+                      &tracker->wake_latency_sum, &tracker->wake_latency_samples,
                       tracker->avg_window);
     }
 
@@ -133,13 +144,90 @@ bool scan_cycle_tracker_snapshot(scan_cycle_tracker_t *tracker, plc_timing_stats
     if (!tracker || !out) return false;
     pthread_mutex_lock(&tracker->mutex);
     *out = tracker->stats;
-    out->scan_time_avg     = tracker->scan_time_sum     / tracker->avg_window;
-    out->cycle_time_avg    = tracker->cycle_time_sum    / tracker->avg_window;
-    out->cycle_latency_avg = tracker->cycle_latency_sum / tracker->avg_window;
+    out->scan_time_avg      = tracker->scan_time_sum      / tracker->avg_window;
+    out->cycle_time_avg     = tracker->cycle_time_sum     / tracker->avg_window;
+    out->cycle_latency_avg  = tracker->cycle_latency_sum  / tracker->avg_window;
+    out->dispatch_delay_avg = tracker->dispatch_delay_sum / tracker->avg_window;
+    out->wake_latency_avg   = tracker->wake_latency_sum   / tracker->avg_window;
     const bool valid = tracker->scan_time_samples > 0 && tracker->cycle_time_samples > 0 &&
                        tracker->cycle_latency_samples > 0;
     pthread_mutex_unlock(&tracker->mutex);
     return valid;
+}
+
+dispatcher_stats_t plc_dispatcher_stats;
+
+int dispatcher_stats_init(dispatcher_stats_t *ds)
+{
+    if (!ds) return -1;
+    if (ds->initialized) return 0;
+    if (init_rt_mutex(&ds->mutex) != 0) return -1;
+    ds->initialized = true;
+    dispatcher_stats_reset(ds, 0);
+    return 0;
+}
+
+void dispatcher_stats_reset(dispatcher_stats_t *ds, int64_t base_tick_ns)
+{
+    if (!ds || !ds->initialized) return;
+    pthread_mutex_lock(&ds->mutex);
+    memset(&ds->stats, 0, sizeof(ds->stats));
+    ds->stats.wake_jitter_min      = INT64_MAX;
+    ds->stats.cycle_start_time_min = INT64_MAX;
+    ds->wake_jitter_sum            = 0;
+    ds->cycle_start_time_sum       = 0;
+    ds->avg_window                 = ewma_window(base_tick_ns);
+    ds->tick_seen                  = false;
+    ds->cycle_start_seen           = false;
+    pthread_mutex_unlock(&ds->mutex);
+}
+
+void dispatcher_stats_record_tick(dispatcher_stats_t *ds, int64_t deadline_ns, int64_t wake_ns)
+{
+    if (!ds || !ds->initialized) return;
+    pthread_mutex_lock(&ds->mutex);
+    plc_dispatcher_stats_t *s = &ds->stats;
+    s->tick_count++;
+    if (!ds->tick_seen)
+    {
+        ds->tick_seen = true;
+    }
+    else if (deadline_ns > 0 && wake_ns >= deadline_ns)
+    {
+        record_sample((wake_ns - deadline_ns) / 1000, &s->wake_jitter_min, &s->wake_jitter_max,
+                      &ds->wake_jitter_sum, &s->wake_jitter_samples, ds->avg_window);
+    }
+    pthread_mutex_unlock(&ds->mutex);
+}
+
+void dispatcher_stats_record_cycle_start(dispatcher_stats_t *ds, int64_t begin_ns,
+                                         int64_t end_ns)
+{
+    if (!ds || !ds->initialized) return;
+    pthread_mutex_lock(&ds->mutex);
+    plc_dispatcher_stats_t *s = &ds->stats;
+    if (!ds->cycle_start_seen)
+    {
+        ds->cycle_start_seen = true;
+    }
+    else if (end_ns >= begin_ns)
+    {
+        record_sample((end_ns - begin_ns) / 1000, &s->cycle_start_time_min,
+                      &s->cycle_start_time_max, &ds->cycle_start_time_sum,
+                      &s->cycle_start_samples, ds->avg_window);
+    }
+    pthread_mutex_unlock(&ds->mutex);
+}
+
+bool dispatcher_stats_snapshot(dispatcher_stats_t *ds, plc_dispatcher_stats_t *out)
+{
+    if (!ds || !out || !ds->initialized) return false;
+    pthread_mutex_lock(&ds->mutex);
+    *out                      = ds->stats;
+    out->wake_jitter_avg      = ds->wake_jitter_sum / ds->avg_window;
+    out->cycle_start_time_avg = ds->cycle_start_time_sum / ds->avg_window;
+    pthread_mutex_unlock(&ds->mutex);
+    return true;
 }
 
 // Forward declaration to avoid pulling plc_state_manager.h into the
@@ -166,7 +254,13 @@ static int append_task_entry(char *buffer, size_t buffer_size, size_t offset,
                            "\"cycle_latency_min\":null,"
                            "\"cycle_latency_max\":null,"
                            "\"cycle_latency_avg\":null,"
-                           "\"overruns\":0}",
+                           "\"overruns\":0,"
+                           "\"dispatch_delay_min\":null,"
+                           "\"dispatch_delay_max\":null,"
+                           "\"dispatch_delay_avg\":null,"
+                           "\"wake_latency_min\":null,"
+                           "\"wake_latency_max\":null,"
+                           "\"wake_latency_avg\":null}",
                            name);
     }
     else
@@ -183,13 +277,63 @@ static int append_task_entry(char *buffer, size_t buffer_size, size_t offset,
                            "\"cycle_latency_min\":%" PRId64 ","
                            "\"cycle_latency_max\":%" PRId64 ","
                            "\"cycle_latency_avg\":%" PRId64 ","
-                           "\"overruns\":%" PRId64 "}",
+                           "\"overruns\":%" PRId64 ","
+                           "\"dispatch_delay_min\":%" PRId64 ","
+                           "\"dispatch_delay_max\":%" PRId64 ","
+                           "\"dispatch_delay_avg\":%" PRId64 ","
+                           "\"wake_latency_min\":%" PRId64 ","
+                           "\"wake_latency_max\":%" PRId64 ","
+                           "\"wake_latency_avg\":%" PRId64 "}",
                            name,
                            s->scan_count, s->scan_time_min, s->scan_time_max, s->scan_time_avg,
                            s->cycle_time_min, s->cycle_time_max, s->cycle_time_avg,
                            s->cycle_latency_min, s->cycle_latency_max, s->cycle_latency_avg,
-                           s->overruns);
+                           s->overruns, s->dispatch_delay_min, s->dispatch_delay_max,
+                           s->dispatch_delay_avg, s->wake_latency_min, s->wake_latency_max,
+                           s->wake_latency_avg);
     }
+    if (written < 0) return 0;
+    return written;
+}
+
+/* Writes a metric value as a JSON number, or `null` when it has no sample. */
+static void format_metric(char *out, size_t out_size, bool has_sample, int64_t value)
+{
+    if (has_sample)
+        snprintf(out, out_size, "%" PRId64, value);
+    else
+        snprintf(out, out_size, "null");
+}
+
+/* Appends `],"dispatcher":{...}}` and the newline that close the STATS payload. */
+static int append_dispatcher_tail(char *buffer, size_t buffer_size, size_t offset)
+{
+    plc_dispatcher_stats_t d;
+    memset(&d, 0, sizeof(d));
+    const bool initialized = dispatcher_stats_snapshot(&plc_dispatcher_stats, &d);
+    const bool has_jitter  = initialized && d.wake_jitter_samples > 0;
+    const bool has_start   = initialized && d.cycle_start_samples > 0;
+
+    char jitter_min[24], jitter_max[24], jitter_avg[24];
+    char start_min[24], start_max[24], start_avg[24];
+    format_metric(jitter_min, sizeof(jitter_min), has_jitter, d.wake_jitter_min);
+    format_metric(jitter_max, sizeof(jitter_max), has_jitter, d.wake_jitter_max);
+    format_metric(jitter_avg, sizeof(jitter_avg), has_jitter, d.wake_jitter_avg);
+    format_metric(start_min, sizeof(start_min), has_start, d.cycle_start_time_min);
+    format_metric(start_max, sizeof(start_max), has_start, d.cycle_start_time_max);
+    format_metric(start_avg, sizeof(start_avg), has_start, d.cycle_start_time_avg);
+
+    const int written = snprintf(buffer + offset, buffer_size - offset,
+                                 "],\"dispatcher\":{"
+                                 "\"tick_count\":%" PRId64 ","
+                                 "\"wake_jitter_min\":%s,"
+                                 "\"wake_jitter_max\":%s,"
+                                 "\"wake_jitter_avg\":%s,"
+                                 "\"cycle_start_time_min\":%s,"
+                                 "\"cycle_start_time_max\":%s,"
+                                 "\"cycle_start_time_avg\":%s}}\n",
+                                 d.tick_count, jitter_min, jitter_max, jitter_avg, start_min,
+                                 start_max, start_avg);
     if (written < 0) return 0;
     return written;
 }
@@ -225,7 +369,10 @@ int format_timing_stats_response(char *buffer, size_t buffer_size)
     }
     plc_tasks_reader_unlock();
 
-    n = snprintf(buffer + offset, buffer_size - offset, "]}\n");
-    if (n > 0) offset += (size_t)n;
+    if (offset < buffer_size)
+    {
+        n = append_dispatcher_tail(buffer, buffer_size, offset);
+        offset += (size_t)n;
+    }
     return (int)offset;
 }
