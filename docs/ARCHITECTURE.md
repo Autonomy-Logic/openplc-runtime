@@ -205,7 +205,8 @@ The runtime tracks timing statistics per IEC task (min, max and average, in micr
 - **Overruns**: Scans that ended after their next scheduled tick, one per scan
 - **Dispatch Delay** (`dispatch_delay`): The task's release by the dispatcher minus the scheduled tick
 - **Wake Latency** (`wake_latency`): Scan start minus the task's release; for each scan,
-  `cycle_latency = dispatch_delay + wake_latency`
+  `cycle_latency = dispatch_delay + wake_latency` in nanoseconds, and within a few microseconds in
+  the reported values, which are truncated to microseconds one by one
 
 The top-level `dispatcher` object tracks the dispatcher thread (min, max and average, in
 microseconds):
@@ -213,7 +214,8 @@ microseconds):
 - **Tick Count** (`tick_count`): Base ticks since the dispatcher started, the first included
 - **Wake Jitter** (`wake_jitter`): The dispatcher's wake time minus the tick deadline, per base tick
 - **Cycle Start Time** (`cycle_start_time`): Duration of the native plugins' `cycle_start` hooks,
-  per task-bearing tick
+  per task-bearing tick; its average uses the base-tick window, so it follows changes more slowly
+  when the tasks run slower than the base tick
 
 Every metric except Scan Count and Tick Count starts from the second sample after each PLC start:
 the first scan, which may run long while the program initialises, the first tick and the first
