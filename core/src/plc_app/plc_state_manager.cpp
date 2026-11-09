@@ -344,13 +344,13 @@ static void plc_task_body(PlcTaskCtx *ctx)
         }
 
         scan_cycle_tracker_end(&ctx->tracker);
-        ctx->first_scan_done.store(true, std::memory_order_release);
 
         ctx->local_tick.fetch_add(1, std::memory_order_relaxed);
         /* Signal scan completion LAST (release order): the dispatcher reads
          * completed vs released to decide whether this worker is idle (safe to
          * re-release) or still in its scan (overrun — skip). */
         ctx->completed.fetch_add(1, std::memory_order_release);
+        ctx->first_scan_done.store(true, std::memory_order_release);
         /* Release this scan's in-flight slot; if we're the last task still
          * running this frame, wake the dispatcher so it retires cycle_end off
          * the hot path. */

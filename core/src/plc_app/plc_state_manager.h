@@ -70,7 +70,7 @@ typedef struct PlcTaskCtx
     plc_atomic_i64_t      release_ns;      /* CLOCK_MONOTONIC time of the last release */
     /* CLOCK_MONOTONIC deadline of the tick of the last release */
     plc_atomic_i64_t      scheduled_ns;
-    /* Set by the worker once its first scan has ended, before that scan's completed bump */
+    /* Set by the worker once its first scan has ended, after that scan's completed bump */
     plc_atomic_bool_t     first_scan_done;
 
     sigjmp_buf            crash_jmp;
