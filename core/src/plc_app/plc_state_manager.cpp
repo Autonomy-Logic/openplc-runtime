@@ -1016,7 +1016,7 @@ void *plc_cycle_thread(void *arg)
                      * task simply runs at a lower effective rate; the others are
                      * unaffected. Rate-limit the log. */
                     /* Ticks, not wall time: replayed ticks after a late dispatcher are missed deadlines too. */
-                    if (plc_task_skip_is_counted(c->completed.load(std::memory_order_acquire)))
+                    if (plc_task_skip_is_counted(cc))
                     {
                         long st = c->stuck_ticks.fetch_add(1, std::memory_order_relaxed) + 1;
                         if (st >= PLC_TASK_STUCK_PERIODS && stuck_idx == SIZE_MAX)
