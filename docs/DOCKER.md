@@ -15,6 +15,73 @@ OpenPLC Runtime v4 provides official Docker images for easy deployment across mu
 - `linux/arm64` - ARM 64-bit (Raspberry Pi 4, etc.)
 - `linux/arm/v7` - ARM 32-bit (Raspberry Pi 3, etc.)
 
+## Base image
+
+The runtime image is planned to build on its own base image, which holds what changes rarely: the OS, the system
+packages and the toolchain.
+
+- **Base image:** `ghcr.io/autonomy-logic/openplc-runtime-base`, public on ghcr.
+- **Source:** `base/Dockerfile` and `base/VERSION` in this repository, built by a `base` job in
+  `.github/workflows/docker.yml` modelled on the `bootloader` job.
+- **Tag scheme and family:** `<debian>-<N>`. The target family is trixie (`trixie-<N>`); the fallback is
+  bookworm (`bookworm-<N>`).
+- **Upstream pin:** `base/Dockerfile` starts `FROM debian:<family>-slim@sha256:...`.
+- **Contents:** the dpkg path-excludes (docs, man pages, locales, sanitizer runtimes) and the apt packages the
+  final stage installs today (`python3`, `libpython3.11`, `g++`, `make`, `ccache`, `ethtool`, `openssl`,
+  `ca-certificates`, `curl`).
+- **Where the product pins it:** the `builder` stage and the final stage of `Dockerfile`, each with
+  `FROM ghcr.io/autonomy-logic/openplc-runtime-base:<tag>@sha256:<digest>`.
+- **Product layer order:** the single `COPY . .` of the `builder` stage is split by rate of change: plugin
+  venvs, then the compiled core, then the webserver, scripts and sources, then the metadata.
+
+**Status:** the base is not introduced yet. `Dockerfile` still builds both stages from the floating tag
+`debian:bookworm-slim`. The concrete tag and digest are recorded here when the base is introduced.
+
+### Policy
+
+1. **One base per product image.** Each product image has its own base, public on ghcr as
+   `ghcr.io/autonomy-logic/<product-image>-base`, holding what changes rarely: the OS, the system packages and
+   the toolchains.
+2. **The base lives with the product.** The base's Dockerfile, its `VERSION` file and its CI workflow live in
+   the product's own repository.
+3. **Everything that ships is pinned by digest.** The product starts
+   `FROM ghcr.io/autonomy-logic/<product-image>-base:<tag>@sha256:<multi-arch digest>`. The base starts `FROM`
+   an upstream image pinned by digest, never by a tag. A builder stage whose output ships is pinned by digest
+   too.
+4. **Tags are `<family>-<N>`**, read from the base's `VERSION` file. N increments on any base change or
+   upstream digest refresh and resets on a family change. A tag is published only when it is absent, so a
+   published tag is immutable. There is no `latest` or other floating tag, and old base versions are
+   never deleted from ghcr, because a two-PR bump needs the previous one. The base workflow runs on a push to
+   `development` or `main` that touches the base directory, or by manual dispatch; a product release never
+   rebuilds its base.
+5. **Family rule.** The base takes the newest Debian stable and the newest Python the product's dependencies
+   support, chosen when the base is introduced, and the tag follows the chosen family. If the product's tests
+   fail on it, the base keeps the image's current family and the reason is recorded with the change that
+   introduces the base.
+6. **Layer order.** Base, then lockfile-keyed dependencies, then rarely changed vendored files, then
+   application code, then metadata last (`ARG VERSION`, `ENV`, `LABEL`, `HEALTHCHECK`, `CMD`). One `COPY` per
+   rate of change. The final stage never runs `apt-get` or a network `pip install`.
+7. **Reproducible layers.** Builds set `SOURCE_DATE_EPOCH` and use the buildx option
+   `rewrite-timestamp=true`, so identical content yields identical layer digests.
+8. **Bump triggers.** A base is bumped only for a needed system package or toolchain change, a fixable
+   security issue, or a family change. Every bump costs one full download of the image on every device.
+
+### Bump procedure
+
+A bump is manual and takes two PRs:
+
+1. **Base PR.** Change `base/Dockerfile` and/or `base/VERSION`. Once it is merged, the base workflow
+   publishes the new tag and prints the product's `FROM` line, with tag and digest, in its job summary.
+2. **Product pin PR.** Set that `FROM` line in `Dockerfile`.
+
+A quarterly review looks at the bases; it forces no bump.
+
+### Drift check
+
+A CI job runs weekly and on manual dispatch and compares each pinned upstream digest with what its tag
+resolves to now. When one has moved, it builds the base and the product on the new digest, runs the product
+tests and reports the result in its job summary or in an issue. The drift check never bumps a pin.
+
 ## The managed install (recommended)
 
 Everything below describes running the runtime container by hand, which is

@@ -192,6 +192,7 @@ State management: `core/src/plc_app/plc_state_manager.cpp`
 - `scripts/` - Build, compile, and management scripts
 - `build/` - CMake output (`plc_main` executable, `libplc_*.so` libraries)
 - `venvs/` - Python virtual environments (runtime + per-plugin)
+- `base/` - Runtime base image (`Dockerfile`, `VERSION`), added when the base is introduced; see `docs/DOCKER.md` "Base image"
 - `bootloader/` - Go service that starts and maintains the runtime container and stays reachable to install a new runtime version
 - `windows/` - Windows installer (MSYS2 + Inno Setup)
 - `docs/` - Detailed documentation
