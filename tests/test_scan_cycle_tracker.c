@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
-/* Unit tests for the per-task scan_cycle_tracker: every metric starts from the second cycle,
- * latency is measured against the scheduled tick, and an overrun is a scan ending past it. */
-
 #include "plc_state_manager.h"
 #include "scan_cycle_manager.h"
 #include "unity.h"
@@ -187,9 +184,6 @@ void test_init_avg_window_matches_target_for_100ms_cycle(void)
 
 void test_snapshot_returns_false_before_first_scan(void)
 {
-    /* scan_count starts at 0; snapshot's "valid" predicate is
-     * scan_count > 0. Important for the JSON path: we emit nulls for
-     * pre-first-scan trackers instead of bogus zero stats. */
     scan_cycle_tracker_init(&tracker, 1000000);
     plc_timing_stats_t out = {0};
     bool valid = scan_cycle_tracker_snapshot(&tracker, &out);
