@@ -380,6 +380,12 @@ static int64_t task_stuck_limit_ns(const PlcTaskCtx *c)
     return PLC_TASK_STUCK_PERIODS * c->interval_ns;
 }
 
+/* Called at each use in plc_cycle_thread: an int64_t local there trips -Wclobbered (sigsetjmp) on 32-bit ARM */
+static inline int64_t timespec_to_ns(const timespec *ts)
+{
+    return (int64_t)ts->tv_sec * 1000000000LL + (int64_t)ts->tv_nsec;
+}
+
 static bool task_first_scan_done(const PlcTaskCtx *c)
 {
     return c->first_scan_done.load(std::memory_order_acquire);
@@ -931,9 +937,7 @@ void *plc_cycle_thread(void *arg)
     {
         /* ---- Phase B: the tick (runs at the absolute deadline) ---- */
         const int64_t master_time = (int64_t)master_tick * (int64_t)base_ns;
-        const int64_t tick_deadline_ns =
-            (int64_t)next_tick.tv_sec * 1000000000LL + (int64_t)next_tick.tv_nsec;
-        dispatcher_stats_record_tick(&plc_dispatcher_stats, tick_deadline_ns, monotonic_ns());
+        dispatcher_stats_record_tick(&plc_dispatcher_stats, timespec_to_ns(&next_tick), monotonic_ns());
 
         watchdog_feed();
 
@@ -1012,7 +1016,7 @@ void *plc_cycle_thread(void *arg)
                      * the worker's matching worker_scan_done() can never drive
                      * g_tasks_running negative. */
                     c->stuck_ticks.store(0, std::memory_order_relaxed);
-                    c->scheduled_ns.store(tick_deadline_ns, std::memory_order_release);
+                    c->scheduled_ns.store(timespec_to_ns(&next_tick), std::memory_order_release);
                     c->release_ns.store(monotonic_ns(), std::memory_order_release);
                     c->time_at_dispatch = master_time;
                     c->released.store(r + 1, std::memory_order_relaxed);
