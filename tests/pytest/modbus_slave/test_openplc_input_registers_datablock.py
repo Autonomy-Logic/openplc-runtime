@@ -161,13 +161,8 @@ def test_datablock_read_out_of_range(runtime_args):
     ):
         db = OpenPLCInputRegistersDataBlock(runtime_args, num_registers=4)
 
-        # Modbus addresses 3..5 -> internal indices 2,3,4; index 4 is past the
-        # four registers this block has. The whole request is refused rather
-        # than part-answered: a zero in the tail is indistinguishable from a
-        # real one.
         assert db.getValues(3, 3) == ExcCodes.ILLEGAL_ADDRESS
 
-        # Entirely inside, same block, still answers.
         assert db.getValues(3, 2) == [30, 40]
 
 

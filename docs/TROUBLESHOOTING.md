@@ -465,8 +465,9 @@ Variable index out of range
 #### Scan Cycle Overruns
 
 **Symptoms:**
-- Logs show "Overruns: X"
-- Timing statistics show high latency
+- Logs show `[task <name>] scan overrun #N`, counted from the second scan on; `#N` counts
+  the ticks skipped while a scan was still running
+- The `overruns` field of the task's timing statistics grows by one per late scan, and latency is high
 
 **Solution:**
 1. Increase scan cycle time in PLC program
@@ -478,6 +479,20 @@ Variable index out of range
    vmstat 1
    ```
 5. Ensure real-time scheduling active
+
+**Finding where latency comes from:**
+
+`cycle_latency` is the sum of `dispatch_delay` (scheduled tick to the task's release) and
+`wake_latency` (release to scan start), within a few microseconds in the reported values. Read the
+task's fields together with the top-level `dispatcher` object of the timing statistics:
+- High `dispatch_delay` with high `dispatcher.wake_jitter`: the dispatcher woke late after the tick
+  deadline (system load, non-real-time kernel)
+- High `dispatch_delay` with high `dispatcher.cycle_start_time`: a native plugin's `cycle_start`
+  hook is slow
+- High `dispatch_delay` with neither: the time goes into copying the config-scope globals in, into
+  the release order (tasks released before this one on the same tick), or into the native plugins'
+  `cycle_end` hooks and the image lock that run before the release when the previous frame overran
+- High `wake_latency`: the task thread was woken late after its release
 
 #### Memory Leaks
 

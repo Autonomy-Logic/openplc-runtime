@@ -78,6 +78,15 @@ extern "C"
      */
     int plc_task_fifo_priority(int iec_priority, bool *clamped);
 
+    /**
+     * @brief Whether a due tick that finds the task still in a scan counts as an
+     * overrun and a stuck tick.
+     *
+     * @param first_scan_done whether the task's first scan had finished before the tick
+     * @return true once the first scan has finished
+     */
+    bool plc_task_skip_is_counted(bool first_scan_done);
+
 #ifdef __cplusplus
 }
 #endif

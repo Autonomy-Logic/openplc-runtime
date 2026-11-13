@@ -283,7 +283,8 @@ static void plc_task_body(PlcTaskCtx *ctx)
         if (ext_strucpp_set_current_time)
             ext_strucpp_set_current_time(ctx->time_at_dispatch);
 
-        scan_cycle_tracker_start(&ctx->tracker);
+        scan_cycle_tracker_start(&ctx->tracker, ctx->scheduled_ns.load(std::memory_order_acquire),
+                                 ctx->release_ns.load(std::memory_order_acquire));
 
         /* Short locked window drains located inputs into the image, then
          * the body runs against .so storage directly. Shared globals have
@@ -349,6 +350,7 @@ static void plc_task_body(PlcTaskCtx *ctx)
          * completed vs released to decide whether this worker is idle (safe to
          * re-release) or still in its scan (overrun — skip). */
         ctx->completed.fetch_add(1, std::memory_order_release);
+        ctx->first_scan_done.store(true, std::memory_order_release);
         /* Release this scan's in-flight slot; if we're the last task still
          * running this frame, wake the dispatcher so it retires cycle_end off
          * the hot path. */
@@ -378,9 +380,15 @@ static int64_t task_stuck_limit_ns(const PlcTaskCtx *c)
     return PLC_TASK_STUCK_PERIODS * c->interval_ns;
 }
 
+/* Called at each use in plc_cycle_thread: an int64_t local there trips -Wclobbered (sigsetjmp) on 32-bit ARM */
+static inline int64_t timespec_to_ns(const timespec *ts)
+{
+    return (int64_t)ts->tv_sec * 1000000000LL + (int64_t)ts->tv_nsec;
+}
+
 static bool task_first_scan_done(const PlcTaskCtx *c)
 {
-    return c->completed.load(std::memory_order_acquire) > 0;
+    return c->first_scan_done.load(std::memory_order_acquire);
 }
 
 /* How long the current scan may run after its release before the teardown aborts it. */
@@ -790,6 +798,8 @@ void *plc_cycle_thread(void *arg)
                 ctx->stuck_ticks.store(0,   std::memory_order_relaxed);
                 ctx->exited.store(0,        std::memory_order_relaxed);
                 ctx->release_ns.store(0,    std::memory_order_relaxed);
+                ctx->scheduled_ns.store(0,  std::memory_order_relaxed);
+                ctx->first_scan_done.store(false, std::memory_order_relaxed);
                 ctx->in_body = 0;
 
                 if (scan_cycle_tracker_init(&ctx->tracker, ctx->interval_ns) != 0)
@@ -914,6 +924,7 @@ void *plc_cycle_thread(void *arg)
     log_info("GCD master-tick dispatcher running (base tick %llu ns)",
              (unsigned long long)base_ns);
     watchdog_dispatcher_started((int64_t)base_ns);
+    dispatcher_stats_reset(&plc_dispatcher_stats, (int64_t)base_ns);
 
     uint64_t master_tick      = 0;
     bool     cycle_end_pending = false;   /* a frame's cycle_end not yet fired */
@@ -926,6 +937,7 @@ void *plc_cycle_thread(void *arg)
     {
         /* ---- Phase B: the tick (runs at the absolute deadline) ---- */
         const int64_t master_time = (int64_t)master_tick * (int64_t)base_ns;
+        dispatcher_stats_record_tick(&plc_dispatcher_stats, timespec_to_ns(&next_tick), monotonic_ns());
 
         watchdog_feed();
 
@@ -969,7 +981,13 @@ void *plc_cycle_thread(void *arg)
                 if (plugin_driver) plugin_driver_cycle_end(plugin_driver);
                 cycle_end_pending = false;
             }
-            if (plugin_driver) plugin_driver_cycle_start(plugin_driver);
+            if (plugin_driver)
+            {
+                const int64_t cycle_start_begin_ns = monotonic_ns();
+                plugin_driver_cycle_start(plugin_driver);
+                dispatcher_stats_record_cycle_start(&plc_dispatcher_stats, cycle_start_begin_ns,
+                                                    monotonic_ns());
+            }
 
             /* Prime config-scope shared globals from the input image.
              * Guarded by quiescence (no overrunning task is in run())
@@ -988,8 +1006,9 @@ void *plc_cycle_thread(void *arg)
                 if (!c->alive.load(std::memory_order_acquire)) continue;
                 if ((master_tick % c->divisor) != 0) continue;
 
-                long r  = c->released.load(std::memory_order_relaxed);
-                long cc = c->completed.load(std::memory_order_acquire);
+                const bool first_done = task_first_scan_done(c);
+                long r                = c->released.load(std::memory_order_relaxed);
+                long cc               = c->completed.load(std::memory_order_acquire);
                 if (r == cc)
                 {
                     /* Worker idle (caught up) → stamp time, count it in flight,
@@ -997,6 +1016,7 @@ void *plc_cycle_thread(void *arg)
                      * the worker's matching worker_scan_done() can never drive
                      * g_tasks_running negative. */
                     c->stuck_ticks.store(0, std::memory_order_relaxed);
+                    c->scheduled_ns.store(timespec_to_ns(&next_tick), std::memory_order_release);
                     c->release_ns.store(monotonic_ns(), std::memory_order_release);
                     c->time_at_dispatch = master_time;
                     c->released.store(r + 1, std::memory_order_relaxed);
@@ -1011,19 +1031,19 @@ void *plc_cycle_thread(void *arg)
                      * task simply runs at a lower effective rate; the others are
                      * unaffected. Rate-limit the log. */
                     /* Ticks, not wall time: replayed ticks after a late dispatcher are missed deadlines too. */
-                    if (task_first_scan_done(c))
+                    if (plc_task_skip_is_counted(first_done))
                     {
                         long st = c->stuck_ticks.fetch_add(1, std::memory_order_relaxed) + 1;
                         if (st >= PLC_TASK_STUCK_PERIODS && stuck_idx == SIZE_MAX)
                             stuck_idx = i;
+                        long oc = c->overrun_count.fetch_add(1, std::memory_order_relaxed) + 1;
+                        if (oc == 1 || (oc % 50) == 0)
+                            log_warn("[task %s] scan overrun #%ld: body exceeds its "
+                                     "%lld ms period — running at reduced rate, "
+                                     "other tasks unaffected",
+                                     c->name, oc,
+                                     (long long)(c->interval_ns / 1000000));
                     }
-                    long oc = c->overrun_count.fetch_add(1, std::memory_order_relaxed) + 1;
-                    if (oc == 1 || (oc % 50) == 0)
-                        log_warn("[task %s] scan overrun #%ld: body exceeds its "
-                                 "%lld ms period — running at reduced rate, "
-                                 "other tasks unaffected",
-                                 c->name, oc,
-                                 (long long)(c->interval_ns / 1000000));
                 }
             }
 
@@ -1131,6 +1151,7 @@ void *plc_cycle_thread(void *arg)
     }
 
     watchdog_dispatcher_stopped();
+    dispatcher_stats_reset(&plc_dispatcher_stats, (int64_t)base_ns);
     g_first_scan_since_ns.store(0, std::memory_order_release);
     reap_task_threads();
     plc_outputs_off();

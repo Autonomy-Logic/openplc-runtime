@@ -22,12 +22,14 @@
 typedef std::atomic<long>               plc_atomic_long_t;
 typedef std::atomic<uint_least64_t>     plc_atomic_u64_t;
 typedef std::atomic<int_least64_t>      plc_atomic_i64_t;
+typedef std::atomic<bool>               plc_atomic_bool_t;
 extern "C" {
 #else
 #include <stdatomic.h>
 typedef atomic_long                     plc_atomic_long_t;
 typedef atomic_uint_least64_t           plc_atomic_u64_t;
 typedef atomic_int_least64_t            plc_atomic_i64_t;
+typedef atomic_bool                     plc_atomic_bool_t;
 #endif
 
 /* Runtime states. TRANSITIONING values APPEND, never insert: the
@@ -66,6 +68,10 @@ typedef struct PlcTaskCtx
     plc_atomic_long_t     stuck_ticks;     /* consecutive due ticks found still in one scan */
     plc_atomic_long_t     exited;          /* 1 once the thread function has returned */
     plc_atomic_i64_t      release_ns;      /* CLOCK_MONOTONIC time of the last release */
+    /* CLOCK_MONOTONIC deadline of the tick of the last release */
+    plc_atomic_i64_t      scheduled_ns;
+    /* Set by the worker once its first scan has ended, after that scan's completed bump */
+    plc_atomic_bool_t     first_scan_done;
 
     sigjmp_buf            crash_jmp;
     volatile sig_atomic_t crash_sig;
