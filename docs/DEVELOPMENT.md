@@ -548,13 +548,43 @@ valgrind --leak-check=full --show-leak-kinds=all ./build/plc_main
 
 ### Timing Analysis
 
-Runtime tracks detailed timing statistics:
-- Scan time (PLC logic execution)
-- Cycle time (total including sleep)
-- Cycle latency (deviation from target)
-- Overruns (cycles exceeding target)
+The runtime tracks timing statistics per IEC task (min, max and average, in microseconds):
+- Scan time: duration of the scan body
+- Cycle time: from one scan start to the next scan start
+- Cycle latency: scan start minus the scheduled tick that released the scan; never negative
+- Overruns: scans that ended after their next scheduled tick, one per scan
+- Dispatch delay (`dispatch_delay`): the task's release by the dispatcher minus the scheduled tick
+- Wake latency (`wake_latency`): scan start minus the task's release
 
-View stats in runtime logs every 5 seconds.
+For each scan, `cycle_latency = dispatch_delay + wake_latency` in nanoseconds. Each reported value
+is truncated to microseconds on its own, so the reported parts can differ from the reported latency
+by a few microseconds.
+
+The top-level `dispatcher` object holds the statistics of the dispatcher thread that releases the
+tasks (min, max and average, in microseconds):
+- `tick_count`: base ticks since the dispatcher started, the first included
+- Wake jitter (`wake_jitter`): the dispatcher's wake time minus the tick deadline, one sample per
+  base tick
+- Cycle start time (`cycle_start_time`): duration of the native plugins' `cycle_start` hooks, one
+  sample per task-bearing tick. Its average uses the base-tick window, so when the tasks run slower
+  than the base tick it follows changes more slowly than the other averages
+
+Every metric starts from the second sample after each PLC start; the first scan, the first tick and
+the first `cycle_start` are left out of all of them. `scan_count` counts every scan and `tick_count`
+every tick, the first included. Until a task has a scan time, a cycle time and a cycle latency
+sample, normally when its third scan starts, every min, max and average of that task is `null`,
+`dispatch_delay_*` and `wake_latency_*` included, while its `scan_count` and `overruns` show the
+real counts. A dispatcher metric with no sample yet is `null`. Outside a run the `tasks` array is
+empty and the `dispatcher` object has `tick_count` 0 and `null` metrics.
+
+Example, one task:
+
+```
+STATS:{"tasks":[{"name":"main","scan_count":1500,"scan_time_min":12,"scan_time_max":48,"scan_time_avg":15,"cycle_time_min":9985,"cycle_time_max":10021,"cycle_time_avg":10000,"cycle_latency_min":8,"cycle_latency_max":61,"cycle_latency_avg":14,"overruns":0,"dispatch_delay_min":3,"dispatch_delay_max":40,"dispatch_delay_avg":6,"wake_latency_min":4,"wake_latency_max":27,"wake_latency_avg":8}],"dispatcher":{"tick_count":1500,"wake_jitter_min":2,"wake_jitter_max":35,"wake_jitter_avg":4,"cycle_start_time_min":0,"cycle_start_time_max":3,"cycle_start_time_avg":1}}
+```
+
+Read them with the `STATS` command on `/run/runtime/plc_runtime.socket`, with
+`GET /api/status?include_stats=true`, or in the editor's Scan Cycle Statistics panel.
 
 ## Documentation
 

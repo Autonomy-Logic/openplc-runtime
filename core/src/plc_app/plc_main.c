@@ -21,6 +21,7 @@
 #include "plc_boot.h"
 #include "plc_state_manager.h"
 #include "plcapp_manager.h"
+#include "scan_cycle_manager.h"
 #include "task_policy.h"
 #include "unix_socket.h"
 #include "utils/log.h"
@@ -220,6 +221,12 @@ int main(int argc, char *argv[])
                 plc_publish_final_state(PLC_STATE_ERROR);
             }
         }
+    }
+
+    if (dispatcher_stats_init(&plc_dispatcher_stats) != 0)
+    {
+        log_error("Failed to initialize dispatcher statistics");
+        return -1;
     }
 
     // Start the socket only now that the driver is fully built: every
