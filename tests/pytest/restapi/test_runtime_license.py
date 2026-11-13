@@ -102,7 +102,10 @@ def test_parse_accepts_an_edge_licence() -> None:
         {"order_id": 7},
         {"issued_at": ""},
         {"key_id": -1},
+        {"key_id": 256},
         {"key_id": False},
+        {"fmt": True},
+        {"fmt": 1.0},
         {"sig": "short"},
     ],
 )
@@ -217,13 +220,30 @@ def test_report_skips_unusable_files(env) -> None:
     assert runtime_license.report()["licenses"] == []
 
 
-def test_report_reads_at_most_the_cap(env, monkeypatch) -> None:
+def test_report_lists_this_device_first_within_the_cap(env, monkeypatch) -> None:
     on_device(env)
-    env["device_dir"].mkdir(parents=True)
-    (env["device_dir"] / "b.license").write_bytes(as_bytes(make_license()))
-    (env["device_dir"] / "a.license").write_bytes(b"{")
-    monkeypatch.setattr(runtime_license, "MAX_STORED_LICENSES", 1)
-    assert runtime_license.report()["licenses"] == []
+    mine = make_license(order_id="zzz_mine")
+    assert runtime_license.store(as_bytes(mine)).ok
+    for i in range(3):
+        assert runtime_license.store(as_bytes(make_license(order_id=f"a{i}", hardware=OTHER_ID))).ok
+    monkeypatch.setattr(runtime_license, "MAX_STORED_LICENSES", 2)
+    listed = runtime_license.report()["licenses"]
+    assert len(listed) == 2
+    assert listed[0] == mine
+
+
+def test_report_reads_the_hardware_id_once(env, monkeypatch) -> None:
+    on_device(env)
+    calls: list[int] = []
+    real = hardware_id.current
+
+    def counted() -> hardware_id.HardwareId | None:
+        calls.append(1)
+        return real()
+
+    monkeypatch.setattr(hardware_id, "current", counted)
+    runtime_license.report()
+    assert len(calls) == 1
 
 
 def test_report_in_a_vplc_lists_only_the_seat_licence(env) -> None:

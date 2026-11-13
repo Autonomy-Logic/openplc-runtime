@@ -413,8 +413,8 @@ name); a licence with the same `order_id` replaces the stored one.
 | 500 | The licence could not be written |
 
 **Where licences live:**
-- On its own hardware: `licenses/<order_id>.license` in the persistent data directory. Every stored
-  licence is reported (at most 100).
+- On its own hardware: `licenses/<order_id>.license` in the persistent data directory. Stored
+  licences are reported, at most 100, those whose `hardware_id` is this device's first.
 - In a vPLC (hardware ID injected by orchestrator-agent): uploads go to
   `/var/lib/openplc-runtime/licenses/`, where the agent collects the host's licences. Only the
   licence inside the seat file the agent writes to `/etc/openplc-runtime/runtime.license`

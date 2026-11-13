@@ -37,6 +37,7 @@ MAX_SEATS = 1000
 MAX_LICENSE_BYTES = 4096
 MAX_SEAT_FILE_BYTES = 8192
 MAX_STORED_LICENSES = 100
+MAX_KEY_ID = 255
 
 SEAT_FILE_PATH = Path("/etc/openplc-runtime/runtime.license")
 VPLC_LICENSES_DIR = Path("/var/lib/openplc-runtime/licenses")
@@ -83,7 +84,7 @@ def parse_license(data: object) -> RuntimeLicense | None:
     """A licence from its decoded JSON; None unless it has exactly the runtime licence shape."""
     if not isinstance(data, dict) or set(data) != _FIELDS:
         return None
-    if data["fmt"] != FORMAT or data["product"] != PRODUCT:
+    if not _is_int(data["fmt"]) or data["fmt"] != FORMAT or data["product"] != PRODUCT:
         return None
     hw = data["hardware_id"]
     order_id = data["order_id"]
@@ -97,7 +98,7 @@ def parse_license(data: object) -> RuntimeLicense | None:
         return None
     if not isinstance(data["issued_at"], str) or not data["issued_at"]:
         return None
-    if not _is_int(key_id) or key_id < 0:
+    if not _is_int(key_id) or not 0 <= key_id <= MAX_KEY_ID:
         return None
     if not isinstance(sig, str) or not _SIG_RE.match(sig):
         return None
@@ -170,34 +171,35 @@ def _seat_license(raw: bytes) -> RuntimeLicense | None:
     return parse_license(data.get("license"))
 
 
-def _stored_licenses() -> list[RuntimeLicense]:
+def _stored_licenses(device_hardware_id: str | None) -> list[RuntimeLicense]:
+    """Up to ``MAX_STORED_LICENSES`` stored licences, those naming ``device_hardware_id`` first."""
     try:
         names = sorted(p for p in DEVICE_LICENSES_DIR.iterdir() if p.suffix == ".license")
     except OSError:
         return []
     found = []
-    for path in names[:MAX_STORED_LICENSES]:
+    for path in names:
         raw = _read_small(path, MAX_LICENSE_BYTES)
         lic = parse_license_bytes(raw) if raw is not None else None
         if lic is not None:
             found.append(lic)
-    return found
+    found.sort(key=lambda lic: lic.hardware_id != device_hardware_id)
+    return found[:MAX_STORED_LICENSES]
 
 
-def reported_licenses() -> list[RuntimeLicense]:
-    """The licences the editor checks: every stored one, or in a vPLC only the seat file's."""
-    record = hardware_id.current()
+def reported_licenses(record: hardware_id.HardwareId | None) -> list[RuntimeLicense]:
+    """The licences the editor checks: the stored ones, or in a vPLC only the seat file's."""
     if record is not None and _in_vplc(record):
         raw = _read_small(SEAT_FILE_PATH, MAX_SEAT_FILE_BYTES)
         lic = _seat_license(raw) if raw else None
         return [lic] if lic is not None else []
-    return _stored_licenses()
+    return _stored_licenses(record.value if record is not None else None)
 
 
 def report() -> dict[str, object]:
     """``GET /api/runtime-license``: the hardware ID and the licences, as stored."""
     record = hardware_id.current()
-    licenses = [json.loads(lic.to_bytes()) for lic in reported_licenses()]
+    licenses = [json.loads(lic.to_bytes()) for lic in reported_licenses(record)]
     if record is None:
         return {"hardwareId": None, "source": None, "licenses": licenses}
     return {"hardwareId": record.value, "source": record.source, "licenses": licenses}
