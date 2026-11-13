@@ -852,9 +852,9 @@ def get_runtime_licenses():
     """Return this runtime's hardware ID and the commercial licences it holds, as stored.
 
     Any authenticated user. The runtime does not verify the licences; the editor
-    checks each signature and hardware ID. On its own hardware every stored
-    licence is listed; in a vPLC only the licence of the seat orchestrator-agent
-    assigned to it.
+    checks each signature and hardware ID. On its own hardware the stored
+    licences are listed, at most 100, those for this device's hardware ID first;
+    in a vPLC only the licence of the seat orchestrator-agent assigned to it.
     ---
     tags:
       - Runtime
