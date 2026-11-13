@@ -171,13 +171,12 @@ Authorization: Bearer <token>
 **Response:**
 ```json
 {
-  "status": "RUNNING",
-  "license": "gpl"
+  "status": "RUNNING"
 }
 ```
 
-`license` is `commercial` when the runtime holds a commercial runtime licence for this hardware
-(see [Runtime Licence](#runtime-licence)), and `gpl` otherwise. It only reports; nothing is limited.
+The licence state is not reported here: the editor reads the stored licences from
+[`GET /api/runtime-license`](#read-runtime-licences) and verifies them.
 
 **Possible Status Values:**
 - `"EMPTY"` - No PLC program loaded
@@ -353,9 +352,38 @@ Authorization: Bearer <token>
 ## Runtime Licence
 
 OpenPLC Runtime is free under the GPLv3. A commercial licence is a JSON file Autonomy Edge signs for
-one hardware ID v2 ([HARDWARE_ID.md](HARDWARE_ID.md)). The runtime stores it, checks its signature
-and reports the result in the `license` key of `/api/status`. It never contacts Edge and never
-limits anything: the editor fetches licences and uploads them.
+one hardware ID v2 ([HARDWARE_ID.md](HARDWARE_ID.md)). The runtime stores licences and reports them
+with its hardware ID; it never checks a signature, never contacts Edge and never limits anything.
+The editor fetches licences from Edge, uploads them, and decides the GPLv3 or commercial status by
+verifying what the runtime reports.
+
+### Read Runtime Licences
+
+```http
+GET /api/runtime-license
+Authorization: Bearer <token>
+```
+
+Any authenticated user.
+
+**Response (200):**
+```json
+{
+  "hardwareId": "hw2:...",
+  "source": "device",
+  "licenses": [
+    {"fmt":1,"product":"com.autonomy.openplc-runtime","hardware_id":"hw2:...","seats":2,
+     "order_id":"...","issued_at":"2026-10-28T12:00:00.000Z","key_id":0,"sig":"..."}
+  ]
+}
+```
+
+`hardwareId` and `source` are as in `GET /api/hardware-id` (`null` when no ID can be derived).
+`licenses` holds each licence exactly as stored, unverified, and may include licences for other
+hardware IDs. The editor counts a licence only when its `hardware_id` equals `hardwareId` and its
+signature verifies: ECDSA P-256 over SHA-256 of the payload without `sig`, keys sorted, no
+whitespace, UTF-8, with `sig` the raw r and s (64 bytes) in base64 and the public key selected by
+`key_id`.
 
 ### Upload Runtime Licence
 
@@ -368,37 +396,30 @@ Content-Type: application/json
  "order_id":"...","issued_at":"2026-10-28T12:00:00.000Z","key_id":0,"sig":"..."}
 ```
 
-Any authenticated user. The body is the licence file exactly as Edge serves it, at most 4 KiB.
+Any authenticated user. The body is the licence file exactly as Edge serves it, at most 4 KiB. Only
+its shape is checked (exact field set, `product`, `fmt`, value ranges, `order_id` safe as a file
+name); a licence with the same `order_id` replaces the stored one.
 
 **Response (200):**
 ```json
-{"orderId": "...", "license": "commercial"}
+{"orderId": "..."}
 ```
 
 | Status | Meaning |
 |--------|---------|
-| 400 | Not a runtime licence, no hardware ID on this device, licence for another hardware ID, or its signature does not verify |
+| 400 | Not a runtime licence, or no hardware ID on this device |
 | 401 | Authentication required |
 | 413 | Body larger than 4 KiB |
-| 500 | The licence verified but could not be written |
-
-**Verification:** ECDSA P-256 over SHA-256 of the payload without `sig`, keys sorted, no
-whitespace, UTF-8. `sig` is the raw r and s (64 bytes) in base64. The public key is selected by
-`key_id` from the keys built into the runtime (`TRUSTED_KEYS` in `webserver/runtime_license.py`).
-`OPENPLC_RUNTIME_LICENSE_DEV_KEY=<key_id>:<x||y hex>` adds a development key; never set it in
-production. The check runs the `openssl` command line.
+| 500 | The licence could not be written |
 
 **Where licences live:**
-- On its own hardware: `licenses/<order_id>.license` in the persistent data directory. Any stored
-  licence that verifies for this device makes the status `commercial`.
+- On its own hardware: `licenses/<order_id>.license` in the persistent data directory. Every stored
+  licence is reported (at most 100).
 - In a vPLC (hardware ID injected by orchestrator-agent): uploads go to
-  `/var/lib/openplc-runtime/licenses/`, where the agent collects the host's licences. Only the seat
-  file the agent writes to `/etc/openplc-runtime/runtime.license` (`{fmt, vplc, license}`) counts:
-  `commercial` when the licence inside verifies for the host's hardware ID. Its `vplc` name is not
-  compared, since a vPLC cannot see its container name.
-
-The status is computed at start, logged once, and recomputed only when a licence, the seat file or
-the hardware ID record changes.
+  `/var/lib/openplc-runtime/licenses/`, where the agent collects the host's licences. Only the
+  licence inside the seat file the agent writes to `/etc/openplc-runtime/runtime.license`
+  (`{fmt, vplc, license}`) is reported; an uploaded host licence alone is not. Its `vplc` name is
+  not compared, since a vPLC cannot see its container name.
 
 ---
 

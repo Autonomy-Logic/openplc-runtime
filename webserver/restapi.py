@@ -846,14 +846,52 @@ def get_hardware_id():
     )
 
 
+@restapi_bp.route("/runtime-license", methods=["GET"])
+@jwt_required()
+def get_runtime_licenses():
+    """Return this runtime's hardware ID and the commercial licences it holds, as stored.
+
+    Any authenticated user. The runtime does not verify the licences; the editor
+    checks each signature and hardware ID. On its own hardware every stored
+    licence is listed; in a vPLC only the licence of the seat orchestrator-agent
+    assigned to it.
+    ---
+    tags:
+      - Runtime
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Licences retrieved
+        schema:
+          type: object
+          properties:
+            hardwareId:
+              type: string
+              description: hw2 followed by 64 lowercase hex characters, or null
+            source:
+              type: string
+              description: device or orchestrator, or null
+            licenses:
+              type: array
+              items:
+                type: object
+                description: the licence file exactly as Edge issued it
+      401:
+        description: Authentication required
+    """
+    return jsonify(runtime_license.report()), 200
+
+
 @restapi_bp.route("/runtime-license", methods=["POST"])
 @jwt_required()
 def upload_runtime_license():
-    """Store a commercial runtime licence issued by Autonomy Edge for this device.
+    """Store a commercial runtime licence issued by Autonomy Edge.
 
     Any authenticated user. The body is the licence file exactly as Edge serves
-    it. It is stored only when its signature verifies and its hardware ID is this
-    device's (in a vPLC, the host's, and orchestrator-agent then assigns a seat).
+    it. Only its shape is checked; the editor verifies it before uploading and
+    again when it reads it back. In a vPLC it goes to the host's licences and
+    orchestrator-agent assigns the seat.
     ---
     tags:
       - Runtime
@@ -869,17 +907,14 @@ def upload_runtime_license():
           properties:
             orderId:
               type: string
-            license:
-              type: string
-              description: commercial or gpl, as /api/status reports it now
       400:
-        description: Not a licence for this device, or its signature does not verify
+        description: Not a runtime licence, or this device has no hardware ID
       401:
         description: Authentication required
       413:
         description: Body larger than 4 KiB
       500:
-        description: The licence verified but could not be written
+        description: The licence could not be written
     """
     limit = runtime_license.MAX_LICENSE_BYTES
     if request.content_length is not None and request.content_length > limit:
@@ -890,7 +925,7 @@ def upload_runtime_license():
     result = runtime_license.store(raw)
     if not result.ok:
         return jsonify({"error": result.error}), 500 if result.internal else 400
-    return jsonify({"orderId": result.order_id, "license": runtime_license.status()}), 200
+    return jsonify({"orderId": result.order_id}), 200
 
 
 @restapi_bp.route("/login", methods=["POST"])
