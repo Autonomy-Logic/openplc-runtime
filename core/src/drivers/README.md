@@ -312,6 +312,45 @@ For standalone testing:
 python3 ./core/src/drivers/plugins/python/modbus_slave/simple_modbus.py
 ```
 
+### 3. Modbus Master (Python)
+
+The `plugins/python/modbus_master/modbus_master_plugin.py` plugin polls Modbus TCP and RTU slaves and maps their
+registers and coils to the IEC image. Its configuration, written by the OpenPLC Editor, is a JSON list of devices; the
+`config` object of each device holds the transport settings and the I/O points.
+
+TCP devices that share a `host:port` (a Modbus gateway) share one connection and one thread, routed by `slave_id`. RTU
+devices on the same serial port settings share one bus thread.
+
+**Reconnect (TCP only):** the optional boolean `reconnect` in a TCP device's `config` sets what happens when the
+connection fails. RTU devices ignore it.
+
+| `reconnect` | Behaviour |
+|---|---|
+| `true` or absent | Retries the first connect and reconnects after any failed request, waiting 2 s, then x1.5 per attempt, up to 30 s. |
+| `false` | Makes one connect attempt. If it fails, or the connection is lost later (the socket is closed, reset or fails), the endpoint is given up: `set-to-zero` read points are zeroed once, `keep-last-value` points keep their value, no further request is sent, and a warning names the endpoint, its devices and the reason (`failed first connect` or `connection lost`). An exception response, an error response, a timeout or a malformed frame on a live connection is a failed poll and keeps the connection. Stop then Start the PLC to try again. |
+
+A non-boolean `reconnect` is refused, naming the device. Devices that share a `host:port` must use the same value;
+otherwise the whole configuration is refused, naming the endpoint, and no device thread starts.
+
+```json
+{
+  "name": "Pump",
+  "protocol": "MODBUS",
+  "config": {
+    "type": "SLAVE",
+    "transport": "tcp",
+    "host": "192.168.1.50",
+    "port": 502,
+    "slave_id": 1,
+    "timeout_ms": 500,
+    "reconnect": false,
+    "io_points": [
+      { "fc": 3, "offset": "0", "iec_location": "%IW0", "len": 1, "cycle_time_ms": 100, "error_handling": "set-to-zero" }
+    ]
+  }
+}
+```
+
 ## Python Plugin Type System and Safety
 
 ### Enhanced Type Safety with the `shared` Module

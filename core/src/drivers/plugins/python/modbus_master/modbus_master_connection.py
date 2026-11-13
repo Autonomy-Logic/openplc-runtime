@@ -7,9 +7,36 @@ import time
 from typing import Literal, Optional, Union
 
 from pymodbus.client import ModbusTcpClient, ModbusSerialClient
+from pymodbus.exceptions import ConnectionException
 
 TransportType = Literal["tcp", "rtu"]
 ParityType = Literal["N", "E", "O"]
+GiveUpReason = Literal["failed first connect", "connection lost"]
+
+GIVE_UP_FAILED_FIRST_CONNECT: GiveUpReason = "failed first connect"
+GIVE_UP_CONNECTION_LOST: GiveUpReason = "connection lost"
+
+
+def is_connection_lost(
+    failure: object, client: Optional[Union[ModbusTcpClient, ModbusSerialClient]]
+) -> bool:
+    """
+    Classify a failed request as a lost connection or a failed poll.
+
+    Args:
+        failure: The error response returned or the exception raised by the request.
+        client: The client the request went through.
+
+    Returns:
+        True when the stack reports the socket closed, reset or failing (a
+        ConnectionException, a socket OSError, or a client no longer connected);
+        False for an exception response, an error response, a timeout or a
+        malformed frame on a connected client.
+    """
+    if isinstance(failure, (ConnectionException, OSError)):
+        return True
+    return client is None or not client.connected
+
 
 class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
     """Manages Modbus TCP and RTU connections with retry logic."""
@@ -29,6 +56,7 @@ class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
         # Common parameters
         timeout_ms: int = 1000,
         slave_id: int = 1,
+        reconnect: bool = True,
     ):
         self.transport = transport
         self.timeout = timeout_ms / 1000.0  # Convert to seconds
@@ -49,6 +77,9 @@ class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
         self.retry_delay_base = 2.0  # initial delay between attempts (seconds)
         self.retry_delay_max = 30.0  # maximum delay between attempts (seconds)
         self.retry_delay_current = self.retry_delay_base
+
+        self.reconnect = reconnect
+        self.give_up_reason: Optional[GiveUpReason] = None
 
         # Connection state - is_connected is the authoritative flag for connection health
         # It is set to False when any error occurs, forcing reconnection on next cycle
@@ -79,6 +110,78 @@ class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
             return f"TCP {self.host}:{self.port}"
         else:
             return f"RTU {self.serial_port}@{self.baud_rate}"
+
+    @property
+    def given_up(self) -> bool:
+        """True once the connection was given up; only a new manager connects again."""
+        return self.give_up_reason is not None
+
+    def give_up(self, reason: GiveUpReason) -> None:
+        """Close the connection and stop using it for the rest of this manager's life."""
+        if self.give_up_reason is None:
+            self.give_up_reason = reason
+        if self.client:
+            try:
+                self.client.close()
+            except OSError as e:
+                print(f"(FAIL) Error closing {self.get_connection_info()}: {e}")
+            self.client = None
+        self.is_connected = False
+
+    def connect(self, stop_event=None) -> bool:
+        """
+        Establish the first connection according to the reconnect policy.
+
+        With reconnect on, retries until connected or stopped. With it off, makes
+        a single attempt and gives up on failure.
+
+        Args:
+            stop_event: Optional threading.Event to allow early termination
+
+        Returns:
+            True if connected, False if interrupted or given up
+        """
+        if self.reconnect:
+            return self.connect_with_retry(stop_event)
+        return self.connect_once()
+
+    def connect_once(self) -> bool:
+        """
+        Make a single connection attempt; on failure the connection is given up.
+
+        Returns:
+            True if connected, False if the attempt failed
+        """
+        if self.given_up:
+            return False
+        conn_info = self.get_connection_info()
+        try:
+            self.client = self._create_client()
+            if self.client.connect():
+                print(f"(PASS) Connected to {conn_info} (single attempt)")
+                self.is_connected = True
+                return True
+            print(f"(FAIL) Connection attempt to {conn_info} failed")
+        except (ConnectionException, OSError) as e:
+            print(f"(FAIL) Connection attempt to {conn_info} failed: {e}")
+        self.give_up(GIVE_UP_FAILED_FIRST_CONNECT)
+        return False
+
+    def handle_request_failure(self, failure: object) -> None:
+        """
+        Apply the reconnect policy to a failed request.
+
+        With reconnect on, the connection is marked disconnected on every failure.
+        With it off, the connection is given up only when the failure is a lost
+        connection; any other failure leaves the connection up.
+
+        Args:
+            failure: The error response returned or the exception raised by the request.
+        """
+        if self.reconnect:
+            self.mark_disconnected()
+        elif is_connection_lost(failure, self.client):
+            self.give_up(GIVE_UP_CONNECTION_LOST)
 
     def connect_with_retry(self, stop_event=None) -> bool:
         """
@@ -159,6 +262,10 @@ class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
         # 2. client.connected (pymodbus internal socket state)
         if self.is_connected and self.client and self.client.connected:
             return True
+
+        if not self.reconnect:
+            self.give_up(GIVE_UP_CONNECTION_LOST)
+            return False
 
         # Connection is broken or marked as unhealthy - force full reconnection
         # First, close any existing client to clean up dead sockets

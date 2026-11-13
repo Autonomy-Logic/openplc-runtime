@@ -82,6 +82,7 @@ class ModbusDeviceConfig:
         # TCP-specific fields
         self.host: str = "127.0.0.1"
         self.port: int = 502
+        self.reconnect: bool = True
 
         # RTU-specific fields
         self.serial_port: str = ""
@@ -113,6 +114,7 @@ class ModbusDeviceConfig:
         # TCP fields
         device.host = config.get("host", "127.0.0.1")
         device.port = config.get("port", 502)
+        device.reconnect = config.get("reconnect", True)
 
         # RTU fields
         device.serial_port = config.get("serial_port", "")
@@ -163,6 +165,11 @@ class ModbusDeviceConfig:
                 raise ValueError(f"Port must be 1-65535 for TCP device '{self.name}', got {self.port}")
             if not isinstance(self.slave_id, int) or not (0 <= self.slave_id <= 255):
                 raise ValueError(f"Slave ID must be 0-255 for TCP device '{self.name}', got {self.slave_id}")
+            if not isinstance(self.reconnect, bool):
+                raise ValueError(
+                    f"reconnect must be true or false for TCP device '{self.name}', "
+                    f"got {self.reconnect!r}"
+                )
         else:
             raise ValueError(f"Invalid transport type '{self.transport}' for device '{self.name}'. Must be 'tcp' or 'rtu'.")
 
@@ -250,6 +257,20 @@ class ModbusMasterConfig(PluginConfigContract):
                 "devices may share a host:port (a Modbus gateway) only if their "
                 "slave IDs differ."
             )
+
+        tcp_endpoint_devices: Dict[str, List[ModbusDeviceConfig]] = {}
+        for device in tcp_devices:
+            tcp_endpoint_devices.setdefault(f"{device.host}:{device.port}", []).append(device)
+        for endpoint, endpoint_devices in tcp_endpoint_devices.items():
+            if len({device.reconnect for device in endpoint_devices}) > 1:
+                settings = ", ".join(
+                    f"{device.name}={device.reconnect}" for device in endpoint_devices
+                )
+                raise ValueError(
+                    f"Devices on TCP endpoint {endpoint} disagree on reconnect ({settings}). "
+                    "Devices sharing a host:port share one connection and must use the same "
+                    "reconnect setting."
+                )
 
         # Check for duplicate slave IDs on the same serial bus for RTU devices
         # Group RTU devices by serial bus (serial_port + baud_rate + parity + stop_bits + data_bits)
