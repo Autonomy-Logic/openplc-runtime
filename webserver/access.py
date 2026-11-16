@@ -56,6 +56,7 @@ POLICY: dict[str, frozenset[str]] = {
     "plc-upload": ENGINEERING,
     "discovery": ENGINEERING,
     "debugger": ENGINEERING,
+    "hmi": EVERY_ROLE,
 }
 
 # Routes reached without a signed-in account, by endpoint name.
@@ -65,6 +66,10 @@ PUBLIC_ENDPOINTS: frozenset[str] = frozenset(
         "restapi_blueprint.restapi_version",
         "restapi_blueprint.restapi_capabilities",
         "restapi_blueprint.login",
+        # The HMI client (sealed static files); its page shows the sign-in form.
+        "hmi_blueprint.hmi_redirect",
+        "hmi_blueprint.hmi_index",
+        "hmi_blueprint.hmi_asset",
     }
 )
 

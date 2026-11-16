@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Final
 
-from webserver import project_snapshot
+from webserver import hmi_upload, project_snapshot
 from webserver.config import VPP_DATA_DIR
 from webserver.image_config import (
     IMAGE_CONF_PATH,
@@ -40,7 +40,8 @@ logger, _ = get_logger("runtime", use_buffer=True)
 
 MAX_FILE_SIZE: Final[int] = 10 * 1024 * 1024  # 10 MB per file
 MAX_TOTAL_SIZE: Final[int] = 50 * 1024 * 1024  # 50 MB total
-DISALLOWED_EXT = (".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr")
+# .js, .wasm and .html are allowed only as HMI client files (webserver/hmi_upload.py).
+DISALLOWED_EXT = (".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr", ".wasm", ".html")
 
 
 class BuildStatus(Enum):
@@ -70,6 +71,34 @@ class BuildProcess:
 build_state = BuildProcess()  # global-ish singleton for status
 
 
+def _is_macos_junk(filename: str) -> bool:
+    return filename.startswith("__MACOSX/") or filename.endswith(".DS_Store")
+
+
+def extracted_names(valid_files: list[zipfile.ZipInfo]) -> list[tuple[zipfile.ZipInfo, str]]:
+    """Each file entry with the path safe_extract gives it: separators normalised, macOS
+    metadata and directories skipped, a single common root folder stripped."""
+    roots = set()
+    for info in valid_files:
+        if _is_macos_junk(info.filename):
+            continue
+        parts = info.filename.split("/", 1)
+        if parts and parts[0]:
+            roots.add(parts[0])
+    strip_root = len(roots) == 1
+
+    out = []
+    for info in valid_files:
+        filename = info.filename.replace("\\", "/")
+        if _is_macos_junk(filename) or filename.endswith("/"):
+            continue
+        if strip_root:
+            parts = filename.split("/", 1)
+            filename = parts[1] if len(parts) == 2 else parts[0]
+        out.append((info, filename))
+    return out
+
+
 def analyze_zip(zip_path) -> tuple[bool, list]:
     """Analyze the ZIP file for safety before extraction."""
     build_state.status = BuildStatus.UNZIPPING
@@ -87,7 +116,6 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
             filename = info.filename
             uncompressed_size = info.file_size
             compressed_size = info.compress_size
-            ext = os.path.splitext(filename)[1].lower()
 
             # Check for path traversal or absolute paths
             if filename.startswith("/") or ".." in filename or ":" in filename:
@@ -105,13 +133,15 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
                 #    filename)
                 safe = False
 
-            # Check disallowed extensions
-            if ext in DISALLOWED_EXT:
-                logger.warning("Disallowed extension: %s", filename)
-                safe = False
-
             total_size += uncompressed_size
             valid_files.append(info)
+
+        # Extensions are judged on the extracted path: .js, .wasm and .html only as HMI client
+        # files, the rest of DISALLOWED_EXT nowhere.
+        for _info, name in extracted_names(valid_files):
+            if not hmi_upload.extension_allowed(name, DISALLOWED_EXT):
+                logger.warning("Disallowed extension: %s", name)
+                safe = False
 
         # Check total size
         if total_size > MAX_TOTAL_SIZE:
@@ -135,38 +165,7 @@ def safe_extract(zip_path, dest_dir, valid_files):
     build_state.status = BuildStatus.UNZIPPING
 
     with zipfile.ZipFile(zip_path, "r") as zf:
-        # Detect roots (ignoring macOS junk)
-        roots = set()
-        for info in valid_files:
-            if info.filename.startswith("__MACOSX/") or info.filename.endswith(".DS_Store"):
-                continue
-            parts = info.filename.split("/", 1)
-            if parts and parts[0]:
-                roots.add(parts[0])
-        strip_root = len(roots) == 1
-
-        for info in valid_files:
-            filename = info.filename
-
-            # Normalize path separators for cross-platform compatibility (Windows \ to Unix /)
-            filename = filename.replace("\\", "/")
-
-            # Skip macOS junk and directories
-            if (
-                filename.startswith("__MACOSX/")
-                or filename.endswith(".DS_Store")
-                or filename.endswith("/")
-            ):
-                continue
-
-            # Optionally strip single root folder
-            if strip_root:
-                parts = filename.split("/", 1)
-                if len(parts) == 2:
-                    filename = parts[1]
-                else:
-                    filename = parts[0]
-
+        for info, filename in extracted_names(valid_files):
             out_path = os.path.join(dest_dir, filename)
             out_path = os.path.abspath(out_path)
 
