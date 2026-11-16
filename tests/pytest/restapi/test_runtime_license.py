@@ -56,6 +56,7 @@ def env(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, pa
         paths[key].parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(hardware_id, "STORED_PATH", paths["stored"])
     monkeypatch.setattr(hardware_id, "INJECTED_PATH", paths["injected"])
+    monkeypatch.setattr(hardware_id, "_sees_host_hardware", lambda: True)
     monkeypatch.setattr(runtime_license, "SEAT_FILE_PATH", paths["seat"])
     monkeypatch.setattr(runtime_license, "DEVICE_LICENSES_DIR", paths["device_dir"])
     monkeypatch.setattr(runtime_license, "VPLC_LICENSES_DIR", paths["vplc_dir"])
@@ -177,6 +178,14 @@ def test_store_refuses(env, setup, raw, error) -> None:
     assert not result.ok
     assert error in result.error
     assert not result.internal
+    assert not env["device_dir"].exists()
+
+
+def test_store_refuses_where_the_host_hardware_is_not_visible(env, monkeypatch) -> None:
+    on_device(env)
+    monkeypatch.setattr(hardware_id, "_sees_host_hardware", lambda: False)
+    result = runtime_license.store(as_bytes(make_license()))
+    assert not result.ok and "no hardware ID" in result.error
     assert not env["device_dir"].exists()
 
 
