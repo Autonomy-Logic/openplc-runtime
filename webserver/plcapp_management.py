@@ -698,6 +698,16 @@ def apply_image_conf(generated_dir: str = "core/generated") -> None:
     )
 
 
+def _discard_new_program() -> None:
+    """Removes build/new_libplc.so left by a failed build, so no later step swaps it in."""
+    try:
+        os.remove(os.path.join("build", "new_libplc.so"))
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        build_state.log(f"[WARNING] Could not remove build/new_libplc.so: {e}\n")
+
+
 def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", clean: bool = False):
     """Run compile script synchronously (wait for completion) and update status/logs.
 
@@ -796,6 +806,13 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
 
         # Block until compile finishes.
         compile_ok = wait_step(compile_proc, "Build")
+        if not compile_ok:
+            # The running program and the installed HMI stay: no stop, no swap.
+            _discard_new_program()
+            build_state.status = BuildStatus.FAILED
+            build_state.exit_code = 1
+            build_state.log("[WARNING] PLC program has not been updated because the build failed\n")
+            return
 
         # stop_plc() returns on ACK, but the .so teardown continues async.
         # Wait for the runtime to leave TRANSITIONING before cleanup touches

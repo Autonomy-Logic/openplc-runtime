@@ -80,6 +80,9 @@ extern "C"
         uint32_t code;
         uint8_t name_len;
         char name[HMI_WIRE_NAME_MAX + 1];
+        /** OPEN: whether the name is well-formed UTF-8 without control characters; when not, name
+         * is empty. */
+        bool name_valid;
     } hmi_wire_msg_t;
 
     typedef enum

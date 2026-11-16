@@ -3,7 +3,8 @@
 # Copyright (c) 2026 Autonomy®
 
 # Builds build/hmi/ (plugin, client copy, hmi.seal) from core/generated/hmi/, or
-# removes it when there is none (docs/HMI.md). Run from the runtime root.
+# removes it when there is none (docs/HMI.md). Run from the runtime root. The
+# build goes to build/hmi.new and replaces build/hmi only when it succeeds.
 
 # HMI_CC/HMI_CXX: compilers (gcc/g++); HMI_EXTRA_FLAGS: added to every compile;
 # HMI_SRC_ROOT: runtime source tree (default .).
@@ -12,7 +13,8 @@ set -euo pipefail
 
 GENERATED_DIR="${GENERATED_DIR:-core/generated}"
 HMI_GEN="$GENERATED_DIR/hmi"
-HMI_OUT="build/hmi"
+HMI_DEST="build/hmi"
+HMI_OUT="build/hmi.new"
 SRC_ROOT="${HMI_SRC_ROOT:-.}"
 HOST_DIR="$SRC_ROOT/core/src/drivers/plugins/native/hmi"
 DRIVERS_INC="$SRC_ROOT/core/src/drivers"
@@ -33,22 +35,21 @@ sha256_hex() {
     fi
 }
 
+rm -rf "$HMI_OUT"
 if [ ! -d "$HMI_GEN" ]; then
-    if [ -d "$HMI_OUT" ]; then
-        echo "[INFO] No HMI in this program, removing $HMI_OUT"
-        rm -rf "$HMI_OUT"
+    if [ -d "$HMI_DEST" ]; then
+        echo "[INFO] No HMI in this program, removing $HMI_DEST"
+        rm -rf "$HMI_DEST"
     fi
     exit 0
 fi
 
 if [ ! -f "$HMI_GEN/manifest.json" ] || [ ! -d "$HMI_GEN/src" ]; then
     echo "[ERROR] $HMI_GEN has no manifest.json or no src/ folder." >&2
-    rm -rf "$HMI_OUT"
     exit 4
 fi
 
-rm -rf "$HMI_OUT"
-# A failed build leaves no partial plugin, client or seal behind.
+# A failed build leaves no partial plugin, client or seal behind, and the installed HMI as it was.
 trap 'rc=$?; [ "$rc" -ne 0 ] && rm -rf "$HMI_OUT"; exit "$rc"' EXIT
 OBJ_DIR="$HMI_OUT/obj"
 mkdir -p "$OBJ_DIR" "$HMI_OUT/client"
@@ -134,4 +135,8 @@ for f in "$HMI_OUT/client"/*; do
     seal_file "client/$(basename "$f")"
 done
 mv "$SEAL_TMP" "$HMI_OUT/hmi.seal"
+rm -rf "$HMI_DEST.old"
+[ -d "$HMI_DEST" ] && mv "$HMI_DEST" "$HMI_DEST.old"
+mv "$HMI_OUT" "$HMI_DEST"
+rm -rf "$HMI_DEST.old"
 echo "[INFO] HMI plugin built and sealed ($SRC_COUNT sources)"

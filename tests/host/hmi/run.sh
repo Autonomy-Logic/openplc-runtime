@@ -94,6 +94,18 @@ for pair in "${PAIRS[@]}"; do
         else
             fail "seal hashes"
         fi
+        sealed_before=$(cat "$seal")
+        printf 'this is not C++\n' > "$build_root/core/generated/hmi/src/broken.cpp"
+        if (cd "$build_root" && HMI_SRC_ROOT="$ROOT" HMI_CC="$cc" HMI_CXX="$cxx" \
+            bash "$ROOT/scripts/compile-hmi.sh" > /dev/null 2>&1); then
+            fail "a broken HMI source builds"
+        elif [ "$(cat "$seal" 2>/dev/null)" = "$sealed_before" ] && [ -f "$so" ] &&
+            [ ! -e "$build_root/build/hmi.new" ]; then
+            echo "  ok    a failed build leaves the installed HMI as it was"
+        else
+            fail "a failed build changed the installed HMI"
+        fi
+        rm -f "$build_root/core/generated/hmi/src/broken.cpp"
         rm -rf "$build_root/core/generated/hmi"
         (cd "$build_root" && HMI_SRC_ROOT="$ROOT" bash "$ROOT/scripts/compile-hmi.sh" > /dev/null)
         if [ -e "$build_root/build/hmi" ]; then
@@ -123,11 +135,12 @@ for pair in "${PAIRS[@]}"; do
         vflags="${variant#*:}"
         objdir="$OUT/obj-$cc-$vname"
         mkdir -p "$objdir"
-        sock="$OUT/hmi-$cc-$vname.socket"
+        sockdir="$OUT/hmi-$cc-$vname"
         # shellcheck disable=SC2206
         flags=(-g -O1 -Wall -Wextra -Werror -ffp-contract=off -pthread $vflags
             -I "$ROOT/core/src/drivers/plugins/native/hmi" -I "$ROOT/core/src/drivers"
-            -I "$CORE_DIR" -I "$HERE/fake_unit" "-DHMI_SOCKET_PATH=\"$sock\"")
+            -I "$CORE_DIR" -I "$HERE/fake_unit" "-DHMI_SOCKET_DIR=\"$sockdir\""
+            "-DHMI_SOCKET_PATH=\"$sockdir/hmi.socket\"" -DHMI_STOP_TIMEOUT_MS=500u)
         objs=()
         ok=1
         for src in "$ROOT"/core/src/drivers/plugins/native/hmi/*.c "$CORE_DIR"/*.c "$HERE"/fake_unit/*.c; do

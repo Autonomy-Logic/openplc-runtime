@@ -21,7 +21,7 @@ A Runtime v4 upload may carry an `hmi/` folder next to the program sources:
 | --- | --- |
 | `hmi/manifest.json` | `{"format": 1}`; anything else is refused |
 | `hmi/src/` | The HMI core (`*.c`, `*.h`) and the generated unit (`*.cpp`, `*.hpp`, `*.h`, including `hmi_unit.h`) |
-| `hmi/client/` | The browser client. Only `.html`, `.js`, `.css`, `.wasm`, `.txt` and `.ttf` files, names matching `^[A-Za-z0-9._-]{1,64}$`, no subfolders |
+| `hmi/client/` | The browser client. Only `.html`, `.js`, `.css`, `.wasm`, `.txt` and `.ttf` files (extensions in lower case), names matching `^[A-Za-z0-9._-]{1,64}$`, no subfolders |
 
 - `.js`, `.wasm` and `.html` stay refused anywhere else in an upload.
 - An upload with `hmi/` replaces the previous HMI. An upload without `hmi/` keeps it; its MD5 then no
@@ -35,10 +35,14 @@ A Runtime v4 upload may carry an `hmi/` folder next to the program sources:
 - sources: the runtime's host (`core/src/drivers/plugins/native/hmi/*.c`) plus `hmi/src/**/*.c` and
   `hmi/src/**/*.cpp`, against the STruC++ runtime headers the program build uses;
 - flags: `-Wall -Wextra`, position independent, C11 / C++17;
-- output: `build/hmi/libhmi_plugin.so`; `hmi/client/*` is copied to `build/hmi/client/`;
+- output: `build/hmi/libhmi_plugin.so`; `hmi/client/*` is copied to `build/hmi/client/`. The build
+  goes to `build/hmi.new` and replaces `build/hmi` only when it succeeds;
+- a failed build (program or HMI) changes nothing on the device: the PLC is not stopped, the running
+  program's `.so` is not replaced and the installed HMI stays;
 - seal: `build/hmi/hmi.seal`, one line per file, `<sha256 hex>  <path relative to build/hmi>`, covering
-  the plugin and every client file. `plc_main` checks the plugin's line before `dlopen`; the web server
-  checks a client file's line before serving it. A missing or mismatching seal refuses the file.
+  the plugin and every client file. `plc_main` checks the plugin's line before `dlopen` and loads only
+  `libhmi_plugin.so` from `build/hmi`; the web server checks a client file's line before serving it. A
+  missing or mismatching seal refuses the file.
 
 The plugin is registered by `plc_main` itself (not through `plugins.conf` or `vpp_plugins.conf`)
 whenever `build/hmi/libhmi_plugin.so` exists, under the name `hmi`.
@@ -74,22 +78,29 @@ buffer format and the STruC++ debug format of `debug_read` / `debug_write` (soft
 
 ## Host
 
-- Socket: `/run/runtime/hmi.socket`, created owner-only (`umask 0177`) in `start_loop`, removed in
-  `stop_loop`. One connection at a time, from the web server.
+- Socket: `/run/runtime/hmi/hmi.socket`, in a directory `start_loop` creates (or takes over when it is
+  a real directory of the same user, not a symlink) with mode 0700; the socket is removed in
+  `stop_loop`. One connection at a time, from the web server, which connects only when the directory
+  is owner-only and both belong to its own user.
 - Viewers: one `hmi_session_t` and one unit instance (`hmi_unit_create`) per viewer, with
-  `hmi_unit_set_role` set from OPEN before the first frame; the unit enforces the screen grid. An
-  allocation failure answers BUSY; there is no other limit.
+  `hmi_unit_set_role` set from OPEN before the first frame; the unit enforces the screen grid. BUSY
+  answers an allocation failure, an account name that is not printable UTF-8 (that viewer only; the
+  connection stays) and an input queue overflow; there is no viewer limit.
 - Frames: a frame thread at the unit's `hmi_frame_ms` renders each viewer and keeps only its latest
   display list; a writer sends pending frames without blocking, so a slow web server or viewer never
   delays another viewer or the PLC. A frame is sent only when its hash changed.
-- Input: applied in arrival order per viewer, from a bounded queue; pointer moves are coalesced when the
-  queue is full, a press or release is never dropped.
+- Input: applied in arrival order per viewer, from a queue of 128 events; pointer moves are coalesced
+  when the queue is full. Each frame applies at most one press or release; more presses, releases and
+  keys than the queue holds close the viewer with BUSY.
 - Writes: each write is logged with the viewer's account, tag path and new value.
 - Faults: `hmi_unit_frame` returns false when the viewer's screen code raised an IEC fault (null
   reference, array bounds); the unit catches it, so a fault never reaches `plc_main`. The host logs
   it, closes that viewer and sends FAULT; the PLC and other viewers are unaffected.
 - Logs: the number of viewers on every open and close.
 - Threads run at the default priority (`SCHED_OTHER`, nice 0); PLC tasks keep `SCHED_FIFO`.
+- Stop: `stop_loop` waits up to 5 seconds for the frame in progress. Screen code that never returns
+  would keep running code `plc_main` is about to unload, so past that `plc_main` logs it and exits with
+  status 43; the web server restarts it as after any crash.
 
 ## Wire protocol (web server <-> host)
 
@@ -100,7 +111,7 @@ Web server to host:
 
 | Type | Name | Payload |
 | --- | --- | --- |
-| 0x01 | OPEN | `u32 viewer, u8 role (0 admin, 1 engineer, 2 operator, 3 viewer), u16 width, u16 height, u16 density x100, u8 name length, name (UTF-8, at most 64)` |
+| 0x01 | OPEN | `u32 viewer, u8 role (0 admin, 1 engineer, 2 operator, 3 viewer), u16 width, u16 height, u16 density x100, u8 name length, name (UTF-8, at most 64 bytes; the web server replaces control characters with '?')` |
 | 0x02 | CLOSE | `u32 viewer` |
 | 0x03 | VIEWPORT | `u32 viewer, u16 width, u16 height, u16 density x100` |
 | 0x04 | POINTER | `u32 viewer, u8 kind (0 down, 1 move, 2 up), i32 x x100, i32 y x100` (CSS pixels) |
@@ -144,7 +155,7 @@ the editor's preview; `density` (the device pixel ratio) only sets the client's 
   1 second without an ack the next frame is sent anyway). `hmi_status` carries `state`: `live` (sent on
   OPENED), `stopped` (the HMI is installed but the PLC is stopped: viewers stay connected and are
   reopened with their last viewport on start), `out_of_date` (to every viewer, and to viewers that
-  connect later), `busy` (this viewer could not be allocated; its next viewport retries), `fault` (its
+  connect later), `busy` (the host refused this viewer, see Host; its next viewport retries), `fault` (its
   screen code raised an IEC fault and the viewer was closed; its next viewport reopens it) or
   `unavailable` (no HMI installed).
 

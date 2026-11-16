@@ -44,8 +44,8 @@ NAMESPACE = "/api/hmi"
 POLICY_KEY = "hmi"
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-# The host's socket; OPENPLC_HMI_SOCKET overrides it for tests.
-HMI_SOCKET_PATH = os.environ.get("OPENPLC_HMI_SOCKET", "/run/runtime/hmi.socket")
+# The host's socket, in a folder only the runtime's user enters; OPENPLC_HMI_SOCKET overrides it.
+HMI_SOCKET_PATH = os.environ.get("OPENPLC_HMI_SOCKET", "/run/runtime/hmi/hmi.socket")
 # build/hmi: plugin, seal and client; OPENPLC_HMI_DIR overrides it for tests.
 HMI_DIR = Path(os.environ.get("OPENPLC_HMI_DIR", str(_REPO_ROOT / "build" / "hmi")))
 PLUGIN_NAME = "libhmi_plugin.so"
@@ -309,9 +309,18 @@ def encode(msg_type: int, payload: bytes) -> bytes:
     return struct.pack("<IB", len(payload) + 1, msg_type) + payload
 
 
+def wire_name(name: str) -> str:
+    """``name`` as the host accepts it: C0, DEL, C1 and lone surrogate code points become '?'."""
+    return "".join(
+        "?" if ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F or 0xD800 <= ord(c) <= 0xDFFF else c
+        for c in name
+    )
+
+
 def encode_open(viewer: int, role: int, viewport: Viewport, name: str) -> bytes:
-    """An OPEN message; ``name`` is cut to at most 64 bytes of UTF-8 on a character boundary."""
-    raw = name.encode("utf-8")[:MAX_NAME_BYTES].decode("utf-8", "ignore").encode("utf-8")
+    """An OPEN message; ``name`` through ``wire_name``, cut to 64 bytes of UTF-8 on a character
+    boundary."""
+    raw = wire_name(name).encode("utf-8")[:MAX_NAME_BYTES].decode("utf-8", "ignore").encode("utf-8")
     payload = struct.pack("<IB", viewer, role) + viewport.pack() + bytes([len(raw)]) + raw
     return encode(MSG_OPEN, payload)
 
@@ -368,7 +377,10 @@ class Viewer:
     token: str
     lock: threading.Lock = field(default_factory=threading.Lock)
     viewport: Viewport | None = None
-    open_sent: bool = False
+    # Host connection epoch the viewer's OPEN went out on; None when not open on the host.
+    open_epoch: int | None = None
+    # Set under ``lock`` once the socket left; nothing is sent to the host for it afterwards.
+    closed: bool = False
     opened: bool = False
     status: str | None = None
     next_n: int = 0
@@ -445,6 +457,8 @@ class HmiProxy:
         self._by_id: dict[int, Viewer] = {}
         self._next_id = 1
         self._host: socket.socket | None = None
+        # Counts host connections; changed with ``_host`` under both ``_send_lock`` and ``_lock``.
+        self._epoch = 0
         self._host_state: str | None = None
         self._running = False
         self._stop = threading.Event()
@@ -518,9 +532,11 @@ class HmiProxy:
             self._by_id.pop(viewer.viewer_id, None)
             count = len(self._viewers)
         with viewer.lock:
-            if viewer.open_sent:
+            viewer.closed = True
+            if self._open_on_host(viewer):
                 self._send_host(encode(MSG_CLOSE, struct.pack("<I", viewer.viewer_id)))
-            viewer.open_sent = viewer.opened = False
+            viewer.open_epoch = None
+            viewer.opened = False
         logger.info("HMI viewer left: %s, %d viewers", viewer.username, count)
 
     def follow_rotation(self, old_jti: str, new_token: str) -> None:
@@ -586,24 +602,30 @@ class HmiProxy:
             for ready in viewer.order(n, event):
                 self._forward(viewer, ready)
 
+    def _open_on_host(self, viewer: Viewer) -> bool:
+        """Whether the viewer's OPEN went out on the current host connection."""
+        return viewer.open_epoch is not None and viewer.open_epoch == self._epoch
+
     def _forward(self, viewer: Viewer, event: ClientEvent) -> None:
         """Sends one ordered event to the host; call with ``viewer.lock`` held."""
+        if viewer.closed:
+            return
         if isinstance(event, Viewport):
             viewer.viewport = event
-            if not viewer.open_sent:
+            if not self._open_on_host(viewer):
                 self._open(viewer)
                 return
-        if viewer.open_sent:
+        if self._open_on_host(viewer):
             self._send_host(encode_event(viewer.viewer_id, event))
 
     def _open(self, viewer: Viewer) -> None:
         """Sends OPEN with the viewer's last viewport; call with ``viewer.lock`` held."""
-        if viewer.viewport is None:
+        if viewer.closed or viewer.viewport is None:
             return
         message = encode_open(
             viewer.viewer_id, ROLE_CODES[viewer.role], viewer.viewport, viewer.username
         )
-        viewer.open_sent = self._send_host(message)
+        viewer.open_epoch = self._send_host_on(message)
 
     # -- statuses and frames --
 
@@ -647,17 +669,21 @@ class HmiProxy:
 
     def _send_host(self, message: bytes) -> bool:
         """Sends one message to the host; False when it is not connected or the send failed."""
+        return self._send_host_on(message) is not None
+
+    def _send_host_on(self, message: bytes) -> int | None:
+        """Sends one message to the host; the epoch of the connection it went out on, or None."""
         with self._send_lock:
-            host = self._host
+            host, epoch = self._host, self._epoch
             if host is None:
-                return False
+                return None
             try:
                 host.sendall(message)
-                return True
+                return epoch
             except OSError as e:
                 logger.warning("HMI host send failed: %s", e)
         self._close_host()
-        return False
+        return None
 
     def _close_host(self) -> None:
         with self._lock:
@@ -672,12 +698,18 @@ class HmiProxy:
 
     def _connect_host(self) -> socket.socket | None:
         try:
-            info = os.stat(HMI_SOCKET_PATH)
+            info = os.lstat(HMI_SOCKET_PATH)
+            folder = os.lstat(os.path.dirname(HMI_SOCKET_PATH))
         except OSError:
             return None
         if not stat.S_ISSOCK(info.st_mode):
             return None
-        if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        if (
+            info.st_uid != os.geteuid()
+            or not stat.S_ISDIR(folder.st_mode)
+            or folder.st_uid != os.geteuid()
+            or folder.st_mode & 0o077
+        ):
             logger.warning("HMI host socket %s is not owner-only, not used", HMI_SOCKET_PATH)
             return None
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -709,14 +741,16 @@ class HmiProxy:
             self._stop.wait(RETRY_INTERVAL_S)
 
     def _host_up(self, sock: socket.socket) -> None:
-        with self._lock:
+        with self._send_lock, self._lock:
             self._host = sock
+            self._epoch += 1
             self._host_state = None
             viewers = list(self._viewers.values())
         for viewer in viewers:
             with viewer.lock:
-                viewer.open_sent = viewer.opened = False
-                self._open(viewer)
+                if not self._open_on_host(viewer):
+                    viewer.opened = False
+                    self._open(viewer)
 
     def _host_gone(self) -> None:
         state = self._offline_state()
@@ -727,7 +761,8 @@ class HmiProxy:
             viewers = list(self._viewers.values())
         for viewer in viewers:
             with viewer.lock:
-                viewer.open_sent = viewer.opened = False
+                viewer.open_epoch = None
+                viewer.opened = False
             with self._frames:
                 viewer.frame = None
             self._set_status(viewer, state)
@@ -764,7 +799,7 @@ class HmiProxy:
             with viewer.lock:
                 viewer.opened = msg_type == MSG_OPENED
                 if msg_type != MSG_OPENED:
-                    viewer.open_sent = False
+                    viewer.open_epoch = None
             if msg_type == MSG_OPENED:
                 self._set_status(viewer, STATE_LIVE)
             elif msg_type == MSG_BUSY:

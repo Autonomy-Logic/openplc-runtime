@@ -6,9 +6,11 @@
 // and HMI_FAKE_FAULT_KEY makes the frame report an IEC fault.
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <new>
+#include <thread>
 
 #include "hmi_core.h"
 #include "hmi_unit.h"
@@ -31,6 +33,8 @@
 #endif
 /** Key code that makes hmi_unit_frame report an IEC fault for that viewer. */
 #define HMI_FAKE_FAULT_KEY 0xE000u
+/** Key code that makes hmi_unit_frame never return. */
+#define HMI_FAKE_SPIN_KEY 0xE001u
 
 namespace
 {
@@ -177,6 +181,8 @@ bool hmi_unit_frame(void *unit)
     const uint32_t key = hmi_key_next();
     if (key == HMI_FAKE_FAULT_KEY)
         return false;
+    while (key == HMI_FAKE_SPIN_KEY)
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     if (key != 0)
     {
         const int16_t code = static_cast<int16_t>(key);

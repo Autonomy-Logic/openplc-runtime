@@ -49,9 +49,20 @@
 #include "hmi_wire.h"
 #include "plugin_types.h"
 
-#ifndef HMI_SOCKET_PATH
-#define HMI_SOCKET_PATH "/run/runtime/hmi.socket"
+/* The socket lives in a directory only this process's user can enter, so its own mode does not
+ * matter. */
+#ifndef HMI_SOCKET_DIR
+#define HMI_SOCKET_DIR "/run/runtime/hmi"
 #endif
+#ifndef HMI_SOCKET_PATH
+#define HMI_SOCKET_PATH HMI_SOCKET_DIR "/hmi.socket"
+#endif
+/** How long stop_loop waits for the frame in progress to return. */
+#ifndef HMI_STOP_TIMEOUT_MS
+#define HMI_STOP_TIMEOUT_MS 5000u
+#endif
+/** plc_main exit status when screen code never returns during a stop. */
+#define HMI_EXIT_SCREEN_STUCK 43
 
 #define HMI_EXPORT __attribute__((visibility("default")))
 
@@ -125,6 +136,7 @@ static hmi_buf_t g_control;
 static bool g_frames_pending;
 static bool g_structural; /**< a viewer is pending or closing */
 static bool g_stop;
+static bool g_frame_done; /**< the frame thread has left its loop and freed its viewers */
 
 static bool g_running;
 static pthread_t g_io_thread;
@@ -706,6 +718,10 @@ static void *frame_main(void *arg)
         all         = v->next;
         viewer_free(v);
     }
+    pthread_mutex_lock(&g_lock);
+    g_frame_done = true;
+    pthread_cond_broadcast(&g_cond);
+    pthread_mutex_unlock(&g_lock);
     return NULL;
 }
 
@@ -793,6 +809,13 @@ static bool handle_message(const hmi_wire_msg_t *m)
         if (viewer_find(m->viewer))
         {
             ok = false;
+            break;
+        }
+        if (!m->name_valid)
+        {
+            hmi_log(LOG_WARN, "viewer %u refused: its account name is not printable UTF-8",
+                    (unsigned)m->viewer);
+            control_viewer(HMI_MSG_BUSY, m->viewer);
             break;
         }
         viewer_t *nv = calloc(1, sizeof *nv);
@@ -1138,6 +1161,30 @@ HMI_EXPORT int init(void *args)
     return 0;
 }
 
+/** Creates HMI_SOCKET_DIR, or takes the existing one when it is a real directory of this user; mode
+ * 0700. */
+static int prepare_socket_dir(void)
+{
+    if (mkdir(HMI_SOCKET_DIR, S_IRWXU) != 0 && errno != EEXIST)
+    {
+        hmi_log(LOG_ERROR, "cannot create %s: %s", HMI_SOCKET_DIR, strerror(errno));
+        return -1;
+    }
+    const int dfd = open(HMI_SOCKET_DIR, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dfd < 0)
+    {
+        hmi_log(LOG_ERROR, "cannot open %s: %s", HMI_SOCKET_DIR, strerror(errno));
+        return -1;
+    }
+    struct stat st;
+    const bool ok = fstat(dfd, &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == geteuid() &&
+                    fchmod(dfd, S_IRWXU) == 0;
+    close(dfd);
+    if (!ok)
+        hmi_log(LOG_ERROR, "%s is not a private directory of this user", HMI_SOCKET_DIR);
+    return ok ? 0 : -1;
+}
+
 static int create_listener(void)
 {
     struct sockaddr_un addr;
@@ -1147,6 +1194,8 @@ static int create_listener(void)
         return -1;
     snprintf(addr.sun_path, sizeof addr.sun_path, "%s", HMI_SOCKET_PATH);
 
+    if (prepare_socket_dir() != 0)
+        return -1;
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0)
         return -1;
@@ -1158,14 +1207,9 @@ static int create_listener(void)
     if (unlink(HMI_SOCKET_PATH) != 0 && errno != ENOENT)
         hmi_log(LOG_WARN, "could not remove the old %s: %s", HMI_SOCKET_PATH, strerror(errno));
 
-    const mode_t old = umask(0177);
-    const int brc    = bind(fd, (const struct sockaddr *)&addr, sizeof addr);
-    const int berr   = errno;
-    umask(old);
-    if (brc != 0 || chmod(HMI_SOCKET_PATH, S_IRUSR | S_IWUSR) != 0 || listen(fd, 4) != 0)
+    if (bind(fd, (const struct sockaddr *)&addr, sizeof addr) != 0 || listen(fd, 4) != 0)
     {
-        hmi_log(LOG_ERROR, "cannot listen on %s: %s", HMI_SOCKET_PATH,
-                strerror(brc != 0 ? berr : errno));
+        hmi_log(LOG_ERROR, "cannot listen on %s: %s", HMI_SOCKET_PATH, strerror(errno));
         close(fd);
         (void)unlink(HMI_SOCKET_PATH);
         return -1;
@@ -1234,6 +1278,7 @@ HMI_EXPORT int start_loop(void)
 
     pthread_mutex_lock(&g_lock);
     g_stop           = false;
+    g_frame_done     = false;
     g_structural     = false;
     g_frames_pending = false;
     g_open_count     = 0;
@@ -1267,6 +1312,28 @@ HMI_EXPORT int start_loop(void)
     return 0;
 }
 
+/**
+ * Joins the frame thread once its current frame returns. Screen code that never returns would keep
+ * running code plc_main is about to unload, so past HMI_STOP_TIMEOUT_MS plc_main exits and the
+ * runtime restarts it.
+ */
+static void join_frame_thread(void)
+{
+    const uint64_t deadline = now_ns() + (uint64_t)HMI_STOP_TIMEOUT_MS * 1000000u;
+    pthread_mutex_lock(&g_lock);
+    while (!g_frame_done && now_ns() < deadline)
+        cond_wait_until(deadline);
+    const bool done = g_frame_done;
+    pthread_mutex_unlock(&g_lock);
+    if (!done)
+    {
+        hmi_log(LOG_ERROR, "screen code has not returned for %u ms; ending plc_main",
+                (unsigned)HMI_STOP_TIMEOUT_MS);
+        _exit(HMI_EXIT_SCREEN_STUCK);
+    }
+    pthread_join(g_frame_thread, NULL);
+}
+
 HMI_EXPORT void stop_loop(void)
 {
     if (!g_running)
@@ -1277,7 +1344,7 @@ HMI_EXPORT void stop_loop(void)
     pthread_mutex_unlock(&g_lock);
     wake_io();
     pthread_join(g_io_thread, NULL);
-    pthread_join(g_frame_thread, NULL);
+    join_frame_thread();
     g_running = false;
 
     hmi_set_tag_access(NULL);

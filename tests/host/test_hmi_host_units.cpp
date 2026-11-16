@@ -81,7 +81,8 @@ static void test_wire_decode()
     CHECK(used == open.size(), "OPEN consumes the whole message");
     CHECK(m.viewer == 42 && m.role == 2 && m.width == 1280 && m.height == 800 && m.density == 150,
           "OPEN fields");
-    CHECK(m.name_len == 5 && std::strcmp(m.name, "Jos\xC3\xA9") == 0, "OPEN name, UTF-8");
+    CHECK(m.name_valid && m.name_len == 5 && std::strcmp(m.name, "Jos\xC3\xA9") == 0,
+          "OPEN name, UTF-8");
 
     for (size_t cut = 0; cut < open.size(); cut++)
     {
@@ -171,10 +172,6 @@ static void test_wire_malformed()
         {"OPEN density 801", message(0x01, open_payload(1, 0, 10, 10, 801, "a"))},
         {"OPEN name length disagrees", message(0x01, open_len)},
         {"OPEN name of 65 bytes", message(0x01, long_name)},
-        {"OPEN name with a control character", message(0x01, open_payload(1, 0, 10, 10, 100, "a\nb"))},
-        {"OPEN name with invalid UTF-8", message(0x01, open_payload(1, 0, 10, 10, 100, "a\xC3"))},
-        {"OPEN name with an overlong form", message(0x01, open_payload(1, 0, 10, 10, 100, "\xC0\xAF"))},
-        {"OPEN name with a surrogate", message(0x01, open_payload(1, 0, 10, 10, 100, "\xED\xA0\x80"))},
         {"VIEWPORT width 0", message(0x03, vp_small)},
         {"VIEWPORT density 24", message(0x03, vp_density)},
         {"VIEWPORT width 8193", message(0x03, vp_big)},
@@ -182,6 +179,23 @@ static void test_wire_malformed()
     };
     for (const Case &c : cases)
         CHECK(decode(c.bytes, &m, &used) == HMI_WIRE_MALFORMED, c.what);
+
+    /* A bad name refuses that viewer only: the message decodes, flagged, with no name. */
+    const Case refused[] = {
+        {"OPEN name with a control character",
+         message(0x01, open_payload(1, 0, 10, 10, 100, "a\nb"))},
+        {"OPEN name with a C1 control",
+         message(0x01, open_payload(1, 0, 10, 10, 100, "a\xC2\x85"))},
+        {"OPEN name with invalid UTF-8", message(0x01, open_payload(1, 0, 10, 10, 100, "a\xC3"))},
+        {"OPEN name with an overlong form",
+         message(0x01, open_payload(1, 0, 10, 10, 100, "\xC0\xAF"))},
+        {"OPEN name with a surrogate",
+         message(0x01, open_payload(1, 0, 10, 10, 100, "\xED\xA0\x80"))},
+    };
+    for (const Case &c : refused)
+        CHECK(decode(c.bytes, &m, &used) == HMI_WIRE_DECODED && !m.name_valid && m.name_len == 0 &&
+                  m.name[0] == '\0',
+              c.what);
 }
 
 static void test_wire_encode()

@@ -18,6 +18,7 @@
 #define VPP_SEAL_FILE VPP_BUILD_SUBDIR "/vpp_plugin.seal"
 #define HMI_BUILD_SUBDIR "build/hmi"
 #define HMI_SEAL_FILE HMI_BUILD_SUBDIR "/hmi.seal"
+#define HMI_PLUGIN_NAME "libhmi_plugin.so"
 #define SHA256_HEX_LEN 64
 #define SHA256_BLOCK_LEN 64
 
@@ -367,6 +368,13 @@ int hmi_plugin_seal_verify(const char *path)
     {
         log_error("[PLUGIN] HMI plugin '%s' is not inside %s -- refusing to load it", path ? path : "",
                   HMI_BUILD_SUBDIR);
+        return -1;
+    }
+    if (strcmp(rel, HMI_PLUGIN_NAME) != 0)
+    {
+        log_error("[PLUGIN] '%s' is not the HMI plugin " HMI_BUILD_SUBDIR "/" HMI_PLUGIN_NAME
+                  " -- refusing to load it",
+                  path);
         return -1;
     }
     return plugin_seal_verify_entry(HMI_SEAL_FILE, path, rel, "HMI plugin");

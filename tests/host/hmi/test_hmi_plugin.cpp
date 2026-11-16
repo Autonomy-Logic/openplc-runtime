@@ -11,6 +11,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -367,6 +368,7 @@ static int32_t dl_width(const Msg &frame)
 
 static const char *MD5 = "0123456789abcdef0123456789abcdef";
 static const uint32_t FAULT_KEY = 0xE000u; // HMI_FAKE_FAULT_KEY
+static const uint32_t SPIN_KEY  = 0xE001u; // HMI_FAKE_SPIN_KEY
 
 static bool press_at(int32_t x, int32_t y)
 {
@@ -391,7 +393,9 @@ static void test_live_session()
     CHECK(init(&args) == 0, "init");
     CHECK(start_loop() == 0, "start_loop");
     struct stat st;
-    CHECK(stat(HMI_SOCKET_PATH, &st) == 0 && (st.st_mode & 0777) == 0600, "socket is owner-only");
+    CHECK(stat(HMI_SOCKET_DIR, &st) == 0 && S_ISDIR(st.st_mode) && (st.st_mode & 0777) == 0700,
+          "the socket's directory is owner-only");
+    CHECK(stat(HMI_SOCKET_PATH, &st) == 0 && S_ISSOCK(st.st_mode), "socket created in it");
 
     int fd = connect_host();
     CHECK(fd >= 0, "connects");
@@ -555,7 +559,11 @@ static void test_live_session()
     fd = connect_host();
     read_msg(fd);
     send_msg(fd, 0x01, open_payload(12, 0, 320, 240, 100, std::string("bad\x01name")));
-    CHECK(closed_by_host(fd), "a control character in the name closes the connection");
+    CHECK(read_until(fd, 0x84, 12).type == 0x84,
+          "a control character in the name refuses that viewer");
+    send_msg(fd, 0x01, open_payload(14, 0, 320, 240, 100, "gina"));
+    CHECK(read_until(fd, 0x83, 14).type == 0x83,
+          "... and the connection still opens other viewers");
     close(fd);
 
     /* A web server that stops reading never stalls the frame thread. */
@@ -606,11 +614,46 @@ static void test_out_of_date()
     (void)MD5;
 }
 
+/** Screen code that never returns: stop_loop ends the process past its timeout instead of hanging.
+ */
+static void test_stuck_screen()
+{
+    std::printf("stuck screen code\n");
+    std::fflush(stdout);
+    const pid_t child = fork();
+    if (child == 0)
+    {
+        plugin_runtime_args_t args = make_args("0123456789ABCDEF0123456789ABCDEF");
+        if (init(&args) != 0 || start_loop() != 0)
+            _exit(2);
+        int fd = connect_host();
+        read_msg(fd);
+        send_msg(fd, 0x01, open_payload(1, 0, 320, 240, 100, "ivan"));
+        if (read_until(fd, 0x83, 1).type != 0x83)
+            _exit(3);
+        send_key(fd, 1, SPIN_KEY);
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        stop_loop();
+        _exit(0);
+    }
+    CHECK(child > 0, "fork");
+    int status       = 0;
+    const auto start = std::chrono::steady_clock::now();
+    CHECK(waitpid(child, &status, 0) == child, "the child ends");
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - start)
+                        .count();
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 43, "stop_loop ends plc_main with status 43");
+    CHECK(ms < 5000, "within the stop timeout");
+    unlink(HMI_SOCKET_PATH);
+}
+
 int main()
 {
     unlink(HMI_SOCKET_PATH);
     test_live_session();
     test_out_of_date();
+    test_stuck_screen();
     if (g_failures == 0)
         std::printf("all cases passed\n");
     else

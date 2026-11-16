@@ -937,7 +937,8 @@ def test_a_malformed_host_message_drops_the_connection_and_reconnects(
 
 def test_a_host_socket_open_to_others_is_not_used(sio, app, tokens, sock_path, hmi_dir, warnings):
     install(hmi_dir)
-    loose = FakeHost(sock_path, mode=0o666).start()
+    os.chmod(os.path.dirname(sock_path), 0o755)
+    loose = FakeHost(sock_path).start()
     try:
         ws = viewer_client(sio, app, tokens["admin"])
         wait_status(ws, "stopped")
@@ -967,6 +968,104 @@ def test_a_send_failure_drops_the_host_connection(sio, app, tokens, host):
     ws.emit("in", {"t": "k", "c": 65, "n": 1}, namespace=NS)
     assert wait_for(lambda: host.connections == 2)
     assert wait_for(lambda: len(host.of_type(hp.MSG_OPEN)) == 2)
+
+
+def test_input_racing_a_disconnect_never_opens_the_viewer_on_the_host(
+    sio, app, tokens, host, monkeypatch
+):
+    viewer_client(sio, app, tokens["viewer"])
+    assert wait_for(lambda: host.connections == 1)
+    proxy = hp.get_proxy()
+    sid = next(iter(proxy._viewers))
+    checked = proxy.token_in_force
+
+    def disconnect_meanwhile(viewer):
+        proxy.remove_viewer(sid)
+        return checked(viewer)
+
+    monkeypatch.setattr(proxy, "token_in_force", disconnect_meanwhile)
+    with app.app_context():
+        proxy.handle_input(sid, {"t": "v", "w": 800, "h": 600, "d": 1, "n": 0})
+    time.sleep(0.1)
+    assert host.of_type(hp.MSG_OPEN) == []
+    assert sid not in proxy._viewers
+
+
+def test_viewports_racing_disconnects_leave_no_viewer_open_on_the_host(sio, app, tokens, host):
+    proxy = hp.get_proxy()
+    assert wait_for(lambda: host.connections == 1)
+    for i in range(100):
+        viewer_client(sio, app, tokens["viewer"])
+        sid = list(proxy._viewers)[-1]
+        start = threading.Barrier(2)
+
+        def viewport(sid=sid):
+            start.wait()
+            with app.app_context():
+                proxy.handle_input(sid, {"t": "v", "w": 800, "h": 600, "d": 1, "n": 0})
+
+        def leave(sid=sid, i=i):
+            start.wait()
+            time.sleep((i % 20) * 0.0002)
+            proxy.remove_viewer(sid)
+
+        threads = [threading.Thread(target=viewport), threading.Thread(target=leave)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    time.sleep(0.2)
+    opened = {decode_open(p)["viewer"] for p in host.of_type(hp.MSG_OPEN)}
+    closed = {struct.unpack("<I", p)[0] for p in host.of_type(hp.MSG_CLOSE)}
+    assert opened <= closed
+    assert proxy._viewers == {}
+
+
+class _ViewportOnReopen:
+    """A viewer lock that lets a viewport through just as a new host connection reopens the viewer."""
+
+    def __init__(self, real, proxy, viewport):
+        self.real = real
+        self.proxy = proxy
+        self.viewport = viewport
+
+    def __enter__(self):
+        reopening = threading.current_thread().name == "hmi-host" and self.proxy._host is not None
+        if reopening and self.viewport is not None:
+            send, self.viewport = self.viewport, None
+            thread = threading.Thread(target=send)
+            thread.start()
+            thread.join()
+        return self.real.__enter__()
+
+    def __exit__(self, *exc):
+        return self.real.__exit__(*exc)
+
+
+def test_a_viewport_racing_a_reconnect_opens_the_viewer_once(sio, app, tokens, host):
+    open_viewer(sio, app, tokens["operator"], host)
+    proxy = hp.get_proxy()
+    sid = next(iter(proxy._viewers))
+    viewer = proxy._viewers[sid]
+
+    def viewport():
+        with app.app_context():
+            proxy.handle_input(sid, {"t": "v", "w": 640, "h": 480, "d": 1, "n": 1})
+
+    viewer.lock = _ViewportOnReopen(viewer.lock, proxy, viewport)
+    host.send_raw(struct.pack("<IB", 1, 0x7F))
+    assert wait_for(lambda: host.connections == 2)
+    assert wait_for(lambda: len(host.of_type(hp.MSG_OPEN)) == 2)
+    time.sleep(0.2)
+    opens = [decode_open(p) for p in host.of_type(hp.MSG_OPEN)]
+    assert len(opens) == 2
+    assert (opens[1]["w"], opens[1]["h"]) == (640, 480)
+
+
+def test_an_account_name_the_host_would_refuse_is_sent_with_those_characters_replaced():
+    name = "op\x01er\x7fat\x85or\ud800é"
+    sent = decode_open(hp.encode_open(1, 2, hp.Viewport(1, 1, 100), name)[5:])["name"]
+    assert sent == "op?er?at?or?é"
 
 
 def test_a_regular_file_at_the_socket_path_is_ignored(sio, app, tokens, sock_path, hmi_dir):

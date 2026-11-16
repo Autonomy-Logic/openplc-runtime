@@ -95,8 +95,10 @@ static void test_hmi_seal()
     seal("build/hmi/hmi.seal", {sha("build/hmi/client/index.html") + "  client/index.html",
                                 so + "  libhmi_plugin.so"});
     CHECK(plugin_seal_check("build/hmi/libhmi_plugin.so") == 0, "matching line loads");
-    CHECK(hmi_plugin_seal_verify("build/hmi/client/index.html") == 0,
-          "client files are named relative to build/hmi");
+    CHECK(hmi_plugin_seal_verify("build/hmi/client/index.html") != 0,
+          "a sealed client file is never loaded as the plugin");
+    CHECK(plugin_seal_check("build/hmi/client/index.html") != 0,
+          "... through plugin_seal_check either");
 
     write_file("build/hmi/libhmi_plugin.so", "swapped bytes");
     g_errors.clear();

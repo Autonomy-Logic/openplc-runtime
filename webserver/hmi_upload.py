@@ -58,13 +58,14 @@ class HmiPlan:
 
 
 def is_client_file(name: str) -> bool:
-    """Whether ``name`` (an extracted path) is an allowed ``hmi/client/`` file."""
+    """Whether ``name`` (an extracted path) is an allowed ``hmi/client/`` file; lower case
+    extensions only."""
     if not name.startswith(CLIENT_PREFIX):
         return False
     base = name[len(CLIENT_PREFIX) :]
     if "/" in base or not CLIENT_NAME_RE.fullmatch(base) or base in (".", ".."):
         return False
-    return os.path.splitext(base)[1].lower() in CLIENT_EXTENSIONS
+    return os.path.splitext(base)[1] in CLIENT_EXTENSIONS
 
 
 def extension_allowed(name: str, disallowed: tuple[str, ...]) -> bool:

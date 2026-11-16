@@ -64,8 +64,9 @@ int vpp_plugin_seal_sha256_file(const char *path, char *out_hex);
 int hmi_plugin_seal_required(const char *path);
 
 /**
- * @brief Verify @p path against its line in build/hmi/hmi.seal, named by its path relative to
- *        build/hmi/. Fails closed like vpp_plugin_seal_verify.
+ * @brief Verify @p path, which must be build/hmi/libhmi_plugin.so, against its line in
+ *        build/hmi/hmi.seal. Any other file, sealed client files included, is refused. Fails closed
+ *        like vpp_plugin_seal_verify.
  */
 int hmi_plugin_seal_verify(const char *path);
 

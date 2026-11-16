@@ -136,8 +136,9 @@ hmi_wire_result_t hmi_wire_decode(const uint8_t *buf, size_t len, hmi_wire_msg_t
             return HMI_WIRE_MALFORMED;
         if (out->name_len > HMI_WIRE_NAME_MAX || plen != 12u + out->name_len)
             return HMI_WIRE_MALFORMED;
-        if (!hmi_wire_name_valid(p + 12, out->name_len))
-            return HMI_WIRE_MALFORMED;
+        out->name_valid = hmi_wire_name_valid(p + 12, out->name_len);
+        if (!out->name_valid)
+            out->name_len = 0;
         memcpy(out->name, p + 12, out->name_len);
         out->name[out->name_len] = '\0';
         break;
