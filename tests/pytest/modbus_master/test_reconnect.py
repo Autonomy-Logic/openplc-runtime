@@ -980,6 +980,72 @@ class TestStopThenStart:
 
         assert len(plugin.slave_threads) == 1
 
+    def test_start_counts_only_the_threads_it_started_in_this_call(
+        self, master: ModbusMasterHarness
+    ) -> None:
+        plugin.slave_threads.append(LingeringThread())
+
+        master.run(tcp_device("Pump", reconnect=True))
+
+        assert "Successfully started 1 device/bus thread(s)" in master.logger.messages("info")
+
+    def test_start_with_no_new_thread_is_refused_even_with_a_leftover(
+        self, master: ModbusMasterHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plugin.slave_threads.append(LingeringThread())
+        monkeypatch.setattr(plugin, "ModbusSlaveDevice", failing_thread_creation)
+
+        started = master.start(tcp_device("Pump", reconnect=True))
+
+        assert started is False
+
+    def test_start_with_no_new_thread_logs_that_none_started(
+        self, master: ModbusMasterHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plugin.slave_threads.append(LingeringThread())
+        monkeypatch.setattr(plugin, "ModbusSlaveDevice", failing_thread_creation)
+
+        master.start(tcp_device("Pump", reconnect=True))
+
+        assert "No device threads started" in master.logger.messages("error")
+
+    def test_a_thread_that_outlived_stop_is_joined_again_by_the_next_stop(
+        self, master: ModbusMasterHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        leftover = LingeringThread()
+        plugin.slave_threads.append(leftover)
+        assert master.stop() is False
+        monkeypatch.setattr(plugin, "ModbusSlaveDevice", failing_thread_creation)
+        master.start(tcp_device("Pump", reconnect=True))
+
+        master.stop()
+
+        assert leftover in plugin.slave_threads and leftover.stop_calls == 2
+
+
+class LingeringThread:
+    """Device thread double that never ends: it stays alive after ``stop()`` and ``join()``."""
+
+    def __init__(self) -> None:
+        self.name = "Lingering"
+        self.stop_calls = 0
+
+    def stop(self) -> None:
+        """Record the stop request without ending."""
+        self.stop_calls += 1
+
+    def join(self, **_options: object) -> None:
+        """Return at once, as a join that timed out does."""
+
+    def is_alive(self) -> bool:
+        """Always alive."""
+        return True
+
+
+def failing_thread_creation(*_args: object, **_kwargs: object) -> LingeringThread:
+    """Stands in for ``ModbusSlaveDevice`` when creating the device thread fails."""
+    raise RuntimeError("thread creation failed")
+
 
 class TestRtuBusUnchanged:
     """RTU buses ignore ``reconnect``."""
