@@ -13,8 +13,11 @@ from typing import Any
 
 from flask import request
 from flask_jwt_extended import current_user, decode_token, verify_jwt_in_request
+from flask_jwt_extended.exceptions import JWTExtendedException
 from flask_socketio import SocketIO, emit
+from jwt import PyJWTError
 
+from webserver import sessions
 from webserver.access import may
 from webserver.logger import get_logger
 
@@ -106,6 +109,21 @@ def _reverify_session_token() -> bool:
         return False
 
     return True
+
+
+def _follow_rotation(old_jti: str, new_token: str) -> None:
+    """Re-keys every open socket holding the renewed token to its successor."""
+    for socket_id, token in list(_session_tokens.items()):
+        try:
+            held_jti = decode_token(token, allow_expired=True).get("jti")
+        except (PyJWTError, JWTExtendedException):
+            continue
+        if held_jti == old_jti:
+            _session_tokens[socket_id] = new_token
+            logger.info("Debug session token followed a renewal")
+
+
+sessions.on_rotation(_follow_rotation)
 
 
 def _caller_may_debug() -> bool:

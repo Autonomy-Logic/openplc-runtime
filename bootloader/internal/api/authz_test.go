@@ -248,7 +248,7 @@ func TestATokenIssuedAfterTheAccountCutOffIsAccepted(t *testing.T) {
 }
 
 func TestATokenFromSignInAfterACutOffIsAccepted(t *testing.T) {
-	cutoff := time.Now().UnixMilli()
+	cutoff := time.Now().UnixMilli() - 1
 	users := &fakeUsers{
 		count: 1, validAfterMs: cutoff,
 		user: &runtimeauth.User{ID: "1", Username: "admin", Role: runtimeauth.RoleAdmin},

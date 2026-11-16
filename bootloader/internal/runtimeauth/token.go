@@ -71,9 +71,9 @@ type Claims struct {
 	IssuedAtMs int64 `json:"iat_ms,omitempty"`
 }
 
-// IssuedBefore reports whether the token predates the account cut-off cutoffMs; a token without iat_ms does when one is set.
+// IssuedBefore reports whether the token was issued at or before the account cut-off cutoffMs; a token without iat_ms was, once one is set.
 func (c *Claims) IssuedBefore(cutoffMs int64) bool {
-	return cutoffMs > 0 && c.IssuedAtMs < cutoffMs
+	return cutoffMs > 0 && c.IssuedAtMs <= cutoffMs
 }
 
 type jwtHeader struct {

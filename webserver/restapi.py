@@ -5,7 +5,7 @@ import base64
 import json
 import os
 import threading
-from typing import Callable, Optional
+from typing import Callable, ClassVar, Optional
 
 from flask import Blueprint, Flask, current_app, jsonify, request
 from flask_jwt_extended import (
@@ -150,7 +150,7 @@ db.init_app(app_restapi)
 
 @jwt.token_in_blocklist_loader
 def check_if_token_revoked(jwt_header, jwt_payload):
-    """True when the token is no longer in force: rotated, signed out, its session or account ended."""
+    """True when the token is not in force: rotated, signed out, or its session or account ended."""
     user = db.session.get(User, _subject_id(jwt_payload))
     if user is None:
         return True
@@ -171,6 +171,8 @@ def _subject_id(jwt_payload: dict) -> int:
 
 class User(db.Model):  # type: ignore[name-defined]
     __tablename__ = "users"
+    # Ids are never reused: a token or cut-off of a deleted account can never name a new one.
+    __table_args__: ClassVar[dict[str, bool]] = {"sqlite_autoincrement": True}
 
     id: int = db.Column(db.Integer, primary_key=True)
     username: str = db.Column(db.Text, nullable=False, unique=True)
@@ -248,17 +250,43 @@ def apply_user_schema_migrations():
         if "sessions_valid_after_ms" not in columns:
             conn.execute(
                 sa_text(
-                    "ALTER TABLE users ADD COLUMN sessions_valid_after_ms INTEGER NOT NULL DEFAULT 0"
+                    "ALTER TABLE users ADD COLUMN sessions_valid_after_ms "
+                    "INTEGER NOT NULL DEFAULT 0"
                 )
             )
         migrated = conn.execute(
             sa_text(
-                "UPDATE users SET role = :engineer WHERE role IS NULL OR role = '' OR role = :legacy"
+                "UPDATE users SET role = :engineer "
+                "WHERE role IS NULL OR role = '' OR role = :legacy"
             ),
             {"engineer": ENGINEER_ROLE, "legacy": LEGACY_USER_ROLE},
         ).rowcount
     if migrated:
         logger.warning("Migrated %d account(s) from the role 'user' to 'engineer'", migrated)
+    _never_reuse_user_ids()
+
+
+def _never_reuse_user_ids() -> None:
+    """Rebuilds a ``users`` table created without AUTOINCREMENT, keeping every row and id."""
+    if db.engine.dialect.name != "sqlite":
+        return
+    with db.engine.begin() as conn:
+        sql = conn.execute(
+            sa_text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'")
+        ).scalar()
+        if not sql or "AUTOINCREMENT" in str(sql).upper():
+            return
+        conn.execute(sa_text("ALTER TABLE users RENAME TO users_before_autoincrement"))
+        User.__table__.create(conn)
+        conn.execute(
+            sa_text(
+                "INSERT INTO users (id, username, password_hash, role, sessions_valid_after_ms) "
+                "SELECT id, username, password_hash, role, sessions_valid_after_ms "
+                "FROM users_before_autoincrement"
+            )
+        )
+        conn.execute(sa_text("DROP TABLE users_before_autoincrement"))
+    logger.warning("Rebuilt the accounts table so account ids are never reused")
 
 
 def repair_missing_admin() -> bool:
@@ -688,8 +716,16 @@ def update_user(user_id):
             current_password = data.get("current_password")
             if not current_password:
                 return jsonify({"msg": "Current password is required"}), 400
-            if not target.check_password(current_password):
-                return jsonify({"msg": "Current password is incorrect"}), 403
+            keys = sessions.throttle_keys(target.username, request.remote_addr)
+            with sessions.throttle_lock(keys):
+                held = _throttled(keys, "password check", target.username)
+                if held is not None:
+                    return held
+                if not target.check_password(current_password):
+                    sessions.record_failure(keys)
+                    logger.warning("Wrong current password for %s", target.username)
+                    return jsonify({"msg": "Current password is incorrect"}), 403
+                sessions.record_success(target.username)
         target.set_password(new_password)
         password_changed = True
 
@@ -879,37 +915,48 @@ def login():
       500:
         description: User retrieval error
     """
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"msg": "The request body must be a JSON object"}), 400
     username = body.get("username")
     password = body.get("password")
     if not isinstance(username, str) or not isinstance(password, str):
         return jsonify("Wrong username or password"), 401
 
     keys = sessions.throttle_keys(username, request.remote_addr)
-    wait = sessions.throttle_wait(keys)
-    if wait > 0:
-        logger.warning("Throttled a sign-in for %s from %s", username, request.remote_addr)
-        response = jsonify({"msg": f"Too many failed sign-ins. Try again in {wait} s."})
-        response.headers["Retry-After"] = str(wait)
-        return response, 429
+    with sessions.throttle_lock(keys):
+        held = _throttled(keys, "sign-in", username)
+        if held is not None:
+            return held
+        issued_ms = sessions.now_ms()
+        try:
+            user = User.query.filter_by(username=username).one_or_none()
+            logger.debug("User found: %s", user)
+        except Exception as e:
+            logger.error("Error retrieving user: %s", e)
+            return jsonify({"msg": f"User retrieval error: {e}"}), 500
 
-    try:
-        user = User.query.filter_by(username=username).one_or_none()
-        logger.debug("User found: %s", user)
-    except Exception as e:
-        logger.error("Error retrieving user: %s", e)
-        return jsonify({"msg": f"User retrieval error: {e}"}), 500
+        if not user or not user.check_password(password):
+            sessions.record_failure(keys)
+            logger.warning("Failed sign-in for %s from %s", username, request.remote_addr)
+            return jsonify("Wrong username or password"), 401
+        sessions.record_success(username)
 
-    if not user or not user.check_password(password):
-        sessions.record_failure(keys)
-        logger.warning("Failed sign-in for %s from %s", username, request.remote_addr)
-        return jsonify("Wrong username or password"), 401
-
-    sessions.record_success(username)
     sessions.purge()
-    claims = sessions.start_session(user.id)
+    claims = sessions.start_session(user.id, issued_ms)
     access_token = create_access_token(identity=user, additional_claims=claims)
     return jsonify(access_token=access_token)
+
+
+def _throttled(keys: list[str], what: str, username: str):
+    """A 429 when an attempt on ``keys`` comes before its allowed time, else None."""
+    wait = sessions.throttle_wait(keys)
+    if wait <= 0:
+        return None
+    logger.warning("Throttled a %s for %s from %s", what, username, request.remote_addr)
+    response = jsonify({"msg": f"Too many failed attempts. Try again in {wait} s."})
+    response.headers["Retry-After"] = str(wait)
+    return response, 429
 
 
 @restapi_bp.route("/renew", methods=["POST"])
@@ -933,10 +980,14 @@ def renew():
       401:
         description: The token is expired, revoked or its session ended
     """
-    claims = sessions.rotate(get_jwt())
-    return jsonify(
-        access_token=create_access_token(identity=current_user, additional_claims=claims)
-    )
+    presented = get_jwt()
+    claims = sessions.rotate(presented)
+    if claims is None:
+        return jsonify({"msg": "This token was already renewed"}), 401
+    sessions.purge()
+    token = create_access_token(identity=current_user, additional_claims=claims)
+    sessions.notify_rotated(str(presented["jti"]), token)
+    return jsonify(access_token=token)
 
 
 # logout endpoint

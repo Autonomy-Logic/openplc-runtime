@@ -224,7 +224,7 @@ func TestIssuedBeforeComparesWithTheCutOff(t *testing.T) {
 	}{
 		{"no cut-off", 1000, 0, false},
 		{"issued before the cut-off", 999, 1000, true},
-		{"issued at the cut-off", 1000, 1000, false},
+		{"issued at the cut-off", 1000, 1000, true},
 		{"issued after the cut-off", 1001, 1000, false},
 		{"no iat_ms and no cut-off", 0, 0, false},
 		{"no iat_ms with a cut-off", 0, 1000, true},

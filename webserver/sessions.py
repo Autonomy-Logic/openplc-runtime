@@ -19,9 +19,15 @@ further failure up to ``THROTTLE_MAX_DELAY_S``.
 
 import math
 import secrets
+import threading
 import time
+import zlib
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
+
+from sqlalchemy.exc import IntegrityError
 
 from webserver.database import db
 from webserver.logger import get_logger
@@ -34,6 +40,12 @@ THROTTLE_FIRST_DELAY_S = 5.0
 THROTTLE_MAX_DELAY_S = 300.0
 # A counter whose last failure is older than this starts again from the first delay.
 THROTTLE_FORGET_S = 3600.0
+# A session not renewed for this long is dropped even if it was never ended.
+IDLE_SESSION_PURGE_S = 86400.0
+# Password checks of a username or address run one at a time, under one of these locks.
+_THROTTLE_LOCKS = tuple(threading.Lock() for _ in range(64))
+# Called with the jti of a rotated token and its successor, e.g. to re-key open debug sockets.
+_rotation_listeners: list[Callable[[str, str], None]] = []
 
 SID_CLAIM = "sid"
 IAT_MS_CLAIM = "iat_ms"
@@ -85,8 +97,8 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def start_session(user_id: int) -> dict[str, object]:
-    """Starts a session for ``user_id``; returns the claims its first token carries."""
+def start_session(user_id: int, issued_ms: int) -> dict[str, object]:
+    """Starts a session for ``user_id``; ``issued_ms`` is when its sign-in began."""
     now = time.time()
     sid = secrets.token_urlsafe(24)
     db.session.add(
@@ -98,7 +110,7 @@ def start_session(user_id: int) -> dict[str, object]:
         )
     )
     db.session.commit()
-    return {SID_CLAIM: sid, IAT_MS_CLAIM: now_ms()}
+    return {SID_CLAIM: sid, IAT_MS_CLAIM: issued_ms}
 
 
 def check_token(payload: dict[str, object], valid_after_ms: int) -> TokenRefusal | None:
@@ -116,13 +128,13 @@ def check_token(payload: dict[str, object], valid_after_ms: int) -> TokenRefusal
     if session is None or session.revoked_at is not None:
         return TokenRefusal("session ended", log=False)
     issued = payload.get(IAT_MS_CLAIM)
-    if not isinstance(issued, int) or issued < valid_after_ms:
+    if not isinstance(issued, int) or (valid_after_ms > 0 and issued <= valid_after_ms):
         return TokenRefusal("account sessions ended", log=False)
     return None
 
 
-def rotate(payload: dict[str, object]) -> dict[str, object]:
-    """Revokes the token ``payload`` as rotated; returns the claims of its successor."""
+def rotate(payload: dict[str, object]) -> dict[str, object] | None:
+    """Revokes the token ``payload`` as rotated; its successor's claims, None if already rotated."""
     sid = str(payload[SID_CLAIM])
     now = time.time()
     db.session.add(
@@ -134,11 +146,27 @@ def rotate(payload: dict[str, object]) -> dict[str, object]:
             reason="rotated",
         )
     )
+    try:
+        db.session.flush()
+    except IntegrityError:
+        db.session.rollback()
+        return None
     session = db.session.get(AuthSession, sid)
     if session is not None:
         session.expires_at = now + TOKEN_LIFETIME.total_seconds()
     db.session.commit()
     return {SID_CLAIM: sid, IAT_MS_CLAIM: now_ms()}
+
+
+def on_rotation(listener: Callable[[str, str], None]) -> None:
+    """Registers ``listener(old_jti, new_token)``, called after each successful renewal."""
+    _rotation_listeners.append(listener)
+
+
+def notify_rotated(old_jti: str, new_token: str) -> None:
+    """Tells the listeners a token was renewed."""
+    for listener in _rotation_listeners:
+        listener(old_jti, new_token)
 
 
 def sign_out(payload: dict[str, object]) -> None:
@@ -182,10 +210,15 @@ def end_account_sessions(user_id: int, reason: str) -> int:
 
 
 def purge(now: float | None = None) -> None:
-    """Drops revocations and sessions whose tokens have all expired."""
+    """Drops expired revocations, ended sessions past expiry, and sessions idle for a day."""
     at = time.time() if now is None else now
     RevokedToken.query.filter(RevokedToken.expires_at < at).delete()
-    AuthSession.query.filter(AuthSession.expires_at < at).delete()
+    AuthSession.query.filter(
+        db.or_(
+            db.and_(AuthSession.revoked_at.isnot(None), AuthSession.expires_at < at),
+            AuthSession.expires_at < at - IDLE_SESSION_PURGE_S,
+        )
+    ).delete(synchronize_session=False)
     LoginThrottle.query.filter(LoginThrottle.last_failure_at < at - THROTTLE_FORGET_S).delete()
     db.session.commit()
 
@@ -193,6 +226,19 @@ def purge(now: float | None = None) -> None:
 def _expiry(payload: dict[str, object], now: float) -> float:
     exp = payload.get("exp")
     return float(exp) if isinstance(exp, (int, float)) else now + TOKEN_LIFETIME.total_seconds()
+
+
+@contextmanager
+def throttle_lock(keys: list[str]) -> Iterator[None]:
+    """Serializes password checks sharing any of ``keys``, so none skips a wait."""
+    stripes = sorted({zlib.crc32(key.encode()) % len(_THROTTLE_LOCKS) for key in keys})
+    for stripe in stripes:
+        _THROTTLE_LOCKS[stripe].acquire()
+    try:
+        yield
+    finally:
+        for stripe in reversed(stripes):
+            _THROTTLE_LOCKS[stripe].release()
 
 
 def throttle_keys(username: str, address: str | None) -> list[str]:
