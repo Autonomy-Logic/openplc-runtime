@@ -10,7 +10,6 @@ and the delete guards.
 
 from conftest import auth, create_user, login, token_for
 
-
 # --- bootstrap / create ---------------------------------------------------
 
 
@@ -35,16 +34,16 @@ def test_create_user_requires_auth_once_a_user_exists(client, admin_token):
 
 
 def test_non_admin_cannot_create_user(client, admin_token):
-    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
+    create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
     bob_token = token_for(client, "bob", "bob-pass")
-    resp = create_user(client, "carol", "carol-pass", token=bob_token, role="user")
+    resp = create_user(client, "carol", "carol-pass", token=bob_token, role="engineer")
     assert resp.status_code == 403
 
 
 def test_admin_creates_user_with_role(client, admin_token):
-    resp = create_user(client, "bob", "bob-pass", token=admin_token, role="user")
+    resp = create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
     assert resp.status_code == 201
-    assert resp.get_json()["role"] == "user"
+    assert resp.get_json()["role"] == "engineer"
 
 
 def test_admin_create_user_rejects_invalid_role(client, admin_token):
@@ -55,7 +54,7 @@ def test_admin_create_user_rejects_invalid_role(client, admin_token):
 def test_create_user_defaults_to_user_role_when_omitted(client, admin_token):
     resp = create_user(client, "bob", "bob-pass", token=admin_token)
     assert resp.status_code == 201
-    assert resp.get_json()["role"] == "user"
+    assert resp.get_json()["role"] == "engineer"
 
 
 # --- login / whoami -------------------------------------------------------
@@ -75,11 +74,11 @@ def test_whoami_returns_identity_and_role(client, admin_token):
 
 
 def test_get_users_info_with_token_lists_roles(client, admin_token):
-    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
+    create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
     resp = client.get("/api/get-users-info", headers=auth(admin_token))
     assert resp.status_code == 200
     roles = {u["username"]: u["role"] for u in resp.get_json()}
-    assert roles == {"admin": "admin", "bob": "user"}
+    assert roles == {"admin": "admin", "bob": "engineer"}
 
 
 # --- update-user: rename --------------------------------------------------
@@ -91,7 +90,7 @@ def _id_of(client, token, username):
 
 
 def test_admin_renames_another_user(client, admin_token):
-    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
+    create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
     bob_id = _id_of(client, admin_token, "bob")
     resp = client.put(
         f"/api/update-user/{bob_id}", json={"username": "bobby"}, headers=auth(admin_token)
@@ -101,7 +100,7 @@ def test_admin_renames_another_user(client, admin_token):
 
 
 def test_rename_to_existing_username_conflicts(client, admin_token):
-    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
+    create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
     bob_id = _id_of(client, admin_token, "bob")
     resp = client.put(
         f"/api/update-user/{bob_id}", json={"username": "admin"}, headers=auth(admin_token)
@@ -132,7 +131,7 @@ def test_update_user_not_found(client, admin_token):
 
 
 def test_admin_resets_other_user_password_without_current(client, admin_token):
-    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
+    create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
     bob_id = _id_of(client, admin_token, "bob")
     resp = client.put(
         f"/api/update-user/{bob_id}", json={"password": "new-pass"}, headers=auth(admin_token)
@@ -187,9 +186,11 @@ def test_self_password_change_revokes_current_token(client, admin_token):
 
 
 def test_admin_reset_of_other_user_does_not_revoke_admin_token(client, admin_token):
-    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
+    create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
     bob_id = _id_of(client, admin_token, "bob")
-    resp = client.put(f"/api/update-user/{bob_id}", json={"password": "reset"}, headers=auth(admin_token))
+    resp = client.put(
+        f"/api/update-user/{bob_id}", json={"password": "reset"}, headers=auth(admin_token)
+    )
     assert resp.status_code == 200
     # Admin's own token stays valid after resetting someone else's password.
     assert client.get("/api/whoami", headers=auth(admin_token)).status_code == 200
@@ -199,8 +200,8 @@ def test_admin_reset_of_other_user_does_not_revoke_admin_token(client, admin_tok
 
 
 def test_non_admin_cannot_edit_other_user(client, admin_token):
-    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
-    create_user(client, "carol", "carol-pass", token=admin_token, role="user")
+    create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
+    create_user(client, "carol", "carol-pass", token=admin_token, role="engineer")
     bob_token = token_for(client, "bob", "bob-pass")
     carol_id = _id_of(client, admin_token, "carol")
     resp = client.put(
@@ -210,7 +211,7 @@ def test_non_admin_cannot_edit_other_user(client, admin_token):
 
 
 def test_non_admin_can_edit_self(client, admin_token):
-    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
+    create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
     bob_token = token_for(client, "bob", "bob-pass")
     bob_id = _id_of(client, admin_token, "bob")
     resp = client.put(
@@ -220,7 +221,7 @@ def test_non_admin_can_edit_self(client, admin_token):
 
 
 def test_non_admin_cannot_change_own_role(client, admin_token):
-    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
+    create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
     bob_token = token_for(client, "bob", "bob-pass")
     bob_id = _id_of(client, admin_token, "bob")
     resp = client.put(f"/api/update-user/{bob_id}", json={"role": "admin"}, headers=auth(bob_token))
@@ -228,7 +229,7 @@ def test_non_admin_cannot_change_own_role(client, admin_token):
 
 
 def test_admin_promotes_and_demotes(client, admin_token):
-    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
+    create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
     bob_id = _id_of(client, admin_token, "bob")
     # Promote bob to admin.
     resp = client.put(
@@ -238,7 +239,7 @@ def test_admin_promotes_and_demotes(client, admin_token):
     # Now two admins -> demoting the original admin is allowed.
     admin_id = _id_of(client, admin_token, "admin")
     resp = client.put(
-        f"/api/update-user/{admin_id}", json={"role": "user"}, headers=auth(admin_token)
+        f"/api/update-user/{admin_id}", json={"role": "engineer"}, headers=auth(admin_token)
     )
     assert resp.status_code == 200
 
@@ -246,13 +247,13 @@ def test_admin_promotes_and_demotes(client, admin_token):
 def test_cannot_demote_last_admin(client, admin_token):
     admin_id = _id_of(client, admin_token, "admin")
     resp = client.put(
-        f"/api/update-user/{admin_id}", json={"role": "user"}, headers=auth(admin_token)
+        f"/api/update-user/{admin_id}", json={"role": "engineer"}, headers=auth(admin_token)
     )
     assert resp.status_code == 409
 
 
 def test_invalid_role_on_update_rejected(client, admin_token):
-    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
+    create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
     bob_id = _id_of(client, admin_token, "bob")
     resp = client.put(
         f"/api/update-user/{bob_id}", json={"role": "root"}, headers=auth(admin_token)
@@ -264,8 +265,8 @@ def test_invalid_role_on_update_rejected(client, admin_token):
 
 
 def test_non_admin_cannot_delete(client, admin_token):
-    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
-    create_user(client, "carol", "carol-pass", token=admin_token, role="user")
+    create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
+    create_user(client, "carol", "carol-pass", token=admin_token, role="engineer")
     bob_token = token_for(client, "bob", "bob-pass")
     carol_id = _id_of(client, admin_token, "carol")
     resp = client.delete(f"/api/delete-user/{carol_id}", headers=auth(bob_token))
@@ -279,7 +280,7 @@ def test_admin_cannot_delete_self(client, admin_token):
 
 
 def test_admin_deletes_other_user(client, admin_token):
-    create_user(client, "bob", "bob-pass", token=admin_token, role="user")
+    create_user(client, "bob", "bob-pass", token=admin_token, role="engineer")
     bob_id = _id_of(client, admin_token, "bob")
     resp = client.delete(f"/api/delete-user/{bob_id}", headers=auth(admin_token))
     assert resp.status_code == 200
