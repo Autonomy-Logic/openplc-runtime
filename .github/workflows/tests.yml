@@ -19,8 +19,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Outputs skip=true only for a pull_request to development whose PR, read from the API, carries ci-passed-locally.
+  local-ci:
+    name: Local CI label
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.label.outputs.skip }}
+    steps:
+      - name: Read the ci-passed-locally label
+        id: label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          skip=false
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$EVENT_BASE" = "development" ]; then
+            # The label is added a few seconds after the PR opens; the event payload does not carry it.
+            sleep 20
+            if state="$(gh api "repos/$REPO/pulls/$PR_NUMBER" \
+                --jq '.base.ref + " " + ([.labels[].name] | any(. == "ci-passed-locally") | tostring)')"; then
+              echo "PR #$PR_NUMBER: base and label present: $state"
+              if [ "$state" = "development true" ]; then
+                skip=true
+              fi
+            else
+              echo "::warning::Could not read the labels of PR #$PR_NUMBER; running every job."
+            fi
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          echo "skip=$skip"
+
   bootloader:
     name: Bootloader (Go)
+    needs: local-ci
+    # Runs unless the label check output skip=true, including when that check failed.
+    if: ${{ !cancelled() && needs.local-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +90,9 @@ jobs:
 
   webserver:
     name: Webserver (pytest)
+    needs: local-ci
+    # Runs unless the label check output skip=true, including when that check failed.
+    if: ${{ !cancelled() && needs.local-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
