@@ -160,3 +160,7 @@ else
         rm -rf "$VPP_OUTPUT_DIR"
     fi
 fi
+
+# The HMI plugin, after the program: built from core/generated/hmi/ when the
+# upload installed one, removed with it otherwise. Coexists with build/vpp/.
+bash scripts/compile-hmi.sh

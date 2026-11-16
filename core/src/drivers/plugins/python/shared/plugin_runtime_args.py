@@ -140,6 +140,8 @@ class PluginRuntimeArgs(ctypes.Structure):
         ("set_switch_position", ctypes.CFUNCTYPE(None, ctypes.c_int)),
         # Current PLC state: int (*)(void), 0 = STOPPED, 1 = RUNNING, 2 = ERROR.
         ("get_plc_state", ctypes.CFUNCTYPE(ctypes.c_int)),
+        # MD5 of the running program: char[33], NUL terminated, empty when none is loaded.
+        ("program_md5", ctypes.c_char * 33),
     ]
 
     def validate_pointers(self):

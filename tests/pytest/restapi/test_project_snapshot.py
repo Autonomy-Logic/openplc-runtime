@@ -81,8 +81,8 @@ def test_promote_makes_the_staged_snapshot_the_stored_one():
 
 
 def test_discard_leaves_the_device_with_nothing():
-    # The failed-build path. compile-clean.sh has already removed the program's
-    # .so by this point, so "no program, no stored project" is the honest state.
+    # The failed-build path: the upload already cleared the stored project, so
+    # the device advertises none.
     project_snapshot.stage(b"payload", _metadata())
     project_snapshot.discard_staged()
     assert project_snapshot.promote() is False

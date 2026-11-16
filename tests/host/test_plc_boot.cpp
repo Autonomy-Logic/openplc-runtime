@@ -11,6 +11,7 @@
 #include "plc_state_manager.h"
 #include "plc_switch.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <string>
@@ -139,6 +140,12 @@ extern "C" int plugin_driver_append_config(plugin_driver_t *, const char *config
     return 0;
 }
 
+extern "C" int plugin_driver_append_hmi(plugin_driver_t *)
+{
+    g_calls.push_back("hmi");
+    return 0;
+}
+
 extern "C" int plugin_driver_init(plugin_driver_t *)
 {
     g_calls.push_back("init");
@@ -256,8 +263,8 @@ static void test_bring_up_order()
     plc_boot_init_plugins(&g_driver, true);
 
     const std::vector<std::string> want = {"load:" PLC_BOOT_PLUGINS_CONF,
-                                           "append:" PLC_BOOT_VPP_PLUGINS_CONF, "init"};
-    CHECK(g_calls == want, "plugins.conf, then vpp_plugins.conf, then init");
+                                           "append:" PLC_BOOT_VPP_PLUGINS_CONF, "hmi", "init"};
+    CHECK(g_calls == want, "plugins.conf, then vpp_plugins.conf, then the HMI, then init");
 
     g_infos.clear();
     plugin_request_plc_start("probe");
@@ -274,6 +281,8 @@ static void test_safe_mode()
 
     CHECK(r == PLC_BOOT_START_SKIPPED_SAFE_MODE, "auto-start skipped");
     CHECK(!g_vpp_loaded, "program plugins (vpp_plugins.conf) not loaded");
+    CHECK(std::find(g_calls.begin(), g_calls.end(), "hmi") == g_calls.end(),
+          "the HMI plugin is not loaded in safe mode");
     CHECK(g_transitions.empty(), "no transition begun");
 }
 
