@@ -24,9 +24,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from webserver import hardware_id
+from webserver.atomic_file import write_file_atomically
 from webserver.config import PERSISTENT_DATA_DIR
 from webserver.logger import get_logger
-from webserver.vpp_license_debug import _write_license_atomically
 
 logger, _ = get_logger("logger", use_buffer=True)
 
@@ -123,12 +123,6 @@ def _in_vplc(record: hardware_id.HardwareId) -> bool:
     return record.source == "orchestrator"
 
 
-def licenses_dir() -> Path:
-    """Where uploads go: the agent's intake folder in a vPLC, else the persistent folder."""
-    record = hardware_id.current()
-    return VPLC_LICENSES_DIR if record is not None and _in_vplc(record) else DEVICE_LICENSES_DIR
-
-
 def store(raw: bytes) -> StoreResult:
     """Keep an uploaded licence as ``<order_id>.license``; only its shape is checked."""
     if len(raw) > MAX_LICENSE_BYTES:
@@ -141,7 +135,7 @@ def store(raw: bytes) -> StoreResult:
         return StoreResult(False, "This device has no hardware ID")
     target_dir = VPLC_LICENSES_DIR if _in_vplc(record) else DEVICE_LICENSES_DIR
     try:
-        _write_license_atomically(str(target_dir / f"{lic.order_id}.license"), lic.to_bytes())
+        write_file_atomically(target_dir / f"{lic.order_id}.license", lic.to_bytes())
     except OSError as exc:
         logger.error("Could not store runtime licence %s: %s", lic.order_id, exc)
         return StoreResult(False, "Licence could not be stored", internal=True)

@@ -29,12 +29,13 @@ Blob integrity is checked on BOTH directions (0x49 and 0x4A) with the same
 function, mirroring what ``license_store_read`` validates on bare metal so the
 two targets answer the same bytes for the same file.
 """
+
 import os
-import tempfile
 import zlib
 from typing import Optional
 
 from webserver import config
+from webserver.atomic_file import write_file_atomically
 from webserver.logger import get_logger
 from webserver.plugin_config_model import PluginsConfiguration
 
@@ -160,7 +161,11 @@ def derive_license_path(config_path: str) -> str:
     if not config_path:
         return ""
     ext = ".json"
-    base = config_path[: -len(ext)] if len(config_path) > len(ext) and config_path.endswith(ext) else config_path
+    base = (
+        config_path[: -len(ext)]
+        if len(config_path) > len(ext) and config_path.endswith(ext)
+        else config_path
+    )
     return base + ".license"
 
 
@@ -275,64 +280,6 @@ def _license_path() -> Optional[str]:
     return resolve_license_path(candidates[0].config_path)
 
 
-def _fsync_directory(directory: str) -> None:
-    """Best-effort fsync of ``directory`` so the RENAME itself is durable.
-
-    Without it the replaced name can still be lost to a power cut even though
-    the file contents were fsynced. Not available on every platform (Windows
-    refuses to open a directory), and a failure here does not undo a rename that
-    already succeeded -- so every error is swallowed on purpose.
-    """
-    try:
-        fd = os.open(directory, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError:
-        pass
-    finally:
-        os.close(fd)
-
-
-def _write_license_atomically(path: str, blob: bytes) -> None:
-    """Write ``blob`` to ``path`` so that a failure NEVER destroys the license
-    that is already there. Raises ``OSError`` for the caller to map.
-
-    ``open(path, "wb")`` truncates before writing, so ENOSPC, a power cut or the
-    process dying mid-activation would leave a partial file -- destroying the
-    PREVIOUS, VALID license and dropping the device to demo on the next start.
-    An activation that fails must not leave the device worse than it was.
-
-    A temporary sibling plus ``os.replace`` makes the swap atomic within the
-    filesystem; the ``fsync`` before it is what makes the bytes durable rather
-    than merely visible. ``mkstemp`` (not a fixed ``.tmp`` name) so two writers
-    cannot interleave into the same temporary and then rename the mess over a
-    good license.
-    """
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".license-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(blob)
-            handle.flush()
-            os.fsync(handle.fileno())
-        # mkstemp creates 0600; the license is public signed data and the bundle
-        # delivery path writes it under the default mask -- keep the two alike so
-        # the .so reads the same file either way.
-        os.chmod(tmp_path, 0o644)
-        os.replace(tmp_path, path)
-    except OSError:
-        # Leave no debris behind, and leave the previous license untouched.
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    _fsync_directory(directory)
-
-
 def handle_license_command(command_hex: str) -> Optional[str]:
     """Resolve a license function code and return the response as spaced hex.
 
@@ -421,7 +368,7 @@ def handle_license_command(command_hex: str) -> Optional[str]:
         if not path:
             return _hex_from_bytes(bytes([fc, ST_LIC_UNSUPPORTED]))
         try:
-            _write_license_atomically(path, blob)
+            write_file_atomically(path, blob)
         except OSError as exc:
             logger.error("0x49 could not write %s: %s", path, exc)
             return _hex_from_bytes(bytes([fc, ST_LIC_IO_ERROR]))
