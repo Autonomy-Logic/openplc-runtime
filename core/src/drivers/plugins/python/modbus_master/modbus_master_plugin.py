@@ -1138,6 +1138,8 @@ def start_loop():
 
         logger.info(f"Found {len(tcp_devices)} TCP device(s) and {len(rtu_devices)} RTU device(s)")
 
+        started_threads = 0
+
         # Group TCP devices by (host, port). One device → one thread;
         # multiple on one endpoint (a Modbus gateway) share a TCP
         # connection, multiplexed by unit ID via ModbusBusHandler.
@@ -1155,6 +1157,7 @@ def start_loop():
                         )
                         device_thread.start()
                         slave_threads.append(device_thread)
+                        started_threads += 1
                         logger.info(
                             f"Started TCP thread for device: {device_config.name} "
                             f"({device_config.host}:{device_config.port}, slave_id={device_config.slave_id})"
@@ -1169,6 +1172,7 @@ def start_loop():
                         )
                         gateway_thread.start()
                         slave_threads.append(gateway_thread)
+                        started_threads += 1
                         device_names = ", ".join([d.name for d in endpoint_devices])
                         slave_ids = ", ".join([str(d.slave_id) for d in endpoint_devices])
                         logger.info(
@@ -1195,6 +1199,7 @@ def start_loop():
                     )
                     bus_thread.start()
                     slave_threads.append(bus_thread)
+                    started_threads += 1
 
                     device_names = ", ".join([d.name for d in bus_info["devices"]])
                     slave_ids = ", ".join([str(d.slave_id) for d in bus_info["devices"]])
@@ -1205,12 +1210,11 @@ def start_loop():
                 except Exception as e:
                     logger.error(f"Failed to start RTU bus thread for {bus_key}: {e}")
 
-        if slave_threads:
-            logger.info(f"Successfully started {len(slave_threads)} device/bus thread(s)")
+        if started_threads > 0:
+            logger.info(f"Successfully started {started_threads} device/bus thread(s)")
             return True
-        else:
-            logger.error("No device threads started")
-            return False
+        logger.error("No device threads started")
+        return False
 
     except Exception as e:
         logger.error(f"Error starting main loop: {e}")
@@ -1221,7 +1225,8 @@ def stop_loop():
     """
     Stop the main loop and all running device threads.
     This function is called when the plugin needs to be stopped.
-    Stopped threads leave slave_threads, so the next start_loop() runs only new ones.
+    Threads that stopped leave `slave_threads`; a thread still alive after the timeout
+    stays, and the next `stop_loop()` joins it again.
 
     Returns:
         True if all threads stopped, False if any thread survived the timeout.

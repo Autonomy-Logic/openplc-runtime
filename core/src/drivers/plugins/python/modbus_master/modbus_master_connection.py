@@ -3,6 +3,7 @@
 
 """Modbus Master plugin connection management utilities."""
 
+import threading
 import time
 from typing import Literal, Optional, Union
 
@@ -128,7 +129,7 @@ class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
             self.client = None
         self.is_connected = False
 
-    def connect(self, stop_event=None) -> bool:
+    def connect(self, stop_event: Optional[threading.Event] = None) -> bool:
         """
         Establish the first connection according to the reconnect policy.
 
