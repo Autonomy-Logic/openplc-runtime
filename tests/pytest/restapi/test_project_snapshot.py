@@ -225,7 +225,7 @@ def test_retrieval_is_refused_to_non_admins(client, admin_token):
     # The stored project is not encrypted on the device, so this role check is
     # the entire access control. It is not a second layer behind one.
     _store()
-    create_user(client, "operator", "operator-pass", token=admin_token, role="user")
+    create_user(client, "operator", "operator-pass", token=admin_token, role="engineer")
     operator = token_for(client, "operator", "operator-pass")
     assert client.get("/api/project-snapshot", headers=auth(operator)).status_code == 403
 

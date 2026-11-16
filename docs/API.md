@@ -19,6 +19,36 @@ The runtime uses JWT-based authentication:
 1. **First User Creation**: `POST /api/create-user` (no authentication required for the first user)
 2. **Login**: `POST /api/login` returns a JWT access token
 3. **Authenticated Requests**: All other endpoints require `Authorization: Bearer <token>` header
+4. **Renewal**: `POST /api/renew` returns a new token for the same session before the current one
+   expires (15 minutes); the presented token is revoked
+
+### Roles
+
+| Role | Reaches |
+| --- | --- |
+| `admin` | Everything, plus account management (`create-user`, `delete-user`, role changes) and `project-snapshot` |
+| `engineer` | PLC operation: upload, start/stop, logs, compilation status, serial ports, plugin commands, discovery, the debugger (`/api/debug`), the user list, its own account |
+| `operator`, `viewer` | Only `login`, `logout`, `renew`, `whoami`, `GET /api/status` and `/api/ping`, and changing their own password with `update-user` |
+
+Every other request from an `operator` or `viewer` is refused with `403`. The role `user` no
+longer exists: stored `user` accounts become `engineer` when the runtime starts, and a request
+naming `user` is refused with `400`. The table lives in `webserver/access.py` (`POLICY`).
+
+### Sessions
+
+- Each sign-in is a session. Renewing rotates its token: the old token is refused from then on, and
+  presenting it again more than 10 seconds after the renewal ends the whole session.
+- `POST /api/logout` ends that session only. A password change, a role change or deleting the
+  account ends every session of the account.
+- Sessions, revocations and account cut-offs are stored in the runtime database, so they hold
+  across restarts.
+
+### Sign-in throttling
+
+After a failed sign-in, the next attempt for the same username, and from the same client address,
+is accepted only after 5 seconds; each further failure doubles the wait, up to 5 minutes. An attempt
+made too early is answered `429 Too Many Requests` with a `Retry-After` header (seconds). A
+successful sign-in clears the username's counter.
 
 **Note**: The OpenPLC Editor handles authentication automatically. Advanced integrators must implement the authentication flow manually.
 
@@ -97,11 +127,12 @@ Content-Type: application/json
 **Status Codes:**
 - `200 OK` - Login successful
 - `401 Unauthorized` - Invalid credentials
+- `429 Too Many Requests` - Sign-in throttled; retry after `Retry-After` seconds
 - `500 Internal Server Error` - Database error
 
 **Notes:**
 - The access token should be included in the `Authorization: Bearer <token>` header for all subsequent requests
-- Tokens expire after a configured duration (default: 24 hours)
+- Tokens expire after 15 minutes; renew with `POST /api/renew` before that
 
 ---
 

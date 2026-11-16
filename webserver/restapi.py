@@ -16,14 +16,25 @@ from flask_jwt_extended import (
     jwt_required,
     verify_jwt_in_request,
 )
-from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import text as sa_text
 from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import webserver.config
-from webserver import project_snapshot
+from webserver import project_snapshot, sessions
+from webserver.access import (
+    ADMIN_ROLE,
+    ENGINEER_ROLE,
+    LEGACY_USER_ROLE,
+    ROLES,
+    allow,
+    command_key,
+    invalid_role_message,
+    may,
+    refuse,
+)
+from webserver.database import db
 from webserver.logger import get_logger
 from webserver.version import MIN_EDITOR_VERSION, RUNTIME_VERSION
 
@@ -132,30 +143,30 @@ def restapi_capabilities():
     )
 
 
+app_restapi.config["JWT_ACCESS_TOKEN_EXPIRES"] = sessions.TOKEN_LIFETIME
 jwt = JWTManager(app_restapi)
-db = SQLAlchemy(app_restapi)
-
-jwt_blacklist = set()
-
-# RBAC: two roles. ``admin`` manages accounts and retrieves projects.
-# ``user`` operates the PLC (upload, start/stop, debug, status/logs) and
-# edits its own account. Enforcement is server-side; the editor UI mirrors
-# it but is never the boundary.
-ADMIN_ROLE = "admin"
-USER_ROLE = "user"
-ROLES = (ADMIN_ROLE, USER_ROLE)
+db.init_app(app_restapi)
 
 
 @jwt.token_in_blocklist_loader
 def check_if_token_revoked(jwt_header, jwt_payload):
+    """True when the token is no longer in force: rotated, signed out, its session or account ended."""
+    user = db.session.get(User, _subject_id(jwt_payload))
+    if user is None:
+        return True
+    refusal = sessions.check_token(jwt_payload, user.sessions_valid_after_ms or 0)
+    if refusal is None:
+        return False
+    if refusal.log:
+        logger.warning("Refused a token of account %s: %s", user.username, refusal.reason)
+    return True
+
+
+def _subject_id(jwt_payload: dict) -> int:
     try:
-        jti = jwt_payload["jti"]
-        return jti in jwt_blacklist
-    except KeyError as e:
-        logger.error("Error revoking JWT: %s", e)
-    except Exception as e:
-        logger.error("Error revoking JWT: %s", e)
-    return False
+        return int(jwt_payload.get("sub", 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 class User(db.Model):  # type: ignore[name-defined]
@@ -168,6 +179,10 @@ class User(db.Model):  # type: ignore[name-defined]
     # (migrated in place) and any insert that omits the role resolve to the
     # privileged role — the pre-RBAC runtime treated every user as an admin.
     role: str = db.Column(db.Text, nullable=False, default=ADMIN_ROLE, server_default=ADMIN_ROLE)
+    # Tokens issued before this time (ms since the epoch) are refused: every session ended here.
+    sessions_valid_after_ms: int = db.Column(
+        db.Integer, nullable=False, default=0, server_default="0"
+    )
 
     # Use PBKDF2 with SHA256 and 600,000 iterations for password hashing
     derivation_method: str = "pbkdf2:sha256:600000"
@@ -225,12 +240,25 @@ def apply_user_schema_migrations():
     if "users" not in inspector.get_table_names():
         return
     columns = {col["name"] for col in inspector.get_columns("users")}
-    if "role" in columns:
-        return
     with db.engine.begin() as conn:
-        conn.execute(
-            sa_text(f"ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT '{ADMIN_ROLE}'")
-        )
+        if "role" not in columns:
+            conn.execute(
+                sa_text(f"ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT '{ADMIN_ROLE}'")
+            )
+        if "sessions_valid_after_ms" not in columns:
+            conn.execute(
+                sa_text(
+                    "ALTER TABLE users ADD COLUMN sessions_valid_after_ms INTEGER NOT NULL DEFAULT 0"
+                )
+            )
+        migrated = conn.execute(
+            sa_text(
+                "UPDATE users SET role = :engineer WHERE role IS NULL OR role = '' OR role = :legacy"
+            ),
+            {"engineer": ENGINEER_ROLE, "legacy": LEGACY_USER_ROLE},
+        ).rowcount
+    if migrated:
+        logger.warning("Migrated %d account(s) from the role 'user' to 'engineer'", migrated)
 
 
 def repair_missing_admin() -> bool:
@@ -377,11 +405,12 @@ def create_user():
 
     if verify_jwt_in_request(optional=True) is None:
         return jsonify({"msg": "Authentication required"}), 401
-    if not (current_user and current_user.is_admin()):
-        return jsonify({"msg": "Admin privileges required"}), 403
-    role = (request.get_json() or {}).get("role", USER_ROLE)
+    caller_role = current_user.role if current_user else None
+    if not may(caller_role, "create-user"):
+        return refuse(caller_role, "create-user")
+    role = (request.get_json() or {}).get("role", ENGINEER_ROLE)
     if role not in ROLES:
-        return jsonify({"msg": f"Invalid role. Must be one of: {', '.join(ROLES)}"}), 400
+        return jsonify({"msg": invalid_role_message(role)}), 400
 
     data = request.get_json()
     username = data.get("username")
@@ -398,6 +427,9 @@ def create_user():
     user.set_password(password)
     db.session.add(user)
     db.session.commit()
+    logger.warning(
+        "Account %s created with role %s by %s", user.username, user.role, current_user.username
+    )
 
     return jsonify({"msg": "User created", "id": user.id, "role": user.role}), 201
 
@@ -435,7 +467,7 @@ def _bootstrap_first_admin():
 
 # verify existing users individually
 @restapi_bp.route("/get-user-info/<int:user_id>", methods=["GET"])
-@jwt_required()
+@allow("get-user-info")
 def get_user_info(user_id):
     """
     Get information about a specific user.
@@ -522,6 +554,9 @@ def get_users_info():
             return jsonify({"msg": "No users found"}), 404
         return jsonify({"msg": "Users found"}), 200
 
+    caller_role = current_user.role if current_user else None
+    if not may(caller_role, "get-users-info"):
+        return refuse(caller_role, "get-users-info")
     try:
         users = User.query.all()
     except Exception as e:
@@ -532,7 +567,7 @@ def get_users_info():
 
 
 @restapi_bp.route("/whoami", methods=["GET"])
-@jwt_required()
+@allow("whoami")
 def whoami():
     """
     Return the currently authenticated user (id, username, role).
@@ -560,7 +595,7 @@ def whoami():
 
 
 @restapi_bp.route("/update-user/<int:user_id>", methods=["PUT"])
-@jwt_required()
+@allow("update-user")
 def update_user(user_id):
     """
     Update a user's username, password and/or role.
@@ -617,16 +652,19 @@ def update_user(user_id):
     new_username = data.get("username")
     new_password = data.get("password")
     new_role = data.get("role")
+    if new_username is not None and not may(caller.role, "rename-account"):
+        return refuse(caller.role, "rename-account")
 
     if new_username is None and new_password is None and new_role is None:
         return jsonify({"msg": "No fields to update"}), 400
 
     # Role change — admin only, with last-admin protection.
+    previous_role = target.role
     if new_role is not None:
         if not caller_is_admin:
             return jsonify({"msg": "Only an admin can change roles"}), 403
         if new_role not in ROLES:
-            return jsonify({"msg": f"Invalid role. Must be one of: {', '.join(ROLES)}"}), 400
+            return jsonify({"msg": invalid_role_message(new_role)}), 400
         if target.is_admin() and new_role != ADMIN_ROLE and admin_count() <= 1:
             return jsonify({"msg": "Cannot demote the last remaining admin"}), 409
         target.role = new_role
@@ -642,7 +680,7 @@ def update_user(user_id):
         target.username = new_username
 
     # Password change — self-change requires the current password.
-    self_password_changed = False
+    password_changed = False
     if new_password is not None:
         if not new_password:
             return jsonify({"msg": "Password cannot be empty"}), 400
@@ -652,23 +690,31 @@ def update_user(user_id):
                 return jsonify({"msg": "Current password is required"}), 400
             if not target.check_password(current_password):
                 return jsonify({"msg": "Current password is incorrect"}), 403
-            self_password_changed = True
         target.set_password(new_password)
+        password_changed = True
 
     db.session.commit()
 
-    # Changing your own password invalidates your current session: revoke the
-    # token used for this request so a stolen/old token can't outlive the
-    # change. The client must re-authenticate with the new password.
-    if self_password_changed:
-        revoke_jwt()
+    role_changed = target.role != previous_role
+    if role_changed:
+        logger.warning(
+            "Role of account %s changed from %s to %s by %s",
+            target.username,
+            previous_role,
+            target.role,
+            caller.username,
+        )
+    if password_changed or role_changed:
+        reason = "role changed" if role_changed else "password changed"
+        target.sessions_valid_after_ms = sessions.end_account_sessions(target.id, reason)
+        db.session.commit()
 
     return jsonify({"msg": "User updated successfully", "user": target.to_dict()}), 200
 
 
 # delete a user by ID
 @restapi_bp.route("/delete-user/<int:user_id>", methods=["DELETE"])
-@jwt_required()
+@allow("delete-user")
 def delete_user(user_id):
     """
     Delete a user by ID.
@@ -718,14 +764,16 @@ def delete_user(user_id):
     if current_user.id == user.id:
         return jsonify({"msg": "You cannot delete your own account"}), 403
 
+    sessions.end_account_sessions(user.id, "account deleted")
     db.session.delete(user)
     db.session.commit()
+    logger.warning("Account %s deleted by %s", user.username, current_user.username)
     return jsonify({"msg": f"User {user.username} deleted successfully"}), 200
 
 
 # login endpoint
 @restapi_bp.route("/project-snapshot", methods=["GET"])
-@jwt_required()
+@allow("project-snapshot")
 def get_project_snapshot():
     """Retrieve the stored source project as a base64 ZIP.
 
@@ -831,8 +879,19 @@ def login():
       500:
         description: User retrieval error
     """
-    username = request.json.get("username", None)
-    password = request.json.get("password", None)
+    body = request.get_json(silent=True) or {}
+    username = body.get("username")
+    password = body.get("password")
+    if not isinstance(username, str) or not isinstance(password, str):
+        return jsonify("Wrong username or password"), 401
+
+    keys = sessions.throttle_keys(username, request.remote_addr)
+    wait = sessions.throttle_wait(keys)
+    if wait > 0:
+        logger.warning("Throttled a sign-in for %s from %s", username, request.remote_addr)
+        response = jsonify({"msg": f"Too many failed sign-ins. Try again in {wait} s."})
+        response.headers["Retry-After"] = str(wait)
+        return response, 429
 
     try:
         user = User.query.filter_by(username=username).one_or_none()
@@ -842,15 +901,47 @@ def login():
         return jsonify({"msg": f"User retrieval error: {e}"}), 500
 
     if not user or not user.check_password(password):
+        sessions.record_failure(keys)
+        logger.warning("Failed sign-in for %s from %s", username, request.remote_addr)
         return jsonify("Wrong username or password"), 401
 
-    access_token = create_access_token(identity=user)
+    sessions.record_success(username)
+    sessions.purge()
+    claims = sessions.start_session(user.id)
+    access_token = create_access_token(identity=user, additional_claims=claims)
     return jsonify(access_token=access_token)
+
+
+@restapi_bp.route("/renew", methods=["POST"])
+@allow("renew")
+def renew():
+    """
+    Rotate the access token: a new token for the same session, the presented one revoked.
+    ---
+    tags:
+      - Authentication
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: The new token
+        schema:
+          type: object
+          properties:
+            access_token:
+              type: string
+      401:
+        description: The token is expired, revoked or its session ended
+    """
+    claims = sessions.rotate(get_jwt())
+    return jsonify(
+        access_token=create_access_token(identity=current_user, additional_claims=claims)
+    )
 
 
 # logout endpoint
 @restapi_bp.route("/logout", methods=["POST"])
-@jwt_required()
+@allow("logout")
 def logout():
     """
     Logout user and revoke JWT token.
@@ -869,21 +960,8 @@ def logout():
               type: string
               example: User logged out successfully
     """
-    revoke_jwt()
+    sessions.sign_out(get_jwt())
     return jsonify({"msg": "User logged out successfully"}), 200
-
-
-def revoke_jwt():
-    # Add the JWT ID to the blacklist
-    try:
-        jti = get_jwt()["jti"]
-        jwt_blacklist.add(jti)
-    except KeyError as e:
-        logger.error("Error revoking JWT: %s", e)
-    except AttributeError as e:
-        logger.error("Error revoking JWT: %s", e)
-    except Exception as e:
-        logger.error("Error revoking JWT: %s", e)
 
 
 @restapi_bp.route("/<command>", methods=["GET"])
@@ -948,6 +1026,9 @@ def restapi_plc_get(command):
       500:
         description: No handler registered or execution error
     """
+    key = command_key("GET", command)
+    if not may(current_user.role, key):
+        return refuse(current_user.role, f"GET {command}")
     if _handler_callback_get is None:
         return jsonify({"error": "No handler registered"}), 500
 
@@ -1008,6 +1089,9 @@ def restapi_plc_post(command):
       500:
         description: No handler registered or execution error
     """
+    key = command_key("POST", command)
+    if not may(current_user.role, key):
+        return refuse(current_user.role, f"POST {command}")
     if _handler_callback_post is None:
         return jsonify({"error": "No handler registered"}), 500
 
