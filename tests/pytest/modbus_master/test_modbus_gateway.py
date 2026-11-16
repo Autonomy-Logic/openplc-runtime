@@ -45,7 +45,6 @@ def _config(devices):
     return cfg
 
 
-# --- Validation ----------------------------------------------------------
 
 def test_gateway_same_ip_different_slave_ids_is_valid():
     """Multiple TCP devices on one IP:port with distinct slave IDs (a gateway)."""
@@ -54,7 +53,7 @@ def test_gateway_same_ip_different_slave_ids_is_valid():
         _tcp_device("G2", slave_id=2),
         _tcp_device("G3", slave_id=10),
     ])
-    cfg.validate()  # must not raise
+    cfg.validate()
 
 
 def test_same_ip_same_slave_id_is_rejected():
@@ -70,7 +69,7 @@ def test_different_ip_same_slave_id_is_valid():
         _tcp_device("A", host="10.0.0.1", slave_id=1),
         _tcp_device("B", host="10.0.0.2", slave_id=1),
     ])
-    cfg.validate()  # must not raise
+    cfg.validate()
 
 
 def test_same_ip_different_port_is_valid():
@@ -78,10 +77,9 @@ def test_same_ip_different_port_is_valid():
         _tcp_device("A", port=502, slave_id=1),
         _tcp_device("B", port=503, slave_id=1),
     ])
-    cfg.validate()  # must not raise
+    cfg.validate()
 
 
-# --- Endpoint grouping ----------------------------------------------------
 
 def test_group_tcp_collapses_same_endpoint():
     """Devices sharing host:port land in one group (one shared connection)."""
