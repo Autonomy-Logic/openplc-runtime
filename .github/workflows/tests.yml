@@ -19,40 +19,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Outputs skip=true only on the run of the opened event of a pull_request to development whose PR, read from
-  # the API, carries ci-passed-locally. Later pushes to the PR never had a full local run, so they run every job.
+  # Outputs skip=true only on a pull_request to development whose head commit carries the commit status
+  # misterflow/local-ci = success, which MisterFlow sets on the exact SHA it pushes after running the unit suite,
+  # lint and type check on it. A push made without MisterFlow has no such status, so every job runs.
   local-ci:
-    name: Local CI label
+    name: Local CI status
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:
-      pull-requests: read
+      statuses: read
     outputs:
-      skip: ${{ steps.label.outputs.skip }}
+      skip: ${{ steps.status.outputs.skip }}
     steps:
-      - name: Read the ci-passed-locally label
-        id: label
+      - name: Read the misterflow/local-ci commit status
+        id: status
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          ACTION: ${{ github.event.action }}
           EVENT_BASE: ${{ github.event.pull_request.base.ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REPO: ${{ github.repository }}
+          STATUS_CONTEXT: misterflow/local-ci
         run: |
           skip=false
-          if [ "$EVENT_NAME" = "pull_request" ] && [ "$ACTION" = "opened" ] && [ "$EVENT_BASE" = "development" ]; then
-            # gh pr create adds the label a moment after the PR exists; the event payload does not carry it.
-            sleep 10
-            if state="$(gh api "repos/$REPO/pulls/$PR_NUMBER" \
-                --jq '.base.ref + " " + ([.labels[].name] | any(. == "ci-passed-locally") | tostring)')"; then
-              echo "PR #$PR_NUMBER: base and label present: $state"
-              if [ "$state" = "development true" ]; then
-                skip=true
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$EVENT_BASE" = "development" ]; then
+            # MisterFlow sets the status right after it pushes, so it can land a few seconds after this run starts:
+            # read every 3 seconds, up to about 12 seconds.
+            for attempt in 1 2 3 4 5; do
+              if ! contexts="$(gh api "repos/$REPO/commits/$HEAD_SHA/status?per_page=100" \
+                  --jq '.statuses[] | select(.state == "success") | .context')"; then
+                echo "::warning::Could not read the commit statuses of $HEAD_SHA; running every job."
+                break
               fi
-            else
-              echo "::warning::Could not read the labels of PR #$PR_NUMBER; running every job."
-            fi
+              if grep -Fqx -- "$STATUS_CONTEXT" <<< "$contexts"; then
+                skip=true
+                break
+              fi
+              if [ "$attempt" -lt 5 ]; then
+                sleep 3
+              fi
+            done
           fi
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
           echo "skip=$skip"
@@ -60,7 +66,7 @@ jobs:
   bootloader:
     name: Bootloader (Go)
     needs: local-ci
-    # Runs unless the label check output skip=true, including when that check failed.
+    # Runs unless the status check output skip=true, including when that check failed.
     if: ${{ !cancelled() && needs.local-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -94,7 +100,7 @@ jobs:
   webserver:
     name: Webserver (pytest)
     needs: local-ci
-    # Runs unless the label check output skip=true, including when that check failed.
+    # Runs unless the status check output skip=true, including when that check failed.
     if: ${{ !cancelled() && needs.local-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
