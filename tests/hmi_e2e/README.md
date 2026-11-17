@@ -8,9 +8,9 @@ docker build -t openplc-runtime:p9 .
 tests/hmi_e2e/run.sh openplc-runtime:p9 ~/path/to/openplc-editor
 ```
 
-Inputs: the runtime image built from this tree, and an openplc-editor worktree that has the HMI
-generator (`src/backend/shared/hmi/`), the HMI core (`resources/sources/hmi/`), STruC++ installed
-(`npm run setup:strucpp`) and the dev CLI bundle `openplc-cli.dev.js`. The client needs
+Inputs: the runtime image built from this tree, and an openplc-editor worktree with STruC++ installed
+(`npm run setup:strucpp`) and the dev CLI bundle `openplc-cli.dev.js` built from it
+(`npm run build:cli:dev`). The client needs
 `python-socketio[client]` in `venvs/test-env`; `run.sh` installs it when it is missing.
 
 Environment: `HMI_E2E_PORT` (host port, default 18543), `HMI_E2E_WORK` (work directory, kept),
@@ -21,12 +21,12 @@ Environment: `HMI_E2E_PORT` (host port, default 18543), `HMI_E2E_WORK` (work dir
 1. `project/` (program `Main` with `Run : BOOL` and `Level : REAL`, instance `instance0`, board
    OpenPLC Runtime v4) is compiled with `openplc-cli compile`, once as is and once with one more
    variable (the changed program of TC12).
-2. `gen_unit.ts` generates the HMI with the editor's `generateHmiUnit` (non-preview): a switch
-   writing `instance0.Main.Run`, a lamp showing it and a value display of `instance0.Main.Level`.
-   Tag addresses come from the bundle's `debug-map.json` (`INSTANCE0.RUN`: the debug map has no
-   configuration, resource or program type in its paths, so `resolve` drops them), `plcMd5` from
-   its `defines.h`. The upload's `hmi/` gets the unit, `hmi_unit.h`, the core's `.c`/`.h` files
-   (with `third_party/stb_truetype.h`), the font table, `manifest.json` and a minimal client.
+2. `project/hmi/` holds the screen (in a horizontal stack: a switch writing `instance0.Main.Run`, a
+   lamp showing it, a value display of `instance0.Main.Level` and a Sign out button calling
+   `HMI_SignOut()`) and its settings, so the editor's own build composes
+   `hmi/` inside the program bundle: the unit with tag addresses from the program's debug map and its
+   MD5, the HMI core and font table, `manifest.json`, and the browser client with its WebAssembly
+   module. The changed program of TC12 is compiled without `project/hmi/`, so it carries no `hmi/`.
 3. `e2e_hmi.py` starts the container (volume and container removed at the end), creates an admin
    and an operator, uploads program + `hmi/` + a test board plugin (`vpp_plugin/`,
    `vpp_plugins.conf`), and checks:
@@ -39,5 +39,12 @@ Environment: `HMI_E2E_PORT` (host port, default 18543), `HMI_E2E_WORK` (work dir
      `Level` rises, frames keep coming and the write is logged with the account;
    - TC11: PLC stop gives `stopped` with the socket connected; start gives `live` and frames
      again with the same socket and no new viewport;
+   - TC27: 100 taps on the switch, each timed from the release to the first frame showing the new
+     state (read from the display list's colours); every tap repaints, the slowest within 200 ms,
+     and the median, 95th percentile and maximum are printed;
+   - TC15: 1,000 press/release pairs, each held for a frame, give exactly 1,000 applied writes in the
+     host log (refused or failed writes are not counted) and leave `Run` as it was;
+   - sign-out: a second operator's tap on Sign out tells its browser `hmi_signed_out`, disconnects it,
+     refuses its token, is logged with the account, and leaves the first viewer connected;
    - TC12: an upload without `hmi/` keeps the HMI; after start the viewer gets `out_of_date`, no
      frames and no writes follow, and a viewer connecting later gets `out_of_date` too.

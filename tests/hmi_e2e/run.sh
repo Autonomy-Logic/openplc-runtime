@@ -5,7 +5,7 @@
 # End-to-end test of the Runtime v4 HMI (docs/HMI.md); see README.md.
 # Usage: tests/hmi_e2e/run.sh [IMAGE] [EDITOR_ROOT]
 #   IMAGE        runtime image built from this tree (default openplc-runtime:p9)
-#   EDITOR_ROOT  openplc-editor worktree with the HMI generator and openplc-cli.dev.js
+#   EDITOR_ROOT  openplc-editor worktree with openplc-cli.dev.js built from it
 # Env: HMI_E2E_PORT (host port, default 18543), HMI_E2E_WORK (work dir, default a temp dir),
 #      HMI_E2E_KEEP=1 (leave the container and work dir in place).
 
@@ -38,6 +38,8 @@ echo "### work dir: $WORK"
 rm -rf "$WORK/proj1" "$WORK/proj2" "$WORK/gen"
 cp -R "$HERE/project" "$WORK/proj1"
 cp -R "$HERE/project" "$WORK/proj2"
+# The changed program of TC12 is uploaded without hmi/.
+rm -rf "$WORK/proj2/hmi"
 # The changed program of TC12: one more variable, so its MD5 differs.
 cat > "$WORK/proj2/pous/programs/Main.st" << 'EOF'
 PROGRAM Main
@@ -63,9 +65,11 @@ B1="$WORK/proj1/build/$TARGET/src"
 B2="$WORK/proj2/build/$TARGET/src"
 grep -h PROGRAM_MD5 "$B1/defines.h" "$B2/defines.h"
 
-echo "### generate the HMI unit"
-(cd "$EDITOR" && TS_NODE_PROJECT="$EDITOR/tsconfig.json" npx ts-node -T -r tsconfig-paths/register \
-    "$HERE/gen_unit.ts" "$EDITOR" "$B1" "$WORK/gen")
+# The editor's build composed hmi/ inside the bundle; the upload adds it from its own folder.
+[ -f "$B1/hmi/manifest.json" ] || { echo "the build produced no hmi/" >&2; exit 1; }
+[ ! -e "$B2/hmi" ] || { echo "the build without screens produced hmi/" >&2; exit 1; }
+mkdir -p "$WORK/gen"
+mv "$B1/hmi" "$WORK/gen/hmi"
 
 echo "### run against $IMAGE on port $PORT"
 KEEP=()

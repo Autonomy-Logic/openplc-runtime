@@ -369,6 +369,7 @@ static int32_t dl_width(const Msg &frame)
 static const char *MD5 = "0123456789abcdef0123456789abcdef";
 static const uint32_t FAULT_KEY = 0xE000u; // HMI_FAKE_FAULT_KEY
 static const uint32_t SPIN_KEY  = 0xE001u; // HMI_FAKE_SPIN_KEY
+static const uint32_t SIGN_OUT_KEY = 0xE002u; // HMI_FAKE_SIGN_OUT_KEY
 
 static bool press_at(int32_t x, int32_t y)
 {
@@ -481,6 +482,21 @@ static void test_live_session()
     CHECK(read_until(fd, 0x84, 10).type == 0x84, "input overflow drops the viewer with BUSY");
     CHECK(wait_for([] { return logged("viewer 10 dropped: its input queue overflowed"); }, 1000),
           "overflow logged");
+
+    /* Screen code asking to sign out: SIGN_OUT once for that viewer, which stays open until the web
+     * server closes it. */
+    send_msg(fd, 0x01, open_payload(30, 2, 320, 240, 100, "ivy"));
+    CHECK(read_until(fd, 0x83, 30).type == 0x83, "viewer 30 opens");
+    send_key(fd, 30, SIGN_OUT_KEY);
+    Msg out = read_until(fd, 0x86, 30);
+    CHECK(out.type == 0x86 && out.payload.size() == 4, "a screen's sign-out answers SIGN_OUT 30");
+    CHECK(wait_for([] { return logged("ivy signed out from the screen (viewer 30)"); }, 1000),
+          "the sign-out is logged");
+    send_key(fd, 30, SIGN_OUT_KEY);
+    CHECK(read_until(fd, 0x86, 30, 400).type == 0, "SIGN_OUT is sent once per viewer");
+    std::vector<uint8_t> close30;
+    put_u32(close30, 30);
+    send_msg(fd, 0x02, close30);
 
     /* An IEC fault in one viewer's screens closes that viewer only. */
     send_msg(fd, 0x01, open_payload(20, 2, 320, 240, 100, "grace"));

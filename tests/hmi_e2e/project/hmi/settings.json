@@ -1,0 +1,5 @@
+{
+  "startScreen": "Overview",
+  "framePeriodMs": 100,
+  "roles": { "Overview": { "engineer": true, "operator": true, "viewer": true } }
+}

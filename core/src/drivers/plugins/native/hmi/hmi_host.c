@@ -119,7 +119,8 @@ typedef struct viewer
     void *unit;
     uint32_t status_warned;
     bool offer_warned;
-    bool was_open; /**< reached VIEWER_OPEN, so its close is logged */
+    bool was_open;      /**< reached VIEWER_OPEN, so its close is logged */
+    bool sign_out_sent; /**< its screen asked to sign out; SIGN_OUT went to the web server */
 } viewer_t;
 
 static plugin_runtime_args_t g_args;
@@ -607,6 +608,22 @@ static void render_viewer(viewer_t *v, uint32_t time_ms, bool *stored_any)
     {
         viewer_fault(v);
         return;
+    }
+
+    if (hmi_frame_sign_out() && !v->sign_out_sent)
+    {
+        v->sign_out_sent = true;
+        pthread_mutex_lock(&g_lock);
+        const bool open = v->state == VIEWER_OPEN;
+        if (open)
+            control_viewer(HMI_MSG_SIGN_OUT, v->id);
+        pthread_mutex_unlock(&g_lock);
+        if (open)
+        {
+            hmi_log(LOG_INFO, "%s signed out from the screen (viewer %u)", v->account,
+                    (unsigned)v->id);
+            wake_io();
+        }
     }
 
     const uint32_t status = hmi_frame_status();

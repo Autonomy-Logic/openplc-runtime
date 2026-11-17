@@ -22,6 +22,8 @@ import time
 from datetime import timedelta
 
 import pytest
+from jwt import InvalidSignatureError
+from sqlalchemy.exc import OperationalError
 
 flask_socketio = pytest.importorskip("flask_socketio", reason="flask_socketio not installed")
 
@@ -896,6 +898,82 @@ def test_a_screen_fault_reports_fault_to_that_viewer_and_the_next_viewport_reope
     host.send(hp.MSG_FAULT, struct.pack("<I", 4242))
     time.sleep(0.1)
     assert ws.is_connected(NS) and statuses(ws) == []
+
+
+def test_a_screen_sign_out_ends_that_session_and_disconnects_its_viewer(
+    sio, app, client, tokens, host
+):
+    ws, opened = open_viewer(sio, app, tokens["operator"], host)
+    other, _ = open_viewer(sio, app, tokens["viewer"], host)
+    wait_status(ws, "live")
+    host.send(hp.MSG_SIGN_OUT, struct.pack("<I", opened["viewer"]))
+    assert wait_for(lambda: not ws.is_connected(NS))
+    assert client.get("/api/whoami", headers=auth(tokens["operator"])).status_code == 401
+    assert client.get("/api/whoami", headers=auth(tokens["viewer"])).status_code == 200
+    assert other.is_connected(NS)
+    assert wait_for(
+        lambda: opened["viewer"] in [struct.unpack("<I", p)[0] for p in host.of_type(hp.MSG_CLOSE)]
+    )
+
+
+def test_a_sign_out_for_an_unknown_viewer_is_ignored_and_a_bad_one_drops_the_host(
+    sio, app, tokens, host
+):
+    ws, _ = open_viewer(sio, app, tokens["operator"], host)
+    host.send(hp.MSG_SIGN_OUT, struct.pack("<I", 999999))
+    time.sleep(0.1)
+    assert ws.is_connected(NS) and host.connections == 1
+    host.send(hp.MSG_SIGN_OUT, b"\x01")
+    assert wait_for(lambda: host.connections == 2)
+
+
+def test_a_database_error_on_sign_out_still_signs_the_browser_out_and_keeps_the_host(
+    sio, app, tokens, host, monkeypatch
+):
+    errors = []
+    monkeypatch.setattr(hp.logger, "error", lambda msg, *a: errors.append(msg % a))
+
+    def locked(_payload):
+        raise OperationalError("UPDATE", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(hp.sessions, "sign_out", locked)
+    ws, opened = open_viewer(sio, app, tokens["operator"], host)
+    other, _ = open_viewer(sio, app, tokens["viewer"], host)
+    host.send(hp.MSG_SIGN_OUT, struct.pack("<I", opened["viewer"]))
+    assert wait_for(lambda: not ws.is_connected(NS))
+    assert any("could not be ended on sign-out" in e for e in errors)
+    assert "hmi-host" in [t.name for t in threading.enumerate()]
+    assert other.is_connected(NS) and host.connections == 1
+
+
+def test_a_message_that_cannot_be_handled_reconnects_instead_of_ending_the_host_link(
+    sio, app, tokens, host, monkeypatch
+):
+    open_viewer(sio, app, tokens["operator"], host)
+    proxy = hp.get_proxy()
+
+    def broken(_code):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(proxy, "_host_status", broken)
+    host.send(hp.MSG_STATUS, bytes([hp.HOST_STATUS_LIVE]))
+    assert wait_for(lambda: host.connections == 2)
+    assert "hmi-host" in [t.name for t in threading.enumerate()]
+
+
+def test_a_sign_out_token_that_no_longer_verifies_ends_the_session_by_its_id(
+    sio, app, client, tokens, host, monkeypatch, warnings
+):
+    ws, opened = open_viewer(sio, app, tokens["operator"], host)
+
+    def unverifiable(_token, allow_expired=False):
+        raise InvalidSignatureError("signature mismatch")
+
+    monkeypatch.setattr(hp, "decode_token", unverifiable)
+    host.send(hp.MSG_SIGN_OUT, struct.pack("<I", opened["viewer"]))
+    assert wait_for(lambda: not ws.is_connected(NS))
+    assert client.get("/api/whoami", headers=auth(tokens["operator"])).status_code == 401
+    assert any("session ended by its id" in w for w in warnings)
 
 
 def test_a_fault_drops_the_frame_still_waiting_for_that_viewer(app, sock_path, hmi_dir):

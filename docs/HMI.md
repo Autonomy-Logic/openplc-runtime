@@ -15,7 +15,9 @@ browser ──HTTPS/WSS──> web server (webserver/hmi_proxy.py) ──Unix so
 
 ## Upload artefact
 
-A Runtime v4 upload may carry an `hmi/` folder next to the program sources:
+A runtime that accepts it says so with `"hmi": true` at `GET /api/capabilities` (unauthenticated);
+older runtimes refuse the client's `.js` file, and with it the upload. A Runtime v4 upload may carry an
+`hmi/` folder next to the program sources:
 
 | Path in the upload | Content |
 | --- | --- |
@@ -93,6 +95,8 @@ buffer format and the STruC++ debug format of `debug_read` / `debug_write` (soft
   when the queue is full. Each frame applies at most one press or release; more presses, releases and
   keys than the queue holds close the viewer with BUSY.
 - Writes: each write is logged with the viewer's account, tag path and new value.
+- Sign-out: a frame whose screen code called `HMI_SignOut()` (`hmi_frame_sign_out`) sends SIGN_OUT for its
+  viewer once and logs it with the account; the web server ends the session.
 - Faults: `hmi_unit_frame` returns false when the viewer's screen code raised an IEC fault (null
   reference, array bounds); the unit catches it, so a fault never reaches `plc_main`. The host logs
   it, closes that viewer and sends FAULT; the PLC and other viewers are unaffected.
@@ -126,6 +130,7 @@ Host to web server:
 | 0x83 | OPENED | `u32 viewer` |
 | 0x84 | BUSY | `u32 viewer` |
 | 0x85 | FAULT | `u32 viewer` (its screen code raised an IEC fault; the viewer was closed) |
+| 0x86 | SIGN_OUT | `u32 viewer` (its screen code called `HMI_SignOut`; sent once per viewer, which stays open) |
 
 Viewport sizes and pointer positions are CSS pixels, and one HMI logical unit is one CSS pixel, as in
 the editor's preview; `density` (the device pixel ratio) only sets the client's raster resolution.
@@ -157,7 +162,38 @@ the editor's preview; `density` (the device pixel ratio) only sets the client's 
   reopened with their last viewport on start), `out_of_date` (to every viewer, and to viewers that
   connect later), `busy` (the host refused this viewer, see Host; its next viewport retries), `fault` (its
   screen code raised an IEC fault and the viewer was closed; its next viewport reopens it) or
-  `unavailable` (no HMI installed).
+  `unavailable` (no HMI installed). `hmi_signed_out` follows a SIGN_OUT: the web server ends that
+  viewer's session as `/api/logout` does (its token and its renewals are refused from then on), tells
+  the browser and disconnects it. A token that no longer verifies (the signing key changed) has its
+  session ended by its id. If the database cannot end the session, the browser is still signed out
+  and disconnected, and the error is logged. A message the web server cannot handle drops the host
+  connection, which is then opened again; it never stops the HMI for good.
+
+## Browser client (`hmi/client/`)
+
+The editor ships the client with every HMI; the runtime serves it as it is. It is a page with no inline
+script or style (the CSP above), `hmi-client.js`, socket.io-client 4.8.1 and `hmi_client.wasm`: the
+HMI core's rasterizer with the unit's font table, so a browser draws a display list to the same pixels
+as the editor's preview. Licence texts ship beside it (`fonts-LICENSE.txt`, `socket.io-LICENSE.txt`).
+
+- Sign in: the page's form posts to `/api/login`; a 401 shows "Wrong user name or password.", a 429
+  the wait from `Retry-After`. The token is kept in the browser's `localStorage`, so a reload or a
+  browser restart on the same device stays signed in while the token is valid.
+- Renewal: `/api/renew` three minutes before the 15-minute expiry, retried every 30 seconds while the
+  device cannot be reached. A token that expires first (the display was unreachable for longer than
+  its lifetime), a refused renewal or a disconnect whose `/api/whoami` answers 401 return to the form.
+- Viewer: `/api/hmi` with `auth.token` read at each (re)connection; events are numbered from 0 per
+  connection. The first viewport is the window's size and device pixel ratio, sent again on resize.
+  Pointer moves are sent at most once per animation frame while pressed; keys carry printable code
+  points plus Enter, Backspace, Escape and Tab.
+- Notices: `stopped` "PLC stopped", `out_of_date` "HMI out of date, rebuild the project", `busy` "Device
+  busy, try later" and `fault` (both asked again after 5 seconds), `unavailable` "No HMI installed",
+  and "Device unreachable, reconnecting" while the socket is down.
+- Sign out: only through the project's screens. A screen's button calls `HMI_SignOut()` (the designer's
+  "Sign out" action); the device ends the session and the client returns to the form on
+  `hmi_signed_out`. The client draws nothing over the screens; a session also ends when its token
+  expires unrenewed, is revoked, or the account changes.
+- While a notice shows, the last frame stays visible, dimmed and grey, and takes no input.
 
 ## Known limits
 
