@@ -16,7 +16,7 @@ browser ──HTTPS/WSS──> web server (webserver/hmi_proxy.py) ──Unix so
 ## Upload artefact
 
 A runtime that accepts it says so with `"hmi": true` at `GET /api/capabilities` (unauthenticated);
-older runtimes refuse the client's `.js`, `.wasm` and `.html` files. A Runtime v4 upload may carry an
+older runtimes refuse the client's `.js` file, and with it the upload. A Runtime v4 upload may carry an
 `hmi/` folder next to the program sources:
 
 | Path in the upload | Content |
@@ -164,7 +164,10 @@ the editor's preview; `density` (the device pixel ratio) only sets the client's 
   screen code raised an IEC fault and the viewer was closed; its next viewport reopens it) or
   `unavailable` (no HMI installed). `hmi_signed_out` follows a SIGN_OUT: the web server ends that
   viewer's session as `/api/logout` does (its token and its renewals are refused from then on), tells
-  the browser and disconnects it.
+  the browser and disconnects it. A token that no longer verifies (the signing key changed) has its
+  session ended by its id. If the database cannot end the session, the browser is still signed out
+  and disconnected, and the error is logged. A message the web server cannot handle drops the host
+  connection, which is then opened again; it never stops the HMI for good.
 
 ## Browser client (`hmi/client/`)
 

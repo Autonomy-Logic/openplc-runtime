@@ -44,7 +44,7 @@ TLS.verify_mode = ssl.CERT_NONE
 # The switch is the screen's first element: Root column, padding 12, height 44.
 SWITCH_X, SWITCH_Y = 40, 34
 SIGN_OUT_X, SIGN_OUT_Y = 400, 202
-# The switch and the lamp draw Run TRUE in the theme's Success green: ARGB 0xFF16A34A, little endian in a display list.
+# Run TRUE is drawn in the theme's Success green, ARGB 0xFF16A34A, little endian in a display list.
 RUN_ON_COLOR = bytes([0x4A, 0xA3, 0x16, 0xFF])
 TAP_REPAINT_MS = 200
 CSP = (
@@ -184,7 +184,12 @@ def wait_log(token: str, needle: str, timeout: float = 10.0) -> bool:
 
 
 def write_count(token: str) -> int:
-    return len(log_lines(container_log(), "write by op1"))
+    """Writes by op1 the host applied; refused and failed writes are logged too and not counted."""
+    return sum(
+        1
+        for line in log_lines(container_log(), "write by op1:")
+        if " refused: " not in line and " failed (status" not in line
+    )
 
 
 def container_log() -> str:
@@ -464,7 +469,7 @@ def main() -> None:
         (current, toggled),
     )
 
-    # TC27: tap to repaint, through the runtime: from the release to the frame showing the switch's new state.
+    # TC27: tap to repaint through the runtime, from the release to the frame showing the new state.
     delays: list[float] = []
     for _ in range(100):
         on = v.shows_run_on()
@@ -478,13 +483,18 @@ def main() -> None:
     delays.sort()
     if delays:
         info(
-            f"TC27 tap to repaint over {len(delays)} taps: median {delays[len(delays) // 2]:.0f} ms, "
+            f"TC27 tap to repaint over {len(delays)} taps: "
+            f"median {delays[len(delays) // 2]:.0f} ms, "
             f"p95 {delays[int(len(delays) * 0.95) - 1]:.0f} ms, max {delays[-1]:.0f} ms"
         )
     check("TC27 every tap repainted", len(delays) == 100, len(delays))
-    check(f"TC27 each repaint within {TAP_REPAINT_MS} ms", bool(delays) and delays[-1] <= TAP_REPAINT_MS, delays[-5:])
+    check(
+        f"TC27 each repaint within {TAP_REPAINT_MS} ms",
+        bool(delays) and delays[-1] <= TAP_REPAINT_MS,
+        delays[-5:],
+    )
 
-    # TC15: 1,000 press/release pairs, each held for at least one frame, all registered as writes, in order.
+    # TC15: 1,000 press/release pairs, each held for a frame, all applied as writes, in order.
     writes_before = write_count(admin)
     run_before = v.shows_run_on()
     for _ in range(1000):
@@ -495,11 +505,16 @@ def main() -> None:
     deadline = time.time() + 30
     while time.time() < deadline and write_count(admin) < writes_before + 1000:
         time.sleep(1)
-    check("TC15 1,000 taps, 1,000 writes", write_count(admin) - writes_before == 1000, write_count(admin) - writes_before)
-    check("TC15 an even number of taps leaves Run as it was", v.wait_run_shown(run_before) is not None)
+    written = write_count(admin) - writes_before
+    check("TC15 1,000 taps, 1,000 writes", written == 1000, written)
+    check(
+        "TC15 an even number of taps leaves Run as it was",
+        v.wait_run_shown(run_before) is not None,
+    )
 
     # Sign-out from the screen's own button ends that session only.
-    r = api("POST", "/create-user", admin, {"username": "op2", "password": "op2-pass", "role": "operator"})
+    op2 = {"username": "op2", "password": "op2-pass", "role": "operator"}
+    r = api("POST", "/create-user", admin, op2)
     check("create operator op2", r.status_code == 201, r.text)
     leaving = Viewer(login("op2", "op2-pass"))
     leaving.connect()
@@ -507,13 +522,20 @@ def main() -> None:
     leaving.viewport()
     check("op2 viewer live", leaving.wait_status("live", t_so))
     leaving.click(SIGN_OUT_X, SIGN_OUT_Y)
+    # The event and the disconnect are handled on separate threads, in either order.
     deadline = time.time() + 10
-    while time.time() < deadline and leaving.sio.connected:
+    while time.time() < deadline and (leaving.sio.connected or leaving.signed_out == 0):
         time.sleep(0.1)
     check("sign-out button: the browser is told", leaving.signed_out == 1, leaving.signed_out)
     check("sign-out button: the viewer is disconnected", not leaving.sio.connected)
-    check("sign-out button: the session's token is refused", api("GET", "/whoami", leaving.token).status_code == 401)
-    check("sign-out button: logged with the account", wait_log(admin, "op2 signed out from the screen", 10))
+    check(
+        "sign-out button: the session's token is refused",
+        api("GET", "/whoami", leaving.token).status_code == 401,
+    )
+    check(
+        "sign-out button: logged with the account",
+        wait_log(admin, "op2 signed out from the screen", 10),
+    )
     check("sign-out button: other viewers stay", v.sio.connected and v.disconnects == 0)
 
     # TC12: an upload without hmi/ keeps the HMI, which is then out of date.

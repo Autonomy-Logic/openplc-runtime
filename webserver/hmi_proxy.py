@@ -31,9 +31,12 @@ from flask_jwt_extended import current_user, decode_token, verify_jwt_in_request
 from flask_jwt_extended.exceptions import JWTExtendedException
 from flask_socketio import ConnectionRefusedError as SocketRefused
 from flask_socketio import SocketIO
+import jwt
 from jwt import PyJWTError
+from sqlalchemy.exc import SQLAlchemyError
 
 from webserver import sessions
+from webserver.database import db
 from webserver.access import ADMIN_ROLE, ENGINEER_ROLE, OPERATOR_ROLE, VIEWER_ROLE, may
 from webserver.logger import get_logger
 from webserver.restapi import check_if_token_revoked, user_lookup_callback
@@ -737,6 +740,8 @@ class HmiProxy:
                 logger.warning("HMI host sent a malformed message (%s), reconnecting", e)
             except OSError as e:
                 logger.info("HMI host connection lost: %s", e)
+            except Exception:
+                logger.exception("HMI host message could not be handled, reconnecting")
             self._close_host()
             self._host_gone()
             self._stop.wait(RETRY_INTERVAL_S)
@@ -822,18 +827,57 @@ class HmiProxy:
             raise ProtocolError(f"unknown type 0x{msg_type:02x}")
 
     def _sign_out(self, viewer: Viewer) -> None:
-        """Ends the viewer's session as /api/logout does, tells its browser and disconnects it."""
+        """Ends the viewer's session as /api/logout does, tells its browser and disconnects it.
+
+        The browser is signed out and disconnected even when the session could not be ended; the
+        log says which happened.
+        """
         with self._app.app_context():
             try:
-                payload: dict[str, object] = decode_token(viewer.token, allow_expired=True)
-                sessions.sign_out(payload)
-            except (PyJWTError, JWTExtendedException) as e:
-                logger.warning(
-                    "HMI viewer %s: sign-out token did not verify: %s", viewer.username, e
+                ended = self._end_session(viewer)
+            except SQLAlchemyError as e:
+                db.session.rollback()
+                ended = False
+                logger.error(
+                    "HMI viewer %s: the session could not be ended on sign-out: %s",
+                    viewer.username,
+                    e,
                 )
-        logger.info("HMI viewer %s signed out from its screen", viewer.username)
+        if ended:
+            logger.info("HMI viewer %s signed out from its screen", viewer.username)
         self._emit("hmi_signed_out", {}, viewer.sid, None)
         self._disconnect(viewer.sid)
+
+    @staticmethod
+    def _end_session(viewer: Viewer) -> bool:
+        """Ends the session of the viewer's token, which verified when the viewer connected.
+
+        When it no longer verifies (the signing key changed), the session is ended by its id.
+        """
+        try:
+            payload: dict[str, object] = decode_token(viewer.token, allow_expired=True)
+        except (PyJWTError, JWTExtendedException) as e:
+            try:
+                claims: object = jwt.decode(viewer.token, options={"verify_signature": False})
+            except PyJWTError:
+                claims = None
+            sid = claims.get(sessions.SID_CLAIM) if isinstance(claims, dict) else None
+            if not isinstance(sid, str):
+                logger.error(
+                    "HMI viewer %s: sign-out token unreadable (%s); session not ended",
+                    viewer.username,
+                    e,
+                )
+                return False
+            sessions.end_session(sid, "signed out from the screen")
+            logger.warning(
+                "HMI viewer %s: sign-out token did not verify (%s); session ended by its id",
+                viewer.username,
+                e,
+            )
+            return True
+        sessions.sign_out(payload)
+        return True
 
     def _host_status(self, code: int) -> None:
         state = STATE_LIVE if code == HOST_STATUS_LIVE else STATE_OUT_OF_DATE

@@ -21,8 +21,9 @@ Environment: `HMI_E2E_PORT` (host port, default 18543), `HMI_E2E_WORK` (work dir
 1. `project/` (program `Main` with `Run : BOOL` and `Level : REAL`, instance `instance0`, board
    OpenPLC Runtime v4) is compiled with `openplc-cli compile`, once as is and once with one more
    variable (the changed program of TC12).
-2. `project/hmi/` holds the screen (a switch writing `instance0.Main.Run`, a lamp showing it and a
-   value display of `instance0.Main.Level`) and its settings, so the editor's own build composes
+2. `project/hmi/` holds the screen (in a horizontal stack: a switch writing `instance0.Main.Run`, a
+   lamp showing it, a value display of `instance0.Main.Level` and a Sign out button calling
+   `HMI_SignOut()`) and its settings, so the editor's own build composes
    `hmi/` inside the program bundle: the unit with tag addresses from the program's debug map and its
    MD5, the HMI core and font table, `manifest.json`, and the browser client with its WebAssembly
    module. The changed program of TC12 is compiled without `project/hmi/`, so it carries no `hmi/`.
@@ -38,5 +39,12 @@ Environment: `HMI_E2E_PORT` (host port, default 18543), `HMI_E2E_WORK` (work dir
      `Level` rises, frames keep coming and the write is logged with the account;
    - TC11: PLC stop gives `stopped` with the socket connected; start gives `live` and frames
      again with the same socket and no new viewport;
+   - TC27: 100 taps on the switch, each timed from the release to the first frame showing the new
+     state (read from the display list's colours); every tap repaints, the slowest within 200 ms,
+     and the median, 95th percentile and maximum are printed;
+   - TC15: 1,000 press/release pairs, each held for a frame, give exactly 1,000 applied writes in the
+     host log (refused or failed writes are not counted) and leave `Run` as it was;
+   - sign-out: a second operator's tap on Sign out tells its browser `hmi_signed_out`, disconnects it,
+     refuses its token, is logged with the account, and leaves the first viewer connected;
    - TC12: an upload without `hmi/` keeps the HMI; after start the viewer gets `out_of_date`, no
      frames and no writes follow, and a viewer connecting later gets `out_of_date` too.
