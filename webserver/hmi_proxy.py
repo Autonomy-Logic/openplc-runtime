@@ -64,6 +64,7 @@ MSG_STATUS = 0x82
 MSG_OPENED = 0x83
 MSG_BUSY = 0x84
 MSG_FAULT = 0x85
+MSG_SIGN_OUT = 0x86
 MAX_MESSAGE = 4 * 1024 * 1024
 HOST_STATUS_LIVE = 0
 HOST_STATUS_OUT_OF_DATE = 1
@@ -789,6 +790,13 @@ class HmiProxy:
             if len(payload) != 1 or payload[0] not in (HOST_STATUS_LIVE, HOST_STATUS_OUT_OF_DATE):
                 raise ProtocolError("bad STATUS")
             self._host_status(payload[0])
+        elif msg_type == MSG_SIGN_OUT:
+            if len(payload) != 4:
+                raise ProtocolError("bad SIGN_OUT")
+            with self._lock:
+                viewer = self._by_id.get(struct.unpack("<I", payload)[0])
+            if viewer is not None:
+                self._sign_out(viewer)
         elif msg_type in (MSG_OPENED, MSG_BUSY, MSG_FAULT):
             if len(payload) != 4:
                 raise ProtocolError("bad OPENED/BUSY/FAULT")
@@ -812,6 +820,20 @@ class HmiProxy:
                 self._set_status(viewer, STATE_FAULT)
         else:
             raise ProtocolError(f"unknown type 0x{msg_type:02x}")
+
+    def _sign_out(self, viewer: Viewer) -> None:
+        """Ends the viewer's session as /api/logout does, tells its browser and disconnects it."""
+        with self._app.app_context():
+            try:
+                payload: dict[str, object] = decode_token(viewer.token, allow_expired=True)
+                sessions.sign_out(payload)
+            except (PyJWTError, JWTExtendedException) as e:
+                logger.warning(
+                    "HMI viewer %s: sign-out token did not verify: %s", viewer.username, e
+                )
+        logger.info("HMI viewer %s signed out from its screen", viewer.username)
+        self._emit("hmi_signed_out", {}, viewer.sid, None)
+        self._disconnect(viewer.sid)
 
     def _host_status(self, code: int) -> None:
         state = STATE_LIVE if code == HOST_STATUS_LIVE else STATE_OUT_OF_DATE

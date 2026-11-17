@@ -898,6 +898,33 @@ def test_a_screen_fault_reports_fault_to_that_viewer_and_the_next_viewport_reope
     assert ws.is_connected(NS) and statuses(ws) == []
 
 
+def test_a_screen_sign_out_ends_that_session_and_disconnects_its_viewer(
+    sio, app, client, tokens, host
+):
+    ws, opened = open_viewer(sio, app, tokens["operator"], host)
+    other, _ = open_viewer(sio, app, tokens["viewer"], host)
+    wait_status(ws, "live")
+    host.send(hp.MSG_SIGN_OUT, struct.pack("<I", opened["viewer"]))
+    assert wait_for(lambda: not ws.is_connected(NS))
+    assert client.get("/api/whoami", headers=auth(tokens["operator"])).status_code == 401
+    assert client.get("/api/whoami", headers=auth(tokens["viewer"])).status_code == 200
+    assert other.is_connected(NS)
+    assert wait_for(
+        lambda: opened["viewer"] in [struct.unpack("<I", p)[0] for p in host.of_type(hp.MSG_CLOSE)]
+    )
+
+
+def test_a_sign_out_for_an_unknown_viewer_is_ignored_and_a_bad_one_drops_the_host(
+    sio, app, tokens, host
+):
+    ws, _ = open_viewer(sio, app, tokens["operator"], host)
+    host.send(hp.MSG_SIGN_OUT, struct.pack("<I", 999999))
+    time.sleep(0.1)
+    assert ws.is_connected(NS) and host.connections == 1
+    host.send(hp.MSG_SIGN_OUT, b"\x01")
+    assert wait_for(lambda: host.connections == 2)
+
+
 def test_a_fault_drops_the_frame_still_waiting_for_that_viewer(app, sock_path, hmi_dir):
     emitted = []
     proxy = hp.HmiProxy(app, lambda *args: emitted.append(args), lambda sid: None)

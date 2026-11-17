@@ -56,7 +56,8 @@ extern "C"
         HMI_MSG_STATUS   = 0x82,
         HMI_MSG_OPENED   = 0x83,
         HMI_MSG_BUSY     = 0x84,
-        HMI_MSG_FAULT    = 0x85
+        HMI_MSG_FAULT    = 0x85,
+        HMI_MSG_SIGN_OUT = 0x86
     } hmi_msg_type_t;
 
     typedef enum
@@ -108,7 +109,8 @@ extern "C"
     /** Whether s[0..len) is well-formed UTF-8 without control characters. */
     bool hmi_wire_name_valid(const uint8_t *s, size_t len);
 
-    /** Writes OPENED, BUSY or FAULT into out (HMI_WIRE_VIEWER_MSG bytes); returns its length. */
+    /** Writes OPENED, BUSY, FAULT or SIGN_OUT into out (HMI_WIRE_VIEWER_MSG bytes); returns its
+     * length. */
     size_t hmi_wire_encode_viewer(uint8_t type, uint32_t viewer, uint8_t *out);
 
     /** Writes a STATUS message into out (HMI_WIRE_STATUS_MSG bytes); returns its length. */

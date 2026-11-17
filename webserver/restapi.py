@@ -127,6 +127,12 @@ def restapi_capabilities():
             minEditorVersion:
               type: string
               description: Oldest OpenPLC Editor version this runtime accepts programs from
+            projectSnapshot:
+              type: boolean
+              description: Uploads may carry a source-project snapshot
+            hmi:
+              type: boolean
+              description: Uploads may carry an hmi/ folder (docs/HMI.md)
     """
     return (
         jsonify(
@@ -137,6 +143,8 @@ def restapi_capabilities():
                 # upload and retrieve it later. Unauthenticated like the rest of
                 # this endpoint, so a client can decide before logging in.
                 "projectSnapshot": True,
+                # Uploads may carry an hmi/ folder (docs/HMI.md); older runtimes refuse its files.
+                "hmi": True,
             }
         ),
         200,

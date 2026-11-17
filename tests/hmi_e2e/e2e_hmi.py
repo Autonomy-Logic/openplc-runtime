@@ -43,6 +43,10 @@ TLS.check_hostname = False
 TLS.verify_mode = ssl.CERT_NONE
 # The switch is the screen's first element: Root column, padding 12, height 44.
 SWITCH_X, SWITCH_Y = 40, 34
+SIGN_OUT_X, SIGN_OUT_Y = 400, 202
+# The switch and the lamp draw Run TRUE in the theme's Success green: ARGB 0xFF16A34A, little endian in a display list.
+RUN_ON_COLOR = bytes([0x4A, 0xA3, 0x16, 0xFF])
+TAP_REPAINT_MS = 200
 CSP = (
     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; "
     "img-src 'self' data:; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
@@ -237,6 +241,8 @@ class Viewer:
     token: str
     statuses: list[tuple[float, str]] = field(default_factory=list)
     frames: list[tuple[float, int]] = field(default_factory=list)
+    last_frame: bytes = b""
+    signed_out: int = 0
     connects: int = 0
     disconnects: int = 0
     n: int = 0
@@ -258,9 +264,15 @@ class Viewer:
         def _status(data: dict[str, str]) -> None:
             self.statuses.append((time.monotonic(), str(data.get("state"))))
 
+        @self.sio.on("hmi_signed_out", namespace=ns)
+        def _signed_out(*_a: object) -> None:
+            self.signed_out += 1
+
         @self.sio.on("dl", namespace=ns)
         def _dl(data: bytes) -> object:
             self.frames.append((time.monotonic(), len(data) if isinstance(data, (bytes, bytearray)) else -1))
+            if isinstance(data, (bytes, bytearray)):
+                self.last_frame = bytes(data)
             return True if self.ack else None
 
     def connect(self) -> None:
@@ -278,6 +290,21 @@ class Viewer:
         self.send({"t": "p", "k": 0, "x": x, "y": y})
         time.sleep(0.15)
         self.send({"t": "p", "k": 2, "x": x, "y": y})
+
+    def press(self, kind: int, x: float, y: float) -> None:
+        self.send({"t": "p", "k": kind, "x": x, "y": y})
+
+    def shows_run_on(self) -> bool:
+        return RUN_ON_COLOR in self.last_frame
+
+    def wait_run_shown(self, on: bool, timeout: float = 5.0) -> float | None:
+        """Seconds until a frame shows Run in the state ``on``; None when none does in time."""
+        start = time.monotonic()
+        while time.monotonic() - start < timeout:
+            if self.shows_run_on() == on:
+                return time.monotonic() - start
+            time.sleep(0.002)
+        return None
 
     def wait_status(self, state: str, since: float, timeout: float = 15.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -436,6 +463,58 @@ def main() -> None:
         current is not None and toggled is not None and toggled[0] == 1 - current[0],
         (current, toggled),
     )
+
+    # TC27: tap to repaint, through the runtime: from the release to the frame showing the switch's new state.
+    delays: list[float] = []
+    for _ in range(100):
+        on = v.shows_run_on()
+        v.press(0, SWITCH_X, SWITCH_Y)
+        time.sleep(0.12)
+        v.press(2, SWITCH_X, SWITCH_Y)
+        took = v.wait_run_shown(not on)
+        if took is not None:
+            delays.append(took * 1000)
+        time.sleep(0.12)
+    delays.sort()
+    if delays:
+        info(
+            f"TC27 tap to repaint over {len(delays)} taps: median {delays[len(delays) // 2]:.0f} ms, "
+            f"p95 {delays[int(len(delays) * 0.95) - 1]:.0f} ms, max {delays[-1]:.0f} ms"
+        )
+    check("TC27 every tap repainted", len(delays) == 100, len(delays))
+    check(f"TC27 each repaint within {TAP_REPAINT_MS} ms", bool(delays) and delays[-1] <= TAP_REPAINT_MS, delays[-5:])
+
+    # TC15: 1,000 press/release pairs, each held for at least one frame, all registered as writes, in order.
+    writes_before = write_count(admin)
+    run_before = v.shows_run_on()
+    for _ in range(1000):
+        v.press(0, SWITCH_X, SWITCH_Y)
+        time.sleep(0.11)
+        v.press(2, SWITCH_X, SWITCH_Y)
+        time.sleep(0.11)
+    deadline = time.time() + 30
+    while time.time() < deadline and write_count(admin) < writes_before + 1000:
+        time.sleep(1)
+    check("TC15 1,000 taps, 1,000 writes", write_count(admin) - writes_before == 1000, write_count(admin) - writes_before)
+    check("TC15 an even number of taps leaves Run as it was", v.wait_run_shown(run_before) is not None)
+
+    # Sign-out from the screen's own button ends that session only.
+    r = api("POST", "/create-user", admin, {"username": "op2", "password": "op2-pass", "role": "operator"})
+    check("create operator op2", r.status_code == 201, r.text)
+    leaving = Viewer(login("op2", "op2-pass"))
+    leaving.connect()
+    t_so = time.monotonic()
+    leaving.viewport()
+    check("op2 viewer live", leaving.wait_status("live", t_so))
+    leaving.click(SIGN_OUT_X, SIGN_OUT_Y)
+    deadline = time.time() + 10
+    while time.time() < deadline and leaving.sio.connected:
+        time.sleep(0.1)
+    check("sign-out button: the browser is told", leaving.signed_out == 1, leaving.signed_out)
+    check("sign-out button: the viewer is disconnected", not leaving.sio.connected)
+    check("sign-out button: the session's token is refused", api("GET", "/whoami", leaving.token).status_code == 401)
+    check("sign-out button: logged with the account", wait_log(admin, "op2 signed out from the screen", 10))
+    check("sign-out button: other viewers stay", v.sio.connected and v.disconnects == 0)
 
     # TC12: an upload without hmi/ keeps the HMI, which is then out of date.
     zip2 = build_zip([(ARGS.bundle2, "")])

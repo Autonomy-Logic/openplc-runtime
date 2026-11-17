@@ -35,6 +35,8 @@
 #define HMI_FAKE_FAULT_KEY 0xE000u
 /** Key code that makes hmi_unit_frame never return. */
 #define HMI_FAKE_SPIN_KEY 0xE001u
+/** Key code that makes the frame ask to sign the viewer out. */
+#define HMI_FAKE_SIGN_OUT_KEY 0xE002u
 
 namespace
 {
@@ -183,6 +185,11 @@ bool hmi_unit_frame(void *unit)
         return false;
     while (key == HMI_FAKE_SPIN_KEY)
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    if (key == HMI_FAKE_SIGN_OUT_KEY)
+    {
+        hmi_sign_out();
+        return true;
+    }
     if (key != 0)
     {
         const int16_t code = static_cast<int16_t>(key);
