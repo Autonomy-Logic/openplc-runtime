@@ -90,7 +90,10 @@ cd bootloader && test -z "$(gofmt -l .)" && go vet ./... && go test -race -count
   `modbus_master` and `modbus_slave` suites (red on the base branch), plus the named plugin suites known
   green; shellcheck on `install.sh`, `scripts/install-docker.sh`, `windows/provision-msys2.sh` and
   `tests/integration/harness.sh`; a check that Windows and Docker callers run `install.sh --native`.
-  Ceedling, `tests/host`, `tests/lifecycle` and `tests/integration` do not run in CI.
+  On a PR to `development` whose head commit carries the commit status `misterflow/local-ci` = `success` (set by
+  MisterFlow on the exact SHA it pushes after running the checks locally), the run skips the Bootloader (Go) and
+  Webserver (pytest) jobs (reported as passed); a push without that status runs them, and the installer scripts job
+  and CLA always run. Ceedling, `tests/host`, `tests/lifecycle` and `tests/integration` do not run in CI.
 - End-to-end: a program deployed to the runtime and exercised over its protocols (e.g. Modbus) or from
   the editor/Edge. Existing suites: `tests/lifecycle/` (boots a real `plc_main` with a compiled program and
   drives it over the command socket, Linux or its container, see its README) and `tests/integration/`
