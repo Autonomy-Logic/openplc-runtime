@@ -494,6 +494,118 @@ def test_switch_readable_and_interlock():
     rt.kill()
 
 
+STOPFAIL_CONF_LINE = (
+    "stopfail,/fixtures/stopfail/stopfail_plugin.py,1,0,/fixtures/stopfail/stopfail_config.json\n"
+)
+IMAGE_RELEASED = "[image_tables] cleared all pointers"
+
+
+def stop_failed_line(name):
+    return (
+        f"Stop failed: plugin {name} did not stop; keeping the I/O image and entering ERROR"
+        " until the runtime restarts"
+    )
+
+
+class StopFailPlugin:
+    """Append the enabled stopfail Python plugin to plugins.conf, and restore the file on exit."""
+
+    def __enter__(self):
+        with open("plugins.conf") as f:
+            self.saved = f.read()
+        base = self.saved if self.saved.endswith("\n") or not self.saved else self.saved + "\n"
+        with open("plugins.conf", "w") as f:
+            f.write(base + STOPFAIL_CONF_LINE)
+        return self
+
+    def __exit__(self, *exc):
+        with open("plugins.conf", "w") as f:
+            f.write(self.saved)
+
+
+def stop_failed_case(tag, env, stop_marker):
+    """Stop a PLC whose stopfail plugin refuses to stop and check the freeze and the latch.
+
+    Returns (runtime, journal offset of the STOP, whether the PLC reached RUNNING first).
+    The runtime is left alive for the caller.
+    """
+    set_switch("RUN")
+    rt = Runtime(tag, init_ms=200, env=env)
+    st = ensure_running()
+    record("stopfail", f"{tag}: reached RUNNING before the test", st == "STATUS:RUNNING", st)
+    if st != "STATUS:RUNNING":
+        rt.dump()
+        return rt, len(rt.journal()), False
+    started = "Plugin stopfail started successfully" in rt.journal()
+    record("stopfail", f"{tag}: the stopfail plugin was started", started)
+
+    mark = len(rt.journal())
+    reply = cmd("STOP")
+    st, secs = wait_final()
+    landed = f"{reply} -> {st} in {secs:.2f}s"
+    record("stopfail", f"{tag}: STOP lands STATUS:ERROR", st == "STATUS:ERROR", landed)
+    after = rt.journal()[mark:]
+    fired = stop_marker in after
+    called = "stop_loop ran" if fired else "stop_loop never ran -- test inconclusive"
+    record("stopfail", f"{tag}: the failing stop_loop was actually called", fired, called)
+    named = stop_failed_line("stopfail") in after
+    record("stopfail", f"{tag}: journal names the plugin that did not stop", named)
+    mapped = rt.program_mapped()
+    unmapped = "mapped" if mapped else "unmapped -- the teardown ran past the failed stop"
+    record("stopfail", f"{tag}: program library still mapped after the stop", mapped, unmapped)
+
+    reply = cmd("START")
+    refused = reply == "START:ERROR"
+    record("stopfail", f"{tag}: START answers START:ERROR while latched", refused, reply)
+    samples = []
+    for _ in range(10):
+        time.sleep(0.1)
+        samples.append(status())
+    stayed = all(s == "STATUS:ERROR" for s in samples)
+    seen = ", ".join(sorted(set(samples)))
+    record("stopfail", f"{tag}: STATUS stays STATUS:ERROR after the START", stayed, seen)
+
+    released = IMAGE_RELEASED in rt.journal()[mark:]
+    freed = "released -- the image was freed under a live plugin" if released else "kept"
+    record("stopfail", f"{tag}: I/O image not released after the stop", not released, freed)
+    return rt, mark, True
+
+
+def test_stop_failed():
+    """A plugin whose stop fails keeps the image, journal and library, and latches ERROR.
+
+    Pre-fix plugin_driver_stop's result was ignored: the teardown went on, the image
+    was released, the stop landed STOPPED and a START was accepted.
+    """
+    banner("a plugin that does not stop: image kept, ERROR latched until restart")
+    with StopFailPlugin():
+        rt, mark, ran = stop_failed_case(
+            "stopfail_false", None, "stopfail: stop_loop returning False"
+        )
+        if not ran:
+            exited, detail = False, "skipped, runtime not running"
+        else:
+            rc, took = rt.signal_and_wait(signal.SIGTERM)
+            if rc is None:
+                exited, detail = False, "HUNG, needed SIGKILL"
+            elif rc < 0:
+                exited, detail = False, f"died on signal {-rc}"
+            else:
+                exited, detail = True, f"rc={rc} in {took:.2f}s"
+        record("stopfail", "SIGTERM while latched: process exits", exited, detail)
+        if ran:
+            released = IMAGE_RELEASED in rt.journal()[mark:]
+            kept = "released" if released else "kept"
+            name = "SIGTERM while latched: frozen image not released on the way out"
+            record("stopfail", name, not released, kept)
+        rt.kill()
+
+        rt, _, _ = stop_failed_case(
+            "stopfail_raise", {"STOPFAIL_MODE": "raise"}, "stopfail: stop_loop raising"
+        )
+        rt.kill()
+
+
 ONLY = os.environ.get("SUITE_ONLY", "")
 
 
@@ -509,6 +621,7 @@ run("phantom", test_phantom_stop)
 run("switch", test_switch_intent)
 run("misc", test_switch_readable_and_interlock)
 run("bootswitch", test_boot_switch_vpp)
+run("stopfail", test_stop_failed)
 
 print("\n=== summary")
 by_finding = {}
