@@ -412,6 +412,10 @@ name); a licence with the same `order_id` replaces the stored one.
 | 413 | Body larger than 4 KiB |
 | 500 | The licence could not be written |
 
+A device without a hardware ID cannot store licences. That includes Windows (MSYS2) installs and
+containers without the privileges to see the host hardware (privileged with the host network, as
+the bootloader runs it); see [HARDWARE_ID.md](HARDWARE_ID.md#record-and-storage).
+
 **Where licences live:**
 - On its own hardware: `licenses/<order_id>.license` in the persistent data directory. Stored
   licences are reported, at most 100, those whose `hardware_id` is this device's first.

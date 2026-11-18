@@ -8,7 +8,8 @@
 # Usage: hardware-id.sh               print the ID (hw2:<64 hex>), exit 2 when none can be derived
 #        hardware-id.sh --elements    print "<kind> <element hash>" lines
 #        hardware-id.sh --record      print the ID line followed by the element lines
-#        hardware-id.sh --store FILE  write the record to FILE unless FILE already holds one
+#        hardware-id.sh --store FILE  write the record to FILE unless it already holds it; keep a
+#                                     well-formed record when no ID can be derived
 # OPENPLC_HWID_ROOT replaces / for every read (tests only).
 
 # BEGIN hardware-id v2
@@ -186,16 +187,39 @@ hw2_record() {
     printf '%s\n' "$elements"
 }
 
-# Writes the record to $1 atomically; an existing record is never replaced.
+# Succeeds when $1 holds a record: the ID line, then "<kind> <hash>" lines; blank lines and
+# surrounding whitespace are ignored.
+hw2_record_ok() {
+    local line first=1
+    [ -r "$1" ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [ -z "$line" ] && continue
+        if [ "$first" -eq 1 ]; then
+            [[ "$line" =~ ^hw2:[0-9a-f]{64}$ ]] || return 1
+            first=0
+        else
+            [[ "$line" =~ ^(serial|uuid|board|mac|cpu)\ [0-9a-f]{64}$ ]] || return 1
+        fi
+    done <"$1"
+    [ "$first" -eq 0 ]
+}
+
+# Writes the live record to $1 atomically unless $1 already holds it. When no ID can be derived,
+# a well-formed record in $1 is kept. Returns 1 when $1 holds no record afterwards.
 hw2_store() {
     local tmp
-    [ -s "$1" ] && return 0
     tmp="$1.tmp.$$"
     if hw2_record >"$tmp"; then
+        if hw2_record_ok "$1" && [ "$(<"$tmp")" = "$(<"$1")" ]; then
+            rm -f "$tmp"
+            return 0
+        fi
         chmod 644 "$tmp" && mv -f "$tmp" "$1"
     else
         rm -f "$tmp"
-        return 1
+        hw2_record_ok "$1"
     fi
 }
 # END hardware-id v2

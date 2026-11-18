@@ -8,14 +8,19 @@ Two sources, in order:
   * ``INJECTED_PATH`` -- a read-only record that orchestrator-agent places in a
     vPLC container before its first boot. A vPLC cannot see the host hardware,
     so this is the only ID it may advertise.
-  * ``STORED_PATH`` -- the record the installers wrote to the persistent data
-    directory (native install and bootloader container).
+  * ``STORED_PATH`` -- the record in the persistent data directory (native
+    install and bootloader container), advertised only where the host hardware
+    is visible.
 
-Installers compute the record once. ``ensure_stored()`` covers devices installed
-before the ID existed: on start it computes the record only when none is stored,
-and only where the host hardware is visible (native, or the bootloader's
-privileged container). It never runs inside a vPLC, where a partial view of the
-hardware would produce an ID that differs from the host's.
+Installers write the record and ``ensure_stored()`` recomputes it on every
+start, replacing it when the live ID differs (a cloned disk, changed hardware)
+or when it is malformed. The stored record is kept when no ID can be computed.
+
+The host hardware is visible natively on Linux and in a container that has
+every capability (privileged) and the host network. Elsewhere (Windows, an
+unprivileged or bridged container, a run without access to the root-only DMI
+files) a partial view would give another ID, so no ID is computed or
+advertised.
 """
 
 import os
@@ -33,10 +38,18 @@ logger, _ = get_logger("logger", use_buffer=True)
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "hardware-id.sh"
 STORED_PATH = PERSISTENT_DATA_DIR / "hardware-id"
 INJECTED_PATH = Path("/etc/openplc-runtime/hardware-id")
+PROC_DIR = Path("/proc")
+SYS_DIR = Path("/sys")
 COMPUTE_TIMEOUT_S = 30
+# Set by the bootloader on the runtime container it starts; other containers derive no ID.
+BOOTLOADER_CONTAINER_ENV = "OPENPLC_PERSISTENT_DATA_DIR"
 
 _ID_RE = re.compile(r"^hw2:[0-9a-f]{64}$")
 _ELEMENT_RE = re.compile(r"^(serial|uuid|board|mac|cpu) ([0-9a-f]{64})$")
+_CAP_BOUNDING_RE = re.compile(r"^CapBnd:\s*([0-9a-fA-F]+)\s*$", re.MULTILINE)
+_ROOT_ONLY_DMI = ("product_uuid", "board_serial")
+# Highest capability the bounding set must hold: CAP_AUDIT_READ.
+_CHECKED_CAP_LAST = 37
 
 
 @dataclass(frozen=True)
@@ -57,7 +70,7 @@ def parse_record(text: str, source: str) -> HardwareId | None:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines or not _ID_RE.match(lines[0]):
         return None
-    elements = []
+    elements: list[Element] = []
     for line in lines[1:]:
         match = _ELEMENT_RE.match(line)
         if not match:
@@ -81,23 +94,68 @@ def _read(path: Path, source: str) -> HardwareId | None:
 
 
 def current() -> HardwareId | None:
-    """The ID to advertise: the orchestrator's record in a vPLC, else the stored one."""
-    return _read(INJECTED_PATH, "orchestrator") or _read(STORED_PATH, "device")
+    """The ID to advertise: the orchestrator's record in a vPLC, else the stored one
+    where the host hardware is visible, else None."""
+    injected = _read(INJECTED_PATH, "orchestrator")
+    if injected is not None:
+        return injected
+    if not _sees_host_hardware():
+        return None
+    return _read(STORED_PATH, "device")
+
+
+def _has_all_capabilities() -> bool:
+    """True when the bounding set holds capabilities 0 to ``_CHECKED_CAP_LAST`` (privileged)."""
+    try:
+        last_cap = int((PROC_DIR / "sys" / "kernel" / "cap_last_cap").read_text().strip())
+        status = (PROC_DIR / "self" / "status").read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        logger.debug("Cannot read the capability set: %s", exc)
+        return False
+    match = _CAP_BOUNDING_RE.search(status)
+    if match is None:
+        return False
+    full = (1 << (min(last_cap, _CHECKED_CAP_LAST) + 1)) - 1
+    return int(match.group(1), 16) & full == full
+
+
+def _sees_physical_nic() -> bool:
+    """True when a network interface backed by a device is visible (host network namespace)."""
+    try:
+        return any((nic / "device").exists() for nic in (SYS_DIR / "class" / "net").iterdir())
+    except OSError:
+        return False
+
+
+def _reads_root_only_dmi() -> bool:
+    """False when a root-only DMI file exists but this process cannot read it."""
+    dmi = SYS_DIR / "class" / "dmi" / "id"
+    return all(
+        not (dmi / name).exists() or os.access(dmi / name, os.R_OK) for name in _ROOT_ONLY_DMI
+    )
 
 
 def _sees_host_hardware() -> bool:
-    if platform.system() != "Linux":
+    if platform.system() != "Linux" or not _reads_root_only_dmi():
         return False
     if not is_running_in_container():
         return True
-    # The bootloader always sets this on the runtime container; vPLCs never do.
-    return bool(os.environ.get("OPENPLC_PERSISTENT_DATA_DIR"))
+    return (
+        bool(os.environ.get(BOOTLOADER_CONTAINER_ENV))
+        and _has_all_capabilities()
+        and _sees_physical_nic()
+    )
 
 
 def ensure_stored() -> None:
-    """Compute and store the record once, when this runtime sees the host and has none."""
-    if INJECTED_PATH.exists() or STORED_PATH.exists() or not _sees_host_hardware():
+    """Recompute the record where the host hardware is visible and store it when it changed.
+
+    A vPLC (injected record) and a runtime that cannot see the host hardware never compute one.
+    When no ID can be computed, a well-formed stored record is kept.
+    """
+    if INJECTED_PATH.exists() or not _sees_host_hardware():
         return
+    previous = _read(STORED_PATH, "device")
     try:
         result = subprocess.run(
             ["bash", str(SCRIPT_PATH), "--store", str(STORED_PATH)],
@@ -109,8 +167,13 @@ def ensure_stored() -> None:
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("Hardware ID computation failed: %s", exc)
         return
-    if result.returncode == 0:
-        record = _read(STORED_PATH, "device")
-        logger.info("Hardware ID stored: %s", record.value if record else "unreadable")
-    else:
+    if result.returncode != 0:
         logger.info("No hardware ID can be derived on this device (exit %d)", result.returncode)
+        return
+    record = _read(STORED_PATH, "device")
+    if record is None:
+        logger.warning("Hardware ID record %s is unreadable after storing it", STORED_PATH)
+    elif previous is None:
+        logger.info("Hardware ID stored: %s", record.value)
+    elif previous.value != record.value:
+        logger.warning("Hardware ID changed from %s to %s", previous.value, record.value)

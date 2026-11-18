@@ -61,7 +61,7 @@ Other rules:
 scripts/hardware-id.sh               # prints the ID; exit status 2 when none can be derived
 scripts/hardware-id.sh --elements    # prints "<kind> <element hash>" per element
 scripts/hardware-id.sh --record      # prints the record (below)
-scripts/hardware-id.sh --store FILE  # writes the record to FILE unless FILE already holds one
+scripts/hardware-id.sh --store FILE  # writes the record to FILE unless FILE already holds it
 ```
 
 Run it as root. On x86 the DMI `product_uuid` and `board_serial` files are readable by root only,
@@ -71,20 +71,34 @@ so an unprivileged run sees only the CPU and derives no ID. Every installer runs
 
 ## Record and storage
 
-The record is the ID line followed by one `<kind> <element hash>` line per element. It is computed
-once, at installation, and never replaced: `--store` (`hw2_store` in the embedded block) leaves an
-existing record alone, so a reinstall on the same hardware keeps it and a wiped device recomputes
-the same one.
+The record is the ID line followed by one `<kind> <element hash>` line per element. A record is
+well formed when, ignoring blank lines and surrounding whitespace, its first line matches the
+format above and every other line is `<kind> <64 lowercase hex>` with a kind from the table above.
+
+`--store` (`hw2_store` in the embedded block) computes the record and writes it atomically unless
+the file already holds exactly that record. A stored record that differs (a cloned disk, changed
+hardware) or is malformed is replaced. When no ID can be derived, a well-formed stored record is
+kept as the fallback and `--store` succeeds; without one it exits with status 2 and writes nothing.
+
+The installers run `--store` at installation, and the runtime runs it again on every start where it
+sees the host hardware, so a disk cloned to another machine never keeps the original machine's ID.
 
 | Install | Who computes it | Record |
 | --- | --- | --- |
-| Native (`install.sh --native`) | `install.sh` | `/var/lib/openplc-runtime/hardware-id` |
-| Container (`scripts/install-docker.sh`) | `install-docker.sh`, on the host | `<data dir>/hardware-id`, default `/var/lib/openplc-runtime/hardware-id` |
+| Native Linux (`install.sh --native`) | `install.sh`, then the runtime on every start | `/var/lib/openplc-runtime/hardware-id` |
+| Container (`scripts/install-docker.sh`) | `install-docker.sh` on the host, then the runtime on every start in the bootloader's privileged, host-network container | `<data dir>/hardware-id`, default `/var/lib/openplc-runtime/hardware-id` |
 | vPLC | orchestrator-agent's installer, on the host | `/etc/openplc-runtime/hardware-id` inside the container, read-only |
+| Windows (MSYS2) | nobody | none: no hardware ID |
+| Any other container, or one without the privileges to see the host hardware | nobody | none: no hardware ID, a stored record is not advertised |
 
-A runtime installed before the record existed computes it on start when none is stored, but only
-where it sees the host hardware: natively, or in the bootloader's privileged container. A vPLC never
-computes one.
+The runtime sees the host hardware natively on Linux, and in a container only when it is the
+bootloader's runtime container (`OPENPLC_PERSISTENT_DATA_DIR` set), its capability bounding set
+holds every capability up to `CAP_AUDIT_READ` (a privileged container) and a network interface
+backed by a device is visible (the host network). In both cases the process must be able
+to read the root-only DMI files (`product_uuid`, `board_serial`) where they exist. Anywhere else a
+partial view of the hardware would give a different ID, so the runtime neither computes nor
+advertises one, and the device is not licensable: it runs under the GPLv3 and licences cannot be
+stored on it. A vPLC's injected record is always advertised, and a vPLC never computes one.
 
 The runtime advertises the record on `GET /api/hardware-id` (any authenticated user):
 

@@ -288,12 +288,50 @@ def test_store_writes_the_record_under_strict_mode(tmp_path: pathlib.Path) -> No
     assert oct(target.stat().st_mode & 0o777) == "0o644"
 
 
-def test_store_never_replaces_a_record(tmp_path: pathlib.Path) -> None:
+def test_store_keeps_the_same_record_untouched(tmp_path: pathlib.Path) -> None:
     root = build(tmp_path / "root", vector("x86-industrial-pc"))
     target = tmp_path / "hardware-id"
-    target.write_text("hw2:" + "0" * 64 + "\n")
     assert _store(root, target) == 0
-    assert target.read_text() == "hw2:" + "0" * 64 + "\n"
+    inode = target.stat().st_ino
+    assert _store(root, target) == 0
+    assert target.stat().st_ino == inode
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["hardware-id", "root"]
+
+
+def test_store_replaces_a_record_from_other_hardware(tmp_path: pathlib.Path) -> None:
+    original = build(tmp_path / "original", vector("x86-industrial-pc"))
+    clone = build(tmp_path / "clone", vector("raspberry-pi"))
+    target = tmp_path / "hardware-id"
+    assert _store(original, target) == 0
+    assert _store(clone, target) == 0
+    assert target.read_text() == run(clone, "--record").out
+
+
+@pytest.mark.parametrize(
+    "content", ["garbage\n", "hw2:" + "0" * 63 + "\n", "hw2:" + "0" * 64 + "\nwifi 12\n", "\n"]
+)
+def test_store_rewrites_a_malformed_record(tmp_path: pathlib.Path, content: str) -> None:
+    root = build(tmp_path / "root", vector("x86-industrial-pc"))
+    target = tmp_path / "hardware-id"
+    target.write_text(content)
+    assert _store(root, target) == 0
+    assert target.read_text() == run(root, "--record").out
+
+
+def test_store_keeps_a_record_when_no_id_can_be_derived(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "hardware-id"
+    record = "hw2:" + "0" * 64 + "\nmac " + "1" * 64 + "\n"
+    target.write_text(record)
+    assert _store(tmp_path / "empty", target) == 0
+    assert target.read_text() == record
+
+
+def test_store_fails_without_an_id_or_a_record(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "hardware-id"
+    target.write_text("garbage\n")
+    assert _store(tmp_path / "empty", target) == 1
+    assert target.read_text() == "garbage\n"
+    assert [p.name for p in tmp_path.iterdir()] == ["hardware-id"]
 
 
 def test_store_leaves_nothing_without_an_id(tmp_path: pathlib.Path) -> None:
