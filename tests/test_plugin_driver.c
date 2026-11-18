@@ -109,12 +109,28 @@ static int (*const fake_detach[FAKE_SLOTS])(void)    = {fake0_detach, fake1_deta
 static void (*const fake_cleanup[FAKE_SLOTS])(void)  = {fake0_cleanup, fake1_cleanup, fake2_cleanup};
 static int (*const fake_start[FAKE_SLOTS])(void)     = {fake0_start, fake1_start, fake2_start};
 
-/* Clears the shared driver and every fake slot. */
+static int invalidate_calls;
+static int cleanup_calls_at_first_invalidate;
+
+/* Overrides the weak support stub: counts invalidations and records fake slot 0's cleanup count at the first. */
+void plc_switch_owner_invalidate(const char *id)
+{
+    (void)id;
+    if (invalidate_calls == 0)
+    {
+        cleanup_calls_at_first_invalidate = fake[0].cleanup_calls;
+    }
+    invalidate_calls++;
+}
+
+/* Clears the shared driver, every fake slot and the invalidation record. */
 static void reset_fake_slots(void)
 {
     memset(&driver, 0, sizeof(driver));
     memset(fake, 0, sizeof(fake));
     memset(fake_bundle, 0, sizeof(fake_bundle));
+    invalidate_calls                  = 0;
+    cleanup_calls_at_first_invalidate = -1;
 }
 
 /* Wires slot n of the shared driver as an enabled native plugin backed by the fake hooks. */
@@ -492,4 +508,32 @@ void test_plugin_driver_update_config_DetachedSlot_ShouldClearTheDetachedFlag(vo
 
     TEST_ASSERT_EQUAL_INT(0, result);
     TEST_ASSERT_FALSE(driver.plugins[0].detached);
+}
+
+void test_plugin_driver_update_config_InitialisedSlot_ShouldInvalidateSwitchReportAfterCleanup(void)
+{
+    char conf[64];
+    write_temp_conf(conf, sizeof(conf), "ghost,./no-such-plugin.so,0,1\n");
+    fake_native_slot(0, 1, 0);
+
+    int result = plugin_driver_update_config(&driver, conf);
+    unlink(conf);
+
+    TEST_ASSERT_EQUAL_INT(0, result);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, invalidate_calls, "switch report invalidated once");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, cleanup_calls_at_first_invalidate,
+                                  "the plugin's cleanup had returned when its switch report was invalidated");
+}
+
+void test_plugin_driver_update_config_UninitialisedSlot_ShouldNotInvalidateSwitchReport(void)
+{
+    char conf[64];
+    write_temp_conf(conf, sizeof(conf), "ghost,./no-such-plugin.so,0,1\n");
+    fake_native_slot(0, 0, 0);
+
+    int result = plugin_driver_update_config(&driver, conf);
+    unlink(conf);
+
+    TEST_ASSERT_EQUAL_INT(0, result);
+    TEST_ASSERT_EQUAL_INT(0, invalidate_calls);
 }
