@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 from asyncua import Server, ua
+from shared import ISafeBufferAccess
 
 # Import local modules (handle both package and direct loading)
 try:
@@ -86,6 +87,7 @@ class SynchronizationManager:
         args: Any,
         variable_nodes: Dict[Addr, VariableNode],
         server: Optional[Server] = None,
+        buffer_accessor: Optional[ISafeBufferAccess] = None,
     ):
         """
         Args:
@@ -95,8 +97,12 @@ class SynchronizationManager:
                             AddressSpaceBuilder.
             server: asyncua Server. Required for the value hooks and the
                     subscription push.
+            buffer_accessor: Accessor that owns args. While it reports
+                    is_valid False, no call reaches args. None means args
+                    is always usable.
         """
         self.args = args
+        self.buffer_accessor = buffer_accessor
         self.variable_nodes = variable_nodes
         self.server = server
 
@@ -250,14 +256,14 @@ class SynchronizationManager:
                 if length > 0:
                     values = []
                     for i in range(length):
-                        v = debug_read_value(self.args, base_arr, base_elem + i, datatype)
+                        v = self._read_leaf(base_arr, base_elem + i, datatype)
                         if v is None:
                             failed = True
                             v = self._get_default_value(datatype)
                         values.append(convert_value_for_opcua(datatype, v))
                     variant = ua.Variant(values, expected_type)
                 else:
-                    v = debug_read_value(self.args, base_arr, base_elem, datatype)
+                    v = self._read_leaf(base_arr, base_elem, datatype)
                     if v is None:
                         failed = True
                         v = self._get_default_value(datatype)
@@ -334,8 +340,11 @@ class SynchronizationManager:
 
         TIME-family values arrive as (tv_sec, tv_nsec) tuples from
         convert_value_for_plc; recombine into the int64 nanosecond
-        representation strucpp uses on the wire.
+        representation strucpp uses on the wire. Skipped while the buffer
+        accessor is invalid.
         """
+        if not self._runtime_usable():
+            return
         if datatype.upper() in TIME_DATATYPES and isinstance(plc_value, tuple):
             tv_sec, tv_nsec = plc_value
             plc_value = int(tv_sec) * 1_000_000_000 + int(tv_nsec)
@@ -363,6 +372,9 @@ class SynchronizationManager:
 
         while is_running():
             try:
+                if not self._runtime_usable():
+                    await asyncio.sleep(cycle_time_seconds)
+                    continue
                 array_count = self.args.debug_array_count()
                 if array_count == 0:
                     if not self._logged_no_plc_warning:
@@ -406,7 +418,7 @@ class SynchronizationManager:
                 if node.array_length and node.array_length > 0:
                     await self._push_array_node(node, base_arr, base_elem)
                 else:
-                    value = debug_read_value(self.args, base_arr, base_elem, node.datatype)
+                    value = self._read_leaf(base_arr, base_elem, node.datatype)
                     if value is None:
                         continue
                     await self._push_scalar_node(node, value)
@@ -463,7 +475,7 @@ class SynchronizationManager:
         values = []
         failed = False
         for i in range(length):
-            v = debug_read_value(self.args, base_arr, base_elem + i, node.datatype)
+            v = self._read_leaf(base_arr, base_elem + i, node.datatype)
             if v is None:
                 failed = True
                 v = self._get_default_value(node.datatype)
@@ -478,6 +490,17 @@ class SynchronizationManager:
     # -----------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------
+
+    def _runtime_usable(self) -> bool:
+        """True unless the buffer accessor reports itself invalid."""
+        return self.buffer_accessor is None or self.buffer_accessor.is_valid
+
+    def _read_leaf(self, arr: int, elem: int, datatype: str) -> Optional[object]:
+        """Read one leaf through args.debug_read; None when it fails or the
+        buffer accessor is invalid."""
+        if not self._runtime_usable():
+            return None
+        return debug_read_value(self.args, arr, elem, datatype)
 
     @staticmethod
     def _get_default_value(datatype: str) -> Any:

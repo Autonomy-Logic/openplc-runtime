@@ -10,10 +10,12 @@ It coordinates all server components and manages the server lifecycle.
 
 import asyncio
 import os
+import socket
 import sys
+import threading
 import traceback
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Awaitable, List, Optional, Dict, Any, TypeVar
 
 from asyncua import Server, ua
 
@@ -48,6 +50,8 @@ except ImportError:
 from shared import SafeBufferAccess
 from shared.plugin_config_decode.opcua_config_model import OpcuaConfig
 
+_PhaseResult = TypeVar("_PhaseResult")
+
 class OpcuaServerManager:
     """
     Manages the OPC-UA server lifecycle and coordinates components.
@@ -64,6 +68,8 @@ class OpcuaServerManager:
         await manager.run()  # Blocks until stop() is called
         await manager.stop()
     """
+
+    SERVER_STOP_TIMEOUT_S = 1.0
 
     def __init__(
         self,
@@ -87,6 +93,13 @@ class OpcuaServerManager:
         self.server: Optional[Server] = None
         self.running = False
         self.namespace_idx: Optional[int] = None
+        self._stop_requested = False
+        self._phase_task: Optional[asyncio.Future] = None
+        self._listener_lock = threading.Lock()
+        self._listener: Optional[asyncio.AbstractServer] = None
+        self._listener_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._listener_sockets: List[socket.socket] = []
+        self._listener_closed = False
 
         # Security manager
         self.security_manager = OpcuaSecurityManager(config, plugin_dir)
@@ -123,38 +136,30 @@ class OpcuaServerManager:
         3. Starts the server
         4. Runs the sync loop (Phase 3)
 
-        Blocks until stop() is called or an error occurs.
+        Blocks until stop() is called or an error occurs. A stop requested
+        before the server listens means it never listens.
         """
         try:
+            if self._stop_requested:
+                return
+
             log_info("OpcuaServerManager starting...")
 
-            # Setup server
-            if not await self._setup_server():
-                log_error("Failed to setup server")
-                return
-
-            # Create address space (nodes)
-            if not await self._create_address_space():
-                log_error("Failed to create address space")
-                return
-
-            # Register permission callbacks (AFTER address space, BEFORE start)
-            if not await self._register_callbacks():
-                log_warn("Failed to register permission callbacks - continuing without access control")
-
-            # Initialize synchronization manager
-            if not await self._initialize_sync_manager():
-                log_error("Failed to initialize sync manager")
+            if not await self._run_phase(self._prepare()):
                 return
 
             # Start server
+            if self._stop_requested:
+                return
             if not await self._start_server():
                 log_error("Failed to start server")
                 return
 
             # Run main loop
+            if self._stop_requested:
+                return
             log_debug("Server running, entering main loop...")
-            await self._main_loop()
+            await self._run_phase(self._main_loop())
 
         except Exception as e:
             log_error(f"Error in server manager: {e}")
@@ -164,12 +169,129 @@ class OpcuaServerManager:
 
     async def stop(self) -> None:
         """
-        Stop the server gracefully.
+        Request the stop of run().
 
-        Sets running flag to False and waits for main loop to exit.
+        Cancels the start-up phase still in progress or the main loop, so
+        run() goes straight to its cleanup, which closes the client
+        sessions and the listening port.
         """
         log_debug("Stop requested...")
-        self.running = False
+        self._stop_requested = True
+        if self._phase_task is not None and not self._phase_task.done():
+            self._phase_task.cancel()
+
+    async def _run_phase(self, phase: Awaitable[_PhaseResult]) -> Optional[_PhaseResult]:
+        """
+        Run one phase of run() as a task that stop() can cancel.
+
+        Returns:
+            The phase result, or None when the phase was cancelled by a stop
+        """
+        self._phase_task = asyncio.ensure_future(phase)
+        try:
+            return await self._phase_task
+        except asyncio.CancelledError:
+            if not self._stop_requested:
+                raise
+            return None
+        finally:
+            self._phase_task = None
+
+    async def _prepare(self) -> bool:
+        """
+        Set up the server, its address space, permission callbacks and
+        sync manager, everything that comes before it listens. Permission
+        callbacks are registered after the address space and before the
+        server starts.
+
+        Returns:
+            True if the server is ready to start, False otherwise
+        """
+        if not await self._setup_server():
+            log_error("Failed to setup server")
+            return False
+
+        if not await self._create_address_space():
+            log_error("Failed to create address space")
+            return False
+
+        if not await self._register_callbacks():
+            log_warn("Failed to register permission callbacks - continuing without access control")
+
+        if not await self._initialize_sync_manager():
+            log_error("Failed to initialize sync manager")
+            return False
+
+        return True
+
+    def close_listener(self) -> None:
+        """
+        Close the listening port now, from any thread, and keep it closed.
+
+        The asyncio listener is closed on its event loop, and the duplicates
+        of its sockets are shut down at OS level, which refuses new
+        connections even when the event loop is stuck. A listener the
+        server opens afterwards is closed as soon as it is opened.
+        Idempotent.
+        """
+        with self._listener_lock:
+            self._listener_closed = True
+            listener, loop = self._listener, self._listener_loop
+            sockets, self._listener_sockets = self._listener_sockets, []
+            self._listener, self._listener_loop = None, None
+
+        if listener is not None and loop is not None:
+            if self._runs_on(loop):
+                listener.close()
+            else:
+                try:
+                    loop.call_soon_threadsafe(listener.close)
+                except RuntimeError as e:
+                    log_debug(f"Listener close not scheduled on its event loop: {e}")
+
+        for sock in sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError as e:
+                log_debug(f"Listening socket shutdown: {e}")
+            sock.close()
+
+    @staticmethod
+    def _runs_on(loop: asyncio.AbstractEventLoop) -> bool:
+        """True when called from inside the given running event loop."""
+        try:
+            return asyncio.get_running_loop() is loop
+        except RuntimeError:
+            return False
+
+    def _hold_listener(self) -> None:
+        """
+        Keep the asyncio listener of the started server and a duplicate of
+        each of its sockets, for close_listener().
+        """
+        listener = getattr(getattr(self.server, "bserver", None), "_server", None)
+        if listener is None:
+            log_warn("Listening server not found; the port closes only through server.stop()")
+            return
+
+        sockets: List[socket.socket] = []
+        try:
+            for sock in listener.sockets:
+                sockets.append(sock.dup())
+        except OSError as e:
+            log_warn(f"Listening sockets not duplicated, no OS-level close on a stuck stop: {e}")
+            for held in sockets:
+                held.close()
+            sockets = []
+
+        with self._listener_lock:
+            self._listener = listener
+            self._listener_loop = asyncio.get_running_loop()
+            self._listener_sockets = sockets
+            closed_already = self._listener_closed
+
+        if closed_already:
+            self.close_listener()
 
     async def _setup_server(self) -> bool:
         """
@@ -266,6 +388,7 @@ class OpcuaServerManager:
 
             await self.server.start()
             self.running = True
+            self._hold_listener()
 
             log_info(f"OPC-UA server started on {self.config.server.endpoint_url}")
 
@@ -296,13 +419,13 @@ class OpcuaServerManager:
         if self.sync_manager:
             # Run the sync manager's loop (blocks until stopped)
             await self.sync_manager.run(
-                is_running=lambda: self.running,
+                is_running=lambda: self.running and not self._stop_requested,
                 cycle_time_seconds=cycle_time
             )
         else:
             # Fallback: simple keepalive loop (no sync)
             log_warn("No sync manager - running without synchronization")
-            while self.running:
+            while self.running and not self._stop_requested:
                 try:
                     await asyncio.sleep(cycle_time)
                 except asyncio.CancelledError:
@@ -313,22 +436,27 @@ class OpcuaServerManager:
         """
         Clean up resources.
 
-        Stops the server and releases resources. asyncua's server.stop()
-        can block while it waits for connected clients to disconnect
-        gracefully (a UAExpert client left running across an editor
-        Stop press is the classic case). Cap that with a short timeout
-        so the editor's Stop button feels responsive — any clients
-        that don't disconnect in 1.5s are dropped when the listening
-        sockets close.
+        Closes the listening port first, through close_listener(), then
+        stops the server and releases resources. asyncua's server.stop()
+        closes the client connections at once, then waits on its session
+        and internal-server tasks, up to about 1 s each; it is capped at
+        SERVER_STOP_TIMEOUT_S so the whole stop fits in the plugin's 2 s
+        grace period whatever the clients do.
         """
         try:
+            self.close_listener()
+
             if self.server and self.running:
                 try:
-                    await asyncio.wait_for(self.server.stop(), timeout=1.5)
+                    await asyncio.wait_for(
+                        self.server.stop(), timeout=self.SERVER_STOP_TIMEOUT_S
+                    )
                     log_info("OPC-UA server stopped")
                 except asyncio.TimeoutError:
-                    log_warn("OPC-UA server.stop() did not finish in 1.5s; "
-                             "proceeding with cleanup anyway")
+                    log_debug(
+                        f"OPC-UA server.stop() cut after {self.SERVER_STOP_TIMEOUT_S}s; "
+                        "connections and listening port already closed"
+                    )
 
             self.running = False
             self.server = None
@@ -396,6 +524,7 @@ class OpcuaServerManager:
                 args=self.buffer_accessor.runtime_args,
                 variable_nodes=self.variable_nodes,
                 server=self.server,
+                buffer_accessor=self.buffer_accessor,
             )
 
             if not await self.sync_manager.initialize():

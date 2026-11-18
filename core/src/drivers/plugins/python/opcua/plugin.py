@@ -213,27 +213,28 @@ def stop_loop() -> bool:
     """
     Stop the OPC UA server.
 
-    Uses a two-phase approach:
-    1. Graceful (2s): signal the stop event and wait for the async server to
-       shut down cleanly via its monitor task. The sync loop preempts
-       between sync directions, so one cycle (~100 ms) is the typical
-       graceful exit budget; the 2 s window covers asyncua's internal
-       teardown of listening sockets / connected clients.
-    2. Forced (3s): if the thread is still alive, cancel all asyncio tasks on
-       the event loop and wait again.
+    Signals the stop and waits up to 2 s for the server thread. The stop
+    cancels a start-up still in progress, or ends the sync loop, then the
+    server manager closes the listening port and the client sessions
+    (server.stop() capped at 1 s), so a normal stop needs no forced
+    cancellation whatever the clients do. Only if the thread is still alive
+    after 2 s are all asyncio tasks on its event loop cancelled, with 3 s
+    more to exit.
 
-    The previous timeout (10 s graceful + 5 s forced) made the editor's
-    Stop button feel broken — the runtime appeared frozen for ~10 s
-    while asyncua's server.stop() waited on connected clients to
-    disconnect. The forced path always succeeded eventually, so the
-    grace period was just dead time.
+    Whatever the outcome, before returning it invalidates the buffer
+    accessor handed to the server manager and closes the listening port, at
+    OS level if the event loop is stuck, so a failed stop leaves no listener
+    and no access to the runtime behind.
 
     Returns:
-        True if the server thread stopped, False if it survived both phases.
+        True if the server thread stopped, False if it survived both phases
+        or the stop raised.
     """
     global _server_thread
 
     log_info("Stopping OPC UA server...")
+    manager = _server_manager
+    accessor = _buffer_accessor
 
     try:
         # Phase 1: Graceful stop — signal and wait briefly.
@@ -262,6 +263,12 @@ def stop_loop() -> bool:
     except Exception as e:
         log_error(f"Error stopping server: {e}")
         return False
+
+    finally:
+        if accessor is not None:
+            accessor.invalidate()
+        if manager is not None:
+            manager.close_listener()
 
 def cleanup() -> bool:
     """
