@@ -270,11 +270,6 @@ static void teardown_plugin_instance(plugin_instance_t *plugin)
         return;
     }
 
-    if (plugin->initialized)
-    {
-        plugin_switch_deinit(plugin);
-    }
-
     if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin)
     {
         // Also safe on an uninitialised plugin: it still releases
@@ -293,6 +288,11 @@ static void teardown_plugin_instance(plugin_instance_t *plugin)
         }
         free(plugin->native_plugin);
         plugin->native_plugin = NULL;
+    }
+
+    if (plugin->initialized)
+    {
+        plugin_switch_deinit(plugin);
     }
 
     plugin->initialized = 0;
