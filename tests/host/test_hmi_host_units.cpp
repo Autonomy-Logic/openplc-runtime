@@ -431,6 +431,11 @@ static void test_codec_numbers()
           "LREAL round trip");
     CHECK(!hmi_codec_from_debug(99, 0, &b1, 1, buf), "unknown type refused");
 
+    const int64_t dt = 1795012327250000000LL;
+    CHECK(hmi_codec_from_debug(HMI_CODEC_DT, 0, (const uint8_t *)&dt, 8, buf) &&
+              hmi_codec_to_debug(HMI_CODEC_DT, 0, buf, wire, 8, nullptr) && std::memcmp(wire, &dt, 8) == 0,
+          "DT round trip");
+
     struct Width
     {
         uint8_t type;
@@ -440,7 +445,9 @@ static void test_codec_numbers()
                             {HMI_CODEC_DINT, 4},  {HMI_CODEC_LINT, 8},  {HMI_CODEC_USINT, 1},
                             {HMI_CODEC_UINT, 2},  {HMI_CODEC_UDINT, 4}, {HMI_CODEC_ULINT, 8},
                             {HMI_CODEC_BYTE, 1},  {HMI_CODEC_WORD, 2},  {HMI_CODEC_DWORD, 4},
-                            {HMI_CODEC_LWORD, 8}, {HMI_CODEC_REAL, 4},  {HMI_CODEC_LREAL, 8}};
+                            {HMI_CODEC_LWORD, 8}, {HMI_CODEC_REAL, 4},  {HMI_CODEC_LREAL, 8},
+                            {HMI_CODEC_TIME, 8},  {HMI_CODEC_LTIME, 8}, {HMI_CODEC_DATE, 8},
+                            {HMI_CODEC_TOD, 8},   {HMI_CODEC_DT, 8}};
     bool all = true;
     for (const Width &w : widths)
         all &= hmi_codec_width(w.type) == w.width && hmi_codec_buffer_size(w.type, 9) == w.width;
@@ -506,6 +513,23 @@ static void test_codec_format()
     const char s[] = "a'b\\c\x01";
     hmi_codec_format(HMI_CODEC_STRING, 10, s, out, sizeof out);
     CHECK(std::strcmp(out, "'a\\'b\\\\c\\x01'") == 0, "STRING quoted and escaped");
+    const int64_t time_ns = 1500000000LL;
+    hmi_codec_format(HMI_CODEC_TIME, 0, &time_ns, out, sizeof out);
+    CHECK(std::strcmp(out, "T#1500000000ns") == 0, "TIME in nanoseconds");
+    hmi_codec_format(HMI_CODEC_LTIME, 0, &time_ns, out, sizeof out);
+    CHECK(std::strcmp(out, "LT#1500000000ns") == 0, "LTIME in nanoseconds");
+    const int64_t days = 20775;
+    hmi_codec_format(HMI_CODEC_DATE, 0, &days, out, sizeof out);
+    CHECK(std::strcmp(out, "D#2026-11-18") == 0, "DATE from days");
+    const int64_t tod = 52327250000000LL;
+    hmi_codec_format(HMI_CODEC_TOD, 0, &tod, out, sizeof out);
+    CHECK(std::strcmp(out, "TOD#14:32:07.250") == 0, "TOD from nanoseconds");
+    const int64_t dt = 1795012327250000000LL;
+    hmi_codec_format(HMI_CODEC_DT, 0, &dt, out, sizeof out);
+    CHECK(std::strcmp(out, "DT#2026-11-18-14:32:07.250") == 0, "DT from nanoseconds");
+    const int64_t before_epoch = -1000000000LL;
+    hmi_codec_format(HMI_CODEC_DT, 0, &before_epoch, out, sizeof out);
+    CHECK(std::strcmp(out, "DT#1969-12-31-23:59:59.000") == 0, "DT before 1970");
     char small[8];
     const std::string big(50, 'z');
     hmi_codec_format(HMI_CODEC_STRING, 50, big.c_str(), small, sizeof small);

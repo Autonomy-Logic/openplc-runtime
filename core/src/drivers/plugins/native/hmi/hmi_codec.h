@@ -41,7 +41,12 @@ extern "C"
         HMI_CODEC_LWORD,
         HMI_CODEC_REAL,
         HMI_CODEC_LREAL,
-        HMI_CODEC_STRING
+        HMI_CODEC_STRING,
+        HMI_CODEC_TIME,
+        HMI_CODEC_LTIME,
+        HMI_CODEC_DATE,
+        HMI_CODEC_TOD,
+        HMI_CODEC_DT
     } hmi_codec_type_t;
 
 /** Largest debug value the host converts: a STRING's length byte and its payload window. */

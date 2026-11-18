@@ -54,6 +54,11 @@ size_t hmi_codec_width(uint8_t type)
     case HMI_CODEC_ULINT:
     case HMI_CODEC_LWORD:
     case HMI_CODEC_LREAL:
+    case HMI_CODEC_TIME:
+    case HMI_CODEC_LTIME:
+    case HMI_CODEC_DATE:
+    case HMI_CODEC_TOD:
+    case HMI_CODEC_DT:
         return 8;
     default:
         return 0;
@@ -184,6 +189,34 @@ static void format_string(const uint8_t *s, uint16_t max_len, char *out, size_t 
     out[o]   = '\0';
 }
 
+/* Calendar date of a day count since 1970-01-01 (proleptic Gregorian). */
+static void civil_from_days(int64_t z, int64_t *y, unsigned *m, unsigned *d)
+{
+    z += 719468;
+    const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const unsigned doe = (unsigned)(z - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const unsigned mp = (5 * doy + 2) / 153;
+    *d = doy - (153 * mp + 2) / 5 + 1;
+    *m = mp < 10 ? mp + 3 : mp - 9;
+    *y = (int64_t)yoe + era * 400 + (*m <= 2);
+}
+
+/* Floor division of a by b > 0. */
+static int64_t floor_div64(int64_t a, int64_t b)
+{
+    return a / b - ((a % b != 0) && ((a < 0) != (b < 0)));
+}
+
+/* hh:mm:ss.fff of a nanosecond count within a day. */
+static void format_clock(int64_t ns, char *out, size_t cap)
+{
+    const int64_t ms = ns / 1000000;
+    snprintf(out, cap, "%02d:%02d:%02d.%03d", (int)(ms / 3600000), (int)(ms / 60000 % 60), (int)(ms / 1000 % 60),
+             (int)(ms % 1000));
+}
+
 void hmi_codec_format(uint8_t type, uint16_t max_len, const void *buf, char *out, size_t cap)
 {
     if (!out || cap == 0)
@@ -236,6 +269,37 @@ void hmi_codec_format(uint8_t type, uint16_t max_len, const void *buf, char *out
         if (cap >= 3)
             format_string(p, max_len, out, cap);
         return;
+    case HMI_CODEC_TIME:
+    case HMI_CODEC_LTIME:
+        snprintf(out, cap, "%s#%" PRId64 "ns", type == HMI_CODEC_TIME ? "T" : "LT", le_signed(p, 8));
+        return;
+    case HMI_CODEC_DATE:
+    {
+        int64_t y;
+        unsigned m, d;
+        civil_from_days(le_signed(p, 8), &y, &m, &d);
+        snprintf(out, cap, "D#%04" PRId64 "-%02u-%02u", y, m, d);
+        return;
+    }
+    case HMI_CODEC_TOD:
+    {
+        char clock[24];
+        format_clock(le_signed(p, 8), clock, sizeof clock);
+        snprintf(out, cap, "TOD#%s", clock);
+        return;
+    }
+    case HMI_CODEC_DT:
+    {
+        const int64_t ns = le_signed(p, 8);
+        const int64_t day = floor_div64(ns, 86400000000000LL);
+        int64_t y;
+        unsigned m, d;
+        char clock[24];
+        civil_from_days(day, &y, &m, &d);
+        format_clock(ns - day * 86400000000000LL, clock, sizeof clock);
+        snprintf(out, cap, "DT#%04" PRId64 "-%02u-%02u-%s", y, m, d, clock);
+        return;
+    }
     default:
         snprintf(out, cap, "?");
         return;
