@@ -6,6 +6,7 @@
 #include "plc_state_manager.h"
 #include "plugin_config.h"
 #include "plugin_driver.h"
+#include "plc_switch.h"
 #include "plugin_plc_requests.h"
 #include "vpp_plugin_seal.h"
 
@@ -127,10 +128,33 @@ __attribute__((weak)) void plugin_request_plc_start(const char *reason)
     (void)reason;
 }
 
-// Stub: plugin_set_switch_position (plugin_plc_requests.c); weak, drops the position.
-__attribute__((weak)) void plugin_set_switch_position(int position)
+// Stub: plugin_switch_reporter_bind (plugin_plc_requests.c); weak, binds no reporter.
+__attribute__((weak)) plugin_switch_reporter_t plugin_switch_reporter_bind(int slot, const char *id)
 {
-    (void)position;
+    (void)slot;
+    (void)id;
+    return NULL;
+}
+
+// Stub: plc_switch_owner_declare (plc_switch.c); weak, records no owner.
+__attribute__((weak)) void plc_switch_owner_declare(const char *id, bool owns)
+{
+    (void)id;
+    (void)owns;
+}
+
+// Stub: plc_switch_owner_invalidate (plc_switch.c); weak, does nothing.
+__attribute__((weak)) void plc_switch_owner_invalidate(const char *id)
+{
+    (void)id;
+}
+
+// Stub: plc_switch_owners_forget_absent (plc_switch.c); weak, does nothing.
+__attribute__((weak)) void plc_switch_owners_forget_absent(const char *const *present_ids,
+                                                           size_t count)
+{
+    (void)present_ids;
+    (void)count;
 }
 
 // Stub: vpp_plugin_seal_required (vpp_plugin_seal.c); weak, no path needs a seal.
