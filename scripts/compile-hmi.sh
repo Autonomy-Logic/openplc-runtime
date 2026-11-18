@@ -4,10 +4,12 @@
 
 # Builds build/hmi/ (plugin, client copy, hmi.seal) from core/generated/hmi/, or
 # removes it when there is none (docs/HMI.md). Run from the runtime root. The
-# build goes to build/hmi.new and replaces build/hmi only when it succeeds.
+# plugin is the runtime's HMI host linked with the upload's manifest data
+# (hmi/src/hmi_access.c); screens run in the browser, not here. The build goes
+# to build/hmi.new and replaces build/hmi only when it succeeds.
 
-# HMI_CC/HMI_CXX: compilers (gcc/g++); HMI_EXTRA_FLAGS: added to every compile;
-# HMI_SRC_ROOT: runtime source tree (default .).
+# HMI_CC: C compiler (gcc); HMI_CXX is accepted and unused; HMI_EXTRA_FLAGS:
+# added to every compile; HMI_SRC_ROOT: runtime source tree (default .).
 
 set -euo pipefail
 
@@ -18,9 +20,7 @@ HMI_OUT="build/hmi.new"
 SRC_ROOT="${HMI_SRC_ROOT:-.}"
 HOST_DIR="$SRC_ROOT/core/src/drivers/plugins/native/hmi"
 DRIVERS_INC="$SRC_ROOT/core/src/drivers"
-RUNTIME_INC="$GENERATED_DIR/strucpp_runtime/include"
 CC="${HMI_CC:-gcc}"
-CXX="${HMI_CXX:-g++}"
 EXTRA_FLAGS="${HMI_EXTRA_FLAGS:-}"
 CLIENT_NAME_RE='^[A-Za-z0-9._-]{1,64}$'
 CLIENT_EXT_RE='\.(html|js|css|wasm|txt|ttf)$'
@@ -54,29 +54,17 @@ trap 'rc=$?; [ "$rc" -ne 0 ] && rm -rf "$HMI_OUT"; exit "$rc"' EXIT
 OBJ_DIR="$HMI_OUT/obj"
 mkdir -p "$OBJ_DIR" "$HMI_OUT/client"
 
-COMMON_FLAGS=(-O2 -fPIC -fvisibility=hidden -pthread -Wall -Wextra -ffp-contract=off)
-# Program .so builds use this too: without it g++ marks template statics unique
-# and dlclose leaves the plugin mapped across a PLC stop and start.
-if echo 'int x;' | "$CXX" -x c++ -fno-gnu-unique -fsyntax-only - > /dev/null 2>&1; then
-    COMMON_FLAGS+=(-fno-gnu-unique)
-fi
+COMMON_FLAGS=(-std=c11 -O2 -fPIC -fvisibility=hidden -pthread -Wall -Wextra)
 # shellcheck disable=SC2206
 [ -n "$EXTRA_FLAGS" ] && COMMON_FLAGS+=($EXTRA_FLAGS)
 
-INCLUDES=(-I "$HOST_DIR" -I "$DRIVERS_INC")
-while IFS= read -r -d '' dir; do
-    INCLUDES+=(-I "$dir")
-done < <(find "$HMI_GEN/src" \( -name '*.h' -o -name '*.hpp' \) -exec dirname {} \; | sort -u | tr '\n' '\0')
-[ -d "$RUNTIME_INC" ] && INCLUDES+=(-I "$RUNTIME_INC")
+INCLUDES=(-I "$HOST_DIR" -I "$DRIVERS_INC" -I "$HMI_GEN/src")
 
 OBJS=()
 compile_one() {
     local src="$1" obj="$2"
     mkdir -p "$(dirname "$obj")"
-    case "$src" in
-        *.c)   "$CC" -std=c11 "${COMMON_FLAGS[@]}" "${INCLUDES[@]}" -c "$src" -o "$obj" ;;
-        *.cpp) "$CXX" -std=c++17 "${COMMON_FLAGS[@]}" "${INCLUDES[@]}" -c "$src" -o "$obj" ;;
-    esac
+    "$CC" "${COMMON_FLAGS[@]}" "${INCLUDES[@]}" -c "$src" -o "$obj"
     OBJS+=("$obj")
 }
 
@@ -89,7 +77,7 @@ while IFS= read -r -d '' src; do
     rel="${src#"$HMI_GEN/src/"}"
     compile_one "$src" "$OBJ_DIR/src/${rel%.*}.o"
     SRC_COUNT=$((SRC_COUNT + 1))
-done < <(find "$HMI_GEN/src" -type f \( -name '*.c' -o -name '*.cpp' \) -print0 | sort -z)
+done < <(find "$HMI_GEN/src" -maxdepth 1 -type f -name '*.c' -print0 | sort -z)
 if [ "$SRC_COUNT" -eq 0 ]; then
     echo "[ERROR] $HMI_GEN/src has no sources." >&2
     rm -rf "$HMI_OUT"
@@ -99,7 +87,7 @@ fi
 LINK_FLAGS=(-shared -pthread)
 # Unresolved symbols fail the build here rather than the dlopen on the device.
 [ "$(uname -s)" = "Linux" ] && LINK_FLAGS+=(-Wl,-z,defs)
-"$CXX" "${LINK_FLAGS[@]}" -o "$HMI_OUT/libhmi_plugin.so" "${OBJS[@]}"
+"$CC" "${LINK_FLAGS[@]}" -o "$HMI_OUT/libhmi_plugin.so" "${OBJS[@]}"
 rm -rf "$OBJ_DIR"
 
 if [ -d "$HMI_GEN/client" ]; then
@@ -139,4 +127,4 @@ rm -rf "$HMI_DEST.old"
 [ -d "$HMI_DEST" ] && mv "$HMI_DEST" "$HMI_DEST.old"
 mv "$HMI_OUT" "$HMI_DEST"
 rm -rf "$HMI_DEST.old"
-echo "[INFO] HMI plugin built and sealed ($SRC_COUNT sources)"
+echo "[INFO] HMI plugin built and sealed ($SRC_COUNT manifest sources)"

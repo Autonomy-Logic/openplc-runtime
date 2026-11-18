@@ -5,12 +5,12 @@
 
 The fake host listens on an owner-only Unix socket and speaks the binary protocol of
 docs/HMI.md. Pinned here: the sealed client files and their headers, the viewer token
-rules at connect and while connected, the rebuilt and ordered client events, latest-frame
-delivery, and the statuses a viewer sees as the host comes and goes.
+rules at connect and while connected, the rebuilt and ordered client events (open, show,
+write; invalid ones forwarded as requests the host refuses), merged value delivery with
+acknowledgements, refusals, and the statuses a viewer sees as the host comes and goes.
 """
 
 import hashlib
-import math
 import os
 import random
 import shutil
@@ -22,8 +22,6 @@ import time
 from datetime import timedelta
 
 import pytest
-from jwt import InvalidSignatureError
-from sqlalchemy.exc import OperationalError
 
 flask_socketio = pytest.importorskip("flask_socketio", reason="flask_socketio not installed")
 
@@ -158,10 +156,30 @@ class FakeHost:
 
 
 def decode_open(payload):
-    viewer, role, w, h, d, name_len = struct.unpack_from("<IBHHHB", payload)
-    name = payload[12 : 12 + name_len].decode()
-    assert len(payload) == 12 + name_len
-    return {"viewer": viewer, "role": role, "w": w, "h": h, "d": d, "name": name}
+    viewer, role, name_len = struct.unpack_from("<IBB", payload)
+    name = payload[6 : 6 + name_len].decode()
+    assert len(payload) == 6 + name_len
+    return {"viewer": viewer, "role": role, "name": name}
+
+
+def values_payload(viewer, page, writes, values):
+    """A VALUES payload for the fake host to send."""
+    out = struct.pack("<IHIH", viewer, page, writes, len(values))
+    for tag, value in values.items():
+        out += struct.pack("<HH", tag, len(value)) + value
+    return out
+
+
+def unpack_values(data):
+    """An hmi_values payload as (page, writes, {tag: bytes})."""
+    page, writes, count = struct.unpack_from("<HIH", data)
+    off, values = 8, {}
+    for _ in range(count):
+        tag, size = struct.unpack_from("<HH", data, off)
+        values[tag] = bytes(data[off + 4 : off + 4 + size])
+        off += 4 + size
+    assert off == len(data)
+    return page, writes, values
 
 
 # ---- fixtures -------------------------------------------------------------------------
@@ -258,16 +276,16 @@ def wait_status(ws, state, seen=None):
     return seen
 
 
-def frames(ws):
-    return [e["args"][0] for e in ws.get_received(NS) if e["name"] == "dl"]
+def received(ws, name):
+    return [e["args"][0] for e in ws.get_received(NS) if e["name"] == name]
 
 
-def open_viewer(sio, app, token, host, w=800, h=600, d=1.5):
+def open_viewer(sio, app, token, host):
     ws = viewer_client(sio, app, token)
     assert ws.is_connected(NS)
     assert wait_for(lambda: host.connections >= 1)
     before = len(host.of_type(hp.MSG_OPEN))
-    ws.emit("in", {"t": "v", "w": w, "h": h, "d": d, "n": 0}, namespace=NS)
+    ws.emit("in", {"t": "o", "n": 0}, namespace=NS)
     assert wait_for(lambda: len(host.of_type(hp.MSG_OPEN)) > before)
     return ws, decode_open(host.of_type(hp.MSG_OPEN)[-1])
 
@@ -397,13 +415,13 @@ def test_the_client_files_need_no_account(client, hmi_dir):
 @pytest.mark.parametrize(
     "data,expected",
     [
-        ({"t": "v", "w": 800, "h": 600, "d": 1.5}, hp.Viewport(800, 600, 150)),
-        ({"t": "v", "w": 1.4, "h": 8192, "d": 0.25}, hp.Viewport(1, 8192, 25)),
-        ({"t": "v", "w": 10, "h": 10, "d": 8}, hp.Viewport(10, 10, 800)),
-        ({"t": "p", "k": 0, "x": -1.5, "y": 2.25}, hp.PointerEvent(0, -150, 225)),
-        ({"t": "p", "k": 2, "x": 100000, "y": 0}, hp.PointerEvent(2, 10000000, 0)),
-        ({"t": "k", "c": 13, "extra": "ignored"}, hp.KeyEvent(13)),
-        ({"t": "k", "c": 0x10FFFF}, hp.KeyEvent(0x10FFFF)),
+        ({"t": "o"}, hp.OpenEvent()),
+        ({"t": "s", "p": 0}, hp.ShowEvent(0)),
+        ({"t": "s", "p": 0xFFFE, "extra": "ignored"}, hp.ShowEvent(0xFFFE)),
+        ({"t": "w", "g": 3, "v": b"\x01"}, hp.WriteEvent(3, b"\x01")),
+        ({"t": "w", "g": 0, "v": b""}, hp.WriteEvent(0, b"")),
+        ({"t": "w", "g": 1, "v": bytearray(b"ab")}, hp.WriteEvent(1, b"ab")),
+        ({"t": "w", "g": 1, "v": b"x" * 1024}, hp.WriteEvent(1, b"x" * 1024)),
     ],
 )
 def test_valid_events_are_rebuilt(data, expected):
@@ -411,37 +429,29 @@ def test_valid_events_are_rebuilt(data, expected):
 
 
 @pytest.mark.parametrize(
-    "data",
+    "data,expected",
     [
-        None,
-        [1, 2],
-        "v",
-        {"t": "x"},
-        {"w": 1, "h": 1, "d": 1},
-        {"t": "v", "w": True, "h": 600, "d": 1},
-        {"t": "v", "w": math.nan, "h": 600, "d": 1},
-        {"t": "v", "w": math.inf, "h": 600, "d": 1},
-        {"t": "v", "w": 0, "h": 600, "d": 1},
-        {"t": "v", "w": 8193, "h": 600, "d": 1},
-        {"t": "v", "w": 800, "h": -1, "d": 1},
-        {"t": "v", "w": 800, "h": 600, "d": 0.2},
-        {"t": "v", "w": 800, "h": 600, "d": 8.01},
-        {"t": "v", "w": "800", "h": 600, "d": 1},
-        {"t": "v", "w": 800, "h": 600},
-        {"t": "p", "k": 3, "x": 1, "y": 1},
-        {"t": "p", "k": True, "x": 1, "y": 1},
-        {"t": "p", "k": 1.0, "x": 1, "y": 1},
-        {"t": "p", "k": 1, "x": math.nan, "y": 1},
-        {"t": "p", "k": 1, "x": 1, "y": 100000.5},
-        {"t": "p", "k": 1, "x": 1},
-        {"t": "k", "c": 0},
-        {"t": "k", "c": 0x110000},
-        {"t": "k", "c": "a"},
-        {"t": "k", "c": False},
-        {"t": "k", "c": 13.0},
+        ({"t": "s"}, hp.ShowEvent(hp.NO_ID)),
+        ({"t": "s", "p": -1}, hp.ShowEvent(hp.NO_ID)),
+        ({"t": "s", "p": 0xFFFF}, hp.ShowEvent(hp.NO_ID)),
+        ({"t": "s", "p": True}, hp.ShowEvent(hp.NO_ID)),
+        ({"t": "s", "p": 1.0}, hp.ShowEvent(hp.NO_ID)),
+        ({"t": "w", "g": 1}, hp.WriteEvent(hp.NO_ID, b"")),
+        ({"t": "w", "g": 1, "v": "text"}, hp.WriteEvent(hp.NO_ID, b"")),
+        ({"t": "w", "g": 1, "v": [1, 2]}, hp.WriteEvent(hp.NO_ID, b"")),
+        ({"t": "w", "g": 1, "v": b"x" * 1025}, hp.WriteEvent(hp.NO_ID, b"")),
+        ({"t": "w", "g": 0x10000, "v": b"\x01"}, hp.WriteEvent(hp.NO_ID, b"")),
+        ({"t": "w", "g": False, "v": b"\x01"}, hp.WriteEvent(hp.NO_ID, b"")),
     ],
 )
-def test_invalid_events_are_refused(data):
+def test_invalid_show_and_write_events_become_requests_the_host_refuses(data, expected):
+    assert hp.parse_event(data) == expected
+
+
+@pytest.mark.parametrize(
+    "data", [None, [1, 2], "o", {"t": "x"}, {"t": "v", "w": 1, "h": 1, "d": 1}, {"g": 1}]
+)
+def test_other_events_are_dropped(data):
     assert hp.parse_event(data) is None
 
 
@@ -464,31 +474,52 @@ def test_sequence_numbers_are_range_checked(data, expected):
 
 
 def test_messages_are_encoded_as_the_wire_protocol():
-    assert hp.encode_event(7, hp.Viewport(800, 600, 150)) == struct.pack(
-        "<IBIHHH", 11, 0x03, 7, 800, 600, 150
+    assert hp.encode_event(7, hp.ShowEvent(2)) == struct.pack("<IBIH", 7, 0x03, 7, 2)
+    assert (
+        hp.encode_event(7, hp.WriteEvent(3, b"ab"))
+        == struct.pack("<IBIHH", 11, 0x04, 7, 3, 2) + b"ab"
     )
-    assert hp.encode_event(7, hp.PointerEvent(1, -150, 225)) == struct.pack(
-        "<IBIBii", 14, 0x04, 7, 1, -150, 225
-    )
-    assert hp.encode_event(7, hp.KeyEvent(65)) == struct.pack("<IBII", 9, 0x05, 7, 65)
-    opened = hp.encode_open(9, 2, hp.Viewport(1, 2, 100), "op")
+    opened = hp.encode_open(9, 2, "op")
     assert opened[:5] == struct.pack("<IB", len(opened) - 4, 0x01)
-    assert decode_open(opened[5:]) == {
-        "viewer": 9,
-        "role": 2,
-        "w": 1,
-        "h": 2,
-        "d": 100,
-        "name": "op",
-    }
+    assert decode_open(opened[5:]) == {"viewer": 9, "role": 2, "name": "op"}
 
 
 def test_a_long_name_is_cut_to_64_bytes_on_a_character_boundary():
     name = "a" + "é" * 40
-    payload = hp.encode_open(1, 0, hp.Viewport(1, 1, 100), name)[5:]
+    payload = hp.encode_open(1, 0, name)[5:]
     sent = decode_open(payload)["name"]
     assert len(sent.encode()) <= 64
     assert name.startswith(sent) and len(sent.encode()) == 63
+
+
+def test_values_are_parsed_and_repacked():
+    viewer, batch = hp.parse_values(values_payload(5, 1, 7, {2: b"\x01", 0: b"abc"}))
+    assert viewer == 5 and batch.page == 1 and batch.writes == 7
+    assert batch.values == {2: b"\x01", 0: b"abc"}
+    assert unpack_values(batch.pack()) == (1, 7, {0: b"abc", 2: b"\x01"})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"\x00" * 11,
+        values_payload(5, 0, 0, {1: b"ab"})[:-1],
+        values_payload(5, 0, 0, {1: b"ab"}) + b"\x00",
+        struct.pack("<IHIH", 5, 0, 0, 1) + b"\x01\x00",
+    ],
+)
+def test_malformed_values_are_a_protocol_error(payload):
+    with pytest.raises(hp.ProtocolError):
+        hp.parse_values(payload)
+
+
+def test_values_not_yet_delivered_are_merged_and_another_screen_replaces_them():
+    v = hp.Viewer("sid", 1, "admin", "admin", "token")
+    v.offer_values(hp.ValuesBatch(0, 0, {0: b"a", 1: b"b"}))
+    v.offer_values(hp.ValuesBatch(0, 2, {1: b"c"}))
+    assert (v.batch.page, v.batch.writes, v.batch.values) == (0, 2, {0: b"a", 1: b"c"})
+    v.offer_values(hp.ValuesBatch(3, 2, {5: b"z"}))
+    assert (v.batch.page, v.batch.values) == (3, {5: b"z"})
 
 
 # ---- ordering (pure) ------------------------------------------------------------------
@@ -500,7 +531,7 @@ def _viewer():
 
 def test_events_are_released_in_sequence_order():
     v = _viewer()
-    a, b, c = hp.KeyEvent(1), hp.KeyEvent(2), hp.KeyEvent(3)
+    a, b, c = hp.ShowEvent(1), hp.ShowEvent(2), hp.ShowEvent(3)
     assert v.order(1, b) == []
     assert v.order(2, c) == []
     assert v.order(0, a) == [a, b, c]
@@ -513,7 +544,7 @@ def test_events_are_released_in_sequence_order():
 
 def test_a_full_pending_window_skips_the_missing_event_and_logs(warnings):
     v = _viewer()
-    events = [hp.KeyEvent(i + 1) for i in range(hp.MAX_PENDING + 1)]
+    events = [hp.ShowEvent(i + 1) for i in range(hp.MAX_PENDING + 1)]
     released = []
     for i, event in enumerate(events):
         released += v.order(i + 1, event)
@@ -522,11 +553,11 @@ def test_a_full_pending_window_skips_the_missing_event_and_logs(warnings):
     assert any("never arrived" in line for line in warnings)
 
 
-# ---- latest-frame coalescing (pure proxy, fake emitter) --------------------------------
+# ---- value delivery (pure proxy, fake emitter) ----------------------------------------
 
 
 class SlowBrowser:
-    """An emitter that records each dl and acknowledges only when told to."""
+    """An emitter that records each hmi_values and acknowledges only when told to."""
 
     def __init__(self):
         self.sent = []
@@ -534,17 +565,16 @@ class SlowBrowser:
         self.callbacks = []
 
     def emit(self, event, data, sid, callback):
-        if event == "dl":
-            self.sent.append(data)
+        if event == "hmi_values":
+            self.sent.append(unpack_values(data))
             self.callbacks.append(callback)
-        else:
+        elif event == "hmi_status":
             self.statuses.append(data["state"])
 
-    def ack(self):
-        self.callbacks[-1]()
 
-
-def test_a_slow_browser_only_ever_gets_the_newest_frame(app, monkeypatch, sock_path, hmi_dir):
+def test_a_slow_browser_gets_every_change_merged_once_it_acknowledges(
+    app, monkeypatch, sock_path, hmi_dir
+):
     monkeypatch.setattr(hp, "ACK_TIMEOUT_S", 30.0)
     monkeypatch.setattr(hp, "RETRY_INTERVAL_S", 0.02)
     browser = SlowBrowser()
@@ -554,32 +584,31 @@ def test_a_slow_browser_only_ever_gets_the_newest_frame(app, monkeypatch, sock_p
     try:
         viewer = proxy.add_viewer("s1", "admin", "admin", "t")
         other = proxy.add_viewer("s2", "eng", "engineer", "t")
-
-        def frame(vid, i):
-            return struct.pack("<I", vid) + bytes([i])
-
-        proxy._dispatch(hp.MSG_FRAME, frame(viewer.viewer_id, 1))
-        assert wait_for(lambda: browser.sent == [b"\x01"])
+        vid = viewer.viewer_id
+        proxy._dispatch(hp.MSG_VALUES, values_payload(vid, 0, 0, {0: b"\x01", 1: b"\x05\x00"}))
+        assert wait_for(lambda: len(browser.sent) == 1)
         for i in range(2, 50):
-            proxy._dispatch(hp.MSG_FRAME, frame(viewer.viewer_id, i))
-        proxy._dispatch(hp.MSG_FRAME, frame(other.viewer_id, 99))
-        assert wait_for(lambda: b"\x63" in browser.sent)
+            proxy._dispatch(hp.MSG_VALUES, values_payload(vid, 0, i, {1: bytes([i, 0])}))
+        proxy._dispatch(hp.MSG_VALUES, values_payload(vid, 0, 50, {2: b"txt"}))
+        proxy._dispatch(hp.MSG_VALUES, values_payload(other.viewer_id, 1, 0, {3: b"\x63"}))
+        assert wait_for(lambda: (1, 0, {3: b"\x63"}) in browser.sent)
         time.sleep(0.1)
-        assert browser.sent == [b"\x01", b"\x63"]
+        assert browser.sent[0] == (0, 0, {0: b"\x01", 1: b"\x05\x00"})
+        assert len(browser.sent) == 2
         browser.callbacks[0]()
         assert wait_for(lambda: len(browser.sent) == 3)
-        assert browser.sent[-1] == b"\x31"
+        assert browser.sent[-1] == (0, 50, {1: b"\x31\x00", 2: b"txt"})
         browser.callbacks[0]()
         time.sleep(0.1)
         assert len(browser.sent) == 3
-        proxy._dispatch(hp.MSG_FRAME, frame(12345, 1))
+        proxy._dispatch(hp.MSG_VALUES, values_payload(12345, 0, 0, {0: b"\x01"}))
         time.sleep(0.05)
         assert len(browser.sent) == 3
     finally:
         proxy.shutdown()
 
 
-def test_an_unacknowledged_frame_stops_holding_back_after_the_timeout(
+def test_unacknowledged_values_stop_holding_back_after_the_timeout(
     app, monkeypatch, sock_path, hmi_dir
 ):
     monkeypatch.setattr(hp, "ACK_TIMEOUT_S", 0.1)
@@ -589,11 +618,10 @@ def test_an_unacknowledged_frame_stops_holding_back_after_the_timeout(
     assert wait_for(lambda: proxy._host_state is not None)
     try:
         viewer = proxy.add_viewer("s1", "admin", "admin", "t")
-        proxy._dispatch(hp.MSG_FRAME, struct.pack("<I", viewer.viewer_id) + b"a")
+        proxy._dispatch(hp.MSG_VALUES, values_payload(viewer.viewer_id, 0, 0, {0: b"a"}))
         assert wait_for(lambda: len(browser.sent) == 1)
-        proxy._dispatch(hp.MSG_FRAME, struct.pack("<I", viewer.viewer_id) + b"b")
+        proxy._dispatch(hp.MSG_VALUES, values_payload(viewer.viewer_id, 0, 0, {0: b"b"}))
         assert wait_for(lambda: len(browser.sent) == 2)
-        assert browser.sent == [b"a", b"b"]
         assert browser.statuses == ["unavailable"]
     finally:
         proxy.shutdown()
@@ -607,8 +635,11 @@ def test_every_role_may_view_and_the_host_learns_role_and_account(sio, app, toke
     ws, opened = open_viewer(sio, app, tokens[role], host)
     assert opened["role"] == hp.ROLE_CODES[role]
     assert opened["name"] == role
-    assert (opened["w"], opened["h"], opened["d"]) == (800, 600, 150)
-    wait_status(ws, "live")
+    live = []
+    assert wait_for(
+        lambda: live.extend(s for s in received(ws, "hmi_status") if s["state"] == "live") or live
+    )
+    assert live[0] == {"state": "live", "role": hp.ROLE_CODES[role]}
 
 
 def _expired(app, token):
@@ -656,6 +687,22 @@ def test_a_revoked_session_is_disconnected_by_the_periodic_check(sio, app, clien
     assert wait_for(lambda: len(host.of_type(hp.MSG_CLOSE)) == 1)
 
 
+def test_a_sign_out_from_the_screens_ends_the_session_and_the_viewer(
+    sio, app, client, tokens, host
+):
+    ws, opened = open_viewer(sio, app, tokens["operator"], host)
+    other, _ = open_viewer(sio, app, tokens["viewer"], host)
+    assert client.post("/api/logout", headers=auth(tokens["operator"])).status_code == 200
+    hp.get_proxy().reverify_all()
+    assert not ws.is_connected(NS)
+    assert client.get("/api/whoami", headers=auth(tokens["operator"])).status_code == 401
+    assert other.is_connected(NS)
+    closed = [struct.unpack("<I", p)[0] for p in host.of_type(hp.MSG_CLOSE)]
+    assert wait_for(
+        lambda: opened["viewer"] in [struct.unpack("<I", p)[0] for p in host.of_type(hp.MSG_CLOSE)]
+    ), closed
+
+
 def test_the_periodic_check_runs_on_its_own(app, client, tokens, host, sock_path, monkeypatch):
     monkeypatch.setattr(hp, "REVERIFY_INTERVAL_S", 0.05)
     monkeypatch.setattr(hp, "RETRY_INTERVAL_S", 0.02)
@@ -670,13 +717,13 @@ def test_the_periodic_check_runs_on_its_own(app, client, tokens, host, sock_path
         proxy.shutdown()
 
 
-def test_input_after_the_account_is_deleted_disconnects(sio, app, client, tokens, host):
+def test_a_write_after_the_account_is_deleted_disconnects(sio, app, client, tokens, host):
     ws, _ = open_viewer(sio, app, tokens["operator"], host)
     op_id = restapi.User.query.filter_by(username="operator").one().id
     assert client.delete(f"/api/delete-user/{op_id}", headers=auth(tokens["admin"])).status_code
-    ws.emit("in", {"t": "k", "c": 65, "n": 1}, namespace=NS)
+    ws.emit("in", {"t": "w", "g": 0, "v": b"\x01", "n": 1}, namespace=NS)
     assert not ws.is_connected(NS)
-    assert host.of_type(hp.MSG_KEY) == []
+    assert host.of_type(hp.MSG_WRITE) == []
 
 
 def test_a_role_change_closes_the_viewer(sio, app, client, tokens, host):
@@ -714,31 +761,30 @@ def test_a_token_that_does_not_verify_disconnects(sio, app, tokens, host):
 # ---- events through the proxy ---------------------------------------------------------
 
 
-def test_events_reach_the_host_rebuilt_and_in_order(sio, app, tokens, host):
+def test_events_reach_the_host_rebuilt_and_in_order(sio, app, tokens, host, warnings):
     ws, opened = open_viewer(sio, app, tokens["engineer"], host)
     vid = opened["viewer"]
-    ws.emit("in", {"t": "k", "c": 66, "n": 3}, namespace=NS)
-    ws.emit("in", {"t": "p", "k": 0, "x": 1.25, "y": 2, "n": 1, "evil": 1}, namespace=NS)
-    ws.emit("in", {"t": "p", "k": 7, "x": 1, "y": 1, "n": 2}, namespace=NS)
-    ws.emit("in", {"t": "v", "w": 1024, "h": 768, "d": 2, "n": 4}, namespace=NS)
-    ws.emit("in", {"t": "k", "c": 67}, namespace=NS)
+    ws.emit("in", {"t": "w", "g": 1, "v": b"\x07\x00", "n": 3}, namespace=NS)
+    ws.emit("in", {"t": "s", "p": 0, "n": 1, "evil": 1}, namespace=NS)
+    ws.emit("in", {"t": "w", "g": 2, "v": "not bytes", "n": 2}, namespace=NS)
+    ws.emit("in", {"t": "s", "p": -5, "n": 4}, namespace=NS)
+    ws.emit("in", {"t": "w", "g": 3, "v": b"\x01"}, namespace=NS)
     ws.emit("in", "nonsense", namespace=NS)
-    assert wait_for(lambda: len(host.messages) >= 4)
+    assert wait_for(lambda: len(host.messages) >= 5)
     time.sleep(0.05)
     after_open = [m for m in host.messages if m[0] != hp.MSG_OPEN]
     assert after_open == [
-        (hp.MSG_POINTER, struct.pack("<IBii", vid, 0, 125, 200)),
-        (hp.MSG_KEY, struct.pack("<II", vid, 66)),
-        (hp.MSG_VIEWPORT, struct.pack("<IHHH", vid, 1024, 768, 200)),
+        (hp.MSG_SHOW, struct.pack("<IH", vid, 0)),
+        (hp.MSG_WRITE, struct.pack("<IHH", vid, hp.NO_ID, 0)),
+        (hp.MSG_WRITE, struct.pack("<IHH", vid, 1, 2) + b"\x07\x00"),
+        (hp.MSG_SHOW, struct.pack("<IH", vid, hp.NO_ID)),
     ]
+    assert any("forwarded as a request to refuse" in w for w in warnings)
 
 
-def test_tc15_a_thousand_press_release_pairs_arrive_in_order(sio, app, tokens, host):
+def test_a_thousand_writes_arrive_in_order(sio, app, tokens, host):
     ws, opened = open_viewer(sio, app, tokens["operator"], host)
-    events = []
-    for i in range(1000):
-        events.append({"t": "p", "k": 0, "x": i, "y": 0})
-        events.append({"t": "p", "k": 2, "x": i, "y": 0})
+    events = [{"t": "w", "g": i % 3, "v": bytes([i % 2])} for i in range(1000)]
     numbered = [dict(e, n=i + 1) for i, e in enumerate(events)]
     rng = random.Random(15)
     for start in range(0, len(numbered), 16):
@@ -747,19 +793,27 @@ def test_tc15_a_thousand_press_release_pairs_arrive_in_order(sio, app, tokens, h
         numbered[start : start + 16] = chunk
     for event in numbered:
         ws.emit("in", event, namespace=NS)
-    assert wait_for(lambda: len(host.of_type(hp.MSG_POINTER)) == 2000, timeout=20)
-    expected = [struct.pack("<IBii", opened["viewer"], e["k"], e["x"] * 100, 0) for e in events]
-    assert host.of_type(hp.MSG_POINTER) == expected
+    assert wait_for(lambda: len(host.of_type(hp.MSG_WRITE)) == 1000, timeout=20)
+    expected = [struct.pack("<IHH", opened["viewer"], e["g"], 1) + e["v"] for e in events]
+    assert host.of_type(hp.MSG_WRITE) == expected
     assert ws.is_connected(NS)
 
 
-def test_input_before_a_viewport_is_not_forwarded(sio, app, tokens, host):
+def test_requests_before_the_viewer_opens_are_not_forwarded(sio, app, tokens, host):
     ws = viewer_client(sio, app, tokens["admin"])
     assert wait_for(lambda: host.connections == 1)
-    ws.emit("in", {"t": "k", "c": 65, "n": 0}, namespace=NS)
-    ws.emit("in", {"t": "p", "k": 0, "x": 1, "y": 1, "n": 1}, namespace=NS)
+    ws.emit("in", {"t": "s", "p": 0, "n": 0}, namespace=NS)
+    ws.emit("in", {"t": "w", "g": 0, "v": b"\x01", "n": 1}, namespace=NS)
     time.sleep(0.1)
     assert host.messages == []
+
+
+def test_a_second_open_starts_the_viewer_afresh_on_the_host(sio, app, tokens, host):
+    ws, opened = open_viewer(sio, app, tokens["operator"], host)
+    ws.emit("in", {"t": "o", "n": 1}, namespace=NS)
+    assert wait_for(lambda: len(host.of_type(hp.MSG_OPEN)) == 2)
+    assert host.of_type(hp.MSG_CLOSE) == [struct.pack("<I", opened["viewer"])]
+    assert decode_open(host.of_type(hp.MSG_OPEN)[1]) == opened
 
 
 def test_disconnecting_closes_the_viewer_on_the_host(sio, app, tokens, host):
@@ -775,37 +829,47 @@ def test_each_socket_gets_its_own_viewer_id(sio, app, tokens, host):
     assert first["viewer"] != second["viewer"]
 
 
-# ---- frames and statuses through the proxy --------------------------------------------
+# ---- values, refusals and statuses through the proxy ----------------------------------
 
 
-def test_display_lists_reach_their_viewer_only(sio, app, tokens, host):
+def test_values_reach_their_viewer_only(sio, app, tokens, host):
     ws, opened = open_viewer(sio, app, tokens["operator"], host)
     other, _ = open_viewer(sio, app, tokens["viewer"], host)
     other.get_received(NS)
-    host.send(hp.MSG_FRAME, struct.pack("<I", opened["viewer"]) + b"HMDL-frame")
+    host.send(hp.MSG_VALUES, values_payload(opened["viewer"], 0, 3, {1: b"\x2a\x00"}))
     got = []
-    assert wait_for(lambda: got.extend(frames(ws)) or got)
-    assert got == [b"HMDL-frame"]
-    assert frames(other) == []
+    assert wait_for(lambda: got.extend(received(ws, "hmi_values")) or got)
+    assert [unpack_values(g) for g in got] == [(0, 3, {1: b"\x2a\x00"})]
+    assert received(other, "hmi_values") == []
+
+
+def test_a_refusal_reaches_its_viewer_and_is_logged(sio, app, tokens, host, warnings):
+    ws, opened = open_viewer(sio, app, tokens["viewer"], host)
+    host.send(hp.MSG_REFUSED, struct.pack("<IBH", opened["viewer"], 1, 4))
+    host.send(hp.MSG_REFUSED, struct.pack("<IBH", opened["viewer"], 0, 2))
+    got = []
+    assert wait_for(lambda: got.extend(received(ws, "hmi_refused")) or len(got) == 2)
+    assert got == [{"what": "write", "id": 4}, {"what": "show", "id": 2}]
+    assert "HMI viewer viewer: the host refused write 4" in warnings
+    host.send(hp.MSG_REFUSED, struct.pack("<IBH", 999999, 1, 4))
+    time.sleep(0.1)
+    assert ws.is_connected(NS) and host.connections == 1
 
 
 def test_tc11_stop_and_start_keeps_viewers_and_reopens_them(sio, app, tokens, host, sock_path):
-    ws, first = open_viewer(sio, app, tokens["operator"], host, w=1280, h=720, d=2)
-    ws.emit("in", {"t": "v", "w": 640, "h": 480, "d": 1, "n": 1}, namespace=NS)
-    assert wait_for(lambda: len(host.of_type(hp.MSG_VIEWPORT)) == 1)
+    ws, first = open_viewer(sio, app, tokens["operator"], host)
     seen = wait_status(ws, "live")
 
     host.stop()
     seen = wait_status(ws, "stopped", seen)
     assert ws.is_connected(NS)
-    ws.emit("in", {"t": "k", "c": 65, "n": 2}, namespace=NS)
+    ws.emit("in", {"t": "w", "g": 0, "v": b"\x01", "n": 1}, namespace=NS)
 
     restarted = FakeHost(sock_path).start()
     try:
         assert wait_for(lambda: len(restarted.of_type(hp.MSG_OPEN)) == 1)
-        reopened = decode_open(restarted.of_type(hp.MSG_OPEN)[0])
-        assert reopened == dict(first, w=640, h=480, d=100)
-        assert restarted.of_type(hp.MSG_KEY) == []
+        assert decode_open(restarted.of_type(hp.MSG_OPEN)[0]) == first
+        assert restarted.of_type(hp.MSG_WRITE) == []
         seen.clear()
         wait_status(ws, "live", seen)
     finally:
@@ -840,110 +904,27 @@ def test_status_live_after_out_of_date_reaches_open_viewers(sio, app, tokens, ho
     host.send(hp.MSG_STATUS, b"\x00")
     time.sleep(0.1)
     assert statuses(ws) == []
-    ws.emit("in", {"t": "v", "w": 10, "h": 10, "d": 1, "n": 1}, namespace=NS)
-    assert wait_for(lambda: len(host.of_type(hp.MSG_VIEWPORT)) == 1)
-    host.send(hp.MSG_OPENED, host.of_type(hp.MSG_OPEN)[-1][:4])
-    seen.clear()
-    seen = wait_status(ws, "live", seen)
-    host.send(hp.MSG_STATUS, b"\x01")
-    seen = wait_status(ws, "out_of_date", seen)
-    host.send(hp.MSG_OPENED, host.of_type(hp.MSG_OPEN)[-1][:4])
-    host.send(hp.MSG_STATUS, b"\x00")
+    ws.emit("in", {"t": "o", "n": 1}, namespace=NS)
+    assert wait_for(lambda: len(host.of_type(hp.MSG_OPEN)) == 2)
     seen.clear()
     wait_status(ws, "live", seen)
 
 
-def test_a_busy_host_reports_busy_and_the_next_viewport_retries(sio, app, tokens, host):
+def test_a_busy_host_reports_busy_and_the_next_open_retries(sio, app, tokens, host):
     host.reply = "busy"
     ws, _ = open_viewer(sio, app, tokens["operator"], host)
     wait_status(ws, "busy")
+    ws.emit("in", {"t": "w", "g": 0, "v": b"\x01", "n": 1}, namespace=NS)
+    time.sleep(0.1)
+    assert host.of_type(hp.MSG_WRITE) == []
     host.reply = "opened"
-    ws.emit("in", {"t": "v", "w": 10, "h": 10, "d": 1, "n": 1}, namespace=NS)
+    ws.emit("in", {"t": "o", "n": 2}, namespace=NS)
     assert wait_for(lambda: len(host.of_type(hp.MSG_OPEN)) == 2)
     wait_status(ws, "live")
     host.send(hp.MSG_OPENED, struct.pack("<I", 4242))
     host.send(hp.MSG_BUSY, struct.pack("<I", 4242))
-
-
-def test_a_screen_fault_reports_fault_to_that_viewer_and_the_next_viewport_reopens(
-    sio, app, tokens, host, warnings
-):
-    ws, opened = open_viewer(sio, app, tokens["operator"], host)
-    other, _ = open_viewer(sio, app, tokens["viewer"], host)
-    seen = wait_status(ws, "live")
-    wait_status(other, "live")
-    viewer = struct.pack("<I", opened["viewer"])
-    host.send(hp.MSG_FRAME, viewer + b"HMDL-before")
-    got = []
-    assert wait_for(lambda: got.extend(frames(ws)) or got)
-    assert got == [b"HMDL-before"]
-
-    host.send(hp.MSG_FAULT, viewer)
-    seen.clear()
-    wait_status(ws, "fault", seen)
-    assert "HMI screen fault, viewer operator closed" in warnings
-    time.sleep(0.1)
-    assert statuses(other) == []
-
-    ws.emit("in", {"t": "k", "c": 65, "n": 1}, namespace=NS)
-    time.sleep(0.1)
-    assert host.of_type(hp.MSG_KEY) == []
-    ws.emit("in", {"t": "v", "w": 640, "h": 480, "d": 2, "n": 2}, namespace=NS)
-    assert wait_for(lambda: len(host.of_type(hp.MSG_OPEN)) == 3)
-    reopened = decode_open(host.of_type(hp.MSG_OPEN)[-1])
-    assert reopened == dict(opened, w=640, h=480, d=200)
-    assert host.of_type(hp.MSG_VIEWPORT) == []
-    seen.clear()
-    wait_status(ws, "live", seen)
-    host.send(hp.MSG_FAULT, struct.pack("<I", 4242))
-    time.sleep(0.1)
-    assert ws.is_connected(NS) and statuses(ws) == []
-
-
-def test_a_screen_sign_out_ends_that_session_and_disconnects_its_viewer(
-    sio, app, client, tokens, host
-):
-    ws, opened = open_viewer(sio, app, tokens["operator"], host)
-    other, _ = open_viewer(sio, app, tokens["viewer"], host)
-    wait_status(ws, "live")
-    host.send(hp.MSG_SIGN_OUT, struct.pack("<I", opened["viewer"]))
-    assert wait_for(lambda: not ws.is_connected(NS))
-    assert client.get("/api/whoami", headers=auth(tokens["operator"])).status_code == 401
-    assert client.get("/api/whoami", headers=auth(tokens["viewer"])).status_code == 200
-    assert other.is_connected(NS)
-    assert wait_for(
-        lambda: opened["viewer"] in [struct.unpack("<I", p)[0] for p in host.of_type(hp.MSG_CLOSE)]
-    )
-
-
-def test_a_sign_out_for_an_unknown_viewer_is_ignored_and_a_bad_one_drops_the_host(
-    sio, app, tokens, host
-):
-    ws, _ = open_viewer(sio, app, tokens["operator"], host)
-    host.send(hp.MSG_SIGN_OUT, struct.pack("<I", 999999))
     time.sleep(0.1)
     assert ws.is_connected(NS) and host.connections == 1
-    host.send(hp.MSG_SIGN_OUT, b"\x01")
-    assert wait_for(lambda: host.connections == 2)
-
-
-def test_a_database_error_on_sign_out_still_signs_the_browser_out_and_keeps_the_host(
-    sio, app, tokens, host, monkeypatch
-):
-    errors = []
-    monkeypatch.setattr(hp.logger, "error", lambda msg, *a: errors.append(msg % a))
-
-    def locked(_payload):
-        raise OperationalError("UPDATE", {}, Exception("database is locked"))
-
-    monkeypatch.setattr(hp.sessions, "sign_out", locked)
-    ws, opened = open_viewer(sio, app, tokens["operator"], host)
-    other, _ = open_viewer(sio, app, tokens["viewer"], host)
-    host.send(hp.MSG_SIGN_OUT, struct.pack("<I", opened["viewer"]))
-    assert wait_for(lambda: not ws.is_connected(NS))
-    assert any("could not be ended on sign-out" in e for e in errors)
-    assert "hmi-host" in [t.name for t in threading.enumerate()]
-    assert other.is_connected(NS) and host.connections == 1
 
 
 def test_a_message_that_cannot_be_handled_reconnects_instead_of_ending_the_host_link(
@@ -961,45 +942,19 @@ def test_a_message_that_cannot_be_handled_reconnects_instead_of_ending_the_host_
     assert "hmi-host" in [t.name for t in threading.enumerate()]
 
 
-def test_a_sign_out_token_that_no_longer_verifies_ends_the_session_by_its_id(
-    sio, app, client, tokens, host, monkeypatch, warnings
-):
-    ws, opened = open_viewer(sio, app, tokens["operator"], host)
-
-    def unverifiable(_token, allow_expired=False):
-        raise InvalidSignatureError("signature mismatch")
-
-    monkeypatch.setattr(hp, "decode_token", unverifiable)
-    host.send(hp.MSG_SIGN_OUT, struct.pack("<I", opened["viewer"]))
-    assert wait_for(lambda: not ws.is_connected(NS))
-    assert client.get("/api/whoami", headers=auth(tokens["operator"])).status_code == 401
-    assert any("session ended by its id" in w for w in warnings)
-
-
-def test_a_fault_drops_the_frame_still_waiting_for_that_viewer(app, sock_path, hmi_dir):
-    emitted = []
-    proxy = hp.HmiProxy(app, lambda *args: emitted.append(args), lambda sid: None)
-    viewer = proxy.add_viewer("sid", "operator", "operator", "token")
-    viewer.in_flight = 1
-    viewer.sent_at = time.monotonic()
-    proxy._dispatch(hp.MSG_FRAME, struct.pack("<I", viewer.viewer_id) + b"HMDL-old")
-    assert viewer.frame == b"HMDL-old"
-    proxy._dispatch(hp.MSG_FAULT, struct.pack("<I", viewer.viewer_id))
-    assert viewer.frame is None
-    assert ("hmi_status", {"state": "fault"}, "sid", None) in emitted
-
-
 @pytest.mark.parametrize(
     "raw",
     [
         struct.pack("<IB", 1, 0x99),
+        struct.pack("<IB", 1, 0x86),
         struct.pack("<IB", 2, hp.MSG_STATUS) + b"\x07",
         struct.pack("<IB", 3, hp.MSG_STATUS) + b"\x00\x00",
         struct.pack("<IB", 3, hp.MSG_OPENED) + b"\x00\x00",
-        struct.pack("<IB", 3, hp.MSG_FAULT) + b"\x00\x00",
-        struct.pack("<IB", 3, hp.MSG_FRAME) + b"\x00\x00",
-        struct.pack("<IB", 0, hp.MSG_FRAME),
-        struct.pack("<IB", hp.MAX_MESSAGE + 1, hp.MSG_FRAME),
+        struct.pack("<IB", 5, hp.MSG_REFUSED) + b"\x00\x00\x00\x00",
+        struct.pack("<IB", 8, hp.MSG_REFUSED) + b"\x00\x00\x00\x00\x07\x00\x00",
+        struct.pack("<IB", 3, hp.MSG_VALUES) + b"\x00\x00",
+        struct.pack("<IB", 0, hp.MSG_VALUES),
+        struct.pack("<IB", hp.MAX_MESSAGE + 1, hp.MSG_VALUES),
     ],
 )
 def test_a_malformed_host_message_drops_the_connection_and_reconnects(
@@ -1043,12 +998,12 @@ def test_a_send_failure_drops_the_host_connection(sio, app, tokens, host):
             real.close()
 
     proxy._host = Broken()
-    ws.emit("in", {"t": "k", "c": 65, "n": 1}, namespace=NS)
+    ws.emit("in", {"t": "s", "p": 0, "n": 1}, namespace=NS)
     assert wait_for(lambda: host.connections == 2)
     assert wait_for(lambda: len(host.of_type(hp.MSG_OPEN)) == 2)
 
 
-def test_input_racing_a_disconnect_never_opens_the_viewer_on_the_host(
+def test_an_open_racing_a_disconnect_never_opens_the_viewer_on_the_host(
     sio, app, tokens, host, monkeypatch
 ):
     viewer_client(sio, app, tokens["viewer"])
@@ -1063,13 +1018,13 @@ def test_input_racing_a_disconnect_never_opens_the_viewer_on_the_host(
 
     monkeypatch.setattr(proxy, "token_in_force", disconnect_meanwhile)
     with app.app_context():
-        proxy.handle_input(sid, {"t": "v", "w": 800, "h": 600, "d": 1, "n": 0})
+        proxy.handle_input(sid, {"t": "o", "n": 0})
     time.sleep(0.1)
     assert host.of_type(hp.MSG_OPEN) == []
     assert sid not in proxy._viewers
 
 
-def test_viewports_racing_disconnects_leave_no_viewer_open_on_the_host(sio, app, tokens, host):
+def test_opens_racing_disconnects_leave_no_viewer_open_on_the_host(sio, app, tokens, host):
     proxy = hp.get_proxy()
     assert wait_for(lambda: host.connections == 1)
     for i in range(100):
@@ -1077,17 +1032,17 @@ def test_viewports_racing_disconnects_leave_no_viewer_open_on_the_host(sio, app,
         sid = list(proxy._viewers)[-1]
         start = threading.Barrier(2)
 
-        def viewport(sid=sid):
+        def open_it(sid=sid, start=start):
             start.wait()
             with app.app_context():
-                proxy.handle_input(sid, {"t": "v", "w": 800, "h": 600, "d": 1, "n": 0})
+                proxy.handle_input(sid, {"t": "o", "n": 0})
 
-        def leave(sid=sid, i=i):
+        def leave(sid=sid, i=i, start=start):
             start.wait()
             time.sleep((i % 20) * 0.0002)
             proxy.remove_viewer(sid)
 
-        threads = [threading.Thread(target=viewport), threading.Thread(target=leave)]
+        threads = [threading.Thread(target=open_it), threading.Thread(target=leave)]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -1099,50 +1054,9 @@ def test_viewports_racing_disconnects_leave_no_viewer_open_on_the_host(sio, app,
     assert proxy._viewers == {}
 
 
-class _ViewportOnReopen:
-    """A viewer lock that lets a viewport through just as a new host connection reopens the viewer."""
-
-    def __init__(self, real, proxy, viewport):
-        self.real = real
-        self.proxy = proxy
-        self.viewport = viewport
-
-    def __enter__(self):
-        reopening = threading.current_thread().name == "hmi-host" and self.proxy._host is not None
-        if reopening and self.viewport is not None:
-            send, self.viewport = self.viewport, None
-            thread = threading.Thread(target=send)
-            thread.start()
-            thread.join()
-        return self.real.__enter__()
-
-    def __exit__(self, *exc):
-        return self.real.__exit__(*exc)
-
-
-def test_a_viewport_racing_a_reconnect_opens_the_viewer_once(sio, app, tokens, host):
-    open_viewer(sio, app, tokens["operator"], host)
-    proxy = hp.get_proxy()
-    sid = next(iter(proxy._viewers))
-    viewer = proxy._viewers[sid]
-
-    def viewport():
-        with app.app_context():
-            proxy.handle_input(sid, {"t": "v", "w": 640, "h": 480, "d": 1, "n": 1})
-
-    viewer.lock = _ViewportOnReopen(viewer.lock, proxy, viewport)
-    host.send_raw(struct.pack("<IB", 1, 0x7F))
-    assert wait_for(lambda: host.connections == 2)
-    assert wait_for(lambda: len(host.of_type(hp.MSG_OPEN)) == 2)
-    time.sleep(0.2)
-    opens = [decode_open(p) for p in host.of_type(hp.MSG_OPEN)]
-    assert len(opens) == 2
-    assert (opens[1]["w"], opens[1]["h"]) == (640, 480)
-
-
 def test_an_account_name_the_host_would_refuse_is_sent_with_those_characters_replaced():
     name = "op\x01er\x7fat\x85or\ud800é"
-    sent = decode_open(hp.encode_open(1, 2, hp.Viewport(1, 1, 100), name)[5:])["name"]
+    sent = decode_open(hp.encode_open(1, 2, name)[5:])["name"]
     assert sent == "op?er?at?or?é"
 
 

@@ -5,19 +5,19 @@
 # HMI plugin tests per compiler pair: compile-hmi.sh with -Werror (exports, seal),
 # then test_hmi_plugin.cpp plain and under ASan/UBSan when available.
 
-# HMI_CORE_DIR: the editor's resources/sources/hmi/core
-# (default ../openplc-editor/resources/sources/hmi/core).
+# HMI_UNIT_DIR: the editor's resources/sources/hmi/unit, which holds hmi_access.h
+# (default ../openplc-editor/resources/sources/hmi/unit).
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 HERE="$ROOT/tests/host/hmi"
-CORE_DIR="${HMI_CORE_DIR:-$ROOT/../openplc-editor/resources/sources/hmi/core}"
-if [ ! -f "$CORE_DIR/hmi_core.h" ]; then
-    echo "HMI core not found at $CORE_DIR; set HMI_CORE_DIR to the editor's resources/sources/hmi/core" >&2
+UNIT_DIR="${HMI_UNIT_DIR:-$ROOT/../openplc-editor/resources/sources/hmi/unit}"
+if [ ! -f "$UNIT_DIR/hmi_access.h" ]; then
+    echo "hmi_access.h not found in $UNIT_DIR; set HMI_UNIT_DIR to the editor's resources/sources/hmi/unit" >&2
     exit 2
 fi
-CORE_DIR="$(cd "$CORE_DIR" && pwd)"
+UNIT_DIR="$(cd "$UNIT_DIR" && pwd)"
 
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
@@ -46,10 +46,9 @@ fail() {
 
 make_generated() {
     local root="$1"
-    mkdir -p "$root/core/generated/hmi/src/core" "$root/core/generated/hmi/client"
-    cp -R "$CORE_DIR"/. "$root/core/generated/hmi/src/core/"
-    cp "$HERE/fake_unit/"* "$root/core/generated/hmi/src/"
-    printf '{"format": 1}\n' > "$root/core/generated/hmi/manifest.json"
+    mkdir -p "$root/core/generated/hmi/src" "$root/core/generated/hmi/client"
+    cp "$UNIT_DIR/hmi_access.h" "$HERE/fake_access/hmi_access.c" "$root/core/generated/hmi/src/"
+    printf '{"format": 2}\n' > "$root/core/generated/hmi/manifest.json"
     printf '<!doctype html><title>HMI</title>\n' > "$root/core/generated/hmi/client/index.html"
     printf 'export {};\n' > "$root/core/generated/hmi/client/hmi.js"
 }
@@ -74,8 +73,8 @@ for pair in "${PAIRS[@]}"; do
                 *) fail "$sym is not exported" ;;
             esac
         done
-        if nm -g "$so" | awk '$2 == "T"' | grep -q ' _\{0,1\}hmi_session_create$'; then
-            fail "core symbols are exported"
+        if nm -g "$so" | awk '$2 == "T"' | grep -q ' _\{0,1\}hmi_values_offer$'; then
+            fail "host symbols are exported"
         else
             echo "  ok    only the plugin interface is exported"
         fi
@@ -95,7 +94,7 @@ for pair in "${PAIRS[@]}"; do
             fail "seal hashes"
         fi
         sealed_before=$(cat "$seal")
-        printf 'this is not C++\n' > "$build_root/core/generated/hmi/src/broken.cpp"
+        printf 'this is not C\n' > "$build_root/core/generated/hmi/src/broken.c"
         if (cd "$build_root" && HMI_SRC_ROOT="$ROOT" HMI_CC="$cc" HMI_CXX="$cxx" \
             bash "$ROOT/scripts/compile-hmi.sh" > /dev/null 2>&1); then
             fail "a broken HMI source builds"
@@ -105,7 +104,7 @@ for pair in "${PAIRS[@]}"; do
         else
             fail "a failed build changed the installed HMI"
         fi
-        rm -f "$build_root/core/generated/hmi/src/broken.cpp"
+        rm -f "$build_root/core/generated/hmi/src/broken.c"
         rm -rf "$build_root/core/generated/hmi"
         (cd "$build_root" && HMI_SRC_ROOT="$ROOT" bash "$ROOT/scripts/compile-hmi.sh" > /dev/null)
         if [ -e "$build_root/build/hmi" ]; then
@@ -139,19 +138,18 @@ for pair in "${PAIRS[@]}"; do
         # shellcheck disable=SC2206
         flags=(-g -O1 -Wall -Wextra -Werror -ffp-contract=off -pthread $vflags
             -I "$ROOT/core/src/drivers/plugins/native/hmi" -I "$ROOT/core/src/drivers"
-            -I "$CORE_DIR" -I "$HERE/fake_unit" "-DHMI_SOCKET_DIR=\"$sockdir\""
-            "-DHMI_SOCKET_PATH=\"$sockdir/hmi.socket\"" -DHMI_STOP_TIMEOUT_MS=500u)
+            -I "$UNIT_DIR" "-DHMI_SOCKET_DIR=\"$sockdir\""
+            "-DHMI_SOCKET_PATH=\"$sockdir/hmi.socket\"")
         objs=()
         ok=1
-        for src in "$ROOT"/core/src/drivers/plugins/native/hmi/*.c "$CORE_DIR"/*.c "$HERE"/fake_unit/*.c; do
+        for src in "$ROOT"/core/src/drivers/plugins/native/hmi/*.c "$HERE"/fake_access/*.c; do
             obj="$objdir/$(basename "$(dirname "$src")")-$(basename "${src%.c}").o"
             "$cc" -std=c11 "${flags[@]}" -c "$src" -o "$obj" || { ok=0; break; }
             objs+=("$obj")
         done
         if [ "$ok" -eq 1 ]; then
-            "$cxx" -std=c++17 "${flags[@]}" -c "$HERE/fake_unit/hmi_fake_unit.cpp" -o "$objdir/unit.o" &&
-                "$cxx" -std=c++17 "${flags[@]}" "$HERE/test_hmi_plugin.cpp" "${objs[@]}" "$objdir/unit.o" \
-                    -o "$objdir/test_hmi_plugin" || ok=0
+            "$cxx" -std=c++17 "${flags[@]}" "$HERE/test_hmi_plugin.cpp" "${objs[@]}" \
+                -o "$objdir/test_hmi_plugin" || ok=0
         fi
         if [ "$ok" -ne 1 ]; then
             fail "test_hmi_plugin ($vname) did not compile with $cc"

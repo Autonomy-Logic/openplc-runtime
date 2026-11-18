@@ -16,9 +16,9 @@ from webserver import hmi_upload
 from webserver.hmi_upload import HmiAction, HmiPlan, HmiUploadError, classify
 from webserver.plcapp_management import DISALLOWED_EXT, analyze_zip, extracted_names
 
-INSTALL = json.dumps({"format": 1}).encode()
-REMOVE = json.dumps({"format": 1, "remove": True}).encode()
-SRC = ["hmi/src/hmi_unit.h", "hmi/src/unit.cpp", "hmi/src/core/hmi_core.c"]
+INSTALL = json.dumps({"format": 2}).encode()
+REMOVE = json.dumps({"format": 2, "remove": True}).encode()
+SRC = ["hmi/src/hmi_access.h", "hmi/src/hmi_access.c"]
 
 
 def _zip(files: dict[str, bytes | str]) -> io.BytesIO:
@@ -35,7 +35,7 @@ def _zip(files: dict[str, bytes | str]) -> io.BytesIO:
 
 def test_install_manifest() -> None:
     plan = classify(["program.cpp", "hmi/manifest.json", *SRC, "hmi/client/index.html"], INSTALL)
-    assert plan == HmiPlan(HmiAction.INSTALL, src_files=3, client_files=1)
+    assert plan == HmiPlan(HmiAction.INSTALL, src_files=2, client_files=1)
 
 
 def test_remove_manifest_alone() -> None:
@@ -53,23 +53,29 @@ def test_directory_entries_are_ignored() -> None:
 @pytest.mark.parametrize(
     "manifest",
     [
-        b'{"format": 2}',
-        b'{"format": "1"}',
+        b'{"format": 1}',
+        b'{"format": 3}',
+        b'{"format": "2"}',
         b'{"format": true}',
-        b'{"format": 1.0}',
-        b'{"format": 1, "remove": false}',
-        b'{"format": 1, "remove": 1}',
-        b'{"format": 1, "extra": 0}',
+        b'{"format": 2.0}',
+        b'{"format": 2, "remove": false}',
+        b'{"format": 2, "remove": 1}',
+        b'{"format": 2, "extra": 0}',
         b'{"remove": true}',
         b"[1]",
         b"not json",
         b"\xff\xfe",
-        b'{"format": 1' + b" " * 2000 + b"}",
+        b'{"format": 2' + b" " * 2000 + b"}",
     ],
 )
 def test_bad_manifest_is_refused(manifest: bytes) -> None:
     with pytest.raises(HmiUploadError):
         classify(["hmi/manifest.json", *SRC], manifest)
+
+
+def test_an_hmi_built_for_screens_run_on_the_device_is_refused_by_name() -> None:
+    with pytest.raises(HmiUploadError, match="format must be 2"):
+        classify(["hmi/manifest.json", *SRC], b'{"format": 1}')
 
 
 def test_hmi_without_manifest_is_refused() -> None:
@@ -121,6 +127,10 @@ def test_allowed_client_files(name: str) -> None:
         "hmi/client/Index.HTML",
         "hmi/client/style.Css",
         "hmi/src/notes.md",
+        "hmi/src/unit.cpp",
+        "hmi/src/unit.hpp",
+        "hmi/src/core/hmi_core.c",
+        "hmi/src/ACCESS.C",
         "hmi/src/build.py",
         "hmi/src/sub dir/a.c",
         "hmi/src/core/../a.c",
@@ -164,7 +174,7 @@ def test_analyze_zip_accepts_client_scripts_only_in_hmi_client() -> None:
     files = {
         "program.cpp": "",
         "hmi/manifest.json": INSTALL,
-        "hmi/src/u.cpp": "",
+        "hmi/src/u.c": "",
         "hmi/client/hmi.js": "",
         "hmi/client/hmi.wasm": b"\0asm",
         "hmi/client/index.html": "",
@@ -184,7 +194,7 @@ def test_single_root_folder_is_stripped_before_the_rules() -> None:
         {
             "proj/program.cpp": "",
             "proj/hmi/manifest.json": INSTALL,
-            "proj/hmi/src/u.cpp": "",
+            "proj/hmi/src/u.c": "",
             "proj/hmi/client/hmi.js": "",
         }
     )
@@ -206,7 +216,7 @@ def test_plan_from_zip_reads_the_manifest() -> None:
 
 def _install(generated: Path, marker: str) -> None:
     (generated / "hmi" / "src").mkdir(parents=True)
-    (generated / "hmi" / "src" / "u.cpp").write_text(marker)
+    (generated / "hmi" / "src" / "u.c").write_text(marker)
 
 
 def _replace_generated(generated: Path, with_hmi: str | None = None) -> None:
@@ -224,7 +234,7 @@ def test_upload_without_hmi_keeps_the_previous_one(tmp_path: Path) -> None:
     _install(generated, "old")
     with hmi_upload.keep_previous(str(generated), HmiPlan(HmiAction.KEEP)):
         _replace_generated(generated)
-    assert (generated / "hmi" / "src" / "u.cpp").read_text() == "old"
+    assert (generated / "hmi" / "src" / "u.c").read_text() == "old"
     assert (generated / "program.cpp").read_text() == "new"
     assert not (tmp_path / "core" / hmi_upload.STASH_NAME).exists()
 
@@ -237,7 +247,7 @@ def test_upload_with_hmi_replaces_the_previous_one(tmp_path: Path) -> None:
     with hmi_upload.keep_previous(str(generated), plan):
         _replace_generated(generated, with_hmi="new")
     hmi_upload.apply(str(generated), plan, lambda _m: None)
-    assert (generated / "hmi" / "src" / "u.cpp").read_text() == "new"
+    assert (generated / "hmi" / "src" / "u.c").read_text() == "new"
 
 
 def test_remove_form_deletes_the_hmi(tmp_path: Path) -> None:
@@ -265,7 +275,7 @@ def test_previous_hmi_survives_a_failed_extract(tmp_path: Path) -> None:
     ):
         shutil.rmtree(generated)
         raise OSError("disk full")
-    assert (generated / "hmi" / "src" / "u.cpp").read_text() == "old"
+    assert (generated / "hmi" / "src" / "u.c").read_text() == "old"
 
 
 def test_stale_stash_is_discarded(tmp_path: Path) -> None:

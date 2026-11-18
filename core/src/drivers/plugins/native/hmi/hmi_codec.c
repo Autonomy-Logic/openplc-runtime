@@ -5,6 +5,7 @@
 
 #include <ctype.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -193,14 +194,14 @@ static void format_string(const uint8_t *s, uint16_t max_len, char *out, size_t 
 static void civil_from_days(int64_t z, int64_t *y, unsigned *m, unsigned *d)
 {
     z += 719468;
-    const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const int64_t era  = (z >= 0 ? z : z - 146096) / 146097;
     const unsigned doe = (unsigned)(z - era * 146097);
     const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
     const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    const unsigned mp = (5 * doy + 2) / 153;
-    *d = doy - (153 * mp + 2) / 5 + 1;
-    *m = mp < 10 ? mp + 3 : mp - 9;
-    *y = (int64_t)yoe + era * 400 + (*m <= 2);
+    const unsigned mp  = (5 * doy + 2) / 153;
+    *d                 = doy - (153 * mp + 2) / 5 + 1;
+    *m                 = mp < 10 ? mp + 3 : mp - 9;
+    *y                 = (int64_t)yoe + era * 400 + (*m <= 2);
 }
 
 /* Floor division of a by b > 0. */
@@ -213,8 +214,8 @@ static int64_t floor_div64(int64_t a, int64_t b)
 static void format_clock(int64_t ns, char *out, size_t cap)
 {
     const int64_t ms = ns / 1000000;
-    snprintf(out, cap, "%02d:%02d:%02d.%03d", (int)(ms / 3600000), (int)(ms / 60000 % 60), (int)(ms / 1000 % 60),
-             (int)(ms % 1000));
+    snprintf(out, cap, "%02d:%02d:%02d.%03d", (int)(ms / 3600000), (int)(ms / 60000 % 60),
+             (int)(ms / 1000 % 60), (int)(ms % 1000));
 }
 
 void hmi_codec_format(uint8_t type, uint16_t max_len, const void *buf, char *out, size_t cap)
@@ -271,7 +272,8 @@ void hmi_codec_format(uint8_t type, uint16_t max_len, const void *buf, char *out
         return;
     case HMI_CODEC_TIME:
     case HMI_CODEC_LTIME:
-        snprintf(out, cap, "%s#%" PRId64 "ns", type == HMI_CODEC_TIME ? "T" : "LT", le_signed(p, 8));
+        snprintf(out, cap, "%s#%" PRId64 "ns", type == HMI_CODEC_TIME ? "T" : "LT",
+                 le_signed(p, 8));
         return;
     case HMI_CODEC_DATE:
     {
@@ -290,7 +292,7 @@ void hmi_codec_format(uint8_t type, uint16_t max_len, const void *buf, char *out
     }
     case HMI_CODEC_DT:
     {
-        const int64_t ns = le_signed(p, 8);
+        const int64_t ns  = le_signed(p, 8);
         const int64_t day = floor_div64(ns, 86400000000000LL);
         int64_t y;
         unsigned m, d;
@@ -317,4 +319,76 @@ bool hmi_md5_live(const char *program_md5, const char *unit_md5)
             return false;
     }
     return program_md5[i] == '\0' && unit_md5[i] == '\0';
+}
+
+size_t hmi_codec_to_wire(uint8_t type, uint16_t max_len, const void *buf, uint8_t *out)
+{
+    const uint8_t *in = buf;
+    if (type == HMI_CODEC_STRING)
+    {
+        size_t n = 0;
+        while (n < max_len && in[n] != '\0')
+            n++;
+        memcpy(out, in, n);
+        return n;
+    }
+    const size_t width = hmi_codec_width(type);
+    memcpy(out, in, width);
+    return width;
+}
+
+bool hmi_codec_from_wire(uint8_t type, uint16_t max_len, const uint8_t *value, size_t len,
+                         void *dest)
+{
+    uint8_t *out = dest;
+    if (!out || (len > 0 && !value))
+        return false;
+    if (type == HMI_CODEC_STRING)
+    {
+        if (len > max_len || (len > 0 && memchr(value, 0, len) != NULL))
+            return false;
+        if (len > 0)
+            memcpy(out, value, len);
+        out[len] = '\0';
+        return true;
+    }
+    const size_t width = hmi_codec_width(type);
+    if (width == 0 || len != width)
+        return false;
+    switch (type)
+    {
+    case HMI_CODEC_BOOL:
+        if (value[0] > 1u)
+            return false;
+        break;
+    case HMI_CODEC_REAL:
+    {
+        const uint32_t u = (uint32_t)le_unsigned(value, 4);
+        float f;
+        memcpy(&f, &u, sizeof f);
+        if (!isfinite(f))
+            return false;
+        break;
+    }
+    case HMI_CODEC_LREAL:
+    {
+        const uint64_t u = le_unsigned(value, 8);
+        double d;
+        memcpy(&d, &u, sizeof d);
+        if (!isfinite(d))
+            return false;
+        break;
+    }
+    case HMI_CODEC_TOD:
+    {
+        const int64_t ns = le_signed(value, 8);
+        if (ns < 0 || ns >= 86400000000000LL)
+            return false;
+        break;
+    }
+    default:
+        break;
+    }
+    memcpy(out, value, width);
+    return true;
 }

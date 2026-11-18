@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-INSTALL = json.dumps({"format": 1})
-REMOVE = json.dumps({"format": 1, "remove": True})
+INSTALL = json.dumps({"format": 2})
+REMOVE = json.dumps({"format": 2, "remove": True})
 
 
 def _zip(files: dict[str, str]) -> bytes:
@@ -72,8 +72,8 @@ def _program(extra: dict[str, str] | None = None) -> bytes:
 
 HMI = {
     "hmi/manifest.json": INSTALL,
-    "hmi/src/hmi_unit.h": "",
-    "hmi/src/unit.cpp": "// unit v1",
+    "hmi/src/hmi_access.h": "",
+    "hmi/src/hmi_access.c": "// unit v1",
     "hmi/client/index.html": "<html>",
     "hmi/client/hmi.js": "export {};",
 }
@@ -83,17 +83,17 @@ def test_install_keep_and_remove(runtime_root: Path) -> None:
     hmi = runtime_root / "core" / "generated" / "hmi"
 
     assert _upload(_program(HMI))["UploadFileFail"] == ""
-    assert (hmi / "src" / "unit.cpp").read_text() == "// unit v1"
+    assert (hmi / "src" / "hmi_access.c").read_text() == "// unit v1"
     assert (hmi / "client" / "hmi.js").exists()
 
     assert _upload(_program())["UploadFileFail"] == ""
-    assert (hmi / "src" / "unit.cpp").read_text() == "// unit v1", "kept without hmi/"
+    assert (hmi / "src" / "hmi_access.c").read_text() == "// unit v1", "kept without hmi/"
     assert (runtime_root / "core" / "generated" / "program.cpp").exists()
 
-    v2 = dict(HMI, **{"hmi/src/unit.cpp": "// unit v2"})
+    v2 = dict(HMI, **{"hmi/src/hmi_access.c": "// unit v2"})
     del v2["hmi/client/hmi.js"]
     assert _upload(_program(v2))["UploadFileFail"] == ""
-    assert (hmi / "src" / "unit.cpp").read_text() == "// unit v2", "replaced"
+    assert (hmi / "src" / "hmi_access.c").read_text() == "// unit v2", "replaced"
     assert not (hmi / "client" / "hmi.js").exists(), "nothing of the old HMI survives"
 
     assert _upload(_program({"hmi/manifest.json": REMOVE}))["UploadFileFail"] == ""
@@ -103,10 +103,11 @@ def test_install_keep_and_remove(runtime_root: Path) -> None:
 @pytest.mark.parametrize(
     "files",
     [
-        {"hmi/manifest.json": json.dumps({"format": 2}), "hmi/src/u.cpp": ""},
-        {"hmi/src/u.cpp": ""},
-        {"hmi/manifest.json": INSTALL, "hmi/src/u.cpp": "", "hmi/client/sub/x.js": ""},
-        {"hmi/manifest.json": REMOVE, "hmi/src/u.cpp": ""},
+        {"hmi/manifest.json": json.dumps({"format": 1}), "hmi/src/u.c": ""},
+        {"hmi/manifest.json": INSTALL, "hmi/src/unit.cpp": ""},
+        {"hmi/src/u.c": ""},
+        {"hmi/manifest.json": INSTALL, "hmi/src/u.c": "", "hmi/client/sub/x.js": ""},
+        {"hmi/manifest.json": REMOVE, "hmi/src/u.c": ""},
     ],
 )
 def test_bad_hmi_is_refused_before_anything_changes(runtime_root: Path, files: dict) -> None:
@@ -116,7 +117,7 @@ def test_bad_hmi_is_refused_before_anything_changes(runtime_root: Path, files: d
         result["UploadFileFail"].startswith("HMI: ") or "safety checks" in result["UploadFileFail"]
     )
     assert result["CompilationStatus"] == "FAILED"
-    unit = runtime_root / "core" / "generated" / "hmi" / "src" / "unit.cpp"
+    unit = runtime_root / "core" / "generated" / "hmi" / "src" / "hmi_access.c"
     assert unit.read_text() == "// unit v1", "the installed HMI is untouched"
 
 

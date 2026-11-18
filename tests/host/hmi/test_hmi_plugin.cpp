@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
-// Host test of the HMI plugin over its Unix socket: links the real host, the editor's HMI core
-// and the fake unit, fakes the runtime's debug surface and logging, and plays the web server.
+// Host test of the HMI plugin over its Unix socket: links the real host and a hand-written
+// manifest (fake_access/hmi_access.c), fakes the runtime's debug surface and logging, and plays
+// the web server. Checks the values served per screen, writes applied and refused by role and
+// screen, the request queue bound and the out-of-date gate.
 // Built and run by tests/host/hmi/run.sh, which defines HMI_SOCKET_PATH.
 
 #include "plugin_types.h"
@@ -11,7 +13,6 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -19,6 +20,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -29,8 +31,6 @@ int init(void *args);
 int start_loop(void);
 void stop_loop(void);
 void cleanup(void);
-void hmi_fake_fail_creates(int n);
-void hmi_fake_last_press(int32_t *x, int32_t *y);
 }
 
 static int g_failures = 0;
@@ -58,6 +58,7 @@ static std::string g_label;
 static std::vector<std::string> g_logs;
 static std::vector<std::vector<uint8_t>> g_writes; // elem, then the debug bytes
 static std::atomic<int> g_reads{0};
+static float g_temp = 21.5f;
 
 static const uint16_t STRING_WIDTH = 127; // STruC++ DEBUG_STRING_WIDTH
 
@@ -100,8 +101,7 @@ static uint16_t dbg_read(uint8_t arr, uint16_t elem, uint8_t *dest)
         break;
     case 4:
     {
-        const float t = 21.5f;
-        std::memcpy(dest, &t, 4);
+        std::memcpy(dest, &g_temp, 4);
         break;
     }
     default:
@@ -148,17 +148,7 @@ static bool logged(const char *needle)
     return false;
 }
 
-static size_t count_logged(const char *needle)
-{
-    std::lock_guard<std::mutex> lk(g_mu);
-    size_t n = 0;
-    for (const std::string &l : g_logs)
-        if (l.find(needle) != std::string::npos)
-            n++;
-    return n;
-}
-
-static bool wait_for(bool (*pred)(), int ms)
+template <typename Pred> static bool wait_for(Pred pred, int ms)
 {
     for (int i = 0; i < ms / 5; i++)
     {
@@ -246,36 +236,41 @@ static void send_msg(int fd, uint8_t type, const std::vector<uint8_t> &payload)
     send_raw(fd, b);
 }
 
-static std::vector<uint8_t> open_payload(uint32_t viewer, uint8_t role, uint16_t w, uint16_t h,
-                                         uint16_t d, const std::string &name)
+static std::vector<uint8_t> open_payload(uint32_t viewer, uint8_t role, const std::string &name)
 {
     std::vector<uint8_t> p;
     put_u32(p, viewer);
     p.push_back(role);
-    put_u16(p, w);
-    put_u16(p, h);
-    put_u16(p, d);
     p.push_back((uint8_t)name.size());
     p.insert(p.end(), name.begin(), name.end());
     return p;
 }
 
-static void send_key(int fd, uint32_t viewer, uint32_t code)
+static void send_show(int fd, uint32_t viewer, uint16_t page)
 {
     std::vector<uint8_t> p;
     put_u32(p, viewer);
-    put_u32(p, code);
-    send_msg(fd, 0x05, p);
+    put_u16(p, page);
+    send_msg(fd, 0x03, p);
 }
 
-static void send_pointer(int fd, uint32_t viewer, uint8_t kind, int32_t x100, int32_t y100)
+static std::vector<uint8_t> write_message(uint32_t viewer, uint16_t tag, const std::vector<uint8_t> &value)
 {
     std::vector<uint8_t> p;
     put_u32(p, viewer);
-    p.push_back(kind);
-    put_u32(p, (uint32_t)x100);
-    put_u32(p, (uint32_t)y100);
-    send_msg(fd, 0x04, p);
+    put_u16(p, tag);
+    put_u16(p, (uint16_t)value.size());
+    p.insert(p.end(), value.begin(), value.end());
+    std::vector<uint8_t> b;
+    put_u32(b, (uint32_t)(p.size() + 1));
+    b.push_back(0x04);
+    b.insert(b.end(), p.begin(), p.end());
+    return b;
+}
+
+static void send_write(int fd, uint32_t viewer, uint16_t tag, const std::vector<uint8_t> &value)
+{
+    send_raw(fd, write_message(viewer, tag, value));
 }
 
 static bool read_exact(int fd, uint8_t *buf, size_t n, int timeout_ms)
@@ -343,258 +338,234 @@ static bool closed_by_host(int fd)
     return false;
 }
 
-static size_t count_frames(int fd, uint32_t viewer, int ms)
+static uint16_t get_u16(const uint8_t *p)
 {
-    size_t n       = 0;
-    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+/** A decoded VALUES message. */
+struct Values
+{
+    bool ok = false;
+    uint16_t page = 0;
+    uint32_t writes = 0;
+    std::map<uint16_t, std::vector<uint8_t>> tags;
+};
+
+static Values parse_values(const Msg &m)
+{
+    Values v;
+    if (m.type != 0x84 || m.payload.size() < 12)
+        return v;
+    const uint8_t *p = m.payload.data();
+    v.page           = get_u16(p + 4);
+    v.writes         = get_u32(p + 6);
+    const uint16_t n = get_u16(p + 10);
+    size_t off       = 12;
+    for (uint16_t i = 0; i < n; i++)
+    {
+        if (m.payload.size() - off < 4)
+            return v;
+        const uint16_t tag = get_u16(p + off);
+        const uint16_t len = get_u16(p + off + 2);
+        if (m.payload.size() - off - 4 < len)
+            return v;
+        v.tags[tag] = std::vector<uint8_t>(p + off + 4, p + off + 4 + len);
+        off += 4u + len;
+    }
+    v.ok = off == m.payload.size();
+    return v;
+}
+
+/** The next VALUES of viewer that satisfies pred, within timeout_ms. */
+template <typename Pred> static Values values_until(int fd, uint32_t viewer, Pred pred, int timeout_ms = 1500)
+{
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (std::chrono::steady_clock::now() < end)
     {
-        Msg m = read_msg(fd, 50);
-        if (m.type == 0x81 && get_u32(m.payload.data()) == viewer)
-            n++;
+        Msg m = read_until(fd, 0x84, viewer, 300);
+        if (m.type == 0)
+            continue;
+        Values v = parse_values(m);
+        if (v.ok && pred(v))
+            return v;
     }
-    return n;
+    return Values{};
 }
 
-static int32_t dl_width(const Msg &frame)
+/** The next REFUSED of viewer, as (what, id); (-1, -1) when none comes. */
+static std::pair<int, int> refused(int fd, uint32_t viewer, int timeout_ms = 1500)
 {
-    // FRAME payload: u32 viewer, then the display list header "HMDL", u16, u16, i32 width.
-    int32_t w;
-    std::memcpy(&w, frame.payload.data() + 4 + 8, 4);
-    return w;
+    Msg m = read_until(fd, 0x85, viewer, timeout_ms);
+    if (m.type != 0x85 || m.payload.size() != 7)
+        return {-1, -1};
+    return {m.payload[4], get_u16(m.payload.data() + 5)};
 }
 
-/* ---- cases --------------------------------------------------------------- */
-
-static const char *MD5 = "0123456789abcdef0123456789abcdef";
-static const uint32_t FAULT_KEY = 0xE000u; // HMI_FAKE_FAULT_KEY
-static const uint32_t SPIN_KEY  = 0xE001u; // HMI_FAKE_SPIN_KEY
-static const uint32_t SIGN_OUT_KEY = 0xE002u; // HMI_FAKE_SIGN_OUT_KEY
-
-static bool press_at(int32_t x, int32_t y)
-{
-    int32_t px = 0, py = 0;
-    hmi_fake_last_press(&px, &py);
-    return px == x && py == y;
-}
-
-static bool lamp_written()
+static size_t write_count()
 {
     std::lock_guard<std::mutex> lk(g_mu);
-    for (const auto &w : g_writes)
-        if (w[0] == 1)
-            return true;
-    return false;
+    return g_writes.size();
 }
 
-static void test_live_session()
+static std::vector<uint8_t> f32(float f)
 {
-    std::printf("live session\n");
-    plugin_runtime_args_t args = make_args("0123456789ABCDEF0123456789ABCDEF");
+    std::vector<uint8_t> b(4);
+    std::memcpy(b.data(), &f, 4);
+    return b;
+}
+
+static const char *MD5 = "0123456789ABCDEF0123456789ABCDEF";
+
+static int open_viewer(int fd, uint32_t viewer, uint8_t role, const char *name)
+{
+    send_msg(fd, 0x01, open_payload(viewer, role, name));
+    return read_until(fd, 0x82, viewer).type == 0x82;
+}
+
+static void test_values_and_writes()
+{
+    std::printf("values and writes\n");
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_lamp  = 0;
+        g_speed = 40;
+        g_label = "pump";
+        g_temp  = 21.5f;
+        g_writes.clear();
+        g_logs.clear();
+    }
+    plugin_runtime_args_t args = make_args(MD5);
     CHECK(init(&args) == 0, "init");
     CHECK(start_loop() == 0, "start_loop");
     struct stat st;
-    CHECK(stat(HMI_SOCKET_DIR, &st) == 0 && S_ISDIR(st.st_mode) && (st.st_mode & 0777) == 0700,
-          "the socket's directory is owner-only");
-    CHECK(stat(HMI_SOCKET_PATH, &st) == 0 && S_ISSOCK(st.st_mode), "socket created in it");
-
+    CHECK(stat(HMI_SOCKET_DIR, &st) == 0 && (st.st_mode & 0777) == 0700, "socket folder is 0700");
     int fd = connect_host();
-    CHECK(fd >= 0, "connects");
+    CHECK(fd >= 0, "web server connects");
     Msg s = read_msg(fd);
-    CHECK(s.type == 0x82 && s.payload.size() == 1 && s.payload[0] == 0, "STATUS live on connect");
+    CHECK(s.type == 0x81 && s.payload.size() == 1 && s.payload[0] == 0, "STATUS live on connect");
 
-    send_msg(fd, 0x01, open_payload(7, 2, 800, 600, 100, "alice"));
-    Msg o = read_until(fd, 0x83, 7);
-    CHECK(o.type == 0x83, "OPENED 7");
-    Msg f = read_until(fd, 0x81, 7);
-    CHECK(f.type == 0x81 && f.payload.size() > 24 && std::memcmp(f.payload.data() + 4, "HMDL", 4) == 0,
-          "first FRAME carries a display list");
-    CHECK(f.type == 0x81 && dl_width(f) == 800, "800 CSS px at density 1.00 is 800 lu");
-    CHECK(logged("viewer 7 opened by alice (operator): 1 viewer(s)"), "open logged with count");
+    CHECK(open_viewer(fd, 1, 2, "alice"), "an operator's OPEN answered with OPENED");
+    CHECK(logged("viewer 1 opened by alice (operator)"), "the open is logged with account and role");
+    CHECK(read_msg(fd, 200).type == 0, "no values before a screen is shown");
 
-    CHECK(count_frames(fd, 7, 200) == 0, "unchanged frames are not sent");
+    send_show(fd, 1, 0);
+    Values v = values_until(fd, 1, [](const Values &x) { return x.tags.size() == 4; });
+    CHECK(v.ok && v.page == 0 && v.writes == 0, "SHOW of a granted screen sends its snapshot");
+    CHECK(v.tags[0] == std::vector<uint8_t>{0} && v.tags[1] == (std::vector<uint8_t>{40, 0}) &&
+              v.tags[2] == (std::vector<uint8_t>{'p', 'u', 'm', 'p'}) && v.tags[3] == f32(21.5f),
+          "every tag the screen reads, in wire format");
 
-    send_pointer(fd, 7, 0, 1000, 1000);
-    send_pointer(fd, 7, 2, 1000, 1000);
-    CHECK(wait_for(lamp_written, 1000), "a press writes LAMP through debug_write");
-    CHECK(wait_for([] { return press_at(10, 10); }, 1000),
-          "a press at 10 CSS px lands at 10 lu");
-    CHECK(logged("write by alice: CONFIG0.RES0.INST0.MAIN.LAMP = TRUE"), "write logged with account");
-    CHECK(logged("write by alice: CONFIG0.RES0.INST0.MAIN.LABEL = 'pressed'"), "STRING write logged");
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        bool label_ok = false;
-        for (const auto &w : g_writes)
-            if (w[0] == 3 && w.size() == 1u + STRING_WIDTH && w[1] == 7 &&
-                std::memcmp(&w[2], "pressed", 7) == 0 && w[9] == 0 && w[STRING_WIDTH] == 0)
-                label_ok = true;
-        CHECK(label_ok, "STRING written in the debug format: length byte, text, zero fill");
+        g_temp = 30.0f;
     }
-    CHECK(read_until(fd, 0x81, 7).type == 0x81, "a changed screen sends a new FRAME");
+    v = values_until(fd, 1, [](const Values &x) { return x.tags.count(3) != 0; });
+    CHECK(v.ok && v.tags.size() == 1 && v.tags[3] == f32(30.0f), "only the changed value follows");
+    CHECK(read_until(fd, 0x84, 1, 200).type == 0, "nothing while no value changes");
 
-    std::vector<uint8_t> key;
-    put_u32(key, 7);
-    put_u32(key, 65);
-    send_msg(fd, 0x05, key);
-    CHECK(wait_for([] {
-              std::lock_guard<std::mutex> lk(g_mu);
-              return g_speed == 65;
-          },
-                   1000),
-          "a key writes SPEED");
-    CHECK(logged("CONFIG0.RES0.INST0.MAIN.SPEED = 65"), "INT write logged");
+    send_write(fd, 1, 0, {1});
+    v = values_until(fd, 1, [](const Values &x) { return x.writes == 1; });
+    CHECK(v.ok && v.tags[0] == std::vector<uint8_t>{1}, "a write is applied and its value sent back");
+    CHECK(g_lamp == 1 && logged("write by alice: CONFIG0.RES0.INSTANCE0.MAIN.LAMP = TRUE"),
+          "soft-written through the debugger and logged with the account");
+    send_write(fd, 1, 2, {'v', 'a', 'l', 'v', 'e'});
+    v = values_until(fd, 1, [](const Values &x) { return x.writes == 2; });
+    CHECK(v.ok && g_label == "valve", "a STRING write");
 
-    std::vector<uint8_t> vp;
-    put_u32(vp, 7);
-    put_u16(vp, 1024);
-    put_u16(vp, 768);
-    put_u16(vp, 200);
-    send_msg(fd, 0x03, vp);
-    Msg r = read_until(fd, 0x81, 7);
-    CHECK(r.type == 0x81 && dl_width(r) == 1024, "VIEWPORT 1024 px at density 2.00 is 1024 lu");
-    send_pointer(fd, 7, 0, 5050, 2500);
-    send_pointer(fd, 7, 2, 5050, 2500);
-    CHECK(wait_for([] { return press_at(50, 25); }, 1000),
-          "density does not scale pointers: 50.5 x 25 CSS px lands at 50 x 25 lu");
+    /* Refused writes: none reaches the debugger, each is answered and counted. */
+    const size_t applied = write_count();
+    send_write(fd, 1, 3, f32(99.0f));
+    CHECK(refused(fd, 1) == std::make_pair(1, 3), "a tag the screen only reads is refused");
+    CHECK(logged("of CONFIG0.RES0.INSTANCE0.MAIN.TEMP refused: the screen shown does not write it"),
+          "and logged with the reason");
+    send_write(fd, 1, 0, {2});
+    CHECK(refused(fd, 1) == std::make_pair(1, 0), "a BOOL other than 0 or 1 is refused");
+    send_write(fd, 1, 1, {1});
+    CHECK(refused(fd, 1) == std::make_pair(1, 1), "an INT of one byte is refused");
+    send_write(fd, 1, 2, std::vector<uint8_t>(21, 'x'));
+    CHECK(refused(fd, 1) == std::make_pair(1, 2), "a STRING past its length is refused");
+    send_write(fd, 1, 2, {'a', 0, 'b'});
+    CHECK(refused(fd, 1) == std::make_pair(1, 2), "a STRING holding a NUL is refused");
+    send_write(fd, 1, 99, {1});
+    CHECK(refused(fd, 1) == std::make_pair(1, 99), "an unknown tag is refused");
+    v = values_until(fd, 1, [](const Values &x) { return x.writes == 8; });
+    CHECK(v.ok, "refused writes are counted too");
+    CHECK(write_count() == applied && g_temp == 30.0f && g_lamp == 1, "no refused write reached the PLC");
 
-    send_msg(fd, 0x01, open_payload(8, 3, 320, 240, 100, "bob"));
-    CHECK(read_until(fd, 0x83, 8).type == 0x83, "a second viewer opens");
-    CHECK(wait_for([] { return logged("viewer 8 opened by bob (viewer): 2 viewer(s)"); }, 1000),
-          "second open logged with count 2");
-    std::vector<uint8_t> close8;
-    put_u32(close8, 8);
-    send_msg(fd, 0x02, close8);
-    CHECK(wait_for([] { return logged("viewer 8 closed: 1 viewer(s)"); }, 1000),
-          "close logged with count 1");
+    /* A screen the role may not open: refused, and nothing is served or written afterwards. */
+    send_show(fd, 1, 2);
+    CHECK(refused(fd, 1) == std::make_pair(0, 2), "an operator's SHOW of an admin screen is refused");
+    CHECK(logged("screen 2 refused for alice (operator)"), "the refused SHOW is logged");
+    v = values_until(fd, 1, [](const Values &x) { return x.page == 0xFFFF; });
+    CHECK(v.ok && v.tags.empty(), "the viewer is served no tag");
+    send_write(fd, 1, 1, {7, 0});
+    CHECK(refused(fd, 1) == std::make_pair(1, 1), "and its writes are refused");
+    CHECK(g_speed == 40, "speed unchanged");
+    send_show(fd, 1, 9);
+    CHECK(refused(fd, 1) == std::make_pair(0, 9), "a screen past the last is refused");
 
-    hmi_fake_fail_creates(1);
-    send_msg(fd, 0x01, open_payload(9, 0, 320, 240, 100, "carol"));
-    CHECK(read_until(fd, 0x84, 9).type == 0x84, "allocation failure answers BUSY");
+    /* Negative control: the same requests from an admin pass. */
+    CHECK(open_viewer(fd, 2, 0, "root"), "an admin opens");
+    send_show(fd, 2, 2);
+    v = values_until(fd, 2, [](const Values &x) { return x.page == 2; });
+    CHECK(v.ok && v.tags.size() == 1 && v.tags.count(1) == 1, "the admin screen serves speed only");
+    send_write(fd, 2, 1, {7, 0});
+    v = values_until(fd, 2, [](const Values &x) { return x.writes == 1; });
+    CHECK(v.ok && g_speed == 7 && logged("write by root: CONFIG0.RES0.INSTANCE0.MAIN.SPEED = 7"),
+          "the admin's write of speed is applied");
 
-    /* Far more presses than frames can apply: the viewer is dropped with BUSY, none is lost. */
-    send_msg(fd, 0x01, open_payload(10, 0, 320, 240, 100, "dave"));
-    CHECK(read_until(fd, 0x83, 10).type == 0x83, "viewer 10 opens");
-    for (int i = 0; i < 200; i++)
+    /* A viewer role: the status screen reads temp and writes nothing. */
+    CHECK(open_viewer(fd, 3, 3, "eve"), "a viewer opens");
+    send_show(fd, 3, 0);
+    CHECK(refused(fd, 3) == std::make_pair(0, 0), "a viewer may not open the control screen");
+    send_show(fd, 3, 1);
+    v = values_until(fd, 3, [](const Values &x) { return x.page == 1; });
+    CHECK(v.ok && v.tags.size() == 1 && v.tags[3] == f32(30.0f), "the status screen serves temp");
+    send_write(fd, 3, 0, {0});
+    CHECK(refused(fd, 3) == std::make_pair(1, 0), "a write from the read-only screen is refused");
+    CHECK(g_lamp == 1, "lamp unchanged");
+
+    /* CLOSE frees the viewer; requests for it are ignored. */
+    std::vector<uint8_t> close_p;
+    put_u32(close_p, 3);
+    send_msg(fd, 0x02, close_p);
+    CHECK(wait_for([] { return logged("viewer 3 closed"); }, 1000), "CLOSE is logged");
+    send_write(fd, 3, 0, {0});
+    CHECK(read_until(fd, 0x85, 3, 300).type == 0, "a closed viewer gets nothing");
+
+    /* More requests than the queue holds: the viewer is dropped with BUSY, others keep going. */
+    std::vector<uint8_t> burst;
+    for (int i = 0; i < 400; i++)
     {
-        send_pointer(fd, 10, 0, 100, 100);
-        send_pointer(fd, 10, 2, 100, 100);
+        const std::vector<uint8_t> m = write_message(1, 3, f32(1.0f));
+        burst.insert(burst.end(), m.begin(), m.end());
     }
-    CHECK(read_until(fd, 0x84, 10).type == 0x84, "input overflow drops the viewer with BUSY");
-    CHECK(wait_for([] { return logged("viewer 10 dropped: its input queue overflowed"); }, 1000),
-          "overflow logged");
-
-    /* Screen code asking to sign out: SIGN_OUT once for that viewer, which stays open until the web
-     * server closes it. */
-    send_msg(fd, 0x01, open_payload(30, 2, 320, 240, 100, "ivy"));
-    CHECK(read_until(fd, 0x83, 30).type == 0x83, "viewer 30 opens");
-    send_key(fd, 30, SIGN_OUT_KEY);
-    Msg out = read_until(fd, 0x86, 30);
-    CHECK(out.type == 0x86 && out.payload.size() == 4, "a screen's sign-out answers SIGN_OUT 30");
-    CHECK(wait_for([] { return logged("ivy signed out from the screen (viewer 30)"); }, 1000),
-          "the sign-out is logged");
-    send_key(fd, 30, SIGN_OUT_KEY);
-    CHECK(read_until(fd, 0x86, 30, 400).type == 0, "SIGN_OUT is sent once per viewer");
-    std::vector<uint8_t> close30;
-    put_u32(close30, 30);
-    send_msg(fd, 0x02, close30);
-
-    /* An IEC fault in one viewer's screens closes that viewer only. */
-    send_msg(fd, 0x01, open_payload(20, 2, 320, 240, 100, "grace"));
-    CHECK(read_until(fd, 0x83, 20).type == 0x83, "viewer 20 opens");
-    send_msg(fd, 0x01, open_payload(21, 2, 320, 240, 100, "heidi"));
-    CHECK(read_until(fd, 0x83, 21).type == 0x83, "viewer 21 opens");
-    send_key(fd, 20, FAULT_KEY);
-    Msg fault = read_until(fd, 0x85, 20);
-    CHECK(fault.type == 0x85 && fault.payload.size() == 4, "a screen fault answers FAULT 20");
-    CHECK(wait_for([] { return logged("viewer 20 closed: "); }, 1000),
-          "the faulted viewer is freed");
-    CHECK(count_logged("screen fault for grace") == 1, "the fault is logged once with the account");
-    send_key(fd, 20, 4321);
-    send_pointer(fd, 20, 0, 100, 100);
-    std::vector<uint8_t> vp20;
-    put_u32(vp20, 20);
-    put_u16(vp20, 640);
-    put_u16(vp20, 480);
-    put_u16(vp20, 100);
-    send_msg(fd, 0x03, vp20);
-    send_key(fd, 21, 77);
-    CHECK(wait_for([] {
-              std::lock_guard<std::mutex> lk(g_mu);
-              return g_speed == 77;
-          },
-                   1000),
-          "input after the fault is ignored for 20 and applied for 21");
+    send_raw(fd, burst);
+    CHECK(read_until(fd, 0x83, 1, 2000).type == 0x83, "a flooding viewer is dropped with BUSY");
+    CHECK(logged("viewer 1 dropped: its request queue overflowed"), "and logged");
     {
-        size_t f20 = 0, f21 = 0;
-        const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
-        while (std::chrono::steady_clock::now() < end)
-        {
-            Msg m = read_msg(fd, 50);
-            if (m.type == 0x81 && get_u32(m.payload.data()) == 20)
-                f20++;
-            if (m.type == 0x81 && get_u32(m.payload.data()) == 21)
-                f21++;
-        }
-        CHECK(f20 == 0 && f21 > 0, "viewer 21 keeps getting frames, 20 gets none");
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_speed = 8;
     }
-    CHECK(count_logged("SPEED = 4321") == 0, "the key sent to the faulted viewer wrote nothing");
-    send_msg(fd, 0x01, open_payload(20, 2, 320, 240, 100, "grace"));
-    CHECK(read_until(fd, 0x83, 20).type == 0x83, "a new OPEN for the faulted id opens it again");
-    CHECK(read_until(fd, 0x81, 20).type == 0x81, "the reopened viewer gets frames");
-    CHECK(count_logged("screen fault for grace") == 1, "no fault after the reopen");
+    v = values_until(fd, 2, [](const Values &x) { return x.tags.count(1) != 0; });
+    CHECK(v.ok && v.tags[1] == (std::vector<uint8_t>{8, 0}), "the other viewer is still served");
 
-    send_msg(fd, 0x01, open_payload(7, 2, 800, 600, 100, "alice"));
-    CHECK(closed_by_host(fd), "OPEN of an open viewer closes the connection");
-    close(fd);
-    CHECK(wait_for([] { return logged("malformed message"); }, 1000), "closing logged");
-
-    fd = connect_host();
-    CHECK(read_msg(fd).type == 0x82, "reconnect gets STATUS");
-    send_raw(fd, {0, 0, 0, 0});
-    CHECK(closed_by_host(fd), "a zero length closes the connection");
+    /* A second OPEN of an open viewer, and an unknown message, break the protocol. */
+    send_msg(fd, 0x01, open_payload(2, 0, "root"));
+    CHECK(closed_by_host(fd), "a repeated OPEN closes the connection");
+    CHECK(wait_for([] { return logged("viewer(s) dropped"); }, 1000), "the connection close is logged");
     close(fd);
 
     fd = connect_host();
     read_msg(fd);
-    send_raw(fd, {2, 0, 0, 0, 0x7F, 0});
-    CHECK(closed_by_host(fd), "an unknown type closes the connection");
-    close(fd);
-
-    fd = connect_host();
-    read_msg(fd);
-    send_raw(fd, {0, 0, 0x40, 0, 0x01});
-    CHECK(closed_by_host(fd), "an oversized length closes the connection");
-    close(fd);
-
-    fd = connect_host();
-    read_msg(fd);
-    send_msg(fd, 0x01, open_payload(11, 0, 0, 240, 100, "erin"));
-    CHECK(closed_by_host(fd), "a zero width closes the connection");
-    close(fd);
-
-    fd = connect_host();
-    read_msg(fd);
-    send_msg(fd, 0x01, open_payload(12, 0, 320, 240, 100, std::string("bad\x01name")));
-    CHECK(read_until(fd, 0x84, 12).type == 0x84,
-          "a control character in the name refuses that viewer");
-    send_msg(fd, 0x01, open_payload(14, 0, 320, 240, 100, "gina"));
-    CHECK(read_until(fd, 0x83, 14).type == 0x83,
-          "... and the connection still opens other viewers");
-    close(fd);
-
-    /* A web server that stops reading never stalls the frame thread. */
-    fd = connect_host();
-    read_msg(fd);
-    send_msg(fd, 0x01, open_payload(13, 0, 320, 240, 100, "frank"));
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    const int reads_before = g_reads.load();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    CHECK(g_reads.load() > reads_before, "frames keep rendering while the reader is idle");
+    send_msg(fd, 0x09, {0, 0, 0, 0});
+    CHECK(closed_by_host(fd), "an unknown message type closes the connection");
     close(fd);
 
     stop_loop();
-    CHECK(stat(HMI_SOCKET_PATH, &st) != 0, "stop_loop removes the socket");
     cleanup();
+    CHECK(access(HMI_SOCKET_PATH, F_OK) != 0, "the socket is removed on stop");
 }
 
 static void test_out_of_date()
@@ -605,71 +576,29 @@ static void test_out_of_date()
         plugin_runtime_args_t args = make_args(md5);
         CHECK(init(&args) == 0, "init");
         CHECK(start_loop() == 0, "start_loop");
-        const int reads     = g_reads.load();
-        const size_t writes = [] {
-            std::lock_guard<std::mutex> lk(g_mu);
-            return g_writes.size();
-        }();
+        const int reads      = g_reads.load();
+        const size_t writes  = write_count();
         int fd = connect_host();
         Msg s  = read_msg(fd);
-        CHECK(s.type == 0x82 && s.payload[0] == 1, "STATUS out_of_date on connect");
-        send_msg(fd, 0x01, open_payload(1, 0, 320, 240, 100, "alice"));
+        CHECK(s.type == 0x81 && s.payload[0] == 1, "STATUS out_of_date on connect");
+        send_msg(fd, 0x01, open_payload(1, 0, "alice"));
         Msg r = read_msg(fd);
-        CHECK(r.type == 0x82 && r.payload[0] == 1, "OPEN answered with STATUS out_of_date");
-        send_pointer(fd, 1, 0, 100, 100);
-        CHECK(read_msg(fd, 300).type == 0, "no OPENED and no FRAME");
-        const size_t writes_after = [] {
-            std::lock_guard<std::mutex> lk(g_mu);
-            return g_writes.size();
-        }();
-        CHECK(g_reads.load() == reads && writes_after == writes, "no debug read or write");
+        CHECK(r.type == 0x81 && r.payload[0] == 1, "OPEN answered with STATUS out_of_date");
+        send_show(fd, 1, 0);
+        send_write(fd, 1, 0, {1});
+        CHECK(read_msg(fd, 300).type == 0, "no OPENED, no VALUES");
+        CHECK(g_reads.load() == reads && write_count() == writes, "no debug read or write");
         close(fd);
         stop_loop();
         cleanup();
     }
-    (void)MD5;
-}
-
-/** Screen code that never returns: stop_loop ends the process past its timeout instead of hanging.
- */
-static void test_stuck_screen()
-{
-    std::printf("stuck screen code\n");
-    std::fflush(stdout);
-    const pid_t child = fork();
-    if (child == 0)
-    {
-        plugin_runtime_args_t args = make_args("0123456789ABCDEF0123456789ABCDEF");
-        if (init(&args) != 0 || start_loop() != 0)
-            _exit(2);
-        int fd = connect_host();
-        read_msg(fd);
-        send_msg(fd, 0x01, open_payload(1, 0, 320, 240, 100, "ivan"));
-        if (read_until(fd, 0x83, 1).type != 0x83)
-            _exit(3);
-        send_key(fd, 1, SPIN_KEY);
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        stop_loop();
-        _exit(0);
-    }
-    CHECK(child > 0, "fork");
-    int status       = 0;
-    const auto start = std::chrono::steady_clock::now();
-    CHECK(waitpid(child, &status, 0) == child, "the child ends");
-    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - start)
-                        .count();
-    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 43, "stop_loop ends plc_main with status 43");
-    CHECK(ms < 5000, "within the stop timeout");
-    unlink(HMI_SOCKET_PATH);
 }
 
 int main()
 {
     unlink(HMI_SOCKET_PATH);
-    test_live_session();
+    test_values_and_writes();
     test_out_of_date();
-    test_stuck_screen();
     if (g_failures == 0)
         std::printf("all cases passed\n");
     else

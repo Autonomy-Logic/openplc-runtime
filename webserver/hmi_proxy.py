@@ -4,17 +4,17 @@
 """HMI on the runtime's web server: the sealed browser client and the viewer channel.
 
 * ``GET /hmi/`` and ``/hmi/<file>`` serve ``build/hmi/client/``; every file is checked
-  against its line in ``build/hmi/hmi.seal`` before it is served.
+  against its line in ``build/hmi/hmi.seal`` before it is served. The client runs the screens.
 * Socket.IO namespace ``/api/hmi``: one viewer per socket, authenticated with the account's
-  access token. Viewer events are rebuilt from whitelisted fields, put back in the client's
-  order and forwarded to the HMI host in ``plc_main`` over one Unix socket connection, with
-  the binary protocol of ``docs/HMI.md``. Display lists come back per viewer; only the newest
-  one is kept and one emitter thread sends it once the browser acknowledged the previous one.
+  access token. Viewer events (open, show a screen, write a tag) are rebuilt from whitelisted
+  fields, put back in the client's order and forwarded to the HMI host in ``plc_main`` over one
+  Unix socket connection, with the binary protocol of ``docs/HMI.md``. The host decides what
+  each viewer may read and write. Values come back per viewer; changes not yet delivered are
+  merged, and one emitter thread sends them once the browser acknowledged the previous batch.
 """
 
 import hashlib
 import hmac
-import math
 import os
 import re
 import socket
@@ -31,12 +31,9 @@ from flask_jwt_extended import current_user, decode_token, verify_jwt_in_request
 from flask_jwt_extended.exceptions import JWTExtendedException
 from flask_socketio import ConnectionRefusedError as SocketRefused
 from flask_socketio import SocketIO
-import jwt
 from jwt import PyJWTError
-from sqlalchemy.exc import SQLAlchemyError
 
 from webserver import sessions
-from webserver.database import db
 from webserver.access import ADMIN_ROLE, ENGINEER_ROLE, OPERATOR_ROLE, VIEWER_ROLE, may
 from webserver.logger import get_logger
 from webserver.restapi import check_if_token_revoked, user_lookup_callback
@@ -58,17 +55,19 @@ CLIENT_DIR = "client"
 # Wire protocol, web server to host.
 MSG_OPEN = 0x01
 MSG_CLOSE = 0x02
-MSG_VIEWPORT = 0x03
-MSG_POINTER = 0x04
-MSG_KEY = 0x05
+MSG_SHOW = 0x03
+MSG_WRITE = 0x04
 # Wire protocol, host to web server.
-MSG_FRAME = 0x81
-MSG_STATUS = 0x82
-MSG_OPENED = 0x83
-MSG_BUSY = 0x84
-MSG_FAULT = 0x85
-MSG_SIGN_OUT = 0x86
+MSG_STATUS = 0x81
+MSG_OPENED = 0x82
+MSG_BUSY = 0x83
+MSG_VALUES = 0x84
+MSG_REFUSED = 0x85
 MAX_MESSAGE = 4 * 1024 * 1024
+# A tag or screen id no manifest has: what an invalid client request is forwarded as, so the
+# host refuses it and its count of writes stays the client's.
+NO_ID = 0xFFFF
+REFUSED_WHAT = {0: "show", 1: "write"}
 HOST_STATUS_LIVE = 0
 HOST_STATUS_OUT_OF_DATE = 1
 ROLE_CODES: dict[str, int] = {ADMIN_ROLE: 0, ENGINEER_ROLE: 1, OPERATOR_ROLE: 2, VIEWER_ROLE: 3}
@@ -79,24 +78,19 @@ STATE_LIVE = "live"
 STATE_STOPPED = "stopped"
 STATE_OUT_OF_DATE = "out_of_date"
 STATE_BUSY = "busy"
-STATE_FAULT = "fault"
 STATE_UNAVAILABLE = "unavailable"
 
 # Ranges of the client events.
-MAX_VIEWPORT_PX = 8192
-MIN_DENSITY_X100 = 25
-MAX_DENSITY_X100 = 800
-MAX_POINTER_PX = 100_000.0
-MAX_KEY_CODE = 0x10FFFF
+MAX_ID = 0xFFFE
+MAX_VALUE_BYTES = 1024
 MAX_SEQUENCE = 2**53
-POINTER_KINDS = (0, 1, 2)
 
 # Events held back per viewer while an earlier sequence number is missing.
 MAX_PENDING = 64
 REVERIFY_INTERVAL_S = 5.0
 RETRY_INTERVAL_S = 1.0
 HOST_SEND_TIMEOUT_S = 2.0
-# A display list not acknowledged within this time no longer holds back the next one.
+# Values not acknowledged within this time no longer hold back the next batch.
 ACK_TIMEOUT_S = 1.0
 
 ASSET_NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
@@ -213,15 +207,6 @@ def hmi_asset(name: str) -> Response:
 # ---- client events ----------------------------------------------------------------------
 
 
-def _number(data: dict[object, object], key: str) -> float | None:
-    value = data.get(key)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    if not math.isfinite(value):
-        return None
-    return float(value)
-
-
 def _integer(data: dict[object, object], key: str) -> int | None:
     value = data.get(key)
     if isinstance(value, bool) or not isinstance(value, int):
@@ -240,64 +225,53 @@ def sequence_of(data: object) -> int | None:
 
 
 @dataclass(frozen=True)
-class Viewport:
-    """A viewer's viewport: CSS pixels and density x100."""
-
-    width: int
-    height: int
-    density: int
-
-    def pack(self) -> bytes:
-        """The viewport fields of OPEN and VIEWPORT."""
-        return struct.pack("<HHH", self.width, self.height, self.density)
+class OpenEvent:
+    """The viewer asks to be opened on the host."""
 
 
 @dataclass(frozen=True)
-class PointerEvent:
-    """A pointer event: kind and CSS pixel position x100."""
+class ShowEvent:
+    """The viewer shows screen ``page``; NO_ID when the event was invalid."""
 
-    kind: int
-    x: int
-    y: int
+    page: int
 
 
 @dataclass(frozen=True)
-class KeyEvent:
-    """A key event: its code point."""
+class WriteEvent:
+    """A screen's write of tag ``tag`` with ``value``; NO_ID and no value when invalid."""
 
-    code: int
+    tag: int
+    value: bytes
 
 
-ClientEvent = Viewport | PointerEvent | KeyEvent
+ClientEvent = OpenEvent | ShowEvent | WriteEvent
 
 
 def parse_event(data: object) -> ClientEvent | None:
-    """Rebuilds a client event from its whitelisted, range-checked fields; None when invalid."""
+    """Rebuilds a client event from its whitelisted, range-checked fields.
+
+    A show or write that does not check out is kept as one naming NO_ID, so the host refuses it
+    in its place; None only for an event that is none of the three.
+    """
     if not isinstance(data, dict):
         return None
     kind = data.get("t")
-    if kind == "v":
-        w, h, d = _number(data, "w"), _number(data, "h"), _number(data, "d")
-        if w is None or h is None or d is None:
-            return None
-        width, height, density = round(w), round(h), round(d * 100)
-        if not (1 <= width <= MAX_VIEWPORT_PX and 1 <= height <= MAX_VIEWPORT_PX):
-            return None
-        if not MIN_DENSITY_X100 <= density <= MAX_DENSITY_X100:
-            return None
-        return Viewport(width, height, density)
-    if kind == "p":
-        k, x, y = _integer(data, "k"), _number(data, "x"), _number(data, "y")
-        if k not in POINTER_KINDS or x is None or y is None:
-            return None
-        if abs(x) > MAX_POINTER_PX or abs(y) > MAX_POINTER_PX:
-            return None
-        return PointerEvent(k, round(x * 100), round(y * 100))
-    if kind == "k":
-        c = _integer(data, "c")
-        if c is None or not 1 <= c <= MAX_KEY_CODE:
-            return None
-        return KeyEvent(c)
+    if kind == "o":
+        return OpenEvent()
+    if kind == "s":
+        page = _integer(data, "p")
+        return ShowEvent(page if page is not None and 0 <= page <= MAX_ID else NO_ID)
+    if kind == "w":
+        tag = _integer(data, "g")
+        value = data.get("v")
+        if (
+            tag is None
+            or not 0 <= tag <= MAX_ID
+            or not isinstance(value, (bytes, bytearray))
+            or len(value) > MAX_VALUE_BYTES
+        ):
+            return WriteEvent(NO_ID, b"")
+        return WriteEvent(tag, bytes(value))
     return None
 
 
@@ -321,21 +295,58 @@ def wire_name(name: str) -> str:
     )
 
 
-def encode_open(viewer: int, role: int, viewport: Viewport, name: str) -> bytes:
+def encode_open(viewer: int, role: int, name: str) -> bytes:
     """An OPEN message; ``name`` through ``wire_name``, cut to 64 bytes of UTF-8 on a character
     boundary."""
     raw = wire_name(name).encode("utf-8")[:MAX_NAME_BYTES].decode("utf-8", "ignore").encode("utf-8")
-    payload = struct.pack("<IB", viewer, role) + viewport.pack() + bytes([len(raw)]) + raw
+    payload = struct.pack("<IB", viewer, role) + bytes([len(raw)]) + raw
     return encode(MSG_OPEN, payload)
 
 
-def encode_event(viewer: int, event: ClientEvent) -> bytes:
-    """The VIEWPORT, POINTER or KEY message of a client event."""
-    if isinstance(event, Viewport):
-        return encode(MSG_VIEWPORT, struct.pack("<I", viewer) + event.pack())
-    if isinstance(event, PointerEvent):
-        return encode(MSG_POINTER, struct.pack("<IBii", viewer, event.kind, event.x, event.y))
-    return encode(MSG_KEY, struct.pack("<II", viewer, event.code))
+def encode_event(viewer: int, event: ShowEvent | WriteEvent) -> bytes:
+    """The SHOW or WRITE message of a client event."""
+    if isinstance(event, ShowEvent):
+        return encode(MSG_SHOW, struct.pack("<IH", viewer, event.page))
+    return encode(MSG_WRITE, struct.pack("<IHH", viewer, event.tag, len(event.value)) + event.value)
+
+
+@dataclass
+class ValuesBatch:
+    """Values for one viewer not yet delivered: the screen they are for, the host's count of
+    the viewer's writes, and the newest value of each tag."""
+
+    page: int
+    writes: int
+    values: dict[int, bytes]
+
+    def pack(self) -> bytes:
+        """The ``hmi_values`` payload: ``u16 page, u32 writes, u16 count`` and the records."""
+        out = bytearray(struct.pack("<HIH", self.page, self.writes, len(self.values)))
+        for tag in sorted(self.values):
+            value = self.values[tag]
+            out += struct.pack("<HH", tag, len(value)) + value
+        return bytes(out)
+
+
+def parse_values(payload: bytes) -> tuple[int, ValuesBatch]:
+    """The viewer and batch of a VALUES payload; ProtocolError when it is malformed."""
+    if len(payload) < 12:
+        raise ProtocolError("VALUES too short")
+    viewer, page, writes, count = struct.unpack_from("<IHIH", payload)
+    values: dict[int, bytes] = {}
+    off = 12
+    for _ in range(count):
+        if len(payload) - off < 4:
+            raise ProtocolError("VALUES record cut short")
+        tag, size = struct.unpack_from("<HH", payload, off)
+        off += 4
+        if len(payload) - off < size:
+            raise ProtocolError("VALUES value cut short")
+        values[tag] = payload[off : off + size]
+        off += size
+    if off != len(payload):
+        raise ProtocolError("VALUES with trailing bytes")
+    return viewer, ValuesBatch(page, writes, values)
 
 
 def _recv_exact(sock: socket.socket, size: int, stop: threading.Event) -> bytes | None:
@@ -380,7 +391,8 @@ class Viewer:
     role: str
     token: str
     lock: threading.Lock = field(default_factory=threading.Lock)
-    viewport: Viewport | None = None
+    # The browser asked to be opened; it is opened again whenever the host comes back.
+    wants_open: bool = False
     # Host connection epoch the viewer's OPEN went out on; None when not open on the host.
     open_epoch: int | None = None
     # Set under ``lock`` once the socket left; nothing is sent to the host for it afterwards.
@@ -389,8 +401,8 @@ class Viewer:
     status: str | None = None
     next_n: int = 0
     pending: dict[int, ClientEvent | None] = field(default_factory=dict)
-    frame: bytes | None = None
-    frame_seq: int = 0
+    batch: ValuesBatch | None = None
+    batch_seq: int = 0
     in_flight: int | None = None
     sent_at: float = 0.0
 
@@ -419,28 +431,33 @@ class Viewer:
                 ready.append(item)
         return ready
 
-    def offer_frame(self, frame: bytes) -> None:
-        """Keeps ``frame`` as the newest display list, dropping an unsent older one."""
-        self.frame = frame
-        self.frame_seq += 1
+    def offer_values(self, batch: ValuesBatch) -> None:
+        """Merges a batch into the values not yet delivered: newer values win; values of
+        another screen are dropped."""
+        if self.batch is None or self.batch.page != batch.page:
+            self.batch = batch
+        else:
+            self.batch.values.update(batch.values)
+            self.batch.writes = batch.writes
+        self.batch_seq += 1
 
-    def take_frame(self, now: float) -> tuple[int, bytes] | None:
-        """The newest display list when none is in flight (or the last one timed out)."""
-        if self.frame is None:
+    def take_values(self, now: float) -> tuple[int, bytes] | None:
+        """The values to deliver when none are in flight (or the last ones timed out)."""
+        if self.batch is None:
             return None
         if self.in_flight is not None and now - self.sent_at < ACK_TIMEOUT_S:
             return None
-        frame, self.frame = self.frame, None
-        self.in_flight = self.frame_seq
+        batch, self.batch = self.batch, None
+        self.in_flight = self.batch_seq
         self.sent_at = now
-        return self.frame_seq, frame
+        return self.batch_seq, batch.pack()
 
     def acknowledge(self, seq: int) -> bool:
-        """Clears the frame in flight when ``seq`` is it; True when a pending frame may go."""
+        """Clears the batch in flight when ``seq`` is it; True when another may go."""
         if self.in_flight != seq:
             return False
         self.in_flight = None
-        return self.frame is not None
+        return self.batch is not None
 
 
 EmitFn = Callable[[str, object, str, Callable[..., None] | None], None]
@@ -448,7 +465,7 @@ DisconnectFn = Callable[[str], None]
 
 
 class HmiProxy:
-    """The viewers, the host connection and the frame emitter of /api/hmi."""
+    """The viewers, the host connection and the values emitter of /api/hmi."""
 
     def __init__(self, app: Flask, emit: EmitFn, disconnect: DisconnectFn) -> None:
         self._app = app
@@ -456,7 +473,7 @@ class HmiProxy:
         self._disconnect = disconnect
         self._lock = threading.Lock()
         self._send_lock = threading.Lock()
-        self._frames = threading.Condition(self._lock)
+        self._values = threading.Condition(self._lock)
         self._viewers: dict[str, Viewer] = {}
         self._by_id: dict[int, Viewer] = {}
         self._next_id = 1
@@ -490,7 +507,7 @@ class HmiProxy:
         self._running = False
         self._stop.set()
         with self._lock:
-            self._frames.notify_all()
+            self._values.notify_all()
         self._close_host()
         for thread in self._threads:
             thread.join(timeout=5.0)
@@ -602,6 +619,14 @@ class HmiProxy:
         event = parse_event(data)
         if event is None:
             logger.warning("HMI viewer %s: invalid event %d dropped", viewer.username, n)
+        elif (isinstance(event, ShowEvent) and event.page == NO_ID) or (
+            isinstance(event, WriteEvent) and event.tag == NO_ID
+        ):
+            logger.warning(
+                "HMI viewer %s: invalid event %d forwarded as a request to refuse",
+                viewer.username,
+                n,
+            )
         with viewer.lock:
             for ready in viewer.order(n, event):
                 self._forward(viewer, ready)
@@ -614,58 +639,64 @@ class HmiProxy:
         """Sends one ordered event to the host; call with ``viewer.lock`` held."""
         if viewer.closed:
             return
-        if isinstance(event, Viewport):
-            viewer.viewport = event
-            if not self._open_on_host(viewer):
-                self._open(viewer)
-                return
+        if isinstance(event, OpenEvent):
+            viewer.wants_open = True
+            if self._open_on_host(viewer):
+                self._send_host(encode(MSG_CLOSE, struct.pack("<I", viewer.viewer_id)))
+                viewer.open_epoch = None
+                viewer.opened = False
+            self._open(viewer)
+            return
         if self._open_on_host(viewer):
             self._send_host(encode_event(viewer.viewer_id, event))
 
     def _open(self, viewer: Viewer) -> None:
-        """Sends OPEN with the viewer's last viewport; call with ``viewer.lock`` held."""
-        if viewer.closed or viewer.viewport is None:
+        """Sends OPEN; call with ``viewer.lock`` held."""
+        if viewer.closed or not viewer.wants_open:
             return
-        message = encode_open(
-            viewer.viewer_id, ROLE_CODES[viewer.role], viewer.viewport, viewer.username
-        )
+        with self._values:
+            viewer.batch = None
+        message = encode_open(viewer.viewer_id, ROLE_CODES[viewer.role], viewer.username)
         viewer.open_epoch = self._send_host_on(message)
 
-    # -- statuses and frames --
+    # -- statuses and values --
 
     def _offline_state(self) -> str:
         return STATE_STOPPED if hmi_installed() else STATE_UNAVAILABLE
 
-    def _set_status(self, viewer: Viewer, state: str) -> None:
+    def _set_status(self, viewer: Viewer, state: str, force: bool = False) -> None:
         with self._lock:
-            if viewer.status == state:
+            if viewer.status == state and not force:
                 return
             viewer.status = state
-        self._emit("hmi_status", {"state": state}, viewer.sid, None)
+        payload: dict[str, object] = {"state": state}
+        if state == STATE_LIVE:
+            payload["role"] = ROLE_CODES[viewer.role]
+        self._emit("hmi_status", payload, viewer.sid, None)
 
     def _emit_loop(self) -> None:
         while not self._stop.is_set():
             batch: list[tuple[Viewer, int, bytes]] = []
-            with self._frames:
+            with self._values:
                 now = time.monotonic()
                 wait = ACK_TIMEOUT_S
                 for viewer in self._viewers.values():
-                    taken = viewer.take_frame(now)
+                    taken = viewer.take_values(now)
                     if taken is not None:
                         batch.append((viewer, taken[0], taken[1]))
-                    elif viewer.frame is not None:
+                    elif viewer.batch is not None:
                         wait = min(wait, max(0.01, ACK_TIMEOUT_S - (now - viewer.sent_at)))
                 if not batch:
-                    self._frames.wait(timeout=wait)
+                    self._values.wait(timeout=wait)
                     continue
-            for viewer, seq, frame in batch:
-                self._emit("dl", frame, viewer.sid, self._ack_callback(viewer, seq))
+            for viewer, seq, payload in batch:
+                self._emit("hmi_values", payload, viewer.sid, self._ack_callback(viewer, seq))
 
     def _ack_callback(self, viewer: Viewer, seq: int) -> Callable[..., None]:
         def acked(*_args: object) -> None:
-            with self._frames:
+            with self._values:
                 if viewer.acknowledge(seq):
-                    self._frames.notify_all()
+                    self._values.notify_all()
 
         return acked
 
@@ -769,8 +800,8 @@ class HmiProxy:
             with viewer.lock:
                 viewer.open_epoch = None
                 viewer.opened = False
-            with self._frames:
-                viewer.frame = None
+            with self._values:
+                viewer.batch = None
             self._set_status(viewer, state)
 
     def _read_host(self, sock: socket.socket) -> None:
@@ -781,103 +812,52 @@ class HmiProxy:
                 return
             self._dispatch(*message)
 
+    def _viewer_by_id(self, payload: bytes) -> Viewer | None:
+        with self._lock:
+            return self._by_id.get(struct.unpack_from("<I", payload)[0])
+
     def _dispatch(self, msg_type: int, payload: bytes) -> None:
-        if msg_type == MSG_FRAME:
-            if len(payload) < 4:
-                raise ProtocolError("FRAME too short")
-            viewer_id = struct.unpack_from("<I", payload)[0]
-            with self._frames:
+        if msg_type == MSG_VALUES:
+            viewer_id, batch = parse_values(payload)
+            with self._values:
                 viewer = self._by_id.get(viewer_id)
                 if viewer is not None:
-                    viewer.offer_frame(payload[4:])
-                    self._frames.notify_all()
+                    viewer.offer_values(batch)
+                    self._values.notify_all()
         elif msg_type == MSG_STATUS:
             if len(payload) != 1 or payload[0] not in (HOST_STATUS_LIVE, HOST_STATUS_OUT_OF_DATE):
                 raise ProtocolError("bad STATUS")
             self._host_status(payload[0])
-        elif msg_type == MSG_SIGN_OUT:
-            if len(payload) != 4:
-                raise ProtocolError("bad SIGN_OUT")
-            with self._lock:
-                viewer = self._by_id.get(struct.unpack("<I", payload)[0])
+        elif msg_type == MSG_REFUSED:
+            if len(payload) != 7 or payload[4] not in REFUSED_WHAT:
+                raise ProtocolError("bad REFUSED")
+            viewer = self._viewer_by_id(payload)
             if viewer is not None:
-                self._sign_out(viewer)
-        elif msg_type in (MSG_OPENED, MSG_BUSY, MSG_FAULT):
+                what, which = REFUSED_WHAT[payload[4]], struct.unpack_from("<H", payload, 5)[0]
+                logger.warning(
+                    "HMI viewer %s: the host refused %s %d", viewer.username, what, which
+                )
+                self._emit("hmi_refused", {"what": what, "id": which}, viewer.sid, None)
+        elif msg_type in (MSG_OPENED, MSG_BUSY):
             if len(payload) != 4:
-                raise ProtocolError("bad OPENED/BUSY/FAULT")
-            with self._lock:
-                viewer = self._by_id.get(struct.unpack("<I", payload)[0])
+                raise ProtocolError("bad OPENED/BUSY")
+            viewer = self._viewer_by_id(payload)
             if viewer is None:
                 return
             with viewer.lock:
                 viewer.opened = msg_type == MSG_OPENED
                 if msg_type != MSG_OPENED:
                     viewer.open_epoch = None
+                    viewer.wants_open = False
             if msg_type == MSG_OPENED:
-                self._set_status(viewer, STATE_LIVE)
-            elif msg_type == MSG_BUSY:
-                logger.warning("HMI host busy, viewer %s not opened", viewer.username)
-                self._set_status(viewer, STATE_BUSY)
+                self._set_status(viewer, STATE_LIVE, force=True)
             else:
-                logger.warning("HMI screen fault, viewer %s closed", viewer.username)
-                with self._frames:
-                    viewer.frame = None
-                self._set_status(viewer, STATE_FAULT)
+                logger.warning("HMI host busy, viewer %s not served", viewer.username)
+                with self._values:
+                    viewer.batch = None
+                self._set_status(viewer, STATE_BUSY, force=True)
         else:
             raise ProtocolError(f"unknown type 0x{msg_type:02x}")
-
-    def _sign_out(self, viewer: Viewer) -> None:
-        """Ends the viewer's session as /api/logout does, tells its browser and disconnects it.
-
-        The browser is signed out and disconnected even when the session could not be ended; the
-        log says which happened.
-        """
-        with self._app.app_context():
-            try:
-                ended = self._end_session(viewer)
-            except SQLAlchemyError as e:
-                db.session.rollback()
-                ended = False
-                logger.error(
-                    "HMI viewer %s: the session could not be ended on sign-out: %s",
-                    viewer.username,
-                    e,
-                )
-        if ended:
-            logger.info("HMI viewer %s signed out from its screen", viewer.username)
-        self._emit("hmi_signed_out", {}, viewer.sid, None)
-        self._disconnect(viewer.sid)
-
-    @staticmethod
-    def _end_session(viewer: Viewer) -> bool:
-        """Ends the session of the viewer's token, which verified when the viewer connected.
-
-        When it no longer verifies (the signing key changed), the session is ended by its id.
-        """
-        try:
-            payload: dict[str, object] = decode_token(viewer.token, allow_expired=True)
-        except (PyJWTError, JWTExtendedException) as e:
-            try:
-                claims: object = jwt.decode(viewer.token, options={"verify_signature": False})
-            except PyJWTError:
-                claims = None
-            sid = claims.get(sessions.SID_CLAIM) if isinstance(claims, dict) else None
-            if not isinstance(sid, str):
-                logger.error(
-                    "HMI viewer %s: sign-out token unreadable (%s); session not ended",
-                    viewer.username,
-                    e,
-                )
-                return False
-            sessions.end_session(sid, "signed out from the screen")
-            logger.warning(
-                "HMI viewer %s: sign-out token did not verify (%s); session ended by its id",
-                viewer.username,
-                e,
-            )
-            return True
-        sessions.sign_out(payload)
-        return True
 
     def _host_status(self, code: int) -> None:
         state = STATE_LIVE if code == HOST_STATUS_LIVE else STATE_OUT_OF_DATE

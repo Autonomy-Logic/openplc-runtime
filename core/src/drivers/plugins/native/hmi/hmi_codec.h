@@ -5,9 +5,10 @@
  * @file hmi_codec.h
  * @brief Conversion between an HMI tag's buffer format and the STruC++ debug format.
  *
- * Buffer format (hmi_unit.h): the tag's IEC width, little endian; a STRING is max_len + 1 bytes,
- * NUL terminated. Debug format (debug_dispatch.hpp, debug_string_ops.hpp): the variable's bytes
- * in target byte order, BOOL as one byte; a STRING as `u8 length` followed by a fixed payload
+ * Buffer format (hmi_access.h): the tag's IEC width, little endian; a STRING is max_len + 1 bytes,
+ * NUL terminated. Wire format (VALUES and WRITE, docs/HMI.md): the same for numbers; a STRING is
+ * its text without the NUL. Debug format (debug_dispatch.hpp, debug_string_ops.hpp): the variable's
+ * bytes in target byte order, BOOL as one byte; a STRING as `u8 length` followed by a fixed payload
  * window, the window being debug_size - 1 bytes.
  */
 
@@ -23,7 +24,7 @@ extern "C"
 {
 #endif
 
-    /** Tag types, the values of hmi_tag_type in hmi_unit.h. */
+    /** Tag types, the values of hmi_access_type in hmi_access.h. */
     typedef enum
     {
         HMI_CODEC_BOOL = 1,
@@ -85,6 +86,21 @@ extern "C"
      * Always NUL terminates out when cap > 0.
      */
     void hmi_codec_format(uint8_t type, uint16_t max_len, const void *buf, char *out, size_t cap);
+
+    /**
+     * Writes a value in buffer format in wire format into out (at most max_len bytes for a STRING,
+     * the width otherwise); returns its length.
+     */
+    size_t hmi_codec_to_wire(uint8_t type, uint16_t max_len, const void *buf, uint8_t *out);
+
+    /**
+     * Checks a value a viewer sent in wire format against the tag's type and converts it into
+     * buffer format (hmi_codec_buffer_size bytes at dest). Refused: a length that is not the
+     * type's width, a BOOL other than 0 or 1, a REAL or LREAL that is not finite, a TOD outside
+     * one day, and a STRING longer than max_len or holding a NUL.
+     */
+    bool hmi_codec_from_wire(uint8_t type, uint16_t max_len, const uint8_t *value, size_t len,
+                             void *dest);
 
     /** Whether the HMI is live: both MD5s non-empty and equal, ignoring hex case. */
     bool hmi_md5_live(const char *program_md5, const char *unit_md5);

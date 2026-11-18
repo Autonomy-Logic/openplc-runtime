@@ -3,8 +3,9 @@
 
 """The ``hmi/`` folder of a Runtime v4 upload (docs/HMI.md, "Upload artefact").
 
-An upload may carry ``hmi/manifest.json``, ``hmi/src/`` (HMI core and generated unit) and
-``hmi/client/`` (the browser client). This module decides, from the entry names as they will be
+An upload may carry ``hmi/manifest.json``, ``hmi/src/`` (the host-side manifest: ``hmi_access.h``
+and the generated ``hmi_access.c``, data only) and ``hmi/client/`` (the browser client, which runs
+the screens). This module decides, from the entry names as they will be
 extracted, whether the upload installs, removes or leaves the HMI alone, refuses anything else
 under ``hmi/``, and keeps the previous HMI across the wipe of ``core/generated/`` when the upload
 has none. ``scripts/compile-hmi.sh`` builds what ends up in ``core/generated/hmi/``.
@@ -28,14 +29,15 @@ MANIFEST: Final[str] = "hmi/manifest.json"
 SRC_PREFIX: Final[str] = "hmi/src/"
 CLIENT_PREFIX: Final[str] = "hmi/client/"
 MANIFEST_MAX_BYTES: Final[int] = 1024
-SRC_EXTENSIONS: Final[frozenset[str]] = frozenset({".c", ".h", ".cpp", ".hpp"})
+MANIFEST_FORMAT: Final[int] = 2
+SRC_EXTENSIONS: Final[frozenset[str]] = frozenset({".c", ".h"})
 CLIENT_EXTENSIONS: Final[frozenset[str]] = frozenset(
     {".html", ".js", ".css", ".wasm", ".txt", ".ttf"}
 )
 # Refused anywhere in an upload except as an HMI client file.
 CLIENT_ONLY_EXTENSIONS: Final[frozenset[str]] = frozenset({".js", ".wasm", ".html"})
 CLIENT_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-SRC_COMPONENT_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+SRC_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # Where the previous HMI waits while core/generated/ is replaced.
 STASH_NAME: Final[str] = ".hmi_previous"
 
@@ -78,16 +80,16 @@ def extension_allowed(name: str, disallowed: tuple[str, ...]) -> bool:
 
 
 def _src_file_allowed(name: str) -> bool:
+    """A ``.c`` or ``.h`` file directly in ``hmi/src/``."""
     rel = name[len(SRC_PREFIX) :]
-    parts = rel.split("/")
-    if any(p in ("", ".", "..") or not SRC_COMPONENT_RE.fullmatch(p) for p in parts):
+    if "/" in rel or rel in (".", "..") or not SRC_NAME_RE.fullmatch(rel):
         return False
-    return os.path.splitext(rel)[1].lower() in SRC_EXTENSIONS
+    return os.path.splitext(rel)[1] in SRC_EXTENSIONS
 
 
 def parse_manifest(data: bytes) -> HmiAction:
-    """``{"format": 1}`` installs, ``{"format": 1, "remove": true}`` removes; anything else is
-    refused."""
+    """``{"format": 2}`` installs, ``{"format": 2, "remove": true}`` removes; anything else,
+    an HMI built for another runtime included, is refused."""
     if len(data) > MANIFEST_MAX_BYTES:
         raise HmiUploadError("hmi/manifest.json is too large")
     try:
@@ -97,8 +99,11 @@ def parse_manifest(data: bytes) -> HmiAction:
     if not isinstance(manifest, dict):
         raise HmiUploadError("hmi/manifest.json must be an object")
     fmt = manifest.get("format")
-    if type(fmt) is not int or fmt != 1:
-        raise HmiUploadError("hmi/manifest.json format must be 1")
+    if type(fmt) is not int or fmt != MANIFEST_FORMAT:
+        raise HmiUploadError(
+            f"hmi/manifest.json format must be {MANIFEST_FORMAT}: this HMI was built by an editor "
+            "this runtime does not match; build the project with an editor of the same release"
+        )
     keys = set(manifest)
     if keys == {"format"}:
         return HmiAction.INSTALL
