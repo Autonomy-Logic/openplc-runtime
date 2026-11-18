@@ -519,15 +519,22 @@ def stop_failed_line(name):
 
 
 class PluginsConf:
-    """Append entries to plugins.conf for one group, and restore the file on exit."""
+    """Append entries to plugins.conf for one group, and restore the file on exit.
 
-    def __init__(self, *lines):
+    `drop` holds line prefixes: the entries starting with one of them are left out meanwhile.
+    """
+
+    def __init__(self, *lines, drop=()):
         self.lines = lines
+        self.drop = tuple(drop)
 
     def __enter__(self):
         with open("plugins.conf") as f:
             self.saved = f.read()
-        base = self.saved if self.saved.endswith("\n") or not self.saved else self.saved + "\n"
+        kept = "".join(
+            l for l in self.saved.splitlines(keepends=True) if not l.startswith(self.drop)
+        )
+        base = kept if kept.endswith("\n") or not kept else kept + "\n"
         with open("plugins.conf", "w") as f:
             f.write(base + "".join(self.lines))
         return self
@@ -739,19 +746,37 @@ def exports_symbol(path, symbol):
         return None
 
 
-def boot_switch_owner(tag, env=None):
+def boot_switch_owner(tag, env=None, group="keepalive", init_ms=100):
     """Boot plc_main with the fake VPP owning the switch, switch on RUN, and wait for RUNNING.
 
     Returns (runtime, whether the PLC reached RUNNING).
     """
     set_switch("RUN")
-    rt = Runtime(tag, init_ms=100, env=dict(SWITCH_OWNER, **(env or {})))
+    rt = Runtime(tag, init_ms=init_ms, env=dict(SWITCH_OWNER, **(env or {})))
     st = wait_status("STATUS:RUNNING")
     ok = st == "STATUS:RUNNING"
-    record("keepalive", f"{tag}: reached RUNNING before the test", ok, st)
+    record(group, f"{tag}: reached RUNNING before the test", ok, st)
     if not ok:
         rt.dump()
     return rt, ok
+
+
+def stays_stopped(group, tag, seconds=3.0, after="the START"):
+    """Poll STATUS and STATS every 100 ms for `seconds`: STOPPED at every poll, zero scans."""
+    states, counts = [], []
+    t0 = time.time()
+    while time.time() - t0 < seconds:
+        states.append(status())
+        counts.append(scan_counts())
+        time.sleep(0.1)
+    stopped = all(s == "STATUS:STOPPED" for s in states)
+    seen = ", ".join(sorted(set(states)))
+    record(group, f"{tag}: STATUS:STOPPED at every poll for {seconds:g} s", stopped, seen)
+    zero = all(c is not None and all(n == 0 for n in c) for c in counts)
+    worst = max((max(c) for c in counts if c), default=0)
+    missing = sum(1 for c in counts if c is None)
+    detail = f"max scan_count {worst}, {missing} unanswered STATS of {len(counts)}"
+    record(group, f"{tag}: zero scans after {after}", zero, detail)
 
 
 def socket_stop(rt):
@@ -814,21 +839,7 @@ def keepalive_stale_switch_case():
         reply = cmd("START")
         refused = reply == "START:ERROR_SWITCH_STOP"
         record("keepalive", f"{tag}: START answers START:ERROR_SWITCH_STOP", refused, reply)
-
-        states, counts = [], []
-        t0 = time.time()
-        while time.time() - t0 < 3.0:
-            states.append(status())
-            counts.append(scan_counts())
-            time.sleep(0.1)
-        stopped = all(s == "STATUS:STOPPED" for s in states)
-        seen = ", ".join(sorted(set(states)))
-        record("keepalive", f"{tag}: STATUS:STOPPED at every poll for 3 s", stopped, seen)
-        zero = all(c is not None and all(n == 0 for n in c) for c in counts)
-        worst = max((max(c) for c in counts if c), default=0)
-        missing = sum(1 for c in counts if c is None)
-        detail = f"max scan_count {worst}, {missing} unanswered STATS of {len(counts)}"
-        record("keepalive", f"{tag}: zero scans after the START", zero, detail)
+        stays_stopped("keepalive", tag)
         rt.kill()
 
 
@@ -983,6 +994,298 @@ def test_ptrprobe_cycles(cycles=50):
         rt.kill()
 
 
+PLC_SWITCH_REPORT_WAIT_S = 2.0
+NO_REPORT_LINE = "no switch owner has reported a position"
+CORRECTION_LINE = "Mode switch came to rest in STOP but the PLC landed on RUNNING"
+FAKEVPP_ENTRY = "fakevpp,"
+FAKEVPP_SILENT = {"FAKEVPP_SWITCH_SILENT": "1"}
+FAKEVPP_SILENT_MARK = "fakevpp: switch silent, no position reported"
+FAKEVPP_FALLBACK = {"FAKEVPP_FALLBACK": "1"}
+PYDETACH_OWNER = {"PYDETACH_OWNS_SWITCH": "1"}
+REINIT_MS = 1000
+
+
+def timed_cmd(c):
+    """Send `c` and return (reply, seconds until the reply arrived)."""
+    t0 = time.time()
+    reply = cmd(c)
+    return reply, time.time() - t0
+
+
+def wait_journal(rt, needle, limit):
+    """Poll the journal until it holds `needle`. Returns whether it did within `limit` seconds."""
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        if needle in rt.journal():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def settle_stopped(rt, limit=PLC_SWITCH_REPORT_WAIT_S + 4):
+    """Wait for the boot decision, then leave the PLC STOPPED. Returns the final state.
+
+    A boot held by an unreported switch owner logs NO_REPORT_LINE and stays STOPPED. A boot
+    that ignores the owner auto-starts and is stopped here, so the START under test begins
+    from STOPPED either way.
+    """
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        if NO_REPORT_LINE in rt.journal():
+            break
+        if status() == "STATUS:RUNNING":
+            cmd("STOP")
+            break
+        time.sleep(0.1)
+    st, _ = wait_final()
+    return st
+
+
+def gate_known_owner_case():
+    """AC2, known owner: a current STOP report refuses START before the transition begins."""
+    tag = "gate_known_owner"
+    with VppLayout():
+        rt, ran = boot_switch_owner(tag, group="gate")
+        if not ran:
+            rt.kill()
+            return
+        _, st, landed = socket_stop(rt)
+        record("gate", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+        set_switch("STOP")
+        sw = wait_switch("SWITCH:STOP", limit=2.0)
+        record("gate", f"{tag}: the keep-alive owner reports STOP", sw == "SWITCH:STOP", sw)
+
+        mark = len(rt.journal())
+        reply = cmd("START")
+        refused = reply == "START:ERROR_SWITCH_STOP"
+        record("gate", f"{tag}: START answers START:ERROR_SWITCH_STOP", refused, reply)
+        stays_stopped("gate", tag)
+        after = rt.journal()[mark:]
+        signs = ("TRANSITIONING_TO_RUN", "Loading PLC application", FAKEVPP_CLEANUP, FAKEVPP_INIT)
+        begun = [sign for sign in signs if sign in after]
+        name = f"{tag}: START not begun: no transition, no plugin re-init"
+        record("gate", name, not begun, ", ".join(begun) or "none")
+        rt.kill()
+
+
+def gate_legacy_stop_case():
+    """AC2, legacy owner: a fallback owner reporting STOP during the start's re-init stops it."""
+    tag = "gate_legacy_stop"
+    exports = exports_symbol(FAKEVPP_LEGACY_SO, "owns_mode_switch")
+    record("gate", f"{tag}: the legacy fake VPP has no owns_mode_switch", exports is False)
+    with VppLayout(path=FAKEVPP_LEGACY_SO):
+        rt, ran = boot_switch_owner(tag, group="gate")
+        if not ran:
+            rt.kill()
+            return
+        _, st, landed = socket_stop(rt)
+        record("gate", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+
+        set_switch("STOP")
+        mark = len(rt.journal())
+        reply = cmd("START")
+        refused = reply == "START:ERROR_SWITCH_STOP"
+        record("gate", f"{tag}: START answers START:ERROR_SWITCH_STOP", refused, reply)
+        stays_stopped("gate", tag)
+        corrected = CORRECTION_LINE in rt.journal()[mark:]
+        record("gate", f"{tag}: no switch correction after the START", not corrected)
+        rt.kill()
+
+
+def gate_legacy_recovery_case():
+    """AC11: a fallback owner reads unknown after a stop; a START in RUN runs the PLC again."""
+    tag = "gate_legacy_recover"
+    with VppLayout(path=FAKEVPP_LEGACY_SO):
+        rt, ran = boot_switch_owner(tag, group="gate", init_ms=REINIT_MS)
+        if not ran:
+            rt.kill()
+            return
+        _, st, landed = socket_stop(rt)
+        record("gate", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+        sw = wait_switch("SWITCH:UNKNOWN", limit=2.0)
+        name = f"{tag}: SWITCH answers SWITCH:UNKNOWN after the stop"
+        record("gate", name, sw == "SWITCH:UNKNOWN", sw)
+
+        set_switch("RUN")
+        reply, secs = timed_cmd("START")
+        record("gate", f"{tag}: START answers START:OK", reply == "START:OK", reply)
+        name = f"{tag}: the reply comes after the plugin re-init"
+        detail = f"{secs:.2f}s, the re-init sleeps {REINIT_MS} ms"
+        record("gate", name, secs >= 0.8 * REINIT_MS / 1000, detail)
+        st = wait_status("STATUS:RUNNING")
+        alive = rt.p.poll() is None
+        name = f"{tag}: STATUS reaches RUNNING in the same process"
+        record("gate", name, st == "STATUS:RUNNING" and alive, f"{st}, alive={alive}")
+        rt.kill()
+
+
+def gate_no_owner_case():
+    """AC8: with no switch owner a start behaves as today and SWITCH reads RUN."""
+    tag = "gate_no_owner"
+    with PluginsConf(drop=(FAKEVPP_ENTRY,)):
+        set_switch("RUN")
+        rt = Runtime(tag, init_ms=100)
+        st = ensure_running()
+        record("gate", f"{tag}: reached RUNNING before the test", st == "STATUS:RUNNING", st)
+        if st != "STATUS:RUNNING":
+            rt.dump()
+            rt.kill()
+            return
+        _, st, landed = socket_stop(rt)
+        record("gate", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+
+        reply = cmd("START")
+        st, secs = wait_final()
+        landed = f"{reply} -> {st} in {secs:.2f}s"
+        ok = reply == "START:OK" and st == "STATUS:RUNNING"
+        record("gate", f"{tag}: START answers START:OK and lands RUNNING", ok, landed)
+        name = f"{tag}: no switch-report wait without an owner"
+        record("gate", name, secs < PLC_SWITCH_REPORT_WAIT_S - 0.5, f"{secs:.2f}s")
+        sw = cmd("SWITCH")
+        record("gate", f"{tag}: SWITCH answers SWITCH:RUN", sw == "SWITCH:RUN", sw)
+        rt.kill()
+
+
+def gate_silent_owner_case():
+    """ABUSE-05, socket: START with an owner that never reports is refused after the wait."""
+    tag = "gate_abuse05"
+    set_switch("RUN")
+    rt = Runtime(tag, init_ms=100, env=FAKEVPP_SILENT)
+    st = settle_stopped(rt)
+    record("gate", f"{tag}: STOPPED before the START", st == "STATUS:STOPPED", st)
+    record("gate", f"{tag}: the fake VPP runs silent", FAKEVPP_SILENT_MARK in rt.journal())
+    if st != "STATUS:STOPPED":
+        rt.dump()
+        rt.kill()
+        return
+
+    mark = len(rt.journal())
+    reply, secs = timed_cmd("START")
+    refused = reply == "START:ERROR_SWITCH_UNKNOWN"
+    detail = f"{reply} in {secs:.2f}s"
+    record("gate", f"{tag}: START answers START:ERROR_SWITCH_UNKNOWN", refused, detail)
+    name = f"{tag}: refused once the 2 s switch-report wait has elapsed"
+    record("gate", name, secs >= PLC_SWITCH_REPORT_WAIT_S - 0.1, f"{secs:.2f}s")
+    stays_stopped("gate", tag)
+    sw = cmd("SWITCH")
+    record("gate", f"{tag}: SWITCH answers SWITCH:UNKNOWN", sw == "SWITCH:UNKNOWN", sw)
+    logged = NO_REPORT_LINE in rt.journal()[mark:]
+    record("gate", f"{tag}: journal says no switch owner has reported a position", logged)
+    rt.kill()
+
+
+def gate_fallback_stop_case():
+    """ABUSE-07: a declared fallback owner reporting STOP during the start's re-init refuses it."""
+    tag = "gate_abuse07"
+    exports = exports_symbol(FAKEVPP_SO, "owns_mode_switch")
+    record("gate", f"{tag}: the fake VPP exports owns_mode_switch", exports is True)
+    with VppLayout():
+        rt, ran = boot_switch_owner(tag, FAKEVPP_FALLBACK, group="gate")
+        if not ran:
+            rt.kill()
+            return
+        _, st, landed = socket_stop(rt)
+        record("gate", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+
+        set_switch("STOP")
+        reply, secs = timed_cmd("START")
+        refused = reply == "START:ERROR_SWITCH_STOP"
+        detail = f"{reply} in {secs:.2f}s"
+        record("gate", f"{tag}: START answers START:ERROR_SWITCH_STOP", refused, detail)
+        name = f"{tag}: answered within the 2 s switch-report wait"
+        record("gate", name, secs < PLC_SWITCH_REPORT_WAIT_S, f"{secs:.2f}s")
+        stays_stopped("gate", tag)
+        rt.kill()
+
+
+def gate_python_owner_case():
+    """Python declaration: pydetach declares ownership, never reports, and START is refused."""
+    tag = "gate_python_owner"
+    with PluginsConf(PYDETACH_CONF_LINE, drop=(FAKEVPP_ENTRY,)):
+        set_switch("RUN")
+        rt = Runtime(tag, init_ms=100, env=PYDETACH_OWNER)
+        st = settle_stopped(rt)
+        record("gate", f"{tag}: STOPPED before the START", st == "STATUS:STOPPED", st)
+        record("gate", f"{tag}: pydetach was initialised", "pydetach: init" in rt.journal())
+        if st != "STATUS:STOPPED":
+            rt.dump()
+            rt.kill()
+            return
+        reply = cmd("START")
+        refused = reply == "START:ERROR_SWITCH_UNKNOWN"
+        record("gate", f"{tag}: START answers START:ERROR_SWITCH_UNKNOWN", refused, reply)
+        rt.kill()
+
+
+def gate_two_owners_case():
+    """Every owner must report: one owner reporting RUN does not cover a silent declared owner.
+
+    The fake VPP reports RUN from init(), so it owns the switch implicitly; pydetach declares
+    ownership and never reports. A report credited to the wrong plugin would read RUN here.
+    """
+    tag = "gate_two_owners"
+    with PluginsConf(PYDETACH_CONF_LINE):
+        set_switch("RUN")
+        rt = Runtime(tag, init_ms=100, env=PYDETACH_OWNER)
+        st = settle_stopped(rt)
+        record("gate", f"{tag}: STOPPED before the START", st == "STATUS:STOPPED", st)
+        j = rt.journal()
+        both = FAKEVPP_INIT in j and "pydetach: init" in j
+        record("gate", f"{tag}: the fake VPP and pydetach were initialised", both)
+        if st != "STATUS:STOPPED":
+            rt.dump()
+            rt.kill()
+            return
+        reply = cmd("START")
+        refused = reply == "START:ERROR_SWITCH_UNKNOWN"
+        record("gate", f"{tag}: START answers START:ERROR_SWITCH_UNKNOWN", refused, reply)
+        sw = cmd("SWITCH")
+        record("gate", f"{tag}: SWITCH answers SWITCH:UNKNOWN", sw == "SWITCH:UNKNOWN", sw)
+        rt.kill()
+
+
+def test_gate():
+    """No start runs a scan while the switch reads STOP or an owner has not reported.
+
+    Pre-fix a START used the position stored before a fallback cleanup, so a legacy owner
+    reporting STOP during the re-init still ran one scan before the correction; an owner that
+    never reported read RUN; SWITCH had no unknown answer.
+    """
+    banner("start gate: every start honours the switch")
+    gate_known_owner_case()
+    gate_legacy_stop_case()
+    gate_legacy_recovery_case()
+    gate_no_owner_case()
+    gate_silent_owner_case()
+    gate_fallback_stop_case()
+    gate_python_owner_case()
+    gate_two_owners_case()
+    set_switch("RUN")
+
+
+def test_boot_gate():
+    """ABUSE-05, boot: a declared switch owner that never reports holds the boot auto-start.
+
+    Pre-fix ownership did not exist: the silent owner left the RUN default and the PLC started.
+    """
+    banner("power-on with a switch owner that never reports")
+    tag = "bootgate_abuse05"
+    with VppLayout():
+        set_switch("RUN")
+        rt = Runtime(tag, init_ms=100, env=FAKEVPP_SILENT)
+        decided = wait_journal(rt, NO_REPORT_LINE, limit=PLC_SWITCH_REPORT_WAIT_S + 4)
+        name = f"{tag}: journal says no switch owner has reported a position"
+        record("bootgate", name, decided)
+        stays_stopped("bootgate", tag, after="power-on")
+        sw = cmd("SWITCH")
+        record("bootgate", f"{tag}: SWITCH answers SWITCH:UNKNOWN", sw == "SWITCH:UNKNOWN", sw)
+        j = rt.journal()
+        record("bootgate", f"{tag}: the fake VPP runs silent", FAKEVPP_SILENT_MARK in j)
+        loaded = "Loading PLC application" in j or rt.program_mapped()
+        record("bootgate", f"{tag}: program never loaded", not loaded)
+        rt.kill()
+
+
 ONLY = os.environ.get("SUITE_ONLY", "")
 
 
@@ -1001,6 +1304,8 @@ run("bootswitch", test_boot_switch_vpp)
 run("stopfail", test_stop_failed)
 run("keepalive", test_keepalive)
 run("ptrprobe", test_ptrprobe_cycles)
+run("gate", test_gate)
+run("bootgate", test_boot_gate)
 
 print("\n=== summary")
 by_finding = {}

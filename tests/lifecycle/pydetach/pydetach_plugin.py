@@ -1,7 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
+import os
+
 _args = None
+
+
+def owns_mode_switch():
+    """Declare switch ownership when PYDETACH_OWNS_SWITCH=1; this fixture never reports."""
+    return os.environ.get("PYDETACH_OWNS_SWITCH") == "1"
 
 
 def init(runtime_args_capsule):

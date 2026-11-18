@@ -28,6 +28,11 @@
  *      FAKEVPP_FALLBACK=1 makes it refuse with -1, and a -DFAKEVPP_LEGACY build
  *      does not export it. cleanup() logs "fakevpp: cleanup".
  *
+ *   5. A DECLARED SWITCH OWNER. owns_mode_switch() returns 1 when
+ *      FAKEVPP_SWITCH_OWNER=1 or FAKEVPP_SWITCH_SILENT=1, and the -DFAKEVPP_LEGACY
+ *      build does not export it. FAKEVPP_SWITCH_SILENT=1 never reports a position
+ *      and requests nothing: an owner whose switch reading never arrives.
+ *
  * Everything is env-driven so one .so covers every scenario, and nothing here
  * touches the process image -- it declares no located variables.
  */
@@ -144,6 +149,12 @@ static int switch_owner(void)
     return env_long("FAKEVPP_SWITCH_OWNER", 0) != 0;
 }
 
+/* FAKEVPP_SWITCH_SILENT=1: never report a position and never request a transition. */
+static int switch_silent(void)
+{
+    return env_long("FAKEVPP_SWITCH_SILENT", 0) != 0;
+}
+
 static int start_watcher(void)
 {
     if (atomic_exchange(&g_running, 1) == 1)
@@ -173,10 +184,12 @@ int init(void *args)
     /* Adopt whatever the switch file already says before anything else, so a test
      * can boot a device with the switch in STOP. */
     g_last_pos = read_switch_file();
-    if (g_args && g_args->set_switch_position)
+    if (switch_silent())
+        plog("info", "fakevpp: switch silent, no position reported");
+    else if (g_args && g_args->set_switch_position)
         g_args->set_switch_position(g_last_pos);
 
-    if (switch_owner())
+    if (switch_owner() && !switch_silent())
     {
         if (g_last_pos == SWITCH_RUN && g_args && g_args->request_plc_start)
             g_args->request_plc_start("fake mode switch is RUN at init");
@@ -206,7 +219,7 @@ int init(void *args)
 int start_loop(void *args)
 {
     (void)args;
-    if (switch_owner())
+    if (switch_owner() || switch_silent())
         return 0;
     return start_watcher();
 }
@@ -239,6 +252,12 @@ int stop_loop(void *args)
 }
 
 #ifndef FAKEVPP_LEGACY
+/* Declares switch ownership when FAKEVPP_SWITCH_OWNER=1 or FAKEVPP_SWITCH_SILENT=1. */
+int owns_mode_switch(void)
+{
+    return switch_owner() || switch_silent();
+}
+
 /* Detaches from the I/O image and keeps the watcher; returns -1 instead when
  * FAKEVPP_FALLBACK=1. */
 int detach_image(void)
