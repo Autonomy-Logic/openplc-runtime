@@ -129,7 +129,7 @@ def test_to_bytes_round_trips() -> None:
     assert json.loads(runtime_license.parse_license(data).to_bytes()) == data
 
 
-def test_no_verifier_is_left() -> None:
+def test_module_exposes_no_signature_verification() -> None:
     for name in ("TRUSTED_KEYS", "DEV_KEY_ENV", "verify_signature", "verifies_for", "status"):
         assert not hasattr(runtime_license, name)
 
@@ -156,12 +156,6 @@ def test_store_in_a_vplc_uses_the_agent_folder(env) -> None:
     assert runtime_license.store(as_bytes(make_license())).ok
     assert (env["vplc_dir"] / "ord_1.license").exists()
     assert not env["device_dir"].exists()
-    assert runtime_license.licenses_dir() == env["vplc_dir"]
-
-
-def test_licenses_dir_on_a_device(env) -> None:
-    on_device(env)
-    assert runtime_license.licenses_dir() == env["device_dir"]
 
 
 @pytest.mark.parametrize(
@@ -192,10 +186,10 @@ def test_store_refuses_where_the_host_hardware_is_not_visible(env, monkeypatch) 
 def test_store_reports_a_write_failure(env, monkeypatch) -> None:
     on_device(env)
 
-    def fail(_path: str, _blob: bytes) -> None:
+    def fail(_path: str | pathlib.Path, _blob: bytes) -> None:
         raise OSError("read-only")
 
-    monkeypatch.setattr(runtime_license, "_write_license_atomically", fail)
+    monkeypatch.setattr(runtime_license, "write_file_atomically", fail)
     result = runtime_license.store(as_bytes(make_license()))
     assert not result.ok and result.internal
 
@@ -342,10 +336,10 @@ def test_upload_refuses_a_large_streamed_body(client, env, user_token) -> None:
 def test_upload_reports_a_write_failure(client, env, user_token, monkeypatch) -> None:
     on_device(env)
 
-    def fail(_path: str, _blob: bytes) -> None:
+    def fail(_path: str | pathlib.Path, _blob: bytes) -> None:
         raise OSError("full")
 
-    monkeypatch.setattr(runtime_license, "_write_license_atomically", fail)
+    monkeypatch.setattr(runtime_license, "write_file_atomically", fail)
     resp = client.post(
         "/api/runtime-license", data=as_bytes(make_license()), headers=auth(user_token)
     )
@@ -367,7 +361,7 @@ class FakeRuntime:
 
 
 @pytest.mark.parametrize("plc_status", ["STATUS:RUNNING", None])
-def test_status_no_longer_reports_a_licence(env, monkeypatch, plc_status) -> None:
+def test_status_omits_the_licence(env, monkeypatch, plc_status) -> None:
     from webserver import app as app_module
 
     monkeypatch.setattr(app_module, "runtime_manager", FakeRuntime(plc_status))

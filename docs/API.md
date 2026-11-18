@@ -378,7 +378,8 @@ Any authenticated user.
 }
 ```
 
-`hardwareId` and `source` are as in `GET /api/hardware-id` (`null` when no ID can be derived).
+`hardwareId` and `source` are as in `GET /api/hardware-id`
+([HARDWARE_ID.md](HARDWARE_ID.md#record-and-storage)), `null` when no ID can be derived.
 `licenses` holds each licence exactly as stored, unverified, and may include licences for other
 hardware IDs. The editor counts a licence only when its `hardware_id` equals `hardwareId` and its
 signature verifies: ECDSA P-256 over SHA-256 of the payload without `sig`, keys sorted, no
@@ -691,4 +692,5 @@ For real-time debugging and variable inspection, the OpenPLC Editor uses a WebSo
 - [Debug Protocol](DEBUG_PROTOCOL.md) - WebSocket debug interface
 - [Compilation Flow](COMPILATION_FLOW.md) - Build process details
 - [Security](SECURITY.md) - Security features
+- [Hardware ID](HARDWARE_ID.md) - Hardware ID v2 derivation, storage and `GET /api/hardware-id`
 - [Troubleshooting](TROUBLESHOOTING.md) - Common issues
