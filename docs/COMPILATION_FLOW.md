@@ -102,6 +102,7 @@ The compilation process runs in a background thread:
 2. Removes old library files: `build/libplc_*.so`
 3. Renames `build/new_libplc.so` to `build/libplc_<timestamp>.so`
 4. Removes object files: `build/*.o`
+5. Flushes the new library to disk with `sync`, so a power cut after the step boots the new program
 
 **Timestamp Format:** Unix epoch seconds (e.g., `libplc_1700000000.so`)
 
