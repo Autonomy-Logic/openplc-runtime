@@ -322,11 +322,7 @@ __attribute__((constructor)) static void state_manager_locks_init_pi(void)
  * matches the dispatcher deadline and does not jump under NTP. */
 static void init_done_cond(void)
 {
-    pthread_condattr_t cattr;
-    pthread_condattr_init(&cattr);
-    pthread_condattr_setclock(&cattr, CLOCK_MONOTONIC);
-    pthread_cond_init(&done_cond, &cattr);
-    pthread_condattr_destroy(&cattr);
+    monotonic_cond_init(&done_cond);
 }
 
 /* Called by a worker when it leaves a scan by any path. Decrements the
