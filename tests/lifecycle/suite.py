@@ -571,6 +571,53 @@ def stop_failed_case(tag, env, stop_marker):
     return rt, mark, True
 
 
+def stop_none_case(tag):
+    """Stop a PLC whose stopfail plugin stops and returns None, and check the normal teardown.
+
+    Pre-fix a None result counted as a failed stop: the stop landed ERROR and latched.
+    The runtime is left alive for the caller.
+    """
+    set_switch("RUN")
+    rt = Runtime(tag, init_ms=200, env={"STOPFAIL_MODE": "none"})
+    st = ensure_running()
+    record("stopfail", f"{tag}: reached RUNNING before the test", st == "STATUS:RUNNING", st)
+    if st != "STATUS:RUNNING":
+        rt.dump()
+        return rt
+    started = "Plugin stopfail started successfully" in rt.journal()
+    record("stopfail", f"{tag}: the stopfail plugin was started", started)
+
+    mark = len(rt.journal())
+    reply = cmd("STOP")
+    st, secs = wait_final()
+    landed = f"{reply} -> {st} in {secs:.2f}s"
+    record("stopfail", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+    after = rt.journal()[mark:]
+    fired = "stopfail: stop_loop returning None" in after
+    called = "stop_loop ran" if fired else "stop_loop never ran -- test inconclusive"
+    record("stopfail", f"{tag}: the None-returning stop_loop was actually called", fired, called)
+    stopped = "Plugin stopfail stopped successfully" in after
+    record("stopfail", f"{tag}: journal reports the plugin stopped successfully", stopped)
+    released = IMAGE_RELEASED in after
+    record("stopfail", f"{tag}: I/O image released by the normal teardown", released)
+    named = stop_failed_line("stopfail") in after
+    record("stopfail", f"{tag}: journal has no stop-failed line", not named)
+    mapped = rt.program_mapped()
+    unmapped = "still mapped -- the teardown did not run" if mapped else "unmapped"
+    record("stopfail", f"{tag}: program library unmapped after the stop", not mapped, unmapped)
+
+    reply = cmd("START")
+    st, secs = wait_final()
+    restarted = reply == "START:OK" and st == "STATUS:RUNNING"
+    landed = f"{reply} -> {st} in {secs:.2f}s"
+    record("stopfail", f"{tag}: START after the stop is not latched", restarted, landed)
+    reply = cmd("STOP")
+    st, secs = wait_final()
+    landed = f"{reply} -> {st} in {secs:.2f}s"
+    record("stopfail", f"{tag}: a second STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+    return rt
+
+
 def test_stop_failed():
     """A plugin whose stop fails keeps the image, journal and library, and latches ERROR.
 
@@ -603,6 +650,9 @@ def test_stop_failed():
         rt, _, _ = stop_failed_case(
             "stopfail_raise", {"STOPFAIL_MODE": "raise"}, "stopfail: stop_loop raising"
         )
+        rt.kill()
+
+        rt = stop_none_case("stopfail_none")
         rt.kill()
 
 

@@ -35,7 +35,7 @@ sources, since `Makefile.strucpp` lists it as an explicit prerequisite:
 #define PROGRAM_MD5 "<md5 of program.st>"
 ```
 
-Run one group at a time with `SUITE_ONLY=crash|shutdown|phantom|switch|misc|bootswitch`, and
+Run one group at a time with `SUITE_ONLY=crash|shutdown|phantom|switch|misc|bootswitch|stopfail`, and
 get a backtrace out of a crash with `SUITE_GDB=1` (needs `gdb` in the image).
 
 ## What the pieces are for
@@ -45,6 +45,7 @@ get a backtrace out of a crash with `SUITE_GDB=1` (needs `gdb` in the image).
 | `suite.py` | The tests. One group per review finding, each with an oracle that fails on the unfixed code. |
 | `fakevpp_plugin.c` | Stands in for a board's VPP package: a configurable sleep in `init()`/`stop_loop()` widens a transition enough to aim at, and a file-driven mode switch (`/tmp/fakevpp_switch`, "RUN"/"STOP") drives `set_switch_position` + `request_plc_start`/`request_plc_stop` the way real hardware does. |
 | `failinject.c` | `LD_PRELOAD` shim that fails exactly one `pthread_create`, one-shot and self-disarming, so the "transition worker could not be spawned" path is reachable without inducing real thread exhaustion. |
+| `stopfail/` | A Python plugin whose `stop_loop` returns False, or raises with `STOPFAIL_MODE=raise`, while its worker thread keeps running until `cleanup()`. With `STOPFAIL_MODE=none` it stops and joins the worker, then returns None. Only the `stopfail` group adds it to `plugins.conf`, loaded from `/fixtures`. |
 | `logserver.py` | Accepts `/run/runtime/log_runtime.socket`. Without something listening there, `--print-logs` produces nothing on stdout either and every journal assertion silently passes. |
 | `harness.sh` | Builds the runtime, the fixtures and the program, writes `plugins.conf`, then runs the suite. |
 
@@ -71,7 +72,11 @@ during a start; a stop whose transition worker cannot be spawned; a mode-switch
 flip during a teardown; `SWITCH` answered mid-transition; and 25 rapid start/stop
 pairs as a wedge guard; power-on with the switch owner shipped in
 `vpp_plugins.conf`, in STOP (left stopped, program never mapped, then started by a
-flip to RUN) and in RUN (exactly one start).
+flip to RUN) and in RUN (exactly one start); a Python plugin whose `stop_loop`
+returns False or raises (the stop lands ERROR, the I/O image and program library are
+kept, START answers `START:ERROR`, and SIGTERM exits without releasing the image); and
+one whose `stop_loop` returns None, which stops normally (the stop lands STOPPED, the
+image is released, the program is unmapped, and the next START is accepted).
 
 Not covered:
 
