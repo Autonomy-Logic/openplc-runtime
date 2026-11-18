@@ -193,6 +193,9 @@ as the editor's preview. Licence texts ship beside it (`fonts-LICENSE.txt`, `soc
   "Sign out" action); the device ends the session and the client returns to the form on
   `hmi_signed_out`. The client draws nothing over the screens; a session also ends when its token
   expires unrenewed, is revoked, or the account changes.
+- `HMI_Lock()` and `HMI_Calibrate()` do nothing here. The PIN entry, the startup screen and the touch
+  calibration belong to a board's own panel; a browser viewer signs in with its account and points
+  with a calibrated device.
 - While a notice shows, the last frame stays visible, dimmed and grey, and takes no input.
 
 ## Known limits
