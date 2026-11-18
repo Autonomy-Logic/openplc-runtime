@@ -37,6 +37,9 @@ typedef struct
     /* Optional: detach_image(). NULL when the module does not define it, and the
      * plugin is cleaned up on every stop. See plugin_driver.h for the contract. */
     PyObject *pFuncDetachImage;
+    /* Optional: owns_mode_switch(). NULL when the module does not define it, and
+     * the plugin is a switch owner only once it reports. See plugin_driver.h. */
+    PyObject *pFuncOwnsModeSwitch;
     PyObject *args_capsule; // Capsule containing plugin_runtime_args_t for lifetime management
 } python_binds_t;
 

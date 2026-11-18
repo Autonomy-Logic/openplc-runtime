@@ -124,7 +124,8 @@ typedef void (*plugin_request_plc_stop_func_t)(const char *reason);
  * transition path the socket START / STOP commands drive, so a plugin-initiated
  * run/stop is byte-for-byte the flow the editor already exercises.
  *
- * Refused while the stored mode-switch position is STOP (see
+ * Refused while the reported mode-switch position is STOP, or unknown because a
+ * switch owner has not reported since its last init (see
  * plugin_set_switch_position_func_t) -- hardware is authoritative regardless of
  * who asks. Non-blocking; `reason` is logged. Safe to call from any plugin
  * thread, including while the PLC is stopped: a plugin that detaches from the
@@ -160,15 +161,27 @@ typedef void (*plugin_request_plc_start_func_t)(const char *reason);
  * this header stays free of the plc_app include tree. Idempotent, and safe to
  * call from any plugin thread.
  *
+ * SWITCH OWNERSHIP. Each plugin gets its own entry point here, so every report is
+ * attributed to the plugin that made it. A plugin becomes a switch owner the
+ * first time it reports, or before its init() when it exports the optional
+ * owns_mode_switch (plugin_driver.h), and stays one until it leaves the plugin
+ * configuration. While any owner has not reported since its last init(), the
+ * switch reads unknown and every start path fails closed: a start waits up to
+ * 2 s after the plugin re-init for the report and is refused without one. A
+ * de-initialised owner (cleanup) must report again from its next init(); one
+ * that detaches keeps its report. A plugin that never reports and does not
+ * declare ownership leaves every start ungated, as before.
+ *
  * Sample the switch from a thread started in init() and torn down in cleanup(),
  * NOT in start_loop() / stop_loop(): the runtime calls stop_loop when the PLC
  * stops, which is precisely when the position matters most. Export detach_image
  * (plugin_driver.h) so that thread survives the stop: without it, or when it
  * refuses, the runtime runs cleanup() on every stop and the switch goes unread
  * until the next start. Make that start idempotent, because init() is
- * re-entered on each PLC start. Reporting the initial position from init() also
+ * re-entered on each PLC start. Report the initial position from init(): that
  * gates the boot auto-start, so a device powered up with its switch in STOP
- * never starts and then bounces.
+ * never starts and then bounces, and it lets each start go ahead without the
+ * report wait.
  */
 typedef void (*plugin_set_switch_position_func_t)(int position);
 

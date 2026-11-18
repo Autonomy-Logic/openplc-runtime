@@ -20,6 +20,7 @@
 #include "../plc_app/image_tables.h"
 #include "../plc_app/journal_buffer.h"
 #include "../plc_app/plc_state_manager.h"
+#include "../plc_app/plc_switch.h"
 #include "../plc_app/utils/log.h"
 #include "../plc_app/utils/utils.h"
 #include "plugin_config.h"
@@ -43,6 +44,76 @@ static int has_python_plugin = 0;
 
 // Prototypes
 static void python_plugin_cleanup(plugin_instance_t *plugin);
+
+_Static_assert(PLC_SWITCH_OWNER_ID_SIZE >= MAX_PLUGIN_NAME_LEN + MAX_PLUGIN_PATH_LEN,
+               "a switch-owner identity holds a config name, '|' and a path");
+
+/** Writes the switch-owner identity of @p plugin, "<config name>|<path>", into @p out. */
+static void plugin_switch_owner_id(const plugin_instance_t *plugin, char *out, size_t out_size)
+{
+    snprintf(out, out_size, "%s|%s", plugin->config.name, plugin->config.path);
+}
+
+/** Tells the switch gate that @p plugin was de-initialised: its last report no longer counts. */
+static void plugin_switch_deinit(const plugin_instance_t *plugin)
+{
+    char id[PLC_SWITCH_OWNER_ID_SIZE];
+    plugin_switch_owner_id(plugin, id, sizeof(id));
+    plc_switch_owner_invalidate(id);
+}
+
+/**
+ * Calls the plugin's optional owns_mode_switch and records the declaration with the
+ * switch gate. A missing symbol or a Python exception declares nothing. Caller holds
+ * the GIL when the plugin is a Python one.
+ */
+static void declare_switch_ownership(plugin_instance_t *plugin)
+{
+    bool owns = false;
+    if (plugin->config.type == PLUGIN_TYPE_NATIVE && plugin->native_plugin &&
+        plugin->native_plugin->owns_mode_switch)
+    {
+        owns = plugin->native_plugin->owns_mode_switch() != 0;
+    }
+    else if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin &&
+             plugin->python_plugin->pFuncOwnsModeSwitch)
+    {
+        PyObject *res = PyObject_CallNoArgs(plugin->python_plugin->pFuncOwnsModeSwitch);
+        if (!res)
+        {
+            PyErr_Print();
+            log_warn("Plugin %s raised in owns_mode_switch; no switch ownership declared",
+                     plugin->config.name);
+        }
+        else
+        {
+            owns = (res == Py_True);
+            Py_DECREF(res);
+        }
+    }
+
+    if (owns)
+        log_info("Plugin %s declares itself a switch owner", plugin->config.name);
+
+    char id[PLC_SWITCH_OWNER_ID_SIZE];
+    plugin_switch_owner_id(plugin, id, sizeof(id));
+    plc_switch_owner_declare(id, owns);
+}
+
+/** Forgets the switch owners that are not among the plugins configured in @p driver. */
+static void forget_unconfigured_switch_owners(const plugin_driver_t *driver)
+{
+    char ids[MAX_PLUGINS][PLC_SWITCH_OWNER_ID_SIZE];
+    const char *present[MAX_PLUGINS];
+    size_t count = 0;
+    for (int i = 0; i < driver->plugin_count && i < MAX_PLUGINS; i++)
+    {
+        plugin_switch_owner_id(&driver->plugins[i], ids[count], sizeof(ids[count]));
+        present[count] = ids[count];
+        count++;
+    }
+    plc_switch_owners_forget_absent(present, count);
+}
 
 // Driver management functions
 plugin_driver_t *plugin_driver_create(void)
@@ -197,6 +268,11 @@ static void teardown_plugin_instance(plugin_instance_t *plugin)
         log_error("[PLUGIN] internal error: tearing down running plugin '%s' — refusing",
                   plugin->config.name);
         return;
+    }
+
+    if (plugin->initialized)
+    {
+        plugin_switch_deinit(plugin);
     }
 
     if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin)
@@ -617,6 +693,8 @@ int plugin_driver_init(plugin_driver_t *driver)
         local_gstate = PyGILState_Ensure();
     }
 
+    forget_unconfigured_switch_owners(driver);
+
     // Initialize ALL plugins regardless of enabled flag (needed for
     // features like EtherCAT slave scanning from the editor).
     // init() must only set up internal state; starting is in start_loop.
@@ -640,6 +718,8 @@ int plugin_driver_init(plugin_driver_t *driver)
                 }
                 return -1;
             }
+            declare_switch_ownership(plugin);
+
             /* BEFORE init(), because init() is where a plugin copies the
              * base pointers by value and decides how big everything is.
              * Delivering afterwards leaves a window, once per load, in which
@@ -690,6 +770,8 @@ int plugin_driver_init(plugin_driver_t *driver)
                 }
                 return -1;
             }
+
+            declare_switch_ownership(plugin);
 
             /* BEFORE init(), for the same reason as the Python path above. */
             if (deliver_image_sizes(plugin) != 0)
@@ -834,6 +916,7 @@ static int cleanup_initialised_slots(plugin_driver_t *driver, int keep_detached)
         {
             plugin->native_plugin->cleanup();
         }
+        plugin_switch_deinit(plugin);
         plugin->initialized = 0;
         plugin->detached    = 0;
         ++cleaned;
@@ -1097,6 +1180,10 @@ void plugin_driver_destroy(plugin_driver_t *driver)
     for (int i = 0; i < driver->plugin_count; i++)
     {
         plugin_instance_t *plugin = &driver->plugins[i];
+        if (plugin->initialized)
+        {
+            plugin_switch_deinit(plugin);
+        }
         if (plugin->python_plugin && python_initialized && plugin->initialized)
         {
             python_plugin_cleanup(plugin);
@@ -1274,8 +1361,11 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
     // Run/stop control: the same transition path the socket START / STOP
     // commands drive, plus the mode-switch store the runtime gates starts on
     // and the state read a plugin uses to drive a status LED.
+    char switch_owner_id[PLC_SWITCH_OWNER_ID_SIZE];
+    plugin_switch_owner_id(&driver->plugins[plugin_index], switch_owner_id,
+                           sizeof(switch_owner_id));
     args->request_plc_start   = plugin_request_plc_start;
-    args->set_switch_position = plugin_set_switch_position;
+    args->set_switch_position = plugin_switch_reporter_bind(plugin_index, switch_owner_id);
     args->get_plc_state       = plugin_get_plc_state;
 
     // PLC base tick time. Runtime owns base_tick_ns; on first plugin init
@@ -1494,6 +1584,14 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
         PyErr_Clear();
     }
 
+    py_binds->pFuncOwnsModeSwitch = PyObject_GetAttrString(py_binds->pModule, "owns_mode_switch");
+    if (!py_binds->pFuncOwnsModeSwitch || !PyCallable_Check(py_binds->pFuncOwnsModeSwitch))
+    {
+        Py_XDECREF(py_binds->pFuncOwnsModeSwitch);
+        py_binds->pFuncOwnsModeSwitch = NULL;
+        PyErr_Clear();
+    }
+
     py_binds->pFuncCleanup = PyObject_GetAttrString(py_binds->pModule, "cleanup");
     if (!py_binds->pFuncCleanup || !PyCallable_Check(py_binds->pFuncCleanup))
     {
@@ -1639,6 +1737,8 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
         (plugin_set_image_sizes_func_t)dlsym(handle, "set_image_sizes");
 
     native_bundle->detach_image = (plugin_detach_image_func_t)dlsym(handle, "detach_image");
+    native_bundle->owns_mode_switch =
+        (plugin_owns_mode_switch_func_t)dlsym(handle, "owns_mode_switch");
 
     // Store the native bundle and handle in the plugin instance
     plugin->native_plugin = native_bundle;
@@ -1976,6 +2076,7 @@ static void python_plugin_cleanup(plugin_instance_t *plugin)
         Py_XDECREF(plugin->python_plugin->pFuncCleanup);
         Py_XDECREF(plugin->python_plugin->pFuncSetImageSizes);
         Py_XDECREF(plugin->python_plugin->pFuncDetachImage);
+        Py_XDECREF(plugin->python_plugin->pFuncOwnsModeSwitch);
         Py_XDECREF(plugin->python_plugin->pModule);
         Py_XDECREF(plugin->python_plugin->args_capsule);
 

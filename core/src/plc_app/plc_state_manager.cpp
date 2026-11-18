@@ -35,6 +35,7 @@ extern "C" {
 #include "journal_buffer.h"
 #include "plc_retain.h"
 #include "plc_state_manager.h"
+#include "plc_switch.h"
 #include "plcapp_manager.h"
 #include "scan_cycle_manager.h"
 #include "task_policy.h"
@@ -143,6 +144,152 @@ static void retire_image(PluginManager *pm, bool journal_initialised)
     plugin_manager_destroy(pm);
 }
 
+/* Start-outcome rendezvous. Starts are serialised by plc_claim_transition, so the
+ * latest start is the one in flight. Guarded by start_outcome_mutex. */
+static pthread_mutex_t     start_outcome_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t      start_outcome_cond;
+static pthread_once_t      start_outcome_once  = PTHREAD_ONCE_INIT;
+static uint64_t            g_starts_begun      = 0;
+static uint64_t            g_start_published   = 0;
+static uint64_t            g_armed_ticket      = 0;
+static uint64_t            g_cancelled_ticket  = 0;
+static plc_start_outcome_t g_armed_outcome     = PLC_START_OUTCOME_ERROR;
+
+/** Creates start_outcome_cond on CLOCK_MONOTONIC. */
+static void start_outcome_init(void)
+{
+    monotonic_cond_init(&start_outcome_cond);
+}
+
+/** Locks the rendezvous, creating its condition variable on first use. */
+static void start_outcome_lock(void)
+{
+    pthread_once(&start_outcome_once, start_outcome_init);
+    pthread_mutex_lock(&start_outcome_mutex);
+}
+
+/** Opens the outcome of a new start; called once at the beginning of each start. */
+static void start_outcome_begin(void)
+{
+    start_outcome_lock();
+    ++g_starts_begun;
+    pthread_mutex_unlock(&start_outcome_mutex);
+}
+
+/** start_outcome_publish() for a caller that holds start_outcome_mutex. */
+static void start_outcome_publish_locked(plc_start_outcome_t outcome)
+{
+    if (g_start_published == g_starts_begun)
+        return;
+    g_start_published = g_starts_begun;
+    if (g_armed_ticket == g_starts_begun)
+    {
+        g_armed_outcome = outcome;
+        pthread_cond_broadcast(&start_outcome_cond);
+    }
+}
+
+/** Publishes the in-flight start's outcome; the first publish of a start wins. */
+static void start_outcome_publish(plc_start_outcome_t outcome)
+{
+    start_outcome_lock();
+    start_outcome_publish_locked(outcome);
+    pthread_mutex_unlock(&start_outcome_mutex);
+}
+
+/**
+ * Commits the switch gate's decision for the in-flight start. A cancelled start is
+ * refused with ERROR; a RUN is published at once. Returns the decision to act on.
+ */
+static plc_start_outcome_t start_outcome_commit_gate(plc_start_outcome_t gate)
+{
+    start_outcome_lock();
+    const bool cancelled = g_cancelled_ticket == g_starts_begun;
+    if (cancelled)
+        gate = PLC_START_OUTCOME_ERROR;
+    else if (gate == PLC_START_OUTCOME_RUN)
+        start_outcome_publish_locked(PLC_START_OUTCOME_RUN);
+    pthread_mutex_unlock(&start_outcome_mutex);
+
+    if (cancelled)
+        log_warn("Start cancelled before the mode switch gate decided - PLC left stopped");
+    return gate;
+}
+
+extern "C" uint64_t plc_start_outcome_arm(void)
+{
+    start_outcome_lock();
+    g_armed_ticket        = g_starts_begun + 1;
+    const uint64_t ticket = g_armed_ticket;
+    pthread_mutex_unlock(&start_outcome_mutex);
+    return ticket;
+}
+
+extern "C" bool plc_start_outcome_await(uint64_t ticket, unsigned timeout_ms,
+                                        plc_start_outcome_t *outcome)
+{
+    const struct timespec deadline = monotonic_deadline_ms(timeout_ms);
+
+    start_outcome_lock();
+    int rc = 0;
+    while (g_armed_ticket == ticket && g_start_published < ticket && rc == 0)
+        rc = pthread_cond_timedwait(&start_outcome_cond, &start_outcome_mutex, &deadline);
+    const bool landed = g_armed_ticket == ticket && g_start_published >= ticket;
+    if (landed && outcome)
+        *outcome = g_armed_outcome;
+    pthread_mutex_unlock(&start_outcome_mutex);
+    return landed;
+}
+
+extern "C" bool plc_start_outcome_cancel(uint64_t ticket, plc_start_outcome_t *outcome)
+{
+    start_outcome_lock();
+    const bool published = g_armed_ticket == ticket && g_start_published >= ticket;
+    if (published)
+    {
+        if (outcome)
+            *outcome = g_armed_outcome;
+    }
+    else
+    {
+        g_cancelled_ticket = ticket;
+    }
+    pthread_mutex_unlock(&start_outcome_mutex);
+    return !published;
+}
+
+/**
+ * The start's switch gate, after plugin init and before the PLC cycle thread.
+ * Waits up to PLC_SWITCH_REPORT_WAIT_MS for owners that have not reported since
+ * their init, then commits the decision.
+ */
+static plc_start_outcome_t switch_gate_before_first_scan(void)
+{
+    if (plc_switch_gate() == PLC_SWITCH_GATE_UNKNOWN)
+        plc_switch_await_report(PLC_SWITCH_REPORT_WAIT_MS);
+
+    plc_start_outcome_t gate = PLC_START_OUTCOME_RUN;
+    switch (plc_switch_gate())
+    {
+    case PLC_SWITCH_GATE_RUN:
+        break;
+    case PLC_SWITCH_GATE_STOP:
+        gate = PLC_START_OUTCOME_SWITCH_STOP;
+        break;
+    case PLC_SWITCH_GATE_UNKNOWN:
+        gate = PLC_START_OUTCOME_SWITCH_UNKNOWN;
+        break;
+    }
+
+    gate = start_outcome_commit_gate(gate);
+    if (gate == PLC_START_OUTCOME_SWITCH_STOP)
+        log_warn("Start refused: the mode switch is in STOP - PLC left stopped");
+    else if (gate == PLC_START_OUTCOME_SWITCH_UNKNOWN)
+        log_warn("Start refused: no switch owner has reported a position within %d ms - PLC "
+                 "left stopped",
+                 PLC_SWITCH_REPORT_WAIT_MS);
+    return gate;
+}
 
 PlcTaskCtx *plc_tasks      = nullptr;
 size_t      plc_task_count = 0;
@@ -1240,6 +1387,13 @@ void *plc_cycle_thread(void *arg)
     return NULL;
 }
 
+/**
+ * Loads the program, reloads and initialises the plugins, applies the switch gate
+ * and creates the PLC cycle thread.
+ *
+ * @return 0 when the cycle thread was created, 1 when the switch gate refused and
+ *         the start landed STOPPED, -1 on failure (ERROR or EMPTY published)
+ */
 extern "C" int load_plc_program(PluginManager *pm)
 {
     if (pm == NULL)
@@ -1404,6 +1558,15 @@ extern "C" int load_plc_program(PluginManager *pm)
                 return -1;
             }
             log_info("[PLUGIN]: Plugins re-initialized with updated config");
+        }
+
+        const plc_start_outcome_t gate = switch_gate_before_first_scan();
+        if (gate != PLC_START_OUTCOME_RUN)
+        {
+            retire_image(pm, false);
+            plc_publish_final_state(PLC_STATE_STOPPED);
+            start_outcome_publish(gate);
+            return 1;
         }
 
         if (pthread_create(&plc_thread, NULL, plc_cycle_thread, pm) != 0)
@@ -1668,6 +1831,7 @@ extern "C" bool plc_set_state(PLCState new_state)
 
     if (new_state == PLC_STATE_RUNNING)
     {
+        start_outcome_begin();
         if (plc_program == NULL)
         {
             char *libplc_path = find_libplc_file(libplc_build_dir);
@@ -1675,6 +1839,7 @@ extern "C" bool plc_set_state(PLCState new_state)
             {
                 log_error("Failed to find libplc file");
                 plc_publish_final_state(PLC_STATE_EMPTY);
+                start_outcome_publish(PLC_START_OUTCOME_ERROR);
                 return false;
             }
 
@@ -1685,6 +1850,7 @@ extern "C" bool plc_set_state(PLCState new_state)
             {
                 log_error("Failed to create PluginManager");
                 plc_publish_final_state(PLC_STATE_EMPTY);
+                start_outcome_publish(PLC_START_OUTCOME_ERROR);
                 return false;
             }
         }
@@ -1695,6 +1861,7 @@ extern "C" bool plc_set_state(PLCState new_state)
              * transition can never end without a final state. Re-publishing the
              * same value is harmless. */
             if (plc_state_is_transitioning()) plc_publish_final_state(PLC_STATE_ERROR);
+            start_outcome_publish(PLC_START_OUTCOME_ERROR);
             return false;
         }
     }

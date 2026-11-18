@@ -18,7 +18,7 @@ The plugin system provides a flexible architecture for integrating external hard
 core/src/drivers/
 ├── plugin_driver.c/h          # Main plugin driver system
 ├── plugin_config.c/h          # Configuration file parsing
-├── plugin_plc_requests.c/h    # Plugin run/stop requests and mode-switch report
+├── plugin_plc_requests.c/h    # Plugin run/stop requests and per-slot mode-switch reporters
 ├── python_plugin_bridge.h     # Python plugin integration
 ├── CMakeLists.txt             # Build configuration
 ├── plugins/
@@ -93,6 +93,15 @@ def detach_image():
         an exception, means the runtime calls cleanup() on the stop instead.
     """
     pass
+
+def owns_mode_switch():
+    """
+    Optional, called once per load before init(). See "Switch ownership" below.
+    Returns:
+        bool: True to declare the plugin a run/stop switch owner. Any other
+        value, or an exception, declares nothing.
+    """
+    pass
 ```
 
 #### Native C/C++ Plugins (Supported)
@@ -125,6 +134,10 @@ int retain_flush(void);                                             // Commit an
 // image is still allocated; return 0 once no image pointer is held. Any other
 // value, or no symbol, means cleanup() runs on the stop instead.
 int detach_image(void);
+
+// Optional: declares the plugin a run/stop switch owner. Called once per load,
+// before init(); non-zero means owner. See "Switch ownership" below.
+int owns_mode_switch(void);
 ```
 
 ### Keep-alive across a stop: `detach_image`
@@ -136,6 +149,15 @@ A plugin whose threads must outlive a PLC stop, such as a board package that wat
 *   **What the plugin keeps.** It stays initialised with its threads. It may keep calling `set_switch_position`, `request_plc_start`, `request_plc_stop`, `get_plc_state` and `log_*`, which stay valid for the process lifetime.
 *   **What the runtime does then.** It logs `Plugin <name> detached from the I/O image`, leaves the plugin initialised and frees the image once no attached plugin holds it. It never calls `start_loop()` on a detached plugin. At the next start the plugin configuration reload runs `cleanup()`, unloads the plugin, verifies a VPP's seal, loads it again and calls `init()`, which hands over the new image's pointers. On process shutdown a detached plugin gets `cleanup()` before it is unloaded.
 *   **Refusal or no symbol.** Any other return value or an exception logs `Plugin <name> did not detach; cleaning it up`, and the plugin gets `cleanup()` on the stop as a plugin without the symbol does. No plugin is re-initialised on a stop.
+
+### Switch ownership: `owns_mode_switch`
+
+A plugin that reads a physical run/stop switch reports its position through `set_switch_position`. Each plugin slot gets its own `set_switch_position` entry point, so the runtime knows which plugin made each report.
+
+*   **Who owns the switch.** A plugin becomes a switch owner the first time it reports a position, or before its `init()` when it exports the optional `owns_mode_switch` (native `int owns_mode_switch(void)` returning non-zero, Python `owns_mode_switch()` returning `True`). The runtime calls it once per load, after the symbols load and before `init()`; a missing symbol, a zero return or an exception declares nothing. Ownership is remembered per plugin (config name and path) across re-inits, and forgotten once the plugin leaves the plugin configuration.
+*   **What a start needs.** No start runs a scan until every owner has reported a position since its last `init()`. A plugin's report stops counting when it is de-initialised (`cleanup()`), not when it detaches through `detach_image`. While a report is missing the switch reads unknown (`SWITCH:UNKNOWN` on the command socket, `switchPosition` `"unknown"` in `/api/status`).
+*   **How a start waits.** A start re-initialises the plugins, then waits up to 2 s (`PLC_SWITCH_REPORT_WAIT_MS`) for the missing reports before the PLC thread is created. A STOP report refuses the start (`START:ERROR_SWITCH_STOP`), no report refuses it (`START:ERROR_SWITCH_UNKNOWN`, logged as "no switch owner has reported a position"), and either way the start runs no scan and lands STOPPED. The boot auto-start waits the same way and leaves the PLC stopped without a report. A plugin `request_plc_start` is refused while the switch reads STOP or unknown.
+*   **What to do in a board package.** Report the initial position from `init()`, so a start never waits, and report again from the switch thread on every change, before calling `request_plc_start` or `request_plc_stop`. Export `owns_mode_switch` when a start must never run without your report, for example when the first reading arrives from a thread after `init()`. A runtime with no switch owner keeps today's behaviour: the switch reads RUN and every start goes ahead.
 
 **Important: Native Plugin Args Lifetime**
 

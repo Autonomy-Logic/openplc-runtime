@@ -93,6 +93,45 @@ initialises it again with the new image. The load rollbacks (a plugin `init()` f
 thread that cannot be created) run steps 4, 6, 7 and 8 the same way, since no journal exists yet. See "Keep-alive across a stop" in
 `core/src/drivers/README.md` for the plugin contract.
 
+### The Start Gates
+
+Every start path honours the run/stop mode switch: socket START (and `GET /api/start-plc`,
+which forwards it), upload-then-start, the boot auto-start, a plugin's `request_plc_start` and
+the correction that runs after a transition lands. The switch gate (`plc_switch_gate()` in
+`core/src/plc_app/plc_switch.c`) reads:
+
+- **RUN** when no plugin owns the switch, or when every owner has reported since its last
+  `init()` and the last report is RUN;
+- **STOP** when every owner has reported since its last `init()` and the last report is STOP;
+- **UNKNOWN** while any owner has not reported since its last `init()`.
+
+A plugin owns the switch once it reports a position, or when it declares it through the optional
+`owns_mode_switch` symbol before its `init()`. Ownership is remembered per plugin across re-inits
+and forgotten when the plugin leaves the configuration. A report stops counting when the plugin is
+de-initialised (`cleanup()`), not when it detaches.
+
+**Gate 1, before a transition begins.** RUN proceeds. STOP refuses with no transition
+(`START:ERROR_SWITCH_STOP`). On UNKNOWN, socket START begins the start and replies only once it
+has landed, after gate 2 (at most `PLC_START_OUTCOME_WAIT_MS`, 12 s; past that the start is
+cancelled, lands STOPPED and the reply is `START:ERROR`). A plugin start request is refused, and
+the post-landing correction never starts.
+
+**Gate 2, inside the start.** After the program loads and the plugins are re-initialised, and
+before the PLC cycle thread is created, the start waits up to `PLC_SWITCH_REPORT_WAIT_MS` (2 s) for
+every owner to report. RUN creates the thread. STOP, or UNKNOWN once the wait ran out, refuses: no
+plugin `start_loop` and no scan, the load rollback steps of the stop sequence above (a keep-alive
+owner detaches and keeps watching the switch), and the state lands STOPPED. The socket reply is
+`START:ERROR_SWITCH_STOP` or `START:ERROR_SWITCH_UNKNOWN`; the latter is logged as
+`Start refused: no switch owner has reported a position within 2000 ms`. A refusal never lands
+ERROR.
+
+**Boot.** Inside the plugin request hold, the auto-start waits up to 2 s for a missing report.
+STOP stays stopped, RUN starts, and still UNKNOWN stays stopped with the log line
+`no switch owner has reported a position`.
+
+`SWITCH` answers `SWITCH:RUN`, `SWITCH:STOP` or `SWITCH:UNKNOWN` from the same gate, and
+`/api/status` reports it as `switchPosition` `"run"`, `"stop"` or `"unknown"`.
+
 ### A Plugin That Does Not Stop
 
 A stop calls every running plugin's `stop_loop`. A Python `stop_loop` that returns

@@ -122,15 +122,24 @@ Authorization: Bearer <token>
 **Response:**
 ```json
 {
-  "status": "PLC started successfully"
+  "status": "START:OK"
 }
 ```
 
+`status` is the runtime's reply to the `START` socket command, forwarded verbatim. The webserver
+waits up to 15 s for it.
+
 **Possible Status Values:**
-- `"PLC started successfully"` - PLC transitioned to RUNNING state
-- `"PLC is already running"` - PLC was already in RUNNING state
-- `"No PLC program loaded"` - No compiled program available
-- `"No response from runtime"` - Runtime process not responding
+- `"START:OK"` - The start was accepted. While a run/stop switch owner had not reported a
+  position, the reply comes only once the start has landed and the PLC is running.
+- `"START:ERROR_ALREADY_RUNNING"` - PLC was already in RUNNING state
+- `"START:ERROR_SWITCH_STOP"` - The run/stop mode switch is in STOP; no scan ran and the PLC
+  stays STOPPED
+- `"START:ERROR_SWITCH_UNKNOWN"` - A switch owner plugin did not report a position within 2 s
+  of the start re-initialising the plugins; no scan ran and the PLC stays STOPPED
+- `"START:ERROR"` - The start could not begin or failed (another state change in flight, no
+  program, a failed load, or the start did not land within 12 s)
+- `null` - Runtime process not responding
 
 ---
 
@@ -171,9 +180,16 @@ Authorization: Bearer <token>
 **Response:**
 ```json
 {
-  "status": "RUNNING"
+  "status": "RUNNING",
+  "switchPosition": "run"
 }
 ```
+
+`switchPosition` is the run/stop mode-switch position:
+- `"run"` - The switch is in RUN, or no plugin owns a switch
+- `"stop"` - The switch is in STOP; every start is refused
+- `"unknown"` - A switch owner plugin has not reported a position since its last init; every
+  start is refused until it does
 
 **Possible Status Values:**
 - `"EMPTY"` - No PLC program loaded

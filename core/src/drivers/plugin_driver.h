@@ -96,6 +96,21 @@ typedef int (*plugin_set_image_sizes_func_t)(const uint32_t *sizes, uint32_t cou
  */
 typedef int (*plugin_detach_image_func_t)(void);
 
+/**
+ * Optional `int owns_mode_switch(void)`: declares the plugin a switch owner.
+ * Resolved with dlsym after the other symbols; Python plugins define
+ * owns_mode_switch() returning True instead.
+ *
+ * Called once per load, after the symbols load and before init(). A non-zero
+ * return (Python: True) makes the plugin a switch owner from that moment, so no
+ * start runs a scan until it has reported a position through
+ * set_switch_position since its init(). A missing symbol, a zero return or a
+ * Python exception declares nothing: a plugin still becomes an owner the first
+ * time it reports a position, and stays one until it leaves the plugin
+ * configuration.
+ */
+typedef int (*plugin_owns_mode_switch_func_t)(void);
+
 typedef struct
 {
     void *handle; // Handle to the loaded shared library
@@ -116,6 +131,8 @@ typedef struct
     plugin_set_image_sizes_func_t set_image_sizes;
     /* Optional; NULL means this plugin is cleaned up on every stop. */
     plugin_detach_image_func_t detach_image;
+    /* Optional; NULL means the plugin owns the switch only once it reports. */
+    plugin_owns_mode_switch_func_t owns_mode_switch;
 } plugin_funct_bundle_t;
 
 // Plugin instance structure

@@ -116,6 +116,10 @@ PLCState plc_get_state(void);
  * Go through plc_begin_transition() instead. It is the only intended entry point
  * for a state change and it does the claiming for you.
  *
+ * A start applies the switch gate after the plugin re-init: refused, it runs no
+ * scan, lands STOPPED and still counts as completed. Each start publishes its
+ * outcome for plc_start_outcome_await().
+ *
  * @param new_state PLC_STATE_RUNNING or PLC_STATE_STOPPED
  * @return true if the transition body completed without error
  */
@@ -205,6 +209,56 @@ bool plc_state_is_transitioning(void);
  * tear them down.
  */
 bool plc_stop_failed_latched(void);
+
+/**
+ * @brief How a start ended, published once per start.
+ *
+ * RUN when the switch gate let the PLC cycle thread start; SWITCH_STOP or
+ * SWITCH_UNKNOWN when the gate refused after the plugin re-init (the start
+ * landed STOPPED with no scan); ERROR on any other failure, and when a caller
+ * cancelled the start before the gate decided.
+ */
+typedef enum
+{
+    PLC_START_OUTCOME_RUN,
+    PLC_START_OUTCOME_SWITCH_STOP,
+    PLC_START_OUTCOME_SWITCH_UNKNOWN,
+    PLC_START_OUTCOME_ERROR
+} plc_start_outcome_t;
+
+/** Longest the socket START waits for a start's outcome; below the webserver's 15 s timeout. */
+#define PLC_START_OUTCOME_WAIT_MS 12000
+
+/**
+ * @brief Reserve the outcome of the next start for plc_start_outcome_await().
+ *
+ * Call before plc_begin_transition(PLC_STATE_RUNNING); the start that transition
+ * begins publishes into the returned ticket.
+ *
+ * @return the ticket of the next start
+ */
+uint64_t plc_start_outcome_arm(void);
+
+/**
+ * @brief Wait up to @p timeout_ms for the outcome of the start @p ticket names.
+ *
+ * Returns once the start has landed: RUN once the switch gate let the start
+ * through, any other outcome after its final state was published.
+ *
+ * @return true with @p outcome set, false when the wait ran out
+ */
+bool plc_start_outcome_await(uint64_t ticket, unsigned timeout_ms, plc_start_outcome_t *outcome);
+
+/**
+ * @brief Cancel the start @p ticket names unless its outcome is already published.
+ *
+ * A cancelled start is refused at its switch gate: it runs no scan and lands
+ * STOPPED.
+ *
+ * @return true when cancelled; false when the outcome was already published, with
+ *         @p outcome set
+ */
+bool plc_start_outcome_cancel(uint64_t ticket, plc_start_outcome_t *outcome);
 
 /* transition_worker stops waiting for a landing at PLC_TRANSITION_LANDING_TIMEOUT_MS.
  * The watchdog forces ERROR on a start stuck past PLC_TRANSITION_STUCK_TIMEOUT_MS; a
