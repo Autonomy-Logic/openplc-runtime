@@ -83,6 +83,16 @@ def stop_loop():
 def cleanup():
     """Called when plugin is being unloaded; release all resources."""
     pass
+
+def detach_image():
+    """
+    Optional keep-alive contract, called on a stop after stop_loop() while the
+    I/O image is still allocated. See "Keep-alive across a stop" below.
+    Returns:
+        bool: True once the plugin holds no image pointer. Any other value, or
+        an exception, means the runtime calls cleanup() on the stop instead.
+    """
+    pass
 ```
 
 #### Native C/C++ Plugins (Supported)
@@ -110,7 +120,22 @@ int retain_save(const uint8_t *blob, uint16_t len);                 // Persist t
 int retain_load(const char *program_md5, uint16_t md5_len,
                 uint8_t *out, uint16_t cap, uint16_t *out_len);     // Restore the blob for THIS program.
 int retain_flush(void);                                             // Commit anything still held.
+
+// Optional: keep-alive across a stop. Called after stop_loop() while the I/O
+// image is still allocated; return 0 once no image pointer is held. Any other
+// value, or no symbol, means cleanup() runs on the stop instead.
+int detach_image(void);
 ```
+
+### Keep-alive across a stop: `detach_image`
+
+A plugin whose threads must outlive a PLC stop, such as a board package that watches the run/stop switch, exports the optional `detach_image` symbol. Its presence is the capability declaration, like `set_image_sizes`; the runtime resolves it with `dlsym` for a native plugin and as a module-level callable for a Python plugin.
+
+*   **When the runtime calls it.** On a stop, after `stop_loop()`, and on a load rollback, where `start_loop()` never ran. Always while the I/O image is still allocated and before the journal is cleaned up, and only on an initialised plugin. A stop that failed (a Python `stop_loop` returning `False` or raising) freezes the teardown before this point, so no plugin is asked to detach.
+*   **What success means.** Native returns `0`, Python returns `True`. The plugin then holds no I/O image pointer in any copy of its arguments: the fourteen table pointers, `image_lock`/`image_unlock`, the `journal_write_*` and the `debug_*` entry points. Until its next `init()` it makes no `image_lock`, `image_unlock`, `journal_write_*` or `debug_*` call and dereferences no image pointer. Every image access must stay on threads that `stop_loop()` joins, so nothing touches the image after `stop_loop()` returns.
+*   **What the plugin keeps.** It stays initialised with its threads. It may keep calling `set_switch_position`, `request_plc_start`, `request_plc_stop`, `get_plc_state` and `log_*`, which stay valid for the process lifetime.
+*   **What the runtime does then.** It logs `Plugin <name> detached from the I/O image`, leaves the plugin initialised and frees the image once no attached plugin holds it. It never calls `start_loop()` on a detached plugin. At the next start the plugin configuration reload runs `cleanup()`, unloads the plugin, verifies a VPP's seal, loads it again and calls `init()`, which hands over the new image's pointers. On process shutdown a detached plugin gets `cleanup()` before it is unloaded.
+*   **Refusal or no symbol.** Any other return value or an exception logs `Plugin <name> did not detach; cleaning it up`, and the plugin gets `cleanup()` on the stop as a plugin without the symbol does. No plugin is re-initialised on a stop.
 
 **Important: Native Plugin Args Lifetime**
 
@@ -581,7 +606,8 @@ int plugin_driver_load_config(plugin_driver_t *driver, const char *config_file);
 // Returns 0 on success, non-zero if one or more plugins failed to init
 int plugin_driver_init(plugin_driver_t *driver);
 
-// Start initialized plugins (calls their 'start_loop' function)
+// Start initialized plugins (calls their 'start_loop' function); a detached
+// plugin is skipped
 // Returns 0 on success
 int plugin_driver_start(plugin_driver_t *driver);
 
@@ -589,6 +615,19 @@ int plugin_driver_start(plugin_driver_t *driver);
 // Returns 0 on success, non-zero if a Python 'stop_loop' returned False or
 // raised; such a plugin is marked stop_failed and stays running
 int plugin_driver_stop(plugin_driver_t *driver);
+
+// Ask every initialised, stopped plugin that exports 'detach_image' to detach
+// from the I/O image; an accepting plugin is marked detached
+// Returns the number of plugins detached
+int plugin_driver_detach_images(plugin_driver_t *driver);
+
+// Call 'cleanup' on every initialised plugin that is not detached
+// Returns the number of plugins cleaned up
+int plugin_driver_cleanup_attached(plugin_driver_t *driver);
+
+// Non-zero while some plugin is initialised and not detached; the image is
+// freed only when this is zero
+int plugin_driver_any_holds_image(plugin_driver_t *driver);
 
 // Call cycle_start for all active native plugins (called at start of each PLC scan cycle)
 // Plugins opt-in by implementing cycle_start(); opt-out by not implementing it
@@ -611,7 +650,8 @@ int plugin_driver_retain_load(plugin_instance_t *store, const char *program_md5,
                               uint8_t *out, uint16_t cap, uint16_t *out_len);
 int plugin_driver_retain_flush(plugin_instance_t *store);
 
-// Destroy the plugin driver and free resources (calls 'cleanup' on plugins)
+// Destroy the plugin driver and free resources (calls 'cleanup' on plugins,
+// detached ones included)
 void plugin_driver_destroy(plugin_driver_t *driver);
 ```
 

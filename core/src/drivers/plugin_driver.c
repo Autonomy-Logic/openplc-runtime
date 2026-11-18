@@ -220,6 +220,7 @@ static void teardown_plugin_instance(plugin_instance_t *plugin)
     }
 
     plugin->initialized = 0;
+    plugin->detached    = 0;
     memset(&plugin->config, 0, sizeof(plugin->config));
 }
 
@@ -727,19 +728,83 @@ int plugin_driver_init(plugin_driver_t *driver)
     return 0;
 }
 
-int plugin_driver_any_initialized(plugin_driver_t *driver)
+int plugin_driver_any_holds_image(plugin_driver_t *driver)
 {
     if (!driver)
         return 0;
     for (int i = 0; i < driver->plugin_count; i++)
     {
-        if (driver->plugins[i].initialized)
+        if (driver->plugins[i].initialized && !driver->plugins[i].detached)
             return 1;
     }
     return 0;
 }
 
-int plugin_driver_cleanup_init(plugin_driver_t *driver)
+/* Calls one slot's detach_image. Returns 1 when it accepted, 0 when it refused or
+ * raised, and -1 when it does not export the symbol. Caller holds the GIL. */
+static int call_detach_image(plugin_instance_t *plugin)
+{
+    if (plugin->config.type == PLUGIN_TYPE_NATIVE && plugin->native_plugin &&
+        plugin->native_plugin->detach_image)
+    {
+        return plugin->native_plugin->detach_image() == 0 ? 1 : 0;
+    }
+
+    if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin &&
+        plugin->python_plugin->pFuncDetachImage)
+    {
+        PyObject *res = PyObject_CallNoArgs(plugin->python_plugin->pFuncDetachImage);
+        if (!res)
+        {
+            PyErr_Print();
+            return 0;
+        }
+        int accepted = (res == Py_True);
+        Py_DECREF(res);
+        return accepted;
+    }
+
+    return -1;
+}
+
+int plugin_driver_detach_images(plugin_driver_t *driver)
+{
+    if (!driver)
+        return 0;
+
+    PyGILState_STATE local_gstate = PyGILState_LOCKED;
+    int have_gil                  = has_python_plugin && Py_IsInitialized();
+    if (have_gil)
+        local_gstate = PyGILState_Ensure();
+
+    int detached = 0;
+    for (int i = 0; i < driver->plugin_count; i++)
+    {
+        plugin_instance_t *plugin = &driver->plugins[i];
+        if (!plugin->initialized || plugin->detached || plugin->running)
+            continue;
+
+        int accepted = call_detach_image(plugin);
+        if (accepted == 1)
+        {
+            plugin->detached = 1;
+            ++detached;
+            log_info("Plugin %s detached from the I/O image", plugin->config.name);
+        }
+        else if (accepted == 0)
+        {
+            log_warn("Plugin %s did not detach; cleaning it up", plugin->config.name);
+        }
+    }
+
+    if (have_gil)
+        PyGILState_Release(local_gstate);
+    return detached;
+}
+
+/* Cleans up every initialised slot in reverse order, skipping detached slots
+ * when keep_detached is set. Returns the count cleaned up. */
+static int cleanup_initialised_slots(plugin_driver_t *driver, int keep_detached)
 {
     if (!driver)
         return 0;
@@ -757,6 +822,8 @@ int plugin_driver_cleanup_init(plugin_driver_t *driver)
         plugin_instance_t *plugin = &driver->plugins[i];
         if (!plugin->initialized)
             continue;
+        if (keep_detached && plugin->detached)
+            continue;
 
         if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin)
         {
@@ -768,12 +835,23 @@ int plugin_driver_cleanup_init(plugin_driver_t *driver)
             plugin->native_plugin->cleanup();
         }
         plugin->initialized = 0;
+        plugin->detached    = 0;
         ++cleaned;
     }
 
     if (have_gil)
         PyGILState_Release(local_gstate);
     return cleaned;
+}
+
+int plugin_driver_cleanup_init(plugin_driver_t *driver)
+{
+    return cleanup_initialised_slots(driver, 0);
+}
+
+int plugin_driver_cleanup_attached(plugin_driver_t *driver)
+{
+    return cleanup_initialised_slots(driver, 1);
 }
 
 void plugin_driver_release_gil(void)
@@ -822,6 +900,12 @@ int plugin_driver_start(plugin_driver_t *driver)
         if (!plugin->config.enabled)
         {
             log_info("Skipping disabled plugin during start: %s", plugin->config.name);
+            continue;
+        }
+
+        if (plugin->detached)
+        {
+            log_info("Skipping detached plugin during start: %s", plugin->config.name);
             continue;
         }
 
@@ -1037,6 +1121,7 @@ void plugin_driver_destroy(plugin_driver_t *driver)
             free(plugin->native_plugin);
             plugin->native_plugin = NULL;
         }
+        plugin->detached = 0;
     }
 
     if (python_initialized)
@@ -1401,6 +1486,14 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
         PyErr_Clear();
     }
 
+    py_binds->pFuncDetachImage = PyObject_GetAttrString(py_binds->pModule, "detach_image");
+    if (!py_binds->pFuncDetachImage || !PyCallable_Check(py_binds->pFuncDetachImage))
+    {
+        Py_XDECREF(py_binds->pFuncDetachImage);
+        py_binds->pFuncDetachImage = NULL;
+        PyErr_Clear();
+    }
+
     py_binds->pFuncCleanup = PyObject_GetAttrString(py_binds->pModule, "cleanup");
     if (!py_binds->pFuncCleanup || !PyCallable_Check(py_binds->pFuncCleanup))
     {
@@ -1544,6 +1637,8 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
      * understand per-table image sizes, and the run stays square for it. */
     native_bundle->set_image_sizes =
         (plugin_set_image_sizes_func_t)dlsym(handle, "set_image_sizes");
+
+    native_bundle->detach_image = (plugin_detach_image_func_t)dlsym(handle, "detach_image");
 
     // Store the native bundle and handle in the plugin instance
     plugin->native_plugin = native_bundle;
@@ -1880,6 +1975,7 @@ static void python_plugin_cleanup(plugin_instance_t *plugin)
         Py_XDECREF(plugin->python_plugin->pFuncStop);
         Py_XDECREF(plugin->python_plugin->pFuncCleanup);
         Py_XDECREF(plugin->python_plugin->pFuncSetImageSizes);
+        Py_XDECREF(plugin->python_plugin->pFuncDetachImage);
         Py_XDECREF(plugin->python_plugin->pModule);
         Py_XDECREF(plugin->python_plugin->args_capsule);
 

@@ -55,15 +55,16 @@ PluginManager   *plc_program = NULL;
 
 extern plugin_driver_t   *plugin_driver;
 
-/* Release the image only once no plugin still holds a base pointer into it.
- * Both native plugins copy those pointers by value at init(), so the ordering
- * is checked here rather than left to a comment. Caller holds the mutex. */
+/* Release the image only once no plugin still holds a base pointer into it: every
+ * plugin is either cleaned up or detached. Plugins copy those pointers by value at
+ * init(), so the ordering is checked here. Caller holds the mutex. */
 static void image_tables_free_when_unheld(void)
 {
-    if (plugin_driver_any_initialized(plugin_driver))
+    if (plugin_driver_any_holds_image(plugin_driver))
     {
         log_error("[PLUGIN]: refusing to free the image while a plugin is still "
-                  "initialised — it still holds the base pointers it copied at init()");
+                  "initialised and not detached — it still holds the base pointers it "
+                  "copied at init()");
         return;
     }
     image_tables_free();
@@ -98,11 +99,15 @@ static void plc_latch_failed_stop(void)
 /**
  * Retire the I/O image and the program once no plugin thread can touch them.
  *
- * Steps, in order: journal_cleanup and debug_write_journal_reset; cleanup_init
- * on every initialised plugin, started or not, since each holds the base
- * pointers it copied by value at init(); pointer clear and image free under the
- * image-tables mutex, the free refused while a plugin is still initialised;
- * python_blocks_cleanup; then the program manager, dropping plc_program.
+ * Steps, in order: detach_images, so each initialised plugin that exports
+ * detach_image drops its image pointers while the image is still allocated;
+ * journal_cleanup and debug_write_journal_reset; cleanup_attached on every
+ * initialised plugin that did not detach, started or not, since each holds the
+ * base pointers it copied by value at init(); pointer clear and image free under
+ * the image-tables mutex, the free refused while an attached plugin is still
+ * initialised; python_blocks_cleanup; then the program manager, dropping
+ * plc_program. A detached plugin stays initialised until the next start reloads
+ * the plugin configuration.
  *
  * Precondition: every running plugin has stopped, because journal_cleanup frees
  * the forced-slot rows that image_lock reads on plugin threads. The caller does
@@ -113,6 +118,8 @@ static void plc_latch_failed_stop(void)
  */
 static void retire_image(PluginManager *pm, bool journal_initialised)
 {
+    plugin_driver_detach_images(plugin_driver);
+
     if (journal_initialised)
     {
         journal_cleanup();
@@ -120,7 +127,7 @@ static void retire_image(PluginManager *pm, bool journal_initialised)
         log_info("Journal buffer cleaned up");
     }
 
-    plugin_driver_cleanup_init(plugin_driver);
+    plugin_driver_cleanup_attached(plugin_driver);
 
     pthread_mutex_t *itm = image_tables_mutex();
     pthread_mutex_lock(itm);

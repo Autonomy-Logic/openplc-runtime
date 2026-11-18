@@ -69,6 +69,30 @@ EMPTY → INIT → RUNNING ⟷ STOPPED → ERROR
 - **STOPPED**: Program loaded but not executing
 - **ERROR**: Recoverable error state, except after a failed plugin stop (below)
 
+### The Stop Sequence
+
+When every plugin stops, a stop runs these steps in order:
+
+1. Join the PLC thread, which ends the scan.
+2. Flush the retained variables.
+3. Call every running plugin's `stop_loop` (`plugin_driver_stop`).
+4. Ask every initialised plugin that exports `detach_image` to detach from the I/O image
+   (`plugin_driver_detach_images`), while the image is still allocated.
+5. Clean up the journal and the debug-write journal.
+6. Call `cleanup()` on every initialised plugin that did not detach
+   (`plugin_driver_cleanup_attached`).
+7. Under the image-tables mutex, clear the image pointers and free the image, which is refused
+   while a plugin that did not detach is still initialised.
+8. Release the Python blocks and unload the program library.
+9. Publish STOPPED.
+
+A plugin that detaches stays initialised with its threads, so a board package keeps reading the
+run/stop switch while the PLC is stopped and can start it again. The runtime never calls its
+`start_loop`; the next start reloads the plugin configuration, which cleans it up, unloads it and
+initialises it again with the new image. The load rollbacks (a plugin `init()` failure or a PLC
+thread that cannot be created) run steps 4, 6, 7 and 8 the same way, since no journal exists yet. See "Keep-alive across a stop" in
+`core/src/drivers/README.md` for the plugin contract.
+
 ### A Plugin That Does Not Stop
 
 A stop calls every running plugin's `stop_loop`. A Python `stop_loop` that returns
@@ -127,6 +151,9 @@ The runtime supports dynamically loaded plugins for hardware I/O:
 - **Configuration**: `plugins.conf` file
 - **Virtual Environments**: Isolated Python dependencies per plugin
 - **Buffer Protection**: Mutex-protected I/O buffers during scan cycles
+- **Keep-alive across a stop**: A plugin that exports the optional `detach_image` symbol drops its
+  I/O image pointers on a stop and stays initialised with its threads until the next start reloads
+  it; any other plugin gets `cleanup()` on the stop (see [The Stop Sequence](#the-stop-sequence))
 
 **Documentation:** See `docs/PLUGIN_VENV_GUIDE.md` and `core/src/drivers/README.md`
 

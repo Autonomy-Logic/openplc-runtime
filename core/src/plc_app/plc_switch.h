@@ -38,7 +38,8 @@ typedef enum
  * refused by the guard still reading the stale STOP.
  *
  * A plain atomic store. Safe to call from any thread, including while the PLC
- * is stopped (the runtime keeps every plugin mapped across a stop).
+ * is stopped (a plugin that detaches from the I/O image through detach_image
+ * stays initialised across a stop and keeps reporting).
  *
  * @param position PLC_SWITCH_STOP or PLC_SWITCH_RUN
  */

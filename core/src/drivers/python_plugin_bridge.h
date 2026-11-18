@@ -34,6 +34,9 @@ typedef struct
      * it, which declares that it does not understand per-table image sizes
      *. See plugin_driver.h for why presence is the declaration. */
     PyObject *pFuncSetImageSizes;
+    /* Optional: detach_image(). NULL when the module does not define it, and the
+     * plugin is cleaned up on every stop. See plugin_driver.h for the contract. */
+    PyObject *pFuncDetachImage;
     PyObject *args_capsule; // Capsule containing plugin_runtime_args_t for lifetime management
 } python_binds_t;
 
