@@ -10,9 +10,12 @@ import time
 from typing import List, Optional, Tuple
 
 import pytest
-from asyncua import Client, ua
+from asyncua import Client, Server, ua
+from asyncua.server.address_space import NodeManagementService
 from asyncua.ua.uaerrors import UaStatusCodeError
 
+import address_space
+import opcua_security
 import plugin
 
 _OpcuaServerManager = plugin.OpcuaServerManager
@@ -24,6 +27,15 @@ SERVER_THREAD_NAME = "opcua-server"
 REQUEST_TIMEOUT_S = 1.0
 STARTUP_TIMEOUT_S = 15.0
 SESSION_CLOSE_TIMEOUT_S = 2.0 * REQUEST_TIMEOUT_S
+FILL_CALLS = 5821
+SLOWED_FILL_S = 5.0
+SECURITY_STEP_DELAY_S = 0.4
+VARIABLE_DELAY_S = 0.1
+PORT_POLL_PERIOD_S = 0.05
+PORT_WATCH_AFTER_FILL_S = 1.0
+STOP_AFTER_ENTERED_S = 0.1
+ABORT_LATENCY_S = 1.0
+EARLY_RUN_BOUND_S = 0.5
 
 
 def _server_threads() -> List[threading.Thread]:
@@ -410,3 +422,341 @@ def test_repeated_start_stop_cycles_each_stop_within_the_grace_period(
     assert not _forced_cancel_logged(opcua_log_lines)
     assert max(durations) < GRACE_PERIOD_S, f"stop durations: {[round(d, 2) for d in durations]}"
     assert len({id(manager.buffer_accessor) for manager in opcua_plugin.managers}) == 10
+
+
+def _wait_until(moment: float) -> None:
+    """Block the calling thread until the monotonic clock reaches the moment."""
+    threading.Event().wait(max(0.0, moment - time.monotonic()))
+
+
+class _SlowedStep:
+    """A start-up step slowed by a synchronous sleep on each call, recording when it is entered."""
+
+    def __init__(self, delay: float):
+        self.delay = delay
+        self.active = True
+        self.entered = threading.Event()
+        self._calls = 0
+        self._progress = threading.Condition()
+
+    def enter(self) -> None:
+        with self._progress:
+            self._calls += 1
+            self._progress.notify_all()
+        self.entered.set()
+        if self.active and self.delay:
+            time.sleep(self.delay)
+
+    def wait_for_calls(self, count: int, timeout: float) -> bool:
+        """Wait until the step was entered `count` times."""
+        with self._progress:
+            return self._progress.wait_for(lambda: self._calls >= count, timeout)
+
+
+class _PacedFill(_SlowedStep):
+    """asyncua's standard address-space fill, paced by synchronous sleeps on each try_add_nodes call
+    so it lasts SLOWED_FILL_S with no suspension point, as the fill on a slow device does."""
+
+    def __init__(self):
+        super().__init__(SLOWED_FILL_S / FILL_CALLS)
+        self.entered_at: Optional[float] = None
+
+    def enter(self) -> None:
+        with self._progress:
+            if self.entered_at is None:
+                self.entered_at = time.monotonic()
+            self._calls += 1
+            slot = self.entered_at + self._calls * self.delay
+            self._progress.notify_all()
+        self.entered.set()
+        if self.active:
+            time.sleep(max(0.0, slot - time.monotonic()))
+
+
+def _slowed_coroutine(step: _SlowedStep, original):
+    """Wrap an async method so each call enters the step, synchronously, before it runs."""
+
+    async def slowed(*args, **kwargs):
+        step.enter()
+        return await original(*args, **kwargs)
+
+    return slowed
+
+
+def _slowed_function(step: _SlowedStep, original):
+    """Wrap a method so each call enters the step before it runs."""
+
+    def slowed(*args, **kwargs):
+        step.enter()
+        return original(*args, **kwargs)
+
+    return slowed
+
+
+class _StartupSlowdowns:
+    """Make the OPC-UA start-up block its event loop like the real one, step by step."""
+
+    def __init__(self, monkeypatch):
+        self._monkeypatch = monkeypatch
+        self.fill = _PacedFill()
+        self.variables = _SlowedStep(VARIABLE_DELAY_S)
+        self.certificate_check = _SlowedStep(SECURITY_STEP_DELAY_S)
+        self.load_certificate = _SlowedStep(SECURITY_STEP_DELAY_S)
+        self.load_private_key = _SlowedStep(SECURITY_STEP_DELAY_S)
+        self.server_start = _SlowedStep(0.0)
+
+    def slow_fill(self) -> None:
+        original = NodeManagementService.try_add_nodes
+        fill = self.fill
+
+        def try_add_nodes(service, *args, **kwargs):
+            fill.enter()
+            yield from original(service, *args, **kwargs)
+
+        self._monkeypatch.setattr(NodeManagementService, "try_add_nodes", try_add_nodes)
+
+    def slow_security(self) -> None:
+        manager = opcua_security.OpcuaSecurityManager
+        self._monkeypatch.setattr(
+            manager,
+            "_is_certificate_valid",
+            _slowed_function(self.certificate_check, manager._is_certificate_valid),
+        )
+        for name, step in (
+            ("load_certificate", self.load_certificate),
+            ("load_private_key", self.load_private_key),
+        ):
+            self._monkeypatch.setattr(Server, name, _slowed_coroutine(step, getattr(Server, name)))
+
+    def slow_variables(self) -> None:
+        builder = address_space.AddressSpaceBuilder
+        self._monkeypatch.setattr(
+            builder,
+            "_create_simple_variable",
+            _slowed_coroutine(self.variables, builder._create_simple_variable),
+        )
+
+    def watch_server_start(self) -> None:
+        slowed = _slowed_coroutine(self.server_start, Server.start)
+        self._monkeypatch.setattr(Server, "start", slowed)
+
+    def release(self) -> None:
+        """Drop every slowdown, so start-up work still in progress finishes at full speed."""
+        for step in (
+            self.fill,
+            self.variables,
+            self.certificate_check,
+            self.load_certificate,
+            self.load_private_key,
+            self.server_start,
+        ):
+            step.active = False
+
+
+class _PortWatch:
+    """Polls a loopback port every PORT_POLL_PERIOD_S in its own thread and records each accepted
+    connection."""
+
+    def __init__(self, port: int):
+        self.port = port
+        self.accepted_at: List[float] = []
+        self._done = threading.Event()
+        self.thread = threading.Thread(target=self._poll, name="opcua-test-port-watch", daemon=True)
+
+    def start(self) -> "_PortWatch":
+        self.thread.start()
+        return self
+
+    def stop_at(self, moment: float) -> None:
+        _wait_until(moment)
+        self.stop()
+
+    def stop(self) -> None:
+        self._done.set()
+        self.thread.join(timeout=5.0)
+
+    def _poll(self) -> None:
+        while not self._done.is_set():
+            if not _port_refuses_connections(self.port):
+                self.accepted_at.append(time.monotonic())
+            self._done.wait(PORT_POLL_PERIOD_S)
+
+
+def _threads_started_since(before, *ignored: threading.Thread) -> List[str]:
+    """Names of the live threads that were not alive in `before`, leaving out `ignored`."""
+    return [
+        t.name
+        for t in threading.enumerate()
+        if t.is_alive() and t not in before and t not in ignored
+    ]
+
+
+@pytest.fixture
+def slowed_plugin(opcua_plugin, monkeypatch):
+    """The OPC-UA plugin harness with asyncua's standard address-space fill paced to last
+    SLOWED_FILL_S."""
+    slowdowns = _StartupSlowdowns(monkeypatch)
+    slowdowns.slow_fill()
+    yield opcua_plugin, slowdowns
+    slowdowns.release()
+
+
+def _stop_while_starting(harness: _PluginHarness, fill: _PacedFill, into_fill_s: Optional[float]):
+    """start_loop(), then stop_loop() right away or `into_fill_s` after the slowed fill began.
+
+    Returns:
+        (stop_loop() result, its duration, the threads started since start_loop() still alive when
+        it returned, the moments the port accepted a connection from the call until
+        PORT_WATCH_AFTER_FILL_S after the slowed fill would have ended)
+    """
+    threads_before = set(threading.enumerate())
+    harness.start()
+    if into_fill_s is not None:
+        assert fill.entered.wait(STARTUP_TIMEOUT_S), "the slowed fill never began"
+        _wait_until(fill.entered_at + into_fill_s)
+
+    watch = _PortWatch(harness.server.PORT).start()
+    called_at = time.monotonic()
+    result, elapsed = harness.timed_stop()
+    leftover = _threads_started_since(threads_before, watch.thread)
+
+    fill_began_at = fill.entered_at if fill.entered_at is not None else called_at
+    watch.stop_at(max(called_at, fill_began_at) + SLOWED_FILL_S + PORT_WATCH_AFTER_FILL_S)
+    return result, elapsed, leftover, watch.accepted_at
+
+
+@pytest.mark.parametrize(
+    "into_fill_s",
+    [None, 0.5, 2.5],
+    ids=["right_after_start_loop", "0.5s_into_the_fill", "2.5s_into_the_fill"],
+)
+def test_a_stop_during_the_blocking_start_up_finishes_within_the_grace_period(
+    slowed_plugin, opcua_log_records, capfd, into_fill_s
+):
+    harness, slowdowns = slowed_plugin
+
+    result, elapsed, leftover, accepted_at = _stop_while_starting(
+        harness, slowdowns.fill, into_fill_s
+    )
+
+    assert result is True, f"stop_loop() returned {result!r} after {elapsed:.2f}s"
+    assert elapsed < GRACE_PERIOD_S, f"stop_loop() took {elapsed:.2f}s"
+    assert not _forced_cancel_logged(opcua_log_records.lines)
+    assert opcua_log_records.lines_at("ERROR") == []
+    assert "Traceback" not in capfd.readouterr().err
+    assert leftover == [], f"threads still alive after stop_loop(): {leftover}"
+    assert accepted_at == [], "the port accepted a connection after stop_loop() was called"
+
+
+def test_the_next_start_after_a_stopped_start_up_serves_clients(slowed_plugin, opcua_log_lines):
+    harness, slowdowns = slowed_plugin
+    _stop_while_starting(harness, slowdowns.fill, 0.5)
+    slowdowns.release()
+
+    harness.start()
+    assert _wait_for_listener(harness.server.PORT, STARTUP_TIMEOUT_S)
+    harness.clients(count=1, write_period=0.1, verify_read_back=True)
+    lines_before_stop = len(opcua_log_lines)
+    result, elapsed = harness.timed_stop()
+
+    assert result is True
+    assert elapsed < GRACE_PERIOD_S, f"stop_loop() took {elapsed:.2f}s"
+    assert not _forced_cancel_logged(opcua_log_lines[lines_before_stop:])
+
+
+class _ManagerRun:
+    """Runs OpcuaServerManager.run() on its own event loop in a test thread."""
+
+    def __init__(self, manager: _OpcuaServerManager, slowdowns: _StartupSlowdowns):
+        self.manager = manager
+        self.slowdowns = slowdowns
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread = threading.Thread(
+            target=self._run, name="opcua-test-manager-run", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def ended_within(self, timeout: float) -> bool:
+        self._thread.join(timeout=timeout)
+        return not self._thread.is_alive()
+
+    def shut_down(self) -> None:
+        self.slowdowns.release()
+        loop = self._loop
+        if self._thread.is_alive() and loop is not None:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self.manager.stop()))
+        if self._thread.ident is not None:
+            self._thread.join(timeout=10.0)
+        _close_leaked_listeners()
+
+    def _run(self) -> None:
+        asyncio.run(self._main())
+
+    async def _main(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        await self.manager.run()
+
+
+@pytest.fixture
+def manager_run(monkeypatch, secure_manager_server, secure_manager_accessor, opcua_log_records):
+    """A server manager on 14841 whose security setup, fill and address-space build all block
+    its event loop."""
+    slowdowns = _StartupSlowdowns(monkeypatch)
+    slowdowns.slow_security()
+    slowdowns.slow_fill()
+    slowdowns.slow_variables()
+    slowdowns.watch_server_start()
+    config = plugin.load_config(secure_manager_server.config_path)
+    manager = _OpcuaServerManager(
+        config, secure_manager_accessor, str(secure_manager_server.plugin_dir)
+    )
+    run = _ManagerRun(manager, slowdowns)
+    yield run
+    run.shut_down()
+
+
+@pytest.mark.parametrize(
+    ("step", "calls", "later_steps"),
+    [
+        pytest.param(
+            "load_private_key",
+            1,
+            ("fill", "variables", "server_start"),
+            id="inside_load_private_key",
+        ),
+        pytest.param("fill", 1, ("variables", "server_start"), id="inside_the_fill"),
+        pytest.param(
+            "variables", 3, ("server_start",), id="inside_the_address_space_build_after_3_variables"
+        ),
+    ],
+)
+def test_a_stop_request_during_a_start_up_step_aborts_the_start_up(
+    manager_run, secure_manager_server, opcua_log_records, capfd, step, calls, later_steps
+):
+    watch = _PortWatch(secure_manager_server.PORT).start()
+    manager_run.start()
+    assert getattr(manager_run.slowdowns, step).wait_for_calls(calls, STARTUP_TIMEOUT_S)
+    threading.Event().wait(STOP_AFTER_ENTERED_S)
+
+    manager_run.manager.request_stop()
+    ended = manager_run.ended_within(ABORT_LATENCY_S)
+    watch.stop()
+
+    assert ended, f"run() still going {ABORT_LATENCY_S}s after request_stop()"
+    assert watch.accepted_at == [], f"port {secure_manager_server.PORT} accepted a connection"
+    began = [name for name in later_steps if getattr(manager_run.slowdowns, name).entered.is_set()]
+    assert began == [], f"steps after the aborted one began: {began}"
+    assert opcua_log_records.lines_at("ERROR") == []
+    assert "Traceback" not in capfd.readouterr().err
+
+
+def test_a_stop_requested_before_run_skips_the_whole_start_up(manager_run, secure_manager_server):
+    manager_run.manager.request_stop()
+    manager_run.start()
+
+    assert manager_run.ended_within(EARLY_RUN_BOUND_S)
+    assert not manager_run.slowdowns.load_certificate.entered.is_set()
+    assert not (secure_manager_server.plugin_dir / "certs").exists()

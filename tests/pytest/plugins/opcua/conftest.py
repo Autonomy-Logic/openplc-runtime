@@ -451,6 +451,139 @@ def opcua_log_lines():
     reset_logger()
 
 
+class LevelRecordingLogAccessor(RecordingLogAccessor):
+    """Logging accessor that keeps each OPC-UA line with its level and appends it to `lines`."""
+
+    def __init__(self, lines: List[str]):
+        super().__init__()
+        self.lines = lines
+        self.records: List[tuple[str, str]] = []
+
+    def _record(self, level: str, message: str) -> None:
+        self.records.append((level, message))
+        self.lines.append(message)
+
+    def log_info(self, message: str) -> None:
+        self._record("INFO", message)
+
+    def log_warn(self, message: str) -> None:
+        self._record("WARN", message)
+
+    def log_error(self, message: str) -> None:
+        self._record("ERROR", message)
+
+    def log_debug(self, message: str) -> None:
+        self._record("DEBUG", message)
+
+    def lines_at(self, level: str) -> List[str]:
+        """The lines logged at the given level, in order."""
+        return [message for recorded, message in list(self.records) if recorded == level]
+
+
+@pytest.fixture
+def opcua_log_records(opcua_log_lines):
+    """Route the OPC-UA logger into a recorder that keeps each line's level; the lines still reach
+    opcua_log_lines."""
+    from opcua_logging import get_logger
+
+    recorder = LevelRecordingLogAccessor(opcua_log_lines)
+    assert get_logger().initialize(recorder)
+    return recorder
+
+
+class SecureManagerServer:
+    """Manager-level server configuration: its endpoint, plugin directory and variable count."""
+
+    PORT = 14841
+    ENDPOINT = f"opc.tcp://127.0.0.1:{PORT}/openplc/opcua"
+    NAMESPACE_URI = "urn:openplc:opcua:stop-during-start:test"
+    VARIABLE_COUNT = 40
+
+    def __init__(self, config_path: str, plugin_dir: Path):
+        self.config_path = config_path
+        self.plugin_dir = plugin_dir
+
+
+@pytest.fixture
+def secure_manager_server(tmp_path):
+    """opcua.json on 14841 with an Anonymous None profile, a Basic256Sha256 SignAndEncrypt profile,
+    a self-signed certificate generated in a temporary plugin directory and 40 DINT variables."""
+    from shared.plugin_config_decode.opcua_config_model import OPCUA_CONFIG_MIN_FORMAT_VERSION
+
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir()
+    variables = [
+        {
+            "node_id": f"dint_{index}",
+            "browse_name": f"dint_{index}",
+            "display_name": f"dint_{index}",
+            "datatype": "DINT",
+            "description": f"DINT variable {index}",
+            "arr": 0,
+            "elem": index,
+            "size": StubRuntimeArgs.LEAF_SIZE,
+            "permissions": {"viewer": "r", "operator": "rw", "engineer": "rw"},
+        }
+        for index in range(SecureManagerServer.VARIABLE_COUNT)
+    ]
+    config = [
+        {
+            "name": "opcua_stop_during_start",
+            "protocol": "OPC-UA",
+            "config": {
+                "format_version": OPCUA_CONFIG_MIN_FORMAT_VERSION,
+                "server": {
+                    "name": "OpenPLC OPC-UA Stop During Start Test Server",
+                    "application_uri": "urn:openplc:opcua:stop-during-start:test",
+                    "product_uri": "urn:openplc:runtime:test",
+                    "endpoint_url": SecureManagerServer.ENDPOINT,
+                    "security_profiles": [
+                        {
+                            "name": "insecure",
+                            "enabled": True,
+                            "security_policy": "None",
+                            "security_mode": "None",
+                            "auth_methods": ["Anonymous"],
+                            "anonymous_role": "viewer",
+                        },
+                        {
+                            "name": "secure",
+                            "enabled": True,
+                            "security_policy": "Basic256Sha256",
+                            "security_mode": "SignAndEncrypt",
+                            "auth_methods": ["Anonymous"],
+                            "anonymous_role": "viewer",
+                        },
+                    ],
+                },
+                "security": {
+                    "server_certificate_strategy": "auto_self_signed",
+                    "server_certificate_custom": None,
+                    "server_private_key_custom": None,
+                    "trusted_client_certificates": [],
+                },
+                "users": [],
+                "cycle_time_ms": 100,
+                "address_space": {
+                    "namespace_uri": SecureManagerServer.NAMESPACE_URI,
+                    "variables": variables,
+                    "structures": [],
+                    "arrays": [],
+                },
+            },
+        }
+    ]
+    config_path = tmp_path / "opcua.json"
+    config_path.write_text(json.dumps(config))
+    return SecureManagerServer(str(config_path), plugin_dir)
+
+
+@pytest.fixture
+def secure_manager_accessor(secure_manager_server, stub_runtime_args):
+    """MockSafeBufferAccess over the manager-level configuration, on the stub runtime args."""
+    return MockSafeBufferAccess(secure_manager_server.config_path, runtime_args=stub_runtime_args)
+
+
 @pytest.fixture
 def event_loop():
     """Create event loop for async tests."""
