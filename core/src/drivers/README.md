@@ -74,9 +74,9 @@ def stop_loop():
     """
     Called when plugin should stop its main operations (e.g., stop a server).
     Returns:
-        bool: True once stopped. Anything else, or an exception, is a failed stop:
-        the runtime keeps the I/O image, enters ERROR and refuses starts until it
-        restarts.
+        bool | None: True or None once stopped. Only an explicit False, or an
+        exception, is a failed stop: the runtime keeps the I/O image, enters ERROR
+        and refuses starts until it restarts.
     """
     pass
 
@@ -586,8 +586,8 @@ int plugin_driver_init(plugin_driver_t *driver);
 int plugin_driver_start(plugin_driver_t *driver);
 
 // Stop running plugins (calls their 'stop_loop' function)
-// Returns 0 on success, non-zero if a Python 'stop_loop' returned anything but
-// True or raised; such a plugin is marked stop_failed and stays running
+// Returns 0 on success, non-zero if a Python 'stop_loop' returned False or
+// raised; such a plugin is marked stop_failed and stays running
 int plugin_driver_stop(plugin_driver_t *driver);
 
 // Call cycle_start for all active native plugins (called at start of each PLC scan cycle)

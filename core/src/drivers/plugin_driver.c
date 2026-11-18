@@ -939,18 +939,18 @@ int plugin_driver_stop(plugin_driver_t *driver)
             }
             else
             {
-                int success = PyObject_IsTrue(res);
+                int reported_failure = (res == Py_False);
                 Py_DECREF(res);
-                if (success == 1)
+                if (reported_failure)
+                {
+                    log_error("Plugin %s failed to stop cleanly", plugin->config.name);
+                    plugin->stop_failed = 1;
+                }
+                else
                 {
                     log_info("Plugin %s stopped successfully", plugin->config.name);
                     plugin->stop_failed = 0;
                     plugin->running     = 0;
-                }
-                else
-                {
-                    log_error("Plugin %s failed to stop cleanly", plugin->config.name);
-                    plugin->stop_failed = 1;
                 }
             }
             if (plugin->stop_failed)

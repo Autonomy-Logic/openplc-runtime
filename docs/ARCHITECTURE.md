@@ -72,7 +72,8 @@ EMPTY → INIT → RUNNING ⟷ STOPPED → ERROR
 ### A Plugin That Does Not Stop
 
 A stop calls every running plugin's `stop_loop`. A Python `stop_loop` that returns
-anything other than `True`, or raises, is a failed stop. The runtime then logs
+`False`, or raises, is a failed stop; any other result, `None` (no `return`)
+included, is a successful stop. The runtime then logs
 `Stop failed: plugin <name> did not stop; keeping the I/O image and entering ERROR
 until the runtime restarts` for each such plugin and stops the teardown there: the
 journal, the plugins' init state, the I/O image and the program library are all
