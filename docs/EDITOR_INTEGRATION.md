@@ -140,7 +140,8 @@ Response:
 `status` forwards the runtime's START reply: `START:OK`, `START:ERROR_ALREADY_RUNNING`,
 `START:ERROR_SWITCH_STOP` (the run/stop switch is in STOP), `START:ERROR_SWITCH_UNKNOWN` (a
 switch owner plugin did not report a position within 2 s) or `START:ERROR`. While a switch owner
-has not reported, the reply comes only once the start has landed, so allow up to 15 s for it.
+has not reported, the reply comes once the switch gate decided the start, which can still land
+ERROR afterwards (poll `/api/status`), so allow up to 15 s for it.
 
 **Stop PLC:**
 ```

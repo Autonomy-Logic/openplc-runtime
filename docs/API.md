@@ -131,7 +131,9 @@ waits up to 15 s for it.
 
 **Possible Status Values:**
 - `"START:OK"` - The start was accepted. While a run/stop switch owner had not reported a
-  position, the reply comes only once the start has landed and the PLC is running.
+  position, the reply comes once the switch gate let the start through, after the plugin
+  re-initialisation and the wait of up to 2 s, and before the PLC cycle thread is created; a
+  failure after that point lands ERROR, which `/api/status` reports.
 - `"START:ERROR_ALREADY_RUNNING"` - PLC was already in RUNNING state
 - `"START:ERROR_SWITCH_STOP"` - The run/stop mode switch is in STOP; no scan ran and the PLC
   stays STOPPED

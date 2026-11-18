@@ -237,8 +237,9 @@ static void format_switch_response(char *response, size_t response_size)
     }
 }
 
-// START while a switch owner has not reported: begin the start, then reply
-// only once it has landed, after its plugin re-init and switch gate.
+// START while a switch owner has not reported: begin the start, then reply once
+// its switch gate decided, after its plugin re-init. RUN does not mean the cycle
+// thread is running yet.
 static void start_awaiting_switch_gate(char *response, size_t response_size)
 {
     const uint64_t ticket = plc_start_outcome_arm();
