@@ -148,7 +148,16 @@ Host to web server:
   the seal, with `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval';
   connect-src 'self'; img-src 'self' data:; style-src 'self'; frame-ancestors 'none'; base-uri 'none';
   form-action 'self'`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` and
-  `Referrer-Policy: no-referrer`. Unauthenticated: the page shows the sign-in form.
+  `Referrer-Policy: no-referrer`. Only the sign-in page and its static files are public:
+  `index.html`, `hmi.css`, `hmi-client.js`, `socket.io.min.js`, `socket.io-LICENSE.txt` and
+  `fonts-LICENSE.txt` (`PUBLIC_ASSETS`); none of them carries anything of the project. Every other
+  client file, `hmi.wasm` (all the project's screens) above all, needs `Authorization: Bearer` with an
+  access token that passes the same checks as the `/api/hmi` connect (signature, expiry, revocation,
+  session, account, a role that may open the HMI). Without one a script's request gets 401 and a page
+  load (`Sec-Fetch-Mode: navigate`, or `Accept: text/html` without that header) is redirected to
+  `/hmi/`; each refusal is logged. Served files keep `Cache-Control: no-store`, so no cache holds the
+  module after sign-out. Every signed-in role receives the same module, with every screen; what each
+  role may read and write is enforced by the host (see Host).
 - Namespace `/api/hmi`: the access token is checked at connect (`auth.token`) with the same rules as
   every endpoint (signature, expiry, revocation, session, account, role in `webserver/access.py`).
   While connected it is re-checked every 5 seconds and on each client event for revocation, session,
@@ -182,6 +191,9 @@ screens (the generated unit), the HMI core and the unit's font table with a brow
 draws the same pixels as the editor's preview and a panel. Licence texts ship beside it
 (`fonts-LICENSE.txt`, `socket.io-LICENSE.txt`).
 
+- Screens module: fetched once signed in, with `Authorization: Bearer` and the token, and compiled
+  from the bytes; a refused fetch (401 or 403) returns to the form. Signing out drops the module, so
+  the next account fetches it again with its own token.
 - Sign in: the page's form posts to `/api/login`; a 401 shows "Wrong user name or password.", a 429
   the wait from `Retry-After`. The token is kept in the browser's `localStorage`, so a reload or a
   browser restart on the same device stays signed in while the token is valid.

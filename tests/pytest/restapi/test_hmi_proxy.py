@@ -320,9 +320,9 @@ def test_index_is_served_with_the_security_headers(client, hmi_dir):
         ("index.html", "text/html; charset=utf-8"),
     ],
 )
-def test_each_allowed_type_is_served_with_its_mime_type(client, hmi_dir, name, ctype):
+def test_each_allowed_type_is_served_with_its_mime_type(client, hmi_dir, admin_token, name, ctype):
     install(hmi_dir, {name: b"body"})
-    resp = client.get(f"/hmi/{name}")
+    resp = client.get(f"/hmi/{name}", headers=auth(admin_token))
     assert resp.status_code == 200
     assert resp.headers["Content-Type"] == ctype
     assert resp.data == b"body"
@@ -341,30 +341,30 @@ def test_each_allowed_type_is_served_with_its_mime_type(client, hmi_dir, name, c
         "/hmi/missing.js",
     ],
 )
-def test_names_outside_the_whitelist_are_not_found(client, hmi_dir, path):
+def test_names_outside_the_whitelist_are_not_found(client, hmi_dir, admin_token, path):
     install(hmi_dir, {"app.js": b"x", "evil.php": b"x", "noext": b"x"})
-    resp = client.get(path)
+    resp = client.get(path, headers=auth(admin_token))
     assert resp.status_code == 404
     if resp.headers.get("Content-Security-Policy") is not None:
         assert resp.headers["Content-Security-Policy"] == HEADERS["Content-Security-Policy"]
 
 
 def test_a_file_that_does_not_match_the_seal_is_refused_and_logged(client, hmi_dir, warnings):
-    install(hmi_dir, {"index.html": b"good", "app.js": b"good"})
-    (hmi_dir / "client" / "app.js").write_bytes(b"tampered")
-    assert client.get("/hmi/app.js").status_code == 404
+    install(hmi_dir, {"index.html": b"good", "hmi-client.js": b"good"})
+    (hmi_dir / "client" / "hmi-client.js").write_bytes(b"tampered")
+    assert client.get("/hmi/hmi-client.js").status_code == 404
     assert any("does not match the seal" in line for line in warnings)
     assert client.get("/hmi/").status_code == 200
 
 
-def test_a_file_missing_from_the_seal_is_refused_and_logged(client, hmi_dir, warnings):
+def test_a_file_missing_from_the_seal_is_refused_and_logged(client, hmi_dir, admin_token, warnings):
     install(hmi_dir, {"index.html": b"good"})
     (hmi_dir / "client" / "extra.js").write_bytes(b"unsealed")
-    assert client.get("/hmi/extra.js").status_code == 404
+    assert client.get("/hmi/extra.js", headers=auth(admin_token)).status_code == 404
     assert any("not in the seal" in line for line in warnings)
 
 
-def test_malformed_seal_lines_seal_nothing(client, hmi_dir):
+def test_malformed_seal_lines_seal_nothing(client, hmi_dir, admin_token):
     digest = hashlib.sha256(b"x").hexdigest()
     install(
         hmi_dir,
@@ -372,7 +372,7 @@ def test_malformed_seal_lines_seal_nothing(client, hmi_dir):
         seal=[f"{digest} client/a.js", f"{digest.upper()}  client/b.js", f"{digest}  c.js"],
     )
     for name in ("a.js", "b.js", "c.js"):
-        assert client.get(f"/hmi/{name}").status_code == 404
+        assert client.get(f"/hmi/{name}", headers=auth(admin_token)).status_code == 404
 
 
 def test_an_unreadable_seal_refuses_every_file(client, hmi_dir, warnings):
@@ -382,12 +382,12 @@ def test_an_unreadable_seal_refuses_every_file(client, hmi_dir, warnings):
     assert any("seal unreadable" in line for line in warnings)
 
 
-def test_a_symlink_out_of_the_client_folder_is_refused(client, hmi_dir, tmp_path):
+def test_a_symlink_out_of_the_client_folder_is_refused(client, hmi_dir, admin_token, tmp_path):
     outside = tmp_path / "secret.txt"
     outside.write_bytes(b"secret")
     install(hmi_dir, {"index.html": b"x"})
     (hmi_dir / "client" / "secret.txt").symlink_to(outside)
-    assert client.get("/hmi/secret.txt").status_code == 404
+    assert client.get("/hmi/secret.txt", headers=auth(admin_token)).status_code == 404
 
 
 @pytest.mark.parametrize("missing", ["plugin", "seal"])
@@ -404,9 +404,79 @@ def test_without_an_installed_hmi_the_index_is_a_self_refreshing_notice(client, 
     assert client.get("/hmi/app.js").status_code == 404
 
 
-def test_the_client_files_need_no_account(client, hmi_dir):
-    install(hmi_dir)
+PUBLIC = {
+    "index.html": b"<!doctype html>",
+    "hmi.css": b"body{}",
+    "hmi-client.js": b"0",
+    "socket.io.min.js": b"0",
+    "socket.io-LICENSE.txt": b"MIT",
+    "fonts-LICENSE.txt": b"OFL",
+}
+WASM = b"\0asm-screens"
+
+
+def test_the_sign_in_page_and_its_static_files_need_no_account(client, hmi_dir):
+    install(hmi_dir, {**PUBLIC, "hmi.wasm": WASM})
     assert client.get("/hmi/").status_code == 200
+    for name, body in PUBLIC.items():
+        resp = client.get(f"/hmi/{name}")
+        assert (resp.status_code, resp.data) == (200, body), name
+    assert hp.PUBLIC_ASSETS == frozenset(PUBLIC)
+
+
+def test_the_screens_module_needs_a_token_that_may_open_the_hmi(
+    client, app, hmi_dir, tokens, warnings
+):
+    install(hmi_dir, {**PUBLIC, "hmi.wasm": WASM, "other.wasm": b"x"})
+    for role in ROLES:
+        resp = client.get("/hmi/hmi.wasm", headers=auth(tokens[role]))
+        assert resp.status_code == 200, role
+        assert resp.data == WASM
+        assert resp.headers["Content-Type"] == "application/wasm"
+        assert resp.headers["Cache-Control"] == "no-store"
+    for headers in ({}, auth(""), auth("garbage"), auth(_expired(app, tokens["operator"]))):
+        resp = client.get("/hmi/hmi.wasm", headers=headers)
+        assert resp.status_code == 401, headers
+        assert resp.data != WASM
+        assert resp.headers["Cache-Control"] == "no-store"
+    assert client.get("/hmi/other.wasm").status_code == 401
+    assert any("HMI client file hmi.wasm refused" in w for w in warnings)
+
+
+def test_the_screens_module_is_refused_after_sign_out_and_account_changes(client, hmi_dir, tokens):
+    install(hmi_dir, {**PUBLIC, "hmi.wasm": WASM})
+    assert client.get("/hmi/hmi.wasm", headers=auth(tokens["viewer"])).status_code == 200
+    assert client.post("/api/logout", headers=auth(tokens["viewer"])).status_code == 200
+    assert client.get("/hmi/hmi.wasm", headers=auth(tokens["viewer"])).status_code == 401
+    user = restapi.User.query.filter_by(username="operator").one()
+    user.role = "user"
+    restapi.db.session.commit()
+    assert client.get("/hmi/hmi.wasm", headers=auth(tokens["operator"])).status_code == 401
+    eng_id = restapi.User.query.filter_by(username="engineer").one().id
+    resp = client.delete(f"/api/delete-user/{eng_id}", headers=auth(tokens["admin"]))
+    assert resp.status_code == 200
+    assert client.get("/hmi/hmi.wasm", headers=auth(tokens["engineer"])).status_code == 401
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Sec-Fetch-Mode": "navigate", "Accept": "text/html"},
+        {"Accept": "text/html,application/xhtml+xml"},
+    ],
+)
+def test_a_page_load_of_the_screens_module_without_a_token_goes_to_the_sign_in_page(
+    client, hmi_dir, headers
+):
+    install(hmi_dir, {**PUBLIC, "hmi.wasm": WASM})
+    resp = client.get("/hmi/hmi.wasm", headers=headers)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/hmi/")
+    assert resp.data != WASM
+    followed = client.get("/hmi/hmi.wasm", headers=headers, follow_redirects=True)
+    assert followed.data == PUBLIC["index.html"]
+    fetch = client.get("/hmi/hmi.wasm", headers={"Sec-Fetch-Mode": "cors", "Accept": "text/html"})
+    assert fetch.status_code == 401
 
 
 # ---- client events (pure) -------------------------------------------------------------

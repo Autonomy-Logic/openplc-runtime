@@ -36,8 +36,9 @@ browser screenshots go to its `shots/`), `HMI_E2E_KEEP=1` (keep the container an
    `vpp_plugins.conf`), and checks:
    - the build log, the HMI host and board plugin log lines (TC13: both load); the device holds only
      `hmi_access.c` and `hmi_access.h` of the HMI;
-   - `/hmi/` headers (CSP, nosniff, no-store, no-referrer), `hmi.wasm` served as `application/wasm`,
-     refused names, and a client file changed on the device refused against the seal, then served
+   - `/hmi/` headers (CSP, nosniff, no-store, no-referrer); the sign-in page files public; `hmi.wasm`
+     refused (401) without a token or with a bad one, a page load of it sent to `/hmi/`, and served as
+     `application/wasm`, `no-store`, with a valid token; refused names, and a client file changed on the device refused against the seal, then served
      again once restored;
    - `/api/hmi`: a bad token refused; the operator's open gives `live` with its role; showing
      Overview sends its values, then only changes; a write of `Run` is applied (read back through the
@@ -50,7 +51,9 @@ browser screenshots go to its `shots/`), `HMI_E2E_KEEP=1` (keep the container an
    - the browser: an operator signs in at `/hmi/`, taps the switch (the PLC's `Run` becomes TRUE) and
      receives a rising `Level`; the viewer's browser shows Status, its tap sends nothing, and a write
      and a show of Overview forged from that signed-in page are refused (the PLC's `Run` unchanged);
-     the screen's Sign out button returns to the form and the token is refused afterwards;
+     the screen's Sign out button returns to the form and the token is refused afterwards; the sign-in
+     page does not load `hmi.wasm`, a fetch of it answers 401 and a page load of it lands on the
+     sign-in page, the signed-in client loads it once, and after sign-out it is refused again;
    - TC11: PLC stop gives `stopped` with the socket connected; start gives `live` and values again
      once the screen is shown, with the same socket;
    - TC27: 100 writes, each timed from the write to the values carrying it back; every one comes back

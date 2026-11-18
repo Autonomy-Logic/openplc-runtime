@@ -413,7 +413,6 @@ def browser(scenario: str, **opts: object) -> dict[str, object]:
 
 
 def client_files(admin: str) -> None:
-    del admin
     index = read_file(ARGS.hmi, "hmi", "client", "index.html")
     r = requests.get(f"{base()}/hmi/", verify=False, timeout=30)
     check("GET /hmi/ serves the sealed index.html", r.status_code == 200 and r.content == index, r.status_code)
@@ -426,11 +425,36 @@ def client_files(admin: str) -> None:
         check(f"/hmi/ header {name}", r.headers.get(name) == value, r.headers.get(name))
     check("/hmi/ content type html", r.headers.get("Content-Type", "").startswith("text/html"), r.headers)
     wasm = read_file(ARGS.hmi, "hmi", "client", "hmi.wasm")
-    r = requests.get(f"{base()}/hmi/hmi.wasm", verify=False, timeout=30)
+    for name in ("hmi-client.js", "hmi.css", "socket.io.min.js", "socket.io-LICENSE.txt", "fonts-LICENSE.txt"):
+        r = requests.get(f"{base()}/hmi/{name}", verify=False, timeout=30)
+        check(f"GET /hmi/{name} needs no account (sign-in page file)", r.status_code == 200, r.status_code)
+    for label, headers in (("no token", {}), ("a bad token", {"Authorization": "Bearer nope"})):
+        r = requests.get(f"{base()}/hmi/hmi.wasm", headers=headers, verify=False, timeout=30)
+        check(
+            f"GET /hmi/hmi.wasm with {label} is refused (401), the module not sent",
+            r.status_code == 401 and wasm not in r.content,
+            r.status_code,
+        )
+    r = requests.get(
+        f"{base()}/hmi/hmi.wasm",
+        headers={"Accept": "text/html", "Sec-Fetch-Mode": "navigate"},
+        verify=False,
+        timeout=30,
+        allow_redirects=False,
+    )
     check(
-        "GET /hmi/hmi.wasm serves the screens' module as application/wasm",
-        r.status_code == 200 and r.content == wasm and r.headers.get("Content-Type") == "application/wasm",
-        (r.status_code, r.headers.get("Content-Type")),
+        "a page load of /hmi/hmi.wasm without a token goes to the sign-in page",
+        r.status_code == 302 and r.headers.get("Location", "").endswith("/hmi/"),
+        r.status_code,
+    )
+    r = requests.get(f"{base()}/hmi/hmi.wasm", headers={"Authorization": f"Bearer {admin}"}, verify=False, timeout=30)
+    check(
+        "GET /hmi/hmi.wasm with a valid token serves the module as application/wasm, not cached",
+        r.status_code == 200
+        and r.content == wasm
+        and r.headers.get("Content-Type") == "application/wasm"
+        and r.headers.get("Cache-Control") == "no-store",
+        (r.status_code, r.headers.get("Content-Type"), r.headers.get("Cache-Control")),
     )
     info(f"hmi.wasm: {len(wasm)} bytes")
     r = requests.get(f"{base()}/hmi", verify=False, timeout=30, allow_redirects=False)
@@ -616,6 +640,13 @@ def main() -> None:
     check("Run unchanged by the viewer's browser (debugger)", unchanged is not None and unchanged[0] == 0, unchanged)
     res = browser("sign-out", user="op3", password="op3-pass")
     check("browser: the screen's Sign out ends the session", "error" not in res, res)
+    res = browser("module-access", user="op3", password="op3-pass")
+    check(
+        "browser: hmi.wasm is not served before sign-in, is loaded once signed in, and is refused after sign-out",
+        "error" not in res,
+        res,
+    )
+    info(f"browser: {json.dumps(res)[:600]}")
     check("operator viewer unaffected by the other sessions", v.sio.connected and v.disconnects == 0)
 
     # TC11: stop and start keep the socket.

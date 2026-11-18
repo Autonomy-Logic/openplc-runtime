@@ -8,7 +8,7 @@
  *
  *   node browser_e2e.mjs <scenario> '<json options>'
  *
- * Scenarios: operator-tap, viewer-refused, sign-out. Options: url, user, password, run (tag id),
+ * Scenarios: operator-tap, viewer-refused, sign-out, module-access. Options: url, user, password, run (tag id),
  * level (tag id), status (page), shots (folder), playwright (path of the playwright package).
  * Prints one JSON line with the result; exits 1 with the reason on any failure. Every wait fails at
  * once when the page reports a failure (a notice other than the reconnect one, a page error).
@@ -266,6 +266,49 @@ async function main() {
       if (out.whoami !== 401) fail(`the signed-out token still answers ${out.whoami}`)
       out.form = join(opts.shots, 'signed-out.png')
       await page.screenshot({ path: out.form })
+    } else if (scenario === 'module-access') {
+      const wasmResponses = []
+      page.on('response', (r) => {
+        if (r.url().endsWith('/hmi/hmi.wasm')) wasmResponses.push(r.status())
+      })
+      await page.goto(`${opts.url}/hmi/`)
+      await page.waitForSelector('#sign-in:not([hidden])')
+      out.beforeSignIn = await page.evaluate(() =>
+        fetch('hmi.wasm').then(async (r) => ({ status: r.status, bytes: (await r.arrayBuffer()).byteLength })),
+      )
+      if (out.beforeSignIn.status !== 401) fail(`hmi.wasm without a token answered ${out.beforeSignIn.status}`)
+      out.loadedBeforeSignIn = wasmResponses.filter((s) => s === 200).length
+      if (out.loadedBeforeSignIn !== 0) fail('the sign-in page loaded hmi.wasm before sign-in')
+      const nav = await page.goto(`${opts.url}/hmi/hmi.wasm`)
+      out.navigation = { url: page.url(), status: nav ? nav.status() : 0, type: nav ? nav.headers()['content-type'] : '' }
+      if (!page.url().endsWith('/hmi/') || !String(out.navigation.type).startsWith('text/html'))
+        fail(`a page load of hmi.wasm without a token was not sent to the sign-in page: ${JSON.stringify(out.navigation)}`)
+      /* The refused probe logs its own 401 in the console: that and nothing else is expected so far. */
+      const unexpected = errors.splice(0).filter((e) => !/status of 401/.test(e))
+      if (unexpected.length > 0) fail(`the page failed before sign-in: ${unexpected.join(' | ')}`)
+      await signIn(page, errors, opts.user, opts.password)
+      await waitUntil(page, errors, () => seen.values.length > 0, 'the screens get values')
+      out.loadedSignedIn = wasmResponses.filter((s) => s === 200).length
+      if (out.loadedSignedIn !== 1) fail(`hmi.wasm loaded ${out.loadedSignedIn} times once signed in`)
+      const token = await page.evaluate(() => localStorage.getItem('openplc-hmi-token'))
+      out.signedIn = await page.evaluate(
+        (t) => fetch('hmi.wasm', { headers: { Authorization: `Bearer ${t}` } }).then((r) => r.status),
+        token,
+      )
+      out.shot = await canvasShot(page, 'module-signed-in.png')
+      await tap(page, SIGN_OUT)
+      await waitUntil(
+        page,
+        errors,
+        () => page.evaluate(() => !document.getElementById('sign-in').hidden),
+        'the Sign out button returns to the form',
+      )
+      out.afterSignOut = await page.evaluate(
+        (t) => fetch('hmi.wasm', { headers: { Authorization: `Bearer ${t}` } }).then((r) => r.status),
+        token,
+      )
+      if (out.signedIn !== 200 || out.afterSignOut !== 401)
+        fail(`hmi.wasm signed in ${out.signedIn}, after sign-out ${out.afterSignOut}`)
     } else {
       fail(`unknown scenario ${scenario}`)
     }

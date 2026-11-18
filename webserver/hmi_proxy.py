@@ -94,6 +94,19 @@ HOST_SEND_TIMEOUT_S = 2.0
 ACK_TIMEOUT_S = 1.0
 
 ASSET_NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+# The client files any visitor may load: the sign-in page and its static code, style and licences,
+# none of them derived from the project. Every other client file (hmi.wasm, which holds the
+# project's screens) is served only with a token that may open the HMI.
+PUBLIC_ASSETS: frozenset[str] = frozenset(
+    {
+        "index.html",
+        "hmi.css",
+        "hmi-client.js",
+        "socket.io.min.js",
+        "socket.io-LICENSE.txt",
+        "fonts-LICENSE.txt",
+    }
+)
 MIME_TYPES: dict[str, str] = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -188,9 +201,37 @@ def hmi_index() -> Response:
     return hmi_asset("index.html")
 
 
+def hmi_access_refusal() -> str | None:
+    """Why the current request's access token may not use the HMI, or None when it may.
+
+    The same checks as every endpoint (signature, expiry, revocation, session, account), plus a
+    role that may open the HMI. Call inside a request whose Authorization header carries the token.
+    """
+    try:
+        verify_jwt_in_request()
+    except (PyJWTError, JWTExtendedException) as e:
+        return str(e) or type(e).__name__
+    role = current_user.role if current_user else None
+    if not may(role, POLICY_KEY) or role not in ROLE_CODES:
+        return f"role {role or 'none'} may not open the HMI"
+    return None
+
+
+def _is_navigation() -> bool:
+    """Whether the request is a browser loading the URL as a page, not a script's fetch."""
+    mode = request.headers.get("Sec-Fetch-Mode")
+    if mode is not None:
+        return mode == "navigate"
+    return "text/html" in request.headers.get("Accept", "")
+
+
 @hmi_bp.route("/hmi/<name>")
 def hmi_asset(name: str) -> Response:
-    """A whitelisted, sealed client file; the self-refreshing notice when no HMI is installed."""
+    """A whitelisted, sealed client file; the self-refreshing notice when no HMI is installed.
+
+    A file outside PUBLIC_ASSETS needs a token that may open the HMI (Authorization: Bearer):
+    without one a fetch gets 401 and a page load is sent to the sign-in page.
+    """
     suffix = os.path.splitext(name)[1]
     if not ASSET_NAME.match(name) or name.startswith(".") or suffix not in MIME_TYPES:
         return _not_found()
@@ -198,6 +239,15 @@ def hmi_asset(name: str) -> Response:
         if name != "index.html":
             return _not_found()
         return _with_headers(Response(NO_HMI_PAGE, status=503, mimetype="text/html"))
+    if name not in PUBLIC_ASSETS:
+        refusal = hmi_access_refusal()
+        if refusal is not None:
+            logger.warning("HMI client file %s refused: %s", name, refusal)
+            if _is_navigation():
+                return _with_headers(redirect("/hmi/", code=302))
+            return _with_headers(
+                Response("Sign in to load the HMI", status=401, mimetype="text/plain")
+            )
     data = read_sealed_client_file(name)
     if data is None:
         return _not_found()
@@ -917,16 +967,12 @@ def init_hmi_proxy(app: Flask, socketio: SocketIO) -> HmiProxy:
         if not isinstance(token, str) or not token:
             logger.warning("HMI viewer refused: no token")
             raise SocketRefused("unauthorized")
-        try:
-            request.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
-            verify_jwt_in_request()
-        except (PyJWTError, JWTExtendedException) as e:
-            logger.warning("HMI viewer refused: %s", e)
-            raise SocketRefused("unauthorized") from e
-        role = current_user.role if current_user else None
-        if not may(role, POLICY_KEY) or role not in ROLE_CODES:
-            logger.warning("HMI viewer refused for role %s", role or "none")
+        request.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
+        refusal = hmi_access_refusal()
+        if refusal is not None:
+            logger.warning("HMI viewer refused: %s", refusal)
             raise SocketRefused("unauthorized")
+        role = current_user.role
         proxy.add_viewer(request.sid, current_user.username, role, token)
         return True
 
