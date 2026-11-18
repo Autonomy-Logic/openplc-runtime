@@ -23,6 +23,11 @@
  *   3. A RUNAWAY-FREE STOP. stop_loop()/cleanup() return promptly, so a slow
  *      teardown never confuses a slow start.
  *
+ *   4. A KEEP-ALIVE STOP. detach_image() drops the image entry points from the
+ *      args copy and keeps the watcher, so a switch owner survives a stop.
+ *      FAKEVPP_FALLBACK=1 makes it refuse with -1, and a -DFAKEVPP_LEGACY build
+ *      does not export it. cleanup() logs "fakevpp: cleanup".
+ *
  * Everything is env-driven so one .so covers every scenario, and nothing here
  * touches the process image -- it declares no located variables.
  */
@@ -43,6 +48,8 @@
  * prefix has to be laid out identically for the offsets to line up, so this
  * includes the real header rather than re-declaring the struct. */
 #include "plugin_types.h"
+
+#include "plugin_detach.h"
 
 #define SWITCH_RUN  1
 #define SWITCH_STOP 0
@@ -231,9 +238,27 @@ int stop_loop(void *args)
     return 0;
 }
 
+#ifndef FAKEVPP_LEGACY
+/* Detaches from the I/O image and keeps the watcher; returns -1 instead when
+ * FAKEVPP_FALLBACK=1. */
+int detach_image(void)
+{
+    if (env_long("FAKEVPP_FALLBACK", 0) != 0)
+    {
+        plog("info", "fakevpp: detach_image returning -1");
+        return -1;
+    }
+    if (g_args)
+        plugin_args_drop_image(g_args);
+    plog("info", "fakevpp: detach_image returning 0");
+    return 0;
+}
+#endif
+
 int cleanup(void *args)
 {
     (void)args;
+    plog("info", "fakevpp: cleanup");
     if (atomic_exchange(&g_running, 0) == 1 && g_watcher_up)
     {
         pthread_join(g_watcher, NULL);

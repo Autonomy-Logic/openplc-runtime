@@ -10,7 +10,9 @@ process -- socket replies, the journal, and /proc/<pid>/maps -- so the same suit
 scores the pristine branch and the fixed one.
 """
 
+import ctypes
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -381,16 +383,25 @@ def test_shutdown_never_ran():
 
 # ------------------------- power-on with a program-shipped switch owner
 class VppLayout:
-    """Move the fake VPP from plugins.conf to vpp_plugins.conf, as a program upload ships it."""
+    """Move the fake VPP from plugins.conf to vpp_plugins.conf, as a program upload ships it.
+
+    `path`, when given, replaces the .so path of the moved entry.
+    """
+
+    def __init__(self, path=None):
+        self.path = path
 
     def __enter__(self):
         with open("plugins.conf") as f:
             self.saved = f.read()
         lines = self.saved.splitlines(keepends=True)
+        vpp = [l for l in lines if l.startswith("fakevpp,")]
+        if self.path:
+            vpp = [",".join([e[0], self.path] + e[2:]) for e in (l.split(",") for l in vpp)]
         with open("plugins.conf", "w") as f:
             f.writelines(l for l in lines if not l.startswith("fakevpp,"))
         with open("vpp_plugins.conf", "w") as f:
-            f.writelines(l for l in lines if l.startswith("fakevpp,"))
+            f.writelines(vpp)
         return self
 
     def __exit__(self, *exc):
@@ -507,20 +518,40 @@ def stop_failed_line(name):
     )
 
 
-class StopFailPlugin:
-    """Append the enabled stopfail Python plugin to plugins.conf, and restore the file on exit."""
+class PluginsConf:
+    """Append entries to plugins.conf for one group, and restore the file on exit."""
+
+    def __init__(self, *lines):
+        self.lines = lines
 
     def __enter__(self):
         with open("plugins.conf") as f:
             self.saved = f.read()
         base = self.saved if self.saved.endswith("\n") or not self.saved else self.saved + "\n"
         with open("plugins.conf", "w") as f:
-            f.write(base + STOPFAIL_CONF_LINE)
+            f.write(base + "".join(self.lines))
         return self
 
     def __exit__(self, *exc):
         with open("plugins.conf", "w") as f:
             f.write(self.saved)
+
+
+class StopFailPlugin(PluginsConf):
+    """Append the enabled stopfail Python plugin to plugins.conf, and restore the file on exit."""
+
+    def __init__(self):
+        super().__init__(STOPFAIL_CONF_LINE)
+
+
+def sigterm_exit(rt):
+    """Send SIGTERM and wait for the exit. Returns (exited cleanly, detail)."""
+    rc, took = rt.signal_and_wait(signal.SIGTERM)
+    if rc is None:
+        return False, "HUNG, needed SIGKILL"
+    if rc < 0:
+        return False, f"died on signal {-rc}"
+    return True, f"rc={rc} in {took:.2f}s"
 
 
 def stop_failed_case(tag, env, stop_marker):
@@ -632,13 +663,7 @@ def test_stop_failed():
         if not ran:
             exited, detail = False, "skipped, runtime not running"
         else:
-            rc, took = rt.signal_and_wait(signal.SIGTERM)
-            if rc is None:
-                exited, detail = False, "HUNG, needed SIGKILL"
-            elif rc < 0:
-                exited, detail = False, f"died on signal {-rc}"
-            else:
-                exited, detail = True, f"rc={rc} in {took:.2f}s"
+            exited, detail = sigterm_exit(rt)
         record("stopfail", "SIGTERM while latched: process exits", exited, detail)
         if ran:
             released = IMAGE_RELEASED in rt.journal()[mark:]
@@ -653,6 +678,308 @@ def test_stop_failed():
         rt.kill()
 
         rt = stop_none_case("stopfail_none")
+        rt.kill()
+
+
+SWITCH_OWNER = {"FAKEVPP_SWITCH_OWNER": "1"}
+FAKEVPP_SO = "./build/plugins/libfakevpp_plugin.so"
+FAKEVPP_LEGACY_SO = "./build/plugins/libfakevpp_legacy_plugin.so"
+FAKEVPP_CLEANUP = "fakevpp: cleanup"
+FAKEVPP_INIT = "fake VPP initialised"
+IMAGE_FREE_REFUSED = "refusing to free the image"
+PTRPROBE_CONF_LINE = (
+    "ptrprobe,./build/plugins/libptrprobe_plugin.so,1,1,/tmp/ptrprobe_config.json,\n"
+)
+PTRPROBE_NONE = "ptrprobe: image=none"
+PTRPROBE_HELD = re.compile(r"ptrprobe: image=0x0*[1-9a-f][0-9a-f]*")
+PYDETACH_CONF_LINE = (
+    "pydetach,/fixtures/pydetach/pydetach_plugin.py,1,0,/fixtures/pydetach/pydetach_config.json\n"
+)
+
+
+def detached_line(name):
+    return f"Plugin {name} detached from the I/O image"
+
+
+def refused_line(name):
+    return f"Plugin {name} did not detach; cleaning it up"
+
+
+def wait_switch(want, limit=5.0):
+    """Poll SWITCH until it answers `want`. Returns the last answer."""
+    t0 = time.time()
+    sw = "unreachable"
+    while time.time() - t0 < limit:
+        try:
+            sw = cmd("SWITCH")
+        except OSError:
+            sw = "unreachable"
+        if sw == want:
+            return sw
+        time.sleep(0.05)
+    return sw
+
+
+def scan_counts():
+    """The scan_count of every task STATS lists, or None when STATS does not answer."""
+    try:
+        reply = cmd("STATS")
+    except OSError:
+        return None
+    if not reply.startswith("STATS:"):
+        return None
+    return [int(n) for n in re.findall(r'"scan_count":(-?\d+)', reply)]
+
+
+def exports_symbol(path, symbol):
+    """Whether the shared object at `path` exports `symbol`, or None when it does not load."""
+    try:
+        return hasattr(ctypes.CDLL(path), symbol)
+    except OSError:
+        return None
+
+
+def boot_switch_owner(tag, env=None):
+    """Boot plc_main with the fake VPP owning the switch, switch on RUN, and wait for RUNNING.
+
+    Returns (runtime, whether the PLC reached RUNNING).
+    """
+    set_switch("RUN")
+    rt = Runtime(tag, init_ms=100, env=dict(SWITCH_OWNER, **(env or {})))
+    st = wait_status("STATUS:RUNNING")
+    ok = st == "STATUS:RUNNING"
+    record("keepalive", f"{tag}: reached RUNNING before the test", ok, st)
+    if not ok:
+        rt.dump()
+    return rt, ok
+
+
+def socket_stop(rt):
+    """Send STOP and wait for the final state. Returns (journal offset, final state, detail)."""
+    mark = len(rt.journal())
+    reply = cmd("STOP")
+    st, secs = wait_final()
+    return mark, st, f"{reply} -> {st} in {secs:.2f}s"
+
+
+def keepalive_switch_case():
+    """AC1: a keep-alive switch owner still reads the switch after a socket STOP."""
+    tag = "keepalive_ac1"
+    with VppLayout():
+        rt, ran = boot_switch_owner(tag)
+        if not ran:
+            rt.kill()
+            return
+        mark, st, landed = socket_stop(rt)
+        record("keepalive", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+        after = rt.journal()[mark:]
+        detached = detached_line("fakevpp") in after
+        record("keepalive", f"{tag}: journal says fakevpp detached", detached)
+        record("keepalive", f"{tag}: image freed on the stop", IMAGE_FREE_REFUSED not in after)
+
+        set_switch("STOP")
+        sw = wait_switch("SWITCH:STOP")
+        record("keepalive", f"{tag}: switch moved to STOP is read", sw == "SWITCH:STOP", sw)
+        window = rt.journal()[mark:]
+        kept = FAKEVPP_CLEANUP not in window
+        record("keepalive", f"{tag}: fakevpp not cleaned up by the stop", kept)
+        reinit = FAKEVPP_INIT in window
+        record("keepalive", f"{tag}: fakevpp not re-initialised by the stop", not reinit)
+
+        set_switch("RUN")
+        sw = wait_switch("SWITCH:RUN")
+        record("keepalive", f"{tag}: switch moved back to RUN is read", sw == "SWITCH:RUN", sw)
+        st = wait_status("STATUS:RUNNING")
+        name = f"{tag}: switch moved to RUN starts the PLC with no socket START"
+        record("keepalive", name, st == "STATUS:RUNNING", st)
+
+        exited, detail = sigterm_exit(rt)
+        record("keepalive", f"{tag}: clean shutdown after a keep-alive stop", exited, detail)
+        rt.kill()
+
+
+def keepalive_stale_switch_case():
+    """ABUSE-01: a START after a stop does not use the switch position stored before the stop."""
+    tag = "keepalive_abuse01"
+    with VppLayout():
+        rt, ran = boot_switch_owner(tag)
+        if not ran:
+            rt.kill()
+            return
+        _, st, landed = socket_stop(rt)
+        record("keepalive", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+
+        set_switch("STOP")
+        wait_switch("SWITCH:STOP", limit=2.0)
+        reply = cmd("START")
+        refused = reply == "START:ERROR_SWITCH_STOP"
+        record("keepalive", f"{tag}: START answers START:ERROR_SWITCH_STOP", refused, reply)
+
+        states, counts = [], []
+        t0 = time.time()
+        while time.time() - t0 < 3.0:
+            states.append(status())
+            counts.append(scan_counts())
+            time.sleep(0.1)
+        stopped = all(s == "STATUS:STOPPED" for s in states)
+        seen = ", ".join(sorted(set(states)))
+        record("keepalive", f"{tag}: STATUS:STOPPED at every poll for 3 s", stopped, seen)
+        zero = all(c is not None and all(n == 0 for n in c) for c in counts)
+        worst = max((max(c) for c in counts if c), default=0)
+        missing = sum(1 for c in counts if c is None)
+        detail = f"max scan_count {worst}, {missing} unanswered STATS of {len(counts)}"
+        record("keepalive", f"{tag}: zero scans after the START", zero, detail)
+        rt.kill()
+
+
+def keepalive_refusal_case():
+    """Fallback, refusal branch: a switch owner whose detach_image returns -1 is cleaned up."""
+    tag = "keepalive_refuse"
+    with VppLayout():
+        rt, ran = boot_switch_owner(tag, {"FAKEVPP_FALLBACK": "1"})
+        if not ran:
+            rt.kill()
+            return
+        mark, st, landed = socket_stop(rt)
+        record("keepalive", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+        after = rt.journal()[mark:]
+        called = "fakevpp: detach_image returning -1" in after
+        record("keepalive", f"{tag}: the refusing detach_image was called", called)
+        refused = refused_line("fakevpp") in after
+        record("keepalive", f"{tag}: journal says fakevpp did not detach", refused)
+        record("keepalive", f"{tag}: fakevpp: cleanup during the STOP", FAKEVPP_CLEANUP in after)
+        exited, detail = sigterm_exit(rt)
+        record("keepalive", f"{tag}: clean shutdown", exited, detail)
+        rt.kill()
+
+
+def keepalive_legacy_case():
+    """Fallback, no-symbol branch: a switch owner without detach_image is cleaned up."""
+    tag = "keepalive_legacy"
+    exports = exports_symbol(FAKEVPP_SO, "detach_image")
+    record("keepalive", f"{tag}: the default fake VPP exports detach_image", exports is True)
+    exports = exports_symbol(FAKEVPP_LEGACY_SO, "detach_image")
+    record("keepalive", f"{tag}: the legacy fake VPP has no detach_image", exports is False)
+    with VppLayout(path=FAKEVPP_LEGACY_SO):
+        rt, ran = boot_switch_owner(tag)
+        if not ran:
+            rt.kill()
+            return
+        mark, st, landed = socket_stop(rt)
+        record("keepalive", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+        after = rt.journal()[mark:]
+        record("keepalive", f"{tag}: fakevpp: cleanup during the STOP", FAKEVPP_CLEANUP in after)
+        claimed = detached_line("fakevpp") in after
+        record("keepalive", f"{tag}: journal does not claim a detach", not claimed)
+        exited, detail = sigterm_exit(rt)
+        record("keepalive", f"{tag}: clean shutdown", exited, detail)
+        rt.kill()
+
+
+def keepalive_python_case():
+    """Python path: pydetach detaches on STOP, then is cleaned up and re-initialised at START."""
+    tag = "keepalive_python"
+    with PluginsConf(PYDETACH_CONF_LINE):
+        set_switch("RUN")
+        rt = Runtime(tag, init_ms=100)
+        st = ensure_running()
+        record("keepalive", f"{tag}: reached RUNNING before the test", st == "STATUS:RUNNING", st)
+        if st != "STATUS:RUNNING":
+            rt.dump()
+            rt.kill()
+            return
+        record("keepalive", f"{tag}: pydetach was initialised", "pydetach: init" in rt.journal())
+
+        mark, st, landed = socket_stop(rt)
+        record("keepalive", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+        after = rt.journal()[mark:]
+        record("keepalive", f"{tag}: pydetach detached on STOP", "pydetach: detached" in after)
+        kept = "pydetach: cleanup" not in after
+        record("keepalive", f"{tag}: pydetach not cleaned up on STOP", kept)
+
+        mark = len(rt.journal())
+        reply = cmd("START")
+        st, secs = wait_final()
+        landed = f"{reply} -> {st} in {secs:.2f}s"
+        record("keepalive", f"{tag}: START lands STATUS:RUNNING", st == "STATUS:RUNNING", landed)
+        after = rt.journal()[mark:]
+        cleaned = after.find("pydetach: cleanup")
+        inited = after.find("pydetach: init", cleaned + 1) if cleaned >= 0 else -1
+        order = f"cleanup at {cleaned}, init after it at {inited}"
+        name = f"{tag}: START cleans pydetach up, then initialises it"
+        record("keepalive", name, cleaned >= 0 and inited > cleaned, order)
+        rt.kill()
+
+
+def test_keepalive():
+    """A plugin that detaches stays alive across a stop; one that cannot is cleaned up.
+
+    Pre-fix every plugin was cleaned up on stop, so the switch watcher died with it: the
+    switch was no longer read, a START used the position stored before the stop, and no
+    detach was ever offered.
+    """
+    banner("keep-alive across a stop: detach_image")
+    keepalive_switch_case()
+    keepalive_stale_switch_case()
+    keepalive_refusal_case()
+    keepalive_legacy_case()
+    keepalive_python_case()
+    set_switch("RUN")
+
+
+def test_ptrprobe_cycles(cycles=50):
+    """ABUSE-02: stop/start cycling never leaves a surviving plugin holding a freed image.
+
+    Every STOP must have ptrprobe drop its image before the runtime clears the image, and
+    every START must hand it a non-null image through a fresh init().
+    """
+    banner(f"ptrprobe: {cycles} STOP/START cycles")
+    with PluginsConf(PTRPROBE_CONF_LINE):
+        set_switch("RUN")
+        rt = Runtime("ptrprobe", init_ms=50)
+        st = ensure_running()
+        record("ptrprobe", "reached RUNNING before the test", st == "STATUS:RUNNING", st)
+        if st != "STATUS:RUNNING":
+            rt.dump()
+            rt.kill()
+            return
+        held = PTRPROBE_HELD.search(rt.journal()) is not None
+        record("ptrprobe", "ptrprobe holds a non-null image while RUNNING", held)
+
+        bad_state, bad_stop, bad_start = [], [], []
+        for i in range(cycles):
+            mark = len(rt.journal())
+            reply = cmd("STOP")
+            st, _ = wait_final()
+            if st != "STATUS:STOPPED":
+                bad_state.append((i, reply, st))
+            after = rt.journal()[mark:]
+            none_at = after.find(PTRPROBE_NONE)
+            cleared_at = after.find(IMAGE_RELEASED)
+            if not (0 <= none_at < cleared_at):
+                bad_stop.append((i, none_at, cleared_at))
+
+            mark = len(rt.journal())
+            reply = cmd("START")
+            st, _ = wait_final()
+            if st != "STATUS:RUNNING":
+                bad_state.append((i, reply, st))
+            if PTRPROBE_HELD.search(rt.journal()[mark:]) is None:
+                bad_start.append(i)
+            if rt.p.poll() is not None:
+                bad_state.append((i, "process exited", rt.p.poll()))
+                break
+
+        name = f"all {cycles} cycles land STOPPED, then RUNNING"
+        record("ptrprobe", name, not bad_state, f"{len(bad_state)} bad: {bad_state[:3]}")
+        name = "every STOP: ptrprobe holds no image before the image is cleared"
+        detail = f"{len(bad_stop)}/{cycles} failed (cycle, none at, cleared at): {bad_stop[:3]}"
+        record("ptrprobe", name, not bad_stop, detail)
+        name = "every START: ptrprobe holds a non-null image"
+        detail = f"{len(bad_start)}/{cycles} failed: {bad_start[:5]}"
+        record("ptrprobe", name, not bad_start, detail)
+        exited, detail = sigterm_exit(rt)
+        record("ptrprobe", "clean shutdown after the cycles", exited, detail)
         rt.kill()
 
 
@@ -672,6 +999,8 @@ run("switch", test_switch_intent)
 run("misc", test_switch_readable_and_interlock)
 run("bootswitch", test_boot_switch_vpp)
 run("stopfail", test_stop_failed)
+run("keepalive", test_keepalive)
+run("ptrprobe", test_ptrprobe_cycles)
 
 print("\n=== summary")
 by_finding = {}
