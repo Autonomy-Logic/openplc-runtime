@@ -108,6 +108,9 @@ typedef struct plugin_instance_s
      * runtime dep). Slot kept but its *_plugin pointers are NULL;
      * init/start/cycle skip it. Keeps the runtime out of ERROR. */
     int degraded;
+    /* Set when the last stop_loop returned anything but True or raised. The
+     * slot then keeps `running` and `initialized`: its thread may be live. */
+    int stop_failed;
     plugin_config_t config;
 } plugin_instance_t;
 
@@ -148,7 +151,12 @@ int plugin_driver_cleanup_init(plugin_driver_t *driver);
  */
 int plugin_driver_any_initialized(plugin_driver_t *driver);
 int plugin_driver_start(plugin_driver_t *driver);
+/* Call stop_loop on every running plugin. Returns 0 when all stopped and
+ * non-zero when a Python stop_loop returned anything but True or raised; each
+ * such slot is marked `stop_failed` and keeps its state. */
 int plugin_driver_stop(plugin_driver_t *driver);
+/* Stop, clean up and unload every plugin, then finalise Python. Leaves
+ * everything loaded when a plugin failed to stop, since its thread may be live. */
 void plugin_driver_destroy(plugin_driver_t *driver);
 
 /* Release the Python GIL and remember the thread state so

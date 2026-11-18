@@ -935,7 +935,7 @@ int plugin_driver_stop(plugin_driver_t *driver)
             {
                 PyErr_Print();
                 log_error("Python stop call failed for plugin: %s", plugin->config.name);
-                stop_failed = 1;
+                plugin->stop_failed = 1;
             }
             else
             {
@@ -944,14 +944,19 @@ int plugin_driver_stop(plugin_driver_t *driver)
                 if (success == 1)
                 {
                     log_info("Plugin %s stopped successfully", plugin->config.name);
+                    plugin->stop_failed = 0;
+                    plugin->running     = 0;
                 }
                 else
                 {
                     log_error("Plugin %s failed to stop cleanly", plugin->config.name);
-                    stop_failed = 1;
+                    plugin->stop_failed = 1;
                 }
             }
-            plugin->running = 0;
+            if (plugin->stop_failed)
+            {
+                stop_failed = 1;
+            }
         }
         else if (plugin->native_plugin && plugin->native_plugin->stop)
         {
@@ -981,6 +986,16 @@ void plugin_driver_destroy(plugin_driver_t *driver)
         log_info("No plugins to destroy");
         free(driver);
         return;
+    }
+
+    for (int i = 0; i < driver->plugin_count; i++)
+    {
+        if (driver->plugins[i].stop_failed)
+        {
+            log_warn("Leaving every plugin loaded: plugin %s did not stop",
+                     driver->plugins[i].config.name);
+            return;
+        }
     }
 
     // Check if Python is initialized before any Python operations

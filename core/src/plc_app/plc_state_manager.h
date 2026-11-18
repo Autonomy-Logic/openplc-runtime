@@ -127,8 +127,9 @@ bool plc_set_state(PLCState new_state);
  * The single arbiter for "may this change start". Under the state lock: a request
  * arriving while a TRANSITIONING state is current is DROPPED -- you cannot change
  * state in the middle of changing state -- and so is a request for the state the
- * runtime is already in. Otherwise the direction is published and the caller owns
- * the transition until it publishes a final state.
+ * runtime is already in. Every request is refused while plc_stop_failed_latched()
+ * is true. Otherwise the direction is published and the caller owns the transition
+ * until it publishes a final state.
  *
  * @param target PLC_STATE_RUNNING or PLC_STATE_STOPPED
  * @return true when the transition is claimed and the caller must complete it
@@ -171,7 +172,8 @@ int64_t plc_stop_budget_ms(void);
  *
  * Used on the safe-mode boot after a watchdog exit: loads and starts the configured
  * plugins (including VPP board plugins), runs the same outputs-off sequence as a
- * stop, then stops the plugins again. The caller must hold a claimed stop.
+ * stop, then stops the plugins again. The caller must hold a claimed stop. A plugin
+ * that fails to stop sets plc_stop_failed_latched() and the image is left as it is.
  *
  * @return true when the plugins were brought up and the zeroed outputs were pushed
  */
@@ -194,6 +196,15 @@ void plc_request_first_scan_trip(void);
 
 /** @brief True while a transition is in flight (either direction). */
 bool plc_state_is_transitioning(void);
+
+/**
+ * @brief True once a plugin failed to stop, until the process exits.
+ *
+ * While true, plc_claim_transition refuses every target, the I/O image, journal
+ * and program library stay as the failed stop left them, and shutdown does not
+ * tear them down.
+ */
+bool plc_stop_failed_latched(void);
 
 /* transition_worker stops waiting for a landing at PLC_TRANSITION_LANDING_TIMEOUT_MS.
  * The watchdog forces ERROR on a start stuck past PLC_TRANSITION_STUCK_TIMEOUT_MS; a

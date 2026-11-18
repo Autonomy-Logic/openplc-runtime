@@ -67,7 +67,20 @@ EMPTY → INIT → RUNNING ⟷ STOPPED → ERROR
 - **INIT**: Program loaded, initializing
 - **RUNNING**: Actively executing scan cycles
 - **STOPPED**: Program loaded but not executing
-- **ERROR**: Recoverable error state
+- **ERROR**: Recoverable error state, except after a failed plugin stop (below)
+
+### A Plugin That Does Not Stop
+
+A stop calls every running plugin's `stop_loop`. A Python `stop_loop` that returns
+anything other than `True`, or raises, is a failed stop. The runtime then logs
+`Stop failed: plugin <name> did not stop; keeping the I/O image and entering ERROR
+until the runtime restarts` for each such plugin and stops the teardown there: the
+journal, the plugins' init state, the I/O image and the program library are all
+kept, because the plugin's thread may still be using them. The state lands on
+ERROR and stays there: every start or stop request is refused (`START:ERROR` on the
+socket) until the runtime process restarts. On SIGINT or SIGTERM the process exits
+without tearing down what the failed stop kept. A native `stop_loop` returns
+nothing, so a native plugin cannot report a failed stop.
 
 **State Manager:** `core/src/plc_app/plc_state_manager.cpp`
 
@@ -174,7 +187,8 @@ defaults of the constants in `core/src/plc_app/task_policy.h`.
    program code then gets `SIGUSR2`, whose handler jumps to the task's recovery
    point. A stop that aborted a task lands in ERROR. On every stop, plugin writes
    are fenced off (the journal is closed), all `%Q` outputs are written to 0 and
-   pushed by a final I/O cycle, and held for 500 ms before plugins stop. Runtime
+   pushed by a final I/O cycle, and held for 500 ms before plugins stop (a plugin
+   that fails to stop latches ERROR, see "A Plugin That Does Not Stop"). Runtime
    code reached from IEC bodies that must not be interrupted (the Python block
    loader) blocks `SIGUSR2`; user C function blocks are not protected, and an abort
    landing inside one that holds a C-library lock ends in layer 3.

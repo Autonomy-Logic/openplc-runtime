@@ -69,6 +69,73 @@ static void image_tables_free_when_unheld(void)
     image_tables_free();
 }
 
+/* Set once a plugin failed to stop; never cleared, so only a process restart ends it. */
+static std::atomic<bool> g_stop_failed_latched{false};
+
+extern "C" bool plc_stop_failed_latched(void)
+{
+    return g_stop_failed_latched.load(std::memory_order_acquire);
+}
+
+/* Log each plugin whose stop failed and set the latch under the state lock, so
+ * plc_claim_transition refuses from the same moment. The caller publishes ERROR. */
+static void plc_latch_failed_stop(void)
+{
+    for (int i = 0; i < plugin_driver->plugin_count; i++)
+    {
+        if (plugin_driver->plugins[i].stop_failed)
+        {
+            log_error("Stop failed: plugin %s did not stop; keeping the I/O image and entering "
+                      "ERROR until the runtime restarts",
+                      plugin_driver->plugins[i].config.name);
+        }
+    }
+    pthread_mutex_lock(&state_mutex);
+    g_stop_failed_latched.store(true, std::memory_order_release);
+    pthread_mutex_unlock(&state_mutex);
+}
+
+/**
+ * Retire the I/O image and the program once no plugin thread can touch them.
+ *
+ * Steps, in order: journal_cleanup and debug_write_journal_reset; cleanup_init
+ * on every initialised plugin, started or not, since each holds the base
+ * pointers it copied by value at init(); pointer clear and image free under the
+ * image-tables mutex, the free refused while a plugin is still initialised;
+ * python_blocks_cleanup; then the program manager, dropping plc_program.
+ *
+ * Precondition: every running plugin has stopped, because journal_cleanup frees
+ * the forced-slot rows that image_lock reads on plugin threads. The caller does
+ * not hold the image-tables mutex.
+ *
+ * @param pm                  program manager to destroy
+ * @param journal_initialised true when this load ran journal_init
+ */
+static void retire_image(PluginManager *pm, bool journal_initialised)
+{
+    if (journal_initialised)
+    {
+        journal_cleanup();
+        debug_write_journal_reset();
+        log_info("Journal buffer cleaned up");
+    }
+
+    plugin_driver_cleanup_init(plugin_driver);
+
+    pthread_mutex_t *itm = image_tables_mutex();
+    pthread_mutex_lock(itm);
+    image_tables_clear_null_pointers();
+    image_tables_free_when_unheld();
+    pthread_mutex_unlock(itm);
+
+    void (*python_cleanup)(void);
+    *(void **)&python_cleanup = plugin_manager_get_symbol(pm, "python_blocks_cleanup");
+    if (python_cleanup) python_cleanup();
+
+    if (pm == plc_program) plc_program = NULL;
+    plugin_manager_destroy(pm);
+}
+
 
 PlcTaskCtx *plc_tasks      = nullptr;
 size_t      plc_task_count = 0;
@@ -1322,23 +1389,11 @@ extern "C" int load_plc_program(PluginManager *pm)
                  * half-allocated state and (e.g.) double-spawn EtherCAT
                  * masters or OPC-UA sockets. */
                 log_error("[PLUGIN]: Plugin init failed — rolling back");
-                plugin_driver_cleanup_init(plugin_driver);
-                /* The image this load allocated goes back too. cleanup_init has
-                 * just undone every plugin's init(), so nothing holds the base
-                 * pointers any more, and leaving it would keep a whole image
-                 * reserved for a program that never started. */
-                {
-                    pthread_mutex_t *rollback_itm = image_tables_mutex();
-                    pthread_mutex_lock(rollback_itm);
-                    image_tables_free_when_unheld();
-                    pthread_mutex_unlock(rollback_itm);
-                }
+                retire_image(pm, false);
                 pthread_mutex_lock(&state_mutex);
                 plc_state = PLC_STATE_ERROR;
                 pthread_mutex_unlock(&state_mutex);
                 log_info("PLC State: ERROR");
-                if (pm == plc_program) plc_program = NULL;
-                plugin_manager_destroy(pm);
                 return -1;
             }
             log_info("[PLUGIN]: Plugins re-initialized with updated config");
@@ -1351,25 +1406,11 @@ extern "C" int load_plc_program(PluginManager *pm)
              * state (allocated buffers, opened devices). Roll those back
              * before bailing — otherwise the next start retries init()
              * on a half-initialised driver. */
-            if (plugin_driver) plugin_driver_cleanup_init(plugin_driver);
-            /* Same reasoning as the init-failure rollback above: the plugins
-             * have been de-initialised, so the image they were pointing at is
-             * free to go and must, or this load leaks it. */
-            {
-                pthread_mutex_t *rollback_itm = image_tables_mutex();
-                pthread_mutex_lock(rollback_itm);
-                image_tables_free_when_unheld();
-                pthread_mutex_unlock(rollback_itm);
-            }
+            retire_image(pm, false);
             pthread_mutex_lock(&state_mutex);
             plc_state = PLC_STATE_ERROR;
             pthread_mutex_unlock(&state_mutex);
             log_info("PLC State: ERROR");
-            // Drop the manager so the next RUNNING transition re-runs
-            // find_libplc_file. See the comment on the dlopen-failure
-            // branch below for the full reasoning.
-            if (pm == plc_program) plc_program = NULL;
-            plugin_manager_destroy(pm);
             return -1;
         }
 
@@ -1430,58 +1471,14 @@ static int unload_plc_program_locked(PluginManager *pm)
          * still be alive to answer). */
         plc_retain_flush();
 
-        plugin_driver_stop(plugin_driver);
+        if (plugin_driver && plugin_driver_stop(plugin_driver) != 0)
+        {
+            plc_latch_failed_stop();
+            plc_publish_final_state(PLC_STATE_ERROR);
+            return -1;
+        }
 
-        /* AFTER plugin_driver_stop, not before, and the reason is a lifetime
-         * rather than tidiness.
-         *
-         * journal_cleanup() frees the forced-slot rows, which used to be
-         * static storage and now are not. image_lock is handed to every plugin
-         * as args->image_lock and calls journal_apply_and_clear(), so
-         * is_slot_forced() runs on plugin-owned threads -- EtherCAT's bus
-         * thread and the s7comm server callback among them. Freeing those rows
-         * while those threads are live is a use-after-free reachable from an
-         * ordinary operation: forcing a variable from the debugger or over
-         * OPC UA is all it takes for there to be anything to read.
-         *
-         * Stopping the plugins first is the only thing that guarantees no
-         * plugin thread is inside image_lock(). force_map_free() clears its
-         * guards before freeing as a second line of defence, but ordering is
-         * what actually closes this.
-         *
-         * plc_retain_flush() above still has to run BEFORE the stop, because a
-         * plugin-backed store has to be alive to answer -- so the two sit on
-         * opposite sides of it deliberately. */
-        journal_cleanup();
-        debug_write_journal_reset();
-        log_info("Journal buffer cleaned up");
-
-        /* STOP IS NOT ENOUGH TO MAKE THE IMAGE FREEABLE, which is easy to miss.
-         *
-         * plugin_driver_stop skips any plugin whose `running` is 0, and a
-         * plugin can be initialised and never started -- ethercat is
-         * deliberately init'd even when disabled. Such a plugin still holds
-         * the by-value copy of the base pointers it took in init(), so
-         * stopping the running ones and freeing would leave it pointing at
-         * released memory. cleanup_init undoes init() for every plugin,
-         * started or not, which is what actually ends the last reference. */
-        plugin_driver_cleanup_init(plugin_driver);
-
-        pthread_mutex_t *itm = image_tables_mutex();
-        pthread_mutex_lock(itm);
-        image_tables_clear_null_pointers();
-        /* Released only after every plugin has been stopped AND de-initialised
-         * above. Both native plugins cache these pointers by value at init(),
-         * so freeing any earlier hands them memory that belongs to nobody. */
-        image_tables_free_when_unheld();
-        pthread_mutex_unlock(itm);
-
-        void (*python_cleanup)(void);
-        *(void **)&python_cleanup = plugin_manager_get_symbol(pm, "python_blocks_cleanup");
-        if (python_cleanup) python_cleanup();
-
-        plugin_manager_destroy(pm);
-        plc_program = NULL;
+        retire_image(pm, true);
 
         log_info("PLC program unloaded successfully");
 
@@ -1540,7 +1537,11 @@ extern "C" bool plc_outputs_off_without_program(void)
 
     plugin_driver_start(plugin_driver);
     plc_outputs_off();
-    plugin_driver_stop(plugin_driver);
+    if (plugin_driver_stop(plugin_driver) != 0)
+    {
+        plc_latch_failed_stop();
+        return true;
+    }
 
     pthread_mutex_lock(itm);
     image_tables_clear_null_pointers();
@@ -1574,6 +1575,14 @@ extern "C" bool plc_claim_transition(PLCState target)
     }
 
     pthread_mutex_lock(&state_mutex);
+
+    if (g_stop_failed_latched.load(std::memory_order_acquire))
+    {
+        pthread_mutex_unlock(&state_mutex);
+        log_error("Refusing to transition to %s: a plugin did not stop; restart the runtime",
+                  target == PLC_STATE_RUNNING ? "RUNNING" : "STOPPED");
+        return false;
+    }
 
     /* Drop, don't queue. Requests are dropped while a transition is in flight,
      * and the switch's intent is recovered afterwards by reconciliation (see
@@ -1728,6 +1737,13 @@ extern "C" void plc_state_manager_cleanup(void)
     {
         log_warn("Shutdown proceeding with a state change still in flight after %d ms",
                  waited);
+    }
+
+    if (plc_stop_failed_latched())
+    {
+        log_warn("Shutdown leaves the program, journal and I/O image in place: a plugin did "
+                 "not stop");
+        return;
     }
 
     if (plc_program) unload_plc_program(plc_program);
