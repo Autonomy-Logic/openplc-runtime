@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import gc
 import socket
+import sys
 import threading
 import time
 from typing import List, Optional, Tuple
@@ -36,6 +37,7 @@ PORT_WATCH_AFTER_FILL_S = 1.0
 STOP_AFTER_ENTERED_S = 0.1
 ABORT_LATENCY_S = 1.0
 EARLY_RUN_BOUND_S = 0.5
+FALLBACK_WARNING = "stoppable address-space fill"
 
 
 def _server_threads() -> List[threading.Thread]:
@@ -760,3 +762,18 @@ def test_a_stop_requested_before_run_skips_the_whole_start_up(manager_run, secur
     assert manager_run.ended_within(EARLY_RUN_BOUND_S)
     assert not manager_run.slowdowns.load_certificate.entered.is_set()
     assert not (secure_manager_server.plugin_dir / "certs").exists()
+
+
+@pytest.mark.parametrize("missing", ["standard_address_space", "InternalServer"])
+def test_without_the_asyncua_internals_the_server_starts_on_a_plain_server(
+    opcua_plugin, opcua_log_records, monkeypatch, missing
+):
+    monkeypatch.setattr(sys.modules[_OpcuaServerManager.__module__], missing, None)
+
+    opcua_plugin.start()
+
+    assert _wait_for_listener(opcua_plugin.server.PORT, STARTUP_TIMEOUT_S)
+    warnings = [line for line in opcua_log_records.lines_at("WARN") if FALLBACK_WARNING in line]
+    assert len(warnings) == 1, f"fallback warnings: {warnings}"
+    result, _ = opcua_plugin.timed_stop()
+    assert result is True
