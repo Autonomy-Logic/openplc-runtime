@@ -587,7 +587,7 @@ def main() -> None:
     t = time.monotonic()
     v.write(setpoint, struct.pack("<h", 30000))
     check(
-        "a Setpoint of 30000 is refused: Overview's slider stops at 100",
+        "a Setpoint of 30000 is refused: Overview's slider and numeric input stop at 100",
         v.wait_refused("write", setpoint, t),
         v.refused,
     )

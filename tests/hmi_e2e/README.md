@@ -28,7 +28,7 @@ browser screenshots go to its `shots/`), `HMI_E2E_KEEP=1` (keep the container an
    variable (the changed program of TC12).
 2. `project/hmi/` holds two screens and their settings: `Overview` (a switch writing
    `instance0.Main.Run`, a lamp, a value display of `Level`, a Sign out button calling
-   `HMI_SignOut()` and a slider of `Setpoint`, 0 to 100), granted to engineers and operators, and `Status` (the lamp and the value only),
+   `HMI_SignOut()`, and a slider and a numeric input of `Setpoint`, both 0 to 100), granted to engineers and operators, and `Status` (the lamp and the value only),
    granted to every role. The editor's own build composes `hmi/` inside the program bundle. The
    changed program of TC12 is compiled without `project/hmi/`, so it carries no `hmi/`.
 3. `e2e_hmi.py` starts the container (volume and container removed at the end), creates an admin,
@@ -44,7 +44,7 @@ browser screenshots go to its `shots/`), `HMI_E2E_KEEP=1` (keep the container an
      Overview sends its values, then only changes; a write of `Run` is applied (read back through the
      debugger, `/api/debug`, FC 0x43), comes back with the write count, `Level` keeps coming, the write
      is logged with the account;
-   - refusals: a `Setpoint` of 30000 (the slider stops at 100; 100 is applied), a write of `Level`
+   - refusals: a `Setpoint` of 30000 (the slider and the numeric input stop at 100; 100 is applied), a write of `Level`
      (Overview only reads it), a BOOL of 2, a write whose value is not
      bytes and a screen that does not exist are refused and logged, and none reaches the PLC; the
      viewer may not show Overview (then it is served nothing), may show Status, and its writes of

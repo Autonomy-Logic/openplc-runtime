@@ -247,6 +247,7 @@ async function main() {
       await waitUntil(page, errors, () => seen.values.length > 0, 'the screens get values')
       const token = await page.evaluate(() => localStorage.getItem('openplc-hmi-token'))
       out.before = await canvasShot(page, 'before-sign-out.png')
+      const logout = page.waitForResponse((r) => r.url().endsWith('/api/logout'), { timeout: 10000 })
       await tap(page, SIGN_OUT)
       await waitUntil(
         page,
@@ -259,6 +260,7 @@ async function main() {
           ),
         'the Sign out button returns to the form',
       )
+      out.logout = (await logout).status()
       out.whoami = await page.evaluate(
         (t) => fetch('/api/whoami', { headers: { Authorization: `Bearer ${t}` } }).then((r) => r.status),
         token,
@@ -296,6 +298,7 @@ async function main() {
         token,
       )
       out.shot = await canvasShot(page, 'module-signed-in.png')
+      const logout = page.waitForResponse((r) => r.url().endsWith('/api/logout'), { timeout: 10000 })
       await tap(page, SIGN_OUT)
       await waitUntil(
         page,
@@ -303,6 +306,7 @@ async function main() {
         () => page.evaluate(() => !document.getElementById('sign-in').hidden),
         'the Sign out button returns to the form',
       )
+      out.logout = (await logout).status()
       out.afterSignOut = await page.evaluate(
         (t) => fetch('hmi.wasm', { headers: { Authorization: `Bearer ${t}` } }).then((r) => r.status),
         token,
