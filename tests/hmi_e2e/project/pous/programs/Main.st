@@ -2,6 +2,7 @@ PROGRAM Main
   VAR
     Run : BOOL;
     Level : REAL;
+    Setpoint : INT;
   END_VAR
 
   IF Run THEN

@@ -583,6 +583,26 @@ def main() -> None:
     v.send({"t": "w", "g": run, "v": "not bytes"})
     v.writes += 1
     check("a write whose value is not bytes is refused", v.wait_refused("write", NO_PAGE, t), v.refused)
+    setpoint = m.tags["SETPOINT"]
+    t = time.monotonic()
+    v.write(setpoint, struct.pack("<h", 30000))
+    check(
+        "a Setpoint of 30000 is refused: Overview's slider stops at 100",
+        v.wait_refused("write", setpoint, t),
+        v.refused,
+    )
+    check(
+        "the out-of-range refusal is logged",
+        wait_log(admin, "SETPOINT refused: the value is outside what the screen shown can set", 10),
+    )
+    t = time.monotonic()
+    index = v.write(setpoint, struct.pack("<h", 100))
+    check(
+        "a Setpoint of 100 is applied and comes back",
+        v.wait_values(lambda x: x.writes >= index and x.records.get(setpoint) == struct.pack("<h", 100), t)
+        is not None,
+    )
+    writes_before += 1
     t = time.monotonic()
     v.show(77)
     check("a screen that does not exist is refused", v.wait_refused("show", 77, t), v.refused)
