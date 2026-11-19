@@ -142,7 +142,7 @@ for pair in "${PAIRS[@]}"; do
             "-DHMI_SOCKET_PATH=\"$sockdir/hmi.socket\"")
         objs=()
         ok=1
-        for src in "$ROOT"/core/src/drivers/plugins/native/hmi/*.c "$HERE"/fake_access/*.c; do
+        for src in "$ROOT"/core/src/drivers/plugins/native/hmi/*.c "$HERE"/fake_access/hmi_access.c; do
             obj="$objdir/$(basename "$(dirname "$src")")-$(basename "${src%.c}").o"
             "$cc" -std=c11 "${flags[@]}" -c "$src" -o "$obj" || { ok=0; break; }
             objs+=("$obj")
@@ -159,6 +159,29 @@ for pair in "${PAIRS[@]}"; do
         if ! "$objdir/test_hmi_plugin"; then
             fail "test_hmi_plugin ($vname) with $cc"
         fi
+    done
+
+    # 3. manifest checks: every bad manifest leaves the HMI out of date; the valid base is live.
+    echo "  --- test_hmi_bad_manifest"
+    badobj="$OUT/bad-$cc"
+    mkdir -p "$badobj"
+    sockdir="$OUT/hmi-$cc-bad"
+    # shellcheck disable=SC2206
+    flags=(-g -O1 -Wall -Wextra -Werror -pthread -I "$ROOT/core/src/drivers/plugins/native/hmi"
+        -I "$ROOT/core/src/drivers" -I "$UNIT_DIR" "-DHMI_SOCKET_DIR=\"$sockdir\""
+        "-DHMI_SOCKET_PATH=\"$sockdir/hmi.socket\"")
+    hostobjs=()
+    for src in "$ROOT"/core/src/drivers/plugins/native/hmi/*.c; do
+        obj="$badobj/$(basename "${src%.c}").o"
+        "$cc" -std=c11 "${flags[@]}" -c "$src" -o "$obj" || { fail "host did not compile for the manifest test"; continue 2; }
+        hostobjs+=("$obj")
+    done
+    for bad in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+        "$cc" -std=c11 "${flags[@]}" "-DHMI_BAD=$bad" -c "$HERE/fake_access/hmi_access_bad.c" \
+            -o "$badobj/manifest-$bad.o" &&
+            "$cxx" -std=c++17 "${flags[@]}" "-DHMI_BAD=$bad" "$HERE/test_hmi_bad_manifest.cpp" \
+                "${hostobjs[@]}" "$badobj/manifest-$bad.o" -o "$badobj/test-$bad" &&
+            "$badobj/test-$bad" || fail "manifest variant $bad with $cc"
     done
 done
 

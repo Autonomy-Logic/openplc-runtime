@@ -552,6 +552,42 @@ static void test_values_and_writes()
     v = values_until(fd, 1, [](const Values &x) { return x.writes == 19; });
     CHECK(v.ok && g_label == std::string(10, 'y'), "a label of 10 bytes is applied");
 
+    /* From one granted screen to another: the old screen's tags are no longer sent. */
+    send_show(fd, 1, 1);
+    v = values_until(fd, 1, [](const Values &x) { return x.page == 1; });
+    CHECK(v.ok && v.tags.size() == 1 && v.tags.count(3) == 1, "the Status snapshot holds temp only");
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_lamp  = 0;
+        g_speed = 55;
+        g_label = "moved";
+        g_flags = 1;
+    }
+    bool leaked    = false;
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+    while (std::chrono::steady_clock::now() < end)
+    {
+        Msg m = read_until(fd, 0x84, 1, 50);
+        Values x = parse_values(m);
+        for (uint16_t tag : {0, 1, 2, 4})
+            leaked |= x.ok && x.tags.count(tag) != 0;
+    }
+    CHECK(!leaked, "lamp, speed, label and flags changed on the PLC are not sent once Status shows");
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_temp = 31.0f;
+    }
+    v = values_until(fd, 1, [](const Values &x) { return x.tags.count(3) != 0; });
+    CHECK(v.ok && v.tags.size() == 1 && v.tags[3] == f32(31.0f), "temp, which Status reads, still is");
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_lamp  = 1;
+        g_speed = 100;
+        g_label = std::string(10, 'y');
+        g_flags = 32;
+        g_temp  = 30.0f;
+    }
+
     /* A screen the role may not open: refused, and nothing is served or written afterwards. */
     send_show(fd, 1, 2);
     CHECK(refused(fd, 1) == std::make_pair(0, 2), "an operator's SHOW of an admin screen is refused");
