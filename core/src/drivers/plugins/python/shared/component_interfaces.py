@@ -154,6 +154,10 @@ class ISafeBufferAccess:
         """Error message if initialization failed"""
         pass
 
+    @abstractmethod
+    def invalidate(self) -> None:
+        """Make the accessor unusable: is_valid turns False, operations stop reaching the runtime"""
+
     # All the public methods from the original API must be implemented
     # See API_SPECIFICATION.md for complete list
 

@@ -5,8 +5,10 @@
 #include "plugin_driver.h"
 #include "unity.h"
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 // Simple mock control variables
 static int mock_calloc_should_fail          = 0;
@@ -67,10 +69,105 @@ void reset_mocks(void)
 // Note: External buffer variables and plugin_manager_destroy are now defined in
 // tests/support/test_plugin_driver_stubs.c and will be linked automatically
 
+#define FAKE_SLOTS 3
+
+/* Call counts and the detach_image result of one fake native plugin slot. */
+typedef struct
+{
+    int detach_calls;
+    int detach_result;
+    int cleanup_calls;
+    int start_calls;
+} fake_hooks_t;
+
+static fake_hooks_t fake[FAKE_SLOTS];
+static plugin_funct_bundle_t fake_bundle[FAKE_SLOTS];
+static plugin_driver_t driver;
+
+/* Defines the detach_image, cleanup and start_loop hooks of fake slot n. */
+#define FAKE_HOOKS(n)                                                                              \
+    static int fake##n##_detach(void)                                                              \
+    {                                                                                              \
+        fake[n].detach_calls++;                                                                    \
+        return fake[n].detach_result;                                                              \
+    }                                                                                              \
+    static void fake##n##_cleanup(void)                                                            \
+    {                                                                                              \
+        fake[n].cleanup_calls++;                                                                   \
+    }                                                                                              \
+    static int fake##n##_start(void)                                                               \
+    {                                                                                              \
+        fake[n].start_calls++;                                                                     \
+        return 0;                                                                                  \
+    }
+
+FAKE_HOOKS(0)
+FAKE_HOOKS(1)
+FAKE_HOOKS(2)
+
+static int (*const fake_detach[FAKE_SLOTS])(void)    = {fake0_detach, fake1_detach, fake2_detach};
+static void (*const fake_cleanup[FAKE_SLOTS])(void)  = {fake0_cleanup, fake1_cleanup, fake2_cleanup};
+static int (*const fake_start[FAKE_SLOTS])(void)     = {fake0_start, fake1_start, fake2_start};
+
+static int invalidate_calls;
+static int cleanup_calls_at_first_invalidate;
+
+/* Overrides the weak support stub: counts invalidations and records fake slot 0's cleanup count at the first. */
+void plc_switch_owner_invalidate(const char *id)
+{
+    (void)id;
+    if (invalidate_calls == 0)
+    {
+        cleanup_calls_at_first_invalidate = fake[0].cleanup_calls;
+    }
+    invalidate_calls++;
+}
+
+/* Clears the shared driver, every fake slot and the invalidation record. */
+static void reset_fake_slots(void)
+{
+    memset(&driver, 0, sizeof(driver));
+    memset(fake, 0, sizeof(fake));
+    memset(fake_bundle, 0, sizeof(fake_bundle));
+    invalidate_calls                  = 0;
+    cleanup_calls_at_first_invalidate = -1;
+}
+
+/* Wires slot n of the shared driver as an enabled native plugin backed by the fake hooks. */
+static plugin_instance_t *fake_native_slot(int n, int initialized, int exports_detach)
+{
+    plugin_instance_t *slot   = &driver.plugins[n];
+    fake_bundle[n].start        = fake_start[n];
+    fake_bundle[n].cleanup      = fake_cleanup[n];
+    fake_bundle[n].detach_image = exports_detach ? fake_detach[n] : NULL;
+    snprintf(slot->config.name, sizeof(slot->config.name), "fake%d", n);
+    slot->config.type    = PLUGIN_TYPE_NATIVE;
+    slot->config.enabled = 1;
+    slot->native_plugin  = &fake_bundle[n];
+    slot->initialized    = initialized;
+    if (driver.plugin_count < n + 1)
+    {
+        driver.plugin_count = n + 1;
+    }
+    return slot;
+}
+
+/* Writes text to a new temporary plugins.conf and stores its path in path. */
+static void write_temp_conf(char *path, size_t path_size, const char *text)
+{
+    snprintf(path, path_size, "/tmp/test_plugin_driver_XXXXXX");
+    int fd = mkstemp(path);
+    TEST_ASSERT_TRUE_MESSAGE(fd >= 0, "mkstemp failed");
+    ssize_t written = write(fd, text, strlen(text));
+    close(fd);
+    TEST_ASSERT_EQUAL_INT((int)strlen(text), (int)written);
+}
+
 void setUp(void)
 {
     // Reset all mocks before each test
     reset_mocks();
+    reset_fake_slots();
 }
 
 void tearDown(void)
@@ -236,4 +333,207 @@ void test_plugin_driver_Init_WhenPluginInitFails_ShouldHaltAndReturnError(void)
                              "plugin_driver_init should return valid result");
 
     // Note: Cleanup of mocked resources would typically be handled by Cmock or test teardown.
+}
+
+void test_plugin_driver_detach_images_DetachImageReturnsZero_ShouldMarkSlotDetached(void)
+{
+    plugin_instance_t *slot = fake_native_slot(0, 1, 1);
+    fake[0].detach_result   = 0;
+
+    plugin_driver_detach_images(&driver);
+
+    TEST_ASSERT_EQUAL_INT(1, fake[0].detach_calls);
+    TEST_ASSERT_TRUE(slot->detached);
+}
+
+void test_plugin_driver_detach_images_DetachedSlot_ShouldStayInitialisedWithoutCleanup(void)
+{
+    plugin_instance_t *slot = fake_native_slot(0, 1, 1);
+    fake[0].detach_result   = 0;
+
+    plugin_driver_detach_images(&driver);
+
+    TEST_ASSERT_TRUE(slot->initialized);
+    TEST_ASSERT_EQUAL_INT(0, fake[0].cleanup_calls);
+}
+
+void test_plugin_driver_detach_images_DetachImageRefuses_ShouldLeaveSlotAttached(void)
+{
+    plugin_instance_t *slot = fake_native_slot(0, 1, 1);
+    fake[0].detach_result   = -1;
+
+    plugin_driver_detach_images(&driver);
+
+    TEST_ASSERT_EQUAL_INT(1, fake[0].detach_calls);
+    TEST_ASSERT_FALSE(slot->detached);
+}
+
+void test_plugin_driver_detach_images_SymbolAbsent_ShouldLeaveSlotAttached(void)
+{
+    plugin_instance_t *slot = fake_native_slot(0, 1, 0);
+
+    plugin_driver_detach_images(&driver);
+
+    TEST_ASSERT_FALSE(slot->detached);
+}
+
+void test_plugin_driver_detach_images_UninitialisedSlot_ShouldNotCallDetachImage(void)
+{
+    plugin_instance_t *slot = fake_native_slot(0, 0, 1);
+    fake[0].detach_result   = 0;
+
+    plugin_driver_detach_images(&driver);
+
+    TEST_ASSERT_EQUAL_INT(0, fake[0].detach_calls);
+    TEST_ASSERT_FALSE(slot->detached);
+}
+
+void test_plugin_driver_detach_images_SeveralSlots_ShouldDetachEachSlotThatAccepts(void)
+{
+    plugin_instance_t *accepts = fake_native_slot(0, 1, 1);
+    plugin_instance_t *refuses = fake_native_slot(1, 1, 1);
+    plugin_instance_t *later   = fake_native_slot(2, 1, 1);
+    fake[0].detach_result      = 0;
+    fake[1].detach_result      = -1;
+    fake[2].detach_result      = 0;
+
+    plugin_driver_detach_images(&driver);
+
+    TEST_ASSERT_TRUE(accepts->detached);
+    TEST_ASSERT_FALSE(refuses->detached);
+    TEST_ASSERT_TRUE(later->detached);
+}
+
+void test_plugin_driver_any_holds_image_EveryInitialisedSlotDetached_ShouldReturnFalse(void)
+{
+    fake_native_slot(0, 1, 1)->detached = 1;
+    fake_native_slot(1, 1, 1)->detached = 1;
+    fake_native_slot(2, 0, 1);
+
+    TEST_ASSERT_FALSE(plugin_driver_any_holds_image(&driver));
+}
+
+void test_plugin_driver_any_holds_image_OneAttachedSlotRemains_ShouldReturnTrue(void)
+{
+    fake_native_slot(0, 1, 1)->detached = 1;
+    fake_native_slot(1, 1, 0);
+
+    TEST_ASSERT_TRUE(plugin_driver_any_holds_image(&driver));
+}
+
+void test_plugin_driver_any_holds_image_OnlyUninitialisedSlots_ShouldReturnFalse(void)
+{
+    fake_native_slot(0, 0, 1);
+    fake_native_slot(1, 0, 0);
+
+    TEST_ASSERT_FALSE(plugin_driver_any_holds_image(&driver));
+}
+
+void test_plugin_driver_cleanup_attached_ShouldCallCleanupOnlyOnAttachedSlots(void)
+{
+    fake_native_slot(0, 1, 1)->detached = 1;
+    fake_native_slot(1, 1, 0);
+
+    plugin_driver_cleanup_attached(&driver);
+
+    TEST_ASSERT_EQUAL_INT(0, fake[0].cleanup_calls);
+    TEST_ASSERT_EQUAL_INT(1, fake[1].cleanup_calls);
+}
+
+void test_plugin_driver_cleanup_attached_DetachedSlot_ShouldStayInitialised(void)
+{
+    plugin_instance_t *slot = fake_native_slot(0, 1, 1);
+    slot->detached          = 1;
+
+    plugin_driver_cleanup_attached(&driver);
+
+    TEST_ASSERT_TRUE(slot->initialized);
+}
+
+void test_plugin_driver_StopSequence_AfterARefusedDetach_ShouldLeaveNoSlotHoldingTheImage(void)
+{
+    fake_native_slot(0, 1, 1);
+    fake_native_slot(1, 1, 1);
+    fake[0].detach_result = 0;
+    fake[1].detach_result = -1;
+
+    plugin_driver_detach_images(&driver);
+    plugin_driver_cleanup_attached(&driver);
+
+    TEST_ASSERT_EQUAL_INT(1, fake[1].cleanup_calls);
+    TEST_ASSERT_FALSE(plugin_driver_any_holds_image(&driver));
+}
+
+void test_plugin_driver_start_DetachedSlot_ShouldNotCallStartLoop(void)
+{
+    fake_native_slot(0, 1, 1)->detached = 1;
+    fake_native_slot(1, 1, 0);
+
+    plugin_driver_start(&driver);
+
+    TEST_ASSERT_EQUAL_INT(0, fake[0].start_calls);
+    TEST_ASSERT_EQUAL_INT(1, fake[1].start_calls);
+}
+
+void test_plugin_driver_destroy_DetachedSlot_ShouldStillBeCleanedUp(void)
+{
+    fake_native_slot(0, 1, 1)->detached = 1;
+
+    plugin_driver_destroy(&driver);
+
+    TEST_ASSERT_EQUAL_INT(1, fake[0].cleanup_calls);
+}
+
+void test_plugin_driver_update_config_DetachedSlot_ShouldBeCleanedUpOnReload(void)
+{
+    char conf[64];
+    write_temp_conf(conf, sizeof(conf), "ghost,./no-such-plugin.so,0,1\n");
+    fake_native_slot(0, 1, 1)->detached = 1;
+
+    int result = plugin_driver_update_config(&driver, conf);
+    unlink(conf);
+
+    TEST_ASSERT_EQUAL_INT(0, result);
+    TEST_ASSERT_EQUAL_INT(1, fake[0].cleanup_calls);
+}
+
+void test_plugin_driver_update_config_DetachedSlot_ShouldClearTheDetachedFlag(void)
+{
+    char conf[64];
+    write_temp_conf(conf, sizeof(conf), "ghost,./no-such-plugin.so,0,1\n");
+    fake_native_slot(0, 1, 1)->detached = 1;
+
+    int result = plugin_driver_update_config(&driver, conf);
+    unlink(conf);
+
+    TEST_ASSERT_EQUAL_INT(0, result);
+    TEST_ASSERT_FALSE(driver.plugins[0].detached);
+}
+
+void test_plugin_driver_update_config_InitialisedSlot_ShouldInvalidateSwitchReportAfterCleanup(void)
+{
+    char conf[64];
+    write_temp_conf(conf, sizeof(conf), "ghost,./no-such-plugin.so,0,1\n");
+    fake_native_slot(0, 1, 0);
+
+    int result = plugin_driver_update_config(&driver, conf);
+    unlink(conf);
+
+    TEST_ASSERT_EQUAL_INT(0, result);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, invalidate_calls, "switch report invalidated once");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, cleanup_calls_at_first_invalidate,
+                                  "the plugin's cleanup had returned when its switch report was invalidated");
+}
+
+void test_plugin_driver_update_config_UninitialisedSlot_ShouldNotInvalidateSwitchReport(void)
+{
+    char conf[64];
+    write_temp_conf(conf, sizeof(conf), "ghost,./no-such-plugin.so,0,1\n");
+    fake_native_slot(0, 0, 0);
+
+    int result = plugin_driver_update_config(&driver, conf);
+    unlink(conf);
+
+    TEST_ASSERT_EQUAL_INT(0, result);
+    TEST_ASSERT_EQUAL_INT(0, invalidate_calls);
 }
