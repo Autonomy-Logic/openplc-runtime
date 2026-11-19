@@ -143,12 +143,16 @@ waits up to 15 s for it.
   plugin, on a process with no switch owner registered yet (for example a freshly installed
   runtime, or one that was running a project without such a plugin). That START replies
   `START:OK` at once, and the switch gate can then refuse it before the first scan: no scan runs,
-  the PLC lands STOPPED, and `/api/status` reports `"STOPPED"` with `switchPosition` `"stop"`
-  (switch in STOP) or `"unknown"` (no report within 2 s). The log says
-  `Start refused: the mode switch is in STOP` or
-  `Start refused: no switch owner has reported a position within 2000 ms`. Later STARTs in the
-  same process reply with the gate's decision. A client that needs to know whether the PLC is
-  running after `START:OK` polls `/api/status`.
+  the PLC lands STOPPED, and `/api/status` reports `"STOPPED"`. The reason is the log line, which
+  a client reads from `GET /api/runtime-logs`: `Start refused: the mode switch is in STOP` or
+  `Start refused: no switch owner has reported a position within 2000 ms`, whatever the switch
+  owner. `switchPosition` alone does not tell the reason. It reads `"stop"` (switch in STOP) only
+  when every switch owner stays attached across the rollback, that is, its `detach_image`
+  accepts. An owner without `detach_image`, or whose `detach_image` refuses, is cleaned up on the
+  rollback, its report stops counting, and `switchPosition` then reads `"unknown"` whatever the
+  switch position. So after this refusal `"unknown"` means either no report within 2 s or a
+  cleaned-up owner. Later STARTs in the same process reply with the gate's decision. A client
+  that needs to know whether the PLC is running after `START:OK` polls `/api/status`.
 - `"START:ERROR_ALREADY_RUNNING"` - PLC was already in RUNNING state
 - `"START:ERROR_SWITCH_STOP"` - The run/stop mode switch was in STOP before the start began, or
   the switch owner reported STOP after the start re-initialised the plugins; no scan ran and the

@@ -147,7 +147,13 @@ The exception: after a Build & Upload that adds a switch owner plugin to a runti
 owner registered, the first START replies `START:OK` at once. The switch gate can still refuse
 that start before the first scan (switch in STOP, or no report within 2 s), and the PLC then stays
 STOPPED with no scan. Later STARTs reply with the gate's decision. So poll `/api/status` after
-`START:OK`, and take the reason for a refusal from `switchPosition` (`"stop"` or `"unknown"`).
+`START:OK` to learn whether the PLC runs, and read the reason for a refusal from the runtime log
+(`GET /api/runtime-logs`): `Start refused: the mode switch is in STOP` or
+`Start refused: no switch owner has reported a position within 2000 ms`. `switchPosition` does
+not tell the reason on its own: it reads `"stop"` only when the switch owner stays attached
+through `detach_image`, and an owner without `detach_image`, or whose `detach_image` refuses, is
+cleaned up and reads `"unknown"` whatever the switch position (see
+[API.md](API.md#start-plc)).
 
 **Stop PLC:**
 ```
