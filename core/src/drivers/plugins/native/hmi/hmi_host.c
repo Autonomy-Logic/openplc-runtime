@@ -3,18 +3,21 @@
 
 /**
  * @file hmi_host.c
- * @brief HMI plugin of Runtime v4: runs the generated HMI unit for every viewer the web server
- *        opens over a Unix socket (docs/HMI.md, "Host" and "Wire protocol").
+ * @brief HMI plugin of Runtime v4: serves PLC values to the browser viewers the web server opens
+ *        over a Unix socket and applies their writes (docs/HMI.md, "Host" and "Wire protocol").
+ *        Screens run in the browser; the host runs no screen code. It serves a viewer only the
+ *        tags of the screen it shows, when its role may open that screen, and applies only the
+ *        writes that screen makes, after checking their type and range, from the build's
+ *        manifest (hmi_access.h), never from what a viewer sends.
  *
  * Threads, both at the default priority:
- * - the I/O thread owns the socket: it accepts the web server, decodes its messages, queues
- *   input and sends control messages and frames without blocking;
- * - the frame thread owns the HMI core and the unit (both single threaded): it creates and frees
- *   viewers, applies input, renders every open viewer each hmi_frame_ms and offers the display
- *   list to the viewer's latest-frame slot.
- * One logical unit is one CSS pixel; the viewport's density is validated and otherwise unused.
- * g_lock guards the viewer list, each viewer's input queue, viewport and slot, and the control
- * queue. It is never held while rendering or sending.
+ * - the I/O thread owns the socket: it accepts the web server, decodes its messages, opens and
+ *   closes viewers, queues each viewer's SHOW and WRITE requests and sends control messages and
+ *   VALUES without blocking;
+ * - the value thread, every hmi_access_period_ms: applies each viewer's queued requests in order,
+ *   reads the tags of the screen it shows and offers the changed values to its pending message.
+ * g_lock guards the viewer list, each viewer's request queue and values, and the control queue.
+ * It is never held while reading or writing PLC variables or sending.
  */
 
 #ifndef _GNU_SOURCE
@@ -41,11 +44,9 @@
 #include <sys/syscall.h>
 #endif
 
+#include "hmi_access.h"
 #include "hmi_codec.h"
-#include "hmi_core.h"
-#include "hmi_input.h"
-#include "hmi_slot.h"
-#include "hmi_unit.h"
+#include "hmi_values.h"
 #include "hmi_wire.h"
 #include "plugin_types.h"
 
@@ -57,79 +58,82 @@
 #ifndef HMI_SOCKET_PATH
 #define HMI_SOCKET_PATH HMI_SOCKET_DIR "/hmi.socket"
 #endif
-/** How long stop_loop waits for the frame in progress to return. */
-#ifndef HMI_STOP_TIMEOUT_MS
-#define HMI_STOP_TIMEOUT_MS 5000u
-#endif
-/** plc_main exit status when screen code never returns during a stop. */
-#define HMI_EXIT_SCREEN_STUCK 43
 
 #define HMI_EXPORT __attribute__((visibility("default")))
 
-#define FRAME_MS_DEFAULT 100u
-#define FRAME_MS_MIN 10u
-#define FRAME_MS_MAX 10000u
+#define PERIOD_MS_DEFAULT 100u
+#define PERIOD_MS_MIN 10u
+#define PERIOD_MS_MAX 10000u
 /** Control bytes queued for the web server above which the host stops reading its messages. */
 #define CONTROL_SOFT_MAX (64u * 1024u)
 #define READ_CHUNK 4096u
 #define LOG_LINE 768u
-/** Pointer coordinates are clamped to this many Q4 units either way. */
-#define POINTER_Q4_LIMIT (1 << 24)
+/** SHOW and WRITE requests one viewer may have queued, and their bytes. */
+#define REQUEST_QUEUE_CAP 128u
+#define REQUEST_QUEUE_BYTES (64u * 1024u)
+/** Bytes of a queued request before its value: kind, id, length. */
+#define REQUEST_HEADER 5u
+/** The debugger's success status for a write. */
+#define DEBUG_WRITE_OK 0x7E
 
 #define SAME_VALUE(a, b) ((int)(a) == (int)(b))
-_Static_assert(
-    SAME_VALUE(HMI_CODEC_BOOL, HMI_TAG_BOOL) && SAME_VALUE(HMI_CODEC_SINT, HMI_TAG_SINT) &&
-        SAME_VALUE(HMI_CODEC_INT, HMI_TAG_INT) && SAME_VALUE(HMI_CODEC_DINT, HMI_TAG_DINT) &&
-        SAME_VALUE(HMI_CODEC_LINT, HMI_TAG_LINT) && SAME_VALUE(HMI_CODEC_USINT, HMI_TAG_USINT) &&
-        SAME_VALUE(HMI_CODEC_UINT, HMI_TAG_UINT) && SAME_VALUE(HMI_CODEC_UDINT, HMI_TAG_UDINT) &&
-        SAME_VALUE(HMI_CODEC_ULINT, HMI_TAG_ULINT) && SAME_VALUE(HMI_CODEC_BYTE, HMI_TAG_BYTE) &&
-        SAME_VALUE(HMI_CODEC_WORD, HMI_TAG_WORD) && SAME_VALUE(HMI_CODEC_DWORD, HMI_TAG_DWORD) &&
-        SAME_VALUE(HMI_CODEC_LWORD, HMI_TAG_LWORD) && SAME_VALUE(HMI_CODEC_REAL, HMI_TAG_REAL) &&
-        SAME_VALUE(HMI_CODEC_LREAL, HMI_TAG_LREAL) && SAME_VALUE(HMI_CODEC_STRING, HMI_TAG_STRING) &&
-        SAME_VALUE(HMI_CODEC_TIME, HMI_TAG_TIME) && SAME_VALUE(HMI_CODEC_LTIME, HMI_TAG_LTIME) &&
-        SAME_VALUE(HMI_CODEC_DATE, HMI_TAG_DATE) && SAME_VALUE(HMI_CODEC_TOD, HMI_TAG_TOD) &&
-        SAME_VALUE(HMI_CODEC_DT, HMI_TAG_DT),
-    "hmi_codec_type_t must mirror hmi_tag_type");
-_Static_assert(SAME_VALUE(HMI_INPUT_DOWN, HMI_PTR_DOWN) &&
-                   SAME_VALUE(HMI_INPUT_MOVE, HMI_PTR_MOVE) && SAME_VALUE(HMI_INPUT_UP, HMI_PTR_UP),
-               "hmi_input_ptr_t must mirror hmi_ptr_kind");
-_Static_assert(HMI_ROLE_ADMIN == 0 && HMI_ROLE_VIEWER == 3, "wire roles are hmi_role values");
+_Static_assert(SAME_VALUE(HMI_CODEC_BOOL, HMI_ACCESS_BOOL) &&
+                   SAME_VALUE(HMI_CODEC_SINT, HMI_ACCESS_SINT) &&
+                   SAME_VALUE(HMI_CODEC_INT, HMI_ACCESS_INT) &&
+                   SAME_VALUE(HMI_CODEC_DINT, HMI_ACCESS_DINT) &&
+                   SAME_VALUE(HMI_CODEC_LINT, HMI_ACCESS_LINT) &&
+                   SAME_VALUE(HMI_CODEC_USINT, HMI_ACCESS_USINT) &&
+                   SAME_VALUE(HMI_CODEC_UINT, HMI_ACCESS_UINT) &&
+                   SAME_VALUE(HMI_CODEC_UDINT, HMI_ACCESS_UDINT) &&
+                   SAME_VALUE(HMI_CODEC_ULINT, HMI_ACCESS_ULINT) &&
+                   SAME_VALUE(HMI_CODEC_BYTE, HMI_ACCESS_BYTE) &&
+                   SAME_VALUE(HMI_CODEC_WORD, HMI_ACCESS_WORD) &&
+                   SAME_VALUE(HMI_CODEC_DWORD, HMI_ACCESS_DWORD) &&
+                   SAME_VALUE(HMI_CODEC_LWORD, HMI_ACCESS_LWORD) &&
+                   SAME_VALUE(HMI_CODEC_REAL, HMI_ACCESS_REAL) &&
+                   SAME_VALUE(HMI_CODEC_LREAL, HMI_ACCESS_LREAL) &&
+                   SAME_VALUE(HMI_CODEC_STRING, HMI_ACCESS_STRING) &&
+                   SAME_VALUE(HMI_CODEC_TIME, HMI_ACCESS_TIME) &&
+                   SAME_VALUE(HMI_CODEC_LTIME, HMI_ACCESS_LTIME) &&
+                   SAME_VALUE(HMI_CODEC_DATE, HMI_ACCESS_DATE) &&
+                   SAME_VALUE(HMI_CODEC_TOD, HMI_ACCESS_TOD) &&
+                   SAME_VALUE(HMI_CODEC_DT, HMI_ACCESS_DT),
+               "hmi_codec_type_t must mirror hmi_access_type");
 
 typedef enum
 {
-    VIEWER_PENDING, /**< OPEN received; the frame thread has not created its session yet */
-    VIEWER_OPEN,
-    VIEWER_CLOSING /**< closed or dropped; the frame thread frees it */
-} viewer_state_t;
+    REQUEST_SHOW  = HMI_MSG_SHOW,
+    REQUEST_WRITE = HMI_MSG_WRITE,
+    REQUEST_BIT   = HMI_MSG_BIT
+} request_kind_t;
 
 typedef struct viewer
 {
     struct viewer *next;
     uint32_t id;
-    viewer_state_t state;
+    bool closing; /**< closed or dropped; the value thread frees it */
     uint8_t role;
     char account[HMI_WIRE_NAME_MAX + 1];
 
     /* Under g_lock. */
-    uint16_t width;
-    uint16_t height;
-    bool viewport_dirty;
-    hmi_input_queue_t input;
-    hmi_slot_t slot;
-
-    /* Frame thread only. */
-    hmi_session_t *session;
-    void *unit;
-    uint32_t status_warned;
-    bool offer_warned;
-    bool was_open;      /**< reached VIEWER_OPEN, so its close is logged */
-    bool sign_out_sent; /**< its screen asked to sign out; SIGN_OUT went to the web server */
+    hmi_buf_t requests; /**< queued SHOW and WRITE requests: kind, u16 id, u16 length, value */
+    size_t request_count;
+    hmi_values_t values;
+    /** Page whose tags the viewer is served, -1 for none; set by the value thread. */
+    int32_t page;
+    /** Writes the value thread has processed, applied or refused. */
+    uint32_t writes;
+    /** A VALUES message must be sent even without a changed value (a new page, a write). */
+    bool announce;
 } viewer_t;
 
 static plugin_runtime_args_t g_args;
 static bool g_have_args;
 static bool g_live;
-static uint32_t g_frame_ms = FRAME_MS_DEFAULT;
+static uint32_t g_period_ms = PERIOD_MS_DEFAULT;
+static hmi_values_layout_t g_layout;
+/** Largest buffer-format value of any tag. */
+static size_t g_value_max = 1;
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cond;
@@ -137,20 +141,15 @@ static bool g_cond_ready;
 static viewer_t *g_viewers;
 static size_t g_open_count;
 static hmi_buf_t g_control;
-static bool g_frames_pending;
-static bool g_structural; /**< a viewer is pending or closing */
+static bool g_values_pending;
 static bool g_stop;
-static bool g_frame_done; /**< the frame thread has left its loop and freed its viewers */
 
 static bool g_running;
 static pthread_t g_io_thread;
-static pthread_t g_frame_thread;
+static pthread_t g_value_thread;
 static int g_listen_fd = -1;
 static int g_wake_rd   = -1;
 static int g_wake_wr   = -1;
-
-/** Viewer whose frame runs; its account is named in write logs. Frame thread only. */
-static const viewer_t *g_current;
 
 /* ---------------------------------------------------------------------------------------- */
 /* Logging                                                                                   */
@@ -190,6 +189,13 @@ static const char *role_name(uint8_t role)
 {
     static const char *const names[] = {"admin", "engineer", "operator", "viewer"};
     return role < 4 ? names[role] : "?";
+}
+
+static const char *tag_path(int tag)
+{
+    if (tag < 0 || tag >= hmi_access_tag_count || !hmi_access_tags[tag].path)
+        return "?";
+    return hmi_access_tags[tag].path;
 }
 
 /* ---------------------------------------------------------------------------------------- */
@@ -269,43 +275,35 @@ static int set_nonblocking(int fd)
 /* Control queue and viewer list (g_lock held)                                               */
 /* ---------------------------------------------------------------------------------------- */
 
-static bool control_append(const uint8_t *msg, size_t len)
+static void control_append(const uint8_t *msg, size_t len)
 {
-    if (g_control.cap - g_control.len < len)
-    {
-        size_t cap = g_control.cap ? g_control.cap * 2u : 256u;
-        while (cap - g_control.len < len)
-            cap *= 2u;
-        uint8_t *p = realloc(g_control.data, cap);
-        if (!p)
-            return false;
-        g_control.data = p;
-        g_control.cap  = cap;
-    }
-    memcpy(g_control.data + g_control.len, msg, len);
-    g_control.len += len;
-    return true;
+    if (!hmi_buf_append(&g_control, msg, len))
+        hmi_log(LOG_ERROR, "no memory to answer the web server");
 }
 
 static void control_viewer(uint8_t type, uint32_t id)
 {
     uint8_t msg[HMI_WIRE_VIEWER_MSG];
-    if (!control_append(msg, hmi_wire_encode_viewer(type, id, msg)))
-        hmi_log(LOG_ERROR, "no memory to answer viewer %u", (unsigned)id);
+    control_append(msg, hmi_wire_encode_viewer(type, id, msg));
 }
 
 static void control_status(uint8_t state)
 {
     uint8_t msg[HMI_WIRE_STATUS_MSG];
-    if (!control_append(msg, hmi_wire_encode_status(state, msg)))
-        hmi_log(LOG_ERROR, "no memory to report the HMI state");
+    control_append(msg, hmi_wire_encode_status(state, msg));
+}
+
+static void control_refused(uint32_t id, uint8_t what, uint16_t which)
+{
+    uint8_t msg[HMI_WIRE_REFUSED_MSG];
+    control_append(msg, hmi_wire_encode_refused(id, what, which, msg));
 }
 
 /** The viewer with this id that is not closing, or NULL. */
 static viewer_t *viewer_find(uint32_t id)
 {
     for (viewer_t *v = g_viewers; v; v = v->next)
-        if (v->id == id && v->state != VIEWER_CLOSING)
+        if (v->id == id && !v->closing)
             return v;
     return NULL;
 }
@@ -334,23 +332,107 @@ static void viewer_append(viewer_t *v)
 
 static void viewer_close_locked(viewer_t *v)
 {
-    if (v->state == VIEWER_CLOSING)
+    if (v->closing)
         return;
-    if (v->state == VIEWER_OPEN && g_open_count > 0)
+    v->closing = true;
+    if (g_open_count > 0)
         g_open_count--;
-    v->state     = VIEWER_CLOSING;
-    g_structural = true;
+}
+
+static void viewer_free(viewer_t *v)
+{
+    hmi_buf_free(&v->requests);
+    hmi_values_free(&v->values);
+    free(v);
 }
 
 /* ---------------------------------------------------------------------------------------- */
-/* Tag access (frame thread)                                                                 */
+/* Access checks                                                                             */
+/* ---------------------------------------------------------------------------------------- */
+
+/** Whether a role may open page. */
+static bool page_granted(int32_t page, uint8_t role)
+{
+    return page >= 0 && page < hmi_access_page_count && role <= HMI_WIRE_ROLE_MAX &&
+           (hmi_access_pages[page].roles & (1u << role)) != 0;
+}
+
+/** Whether a sorted id list holds id. */
+static bool list_has(const uint16_t *ids, uint16_t count, uint16_t id)
+{
+    size_t lo = 0, hi = count;
+    while (lo < hi)
+    {
+        const size_t mid = lo + (hi - lo) / 2u;
+        if (ids[mid] == id)
+            return true;
+        if (ids[mid] < id)
+            lo = mid + 1u;
+        else
+            hi = mid;
+    }
+    return false;
+}
+
+static bool page_reads(int32_t page, uint16_t tag)
+{
+    return page >= 0 && page < hmi_access_page_count &&
+           list_has(hmi_access_pages[page].reads, hmi_access_pages[page].read_count, tag);
+}
+
+/** How the shown page writes tag, or NULL when it does not write it. */
+static const hmi_access_write_t *page_write(int32_t page, uint16_t tag)
+{
+    if (page < 0 || page >= hmi_access_page_count)
+        return NULL;
+    const hmi_access_write_t *w = hmi_access_pages[page].writes;
+    size_t lo = 0, hi = hmi_access_pages[page].write_count;
+    while (lo < hi)
+    {
+        const size_t mid = lo + (hi - lo) / 2u;
+        if (w[mid].tag == tag)
+            return &w[mid];
+        if (w[mid].tag < tag)
+            lo = mid + 1u;
+        else
+            hi = mid;
+    }
+    return NULL;
+}
+
+/** Whether a tag's type takes bit assignments (integers and bit strings); its width in bits, else
+ * 0. */
+static unsigned bit_width(uint8_t type)
+{
+    switch (type)
+    {
+    case HMI_CODEC_SINT:
+    case HMI_CODEC_INT:
+    case HMI_CODEC_DINT:
+    case HMI_CODEC_LINT:
+    case HMI_CODEC_USINT:
+    case HMI_CODEC_UINT:
+    case HMI_CODEC_UDINT:
+    case HMI_CODEC_ULINT:
+    case HMI_CODEC_BYTE:
+    case HMI_CODEC_WORD:
+    case HMI_CODEC_DWORD:
+    case HMI_CODEC_LWORD:
+        return (unsigned)hmi_codec_width(type) * 8u;
+    default:
+        return 0;
+    }
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* PLC variables (value thread)                                                              */
 /* ---------------------------------------------------------------------------------------- */
 
 static bool tag_address(int tag, uint8_t *arr, uint16_t *elem)
 {
-    if (tag < 0 || tag >= hmi_tag_count)
+    if (tag < 0 || tag >= hmi_access_tag_count)
         return false;
-    const hmi_tag_t *t = &hmi_tags[tag];
+    const hmi_access_tag_t *t = &hmi_access_tags[tag];
     if (t->arr > UINT8_MAX || t->elem > UINT16_MAX)
         return false;
     *arr  = (uint8_t)t->arr;
@@ -358,13 +440,12 @@ static bool tag_address(int tag, uint8_t *arr, uint16_t *elem)
     return true;
 }
 
-static bool tag_read(void *ctx, int tag, void *dest)
+/** Reads a tag into buffer format; false when it cannot be read. */
+static bool tag_read(int tag, uint8_t *dest)
 {
-    (void)ctx;
     uint8_t arr;
     uint16_t elem;
-    if (!g_live || !dest || !g_args.debug_read || !g_args.debug_size ||
-        !tag_address(tag, &arr, &elem))
+    if (!g_live || !g_args.debug_read || !g_args.debug_size || !tag_address(tag, &arr, &elem))
         return false;
     const uint16_t dsize = g_args.debug_size(arr, elem);
     if (dsize == 0 || dsize > HMI_CODEC_DEBUG_MAX)
@@ -372,23 +453,27 @@ static bool tag_read(void *ctx, int tag, void *dest)
     uint8_t wire[HMI_CODEC_DEBUG_MAX];
     if (g_args.debug_read(arr, elem, wire) != dsize)
         return false;
-    return hmi_codec_from_debug(hmi_tags[tag].type, hmi_tags[tag].max_len, wire, dsize, dest);
+    const hmi_access_tag_t *t = &hmi_access_tags[tag];
+    return hmi_codec_from_debug(t->type, t->max_len, wire, dsize, dest);
 }
 
-static void tag_write(void *ctx, int tag, const void *src)
+/**
+ * Soft-writes a checked value in buffer format, logged with the viewer's account; bit >= 0 names
+ * the one bit a bit assignment changed, logged with the variable's resulting value.
+ */
+static void tag_write(const viewer_t *v, int tag, int bit, const uint8_t *src)
 {
-    (void)ctx;
     uint8_t arr;
     uint16_t elem;
-    if (!g_live || !src || !g_args.debug_write || !g_args.debug_size ||
-        !tag_address(tag, &arr, &elem))
-        return;
-    const hmi_tag_t *t  = &hmi_tags[tag];
-    const char *account = g_current ? g_current->account : "?";
-    const char *path    = t->path ? t->path : "?";
+    const hmi_access_tag_t *t = &hmi_access_tags[tag];
     char value[160];
     hmi_codec_format(t->type, t->max_len, src, value, sizeof value);
-
+    if (!g_args.debug_write || !g_args.debug_size || !tag_address(tag, &arr, &elem))
+    {
+        hmi_log(LOG_WARN, "write by %s: %s = %s failed: no debug access", v->account, tag_path(tag),
+                value);
+        return;
+    }
     const uint16_t dsize = g_args.debug_size(arr, elem);
     uint8_t wire[HMI_CODEC_DEBUG_MAX];
     bool truncated = false;
@@ -396,53 +481,221 @@ static void tag_write(void *ctx, int tag, const void *src)
         !hmi_codec_to_debug(t->type, t->max_len, src, wire, dsize, &truncated))
     {
         hmi_log(LOG_WARN, "write by %s: %s = %s refused: the variable does not match the HMI",
-                account, path, value);
+                v->account, tag_path(tag), value);
         return;
     }
     const uint8_t status = g_args.debug_write(arr, elem, wire, dsize);
-    if (status != 0x7E)
+    if (status != DEBUG_WRITE_OK)
     {
-        hmi_log(LOG_WARN, "write by %s: %s = %s failed (status 0x%02X)", account, path, value,
-                status);
+        hmi_log(LOG_WARN, "write by %s: %s = %s failed (status 0x%02X)", v->account, tag_path(tag),
+                value, status);
         return;
     }
-    hmi_log(LOG_INFO, "write by %s: %s = %s%s", account, path, value,
-            truncated ? " (cut to the debugger's string length)" : "");
+    if (bit >= 0)
+        hmi_log(LOG_INFO, "write by %s: %s.%d = %s (now %s)", v->account, tag_path(tag), bit,
+                (src[bit / 8] >> (bit % 8)) & 1u ? "TRUE" : "FALSE", value);
+    else
+        hmi_log(LOG_INFO, "write by %s: %s = %s%s", v->account, tag_path(tag), value,
+                truncated ? " (cut to the debugger's string length)" : "");
 }
-
-static const hmi_tag_access_t g_access = {tag_read, tag_write, NULL};
 
 /* ---------------------------------------------------------------------------------------- */
-/* Frame thread                                                                              */
+/* Value thread                                                                              */
 /* ---------------------------------------------------------------------------------------- */
 
-static int32_t css_to_lu(uint16_t css)
+static void refuse(viewer_t *v, uint8_t what, uint16_t which)
 {
-    return css > 0 ? (int32_t)css : 1;
+    pthread_mutex_lock(&g_lock);
+    if (!v->closing)
+        control_refused(v->id, what, which);
+    pthread_mutex_unlock(&g_lock);
+    wake_io();
 }
 
-static void viewer_free(viewer_t *v)
+/** SHOW: serve the page's tags when the viewer's role may open it, nothing otherwise. */
+static void apply_show(viewer_t *v, uint16_t page)
 {
-    if (v->unit)
-        hmi_unit_destroy(v->unit);
-    if (v->session)
-        hmi_session_destroy(v->session);
-    hmi_slot_free(&v->slot);
-    free(v);
+    const bool granted = page_granted(page, v->role);
+    pthread_mutex_lock(&g_lock);
+    v->page = granted ? (int32_t)page : -1;
+    hmi_values_forget_all(&v->values, &g_layout);
+    v->announce = true;
+    pthread_mutex_unlock(&g_lock);
+    if (!granted)
+    {
+        hmi_log(LOG_WARN, "screen %u refused for %s (%s): not a screen this role may open",
+                (unsigned)page, v->account, role_name(v->role));
+        refuse(v, HMI_REFUSED_SHOW, page);
+    }
 }
 
-/** Creates the session and unit of pending viewers and frees closing ones. */
-static void frame_structural(void)
+/** Counts a processed write and has a tag the shown page reads sent again with its value after it.
+ */
+static void count_write(viewer_t *v, int32_t page, uint16_t tag)
+{
+    pthread_mutex_lock(&g_lock);
+    v->writes++;
+    v->announce = true;
+    if (page_reads(page, tag))
+        hmi_values_forget(&v->values, &g_layout, tag);
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void refuse_write(viewer_t *v, uint16_t tag, const char *why)
+{
+    hmi_log(LOG_WARN, "write by %s (%s) of %s refused: %s", v->account, role_name(v->role),
+            tag < hmi_access_tag_count ? tag_path(tag) : "an unknown tag", why);
+    refuse(v, HMI_REFUSED_WRITE, tag);
+}
+
+/**
+ * WRITE: applied when the shown screen writes the tag as a whole value, the value fits its type and
+ * range, and lies within the screen's limit for the tag when it has one (its widgets' ranges and
+ * the literals it assigns). A tag the screen only assigns bit by bit takes no whole value.
+ * Conditions in screen code are not checked: they run in the browser.
+ */
+static void apply_write(viewer_t *v, uint16_t tag, const uint8_t *value, uint16_t len,
+                        uint8_t *buffer)
+{
+    const int32_t page            = v->page;
+    const hmi_access_write_t *how = page_write(page, tag);
+    const char *why               = NULL;
+    if (tag >= hmi_access_tag_count)
+        why = "no such variable";
+    else if (page < 0)
+        why = "no screen shown";
+    else if (!how)
+        why = "the screen shown does not write it";
+    else if (!how->whole)
+        why = "the screen shown only sets single bits of it";
+    else if (!hmi_codec_from_wire(hmi_access_tags[tag].type, hmi_access_tags[tag].max_len, value,
+                                  len, buffer))
+        why = "the value does not fit its type";
+    else if (how->limited &&
+             !hmi_codec_within(hmi_access_tags[tag].type, hmi_access_tags[tag].max_len, buffer,
+                               how->min, how->max))
+        why = "the value is outside what the screen shown can set";
+
+    if (why)
+        refuse_write(v, tag, why);
+    else
+        tag_write(v, tag, -1, buffer);
+    count_write(v, page, tag);
+}
+
+/**
+ * BIT: one bit assignment of the shown screen, applied to the variable's current value (read,
+ * change the bit, soft-write), so bits the PLC changed meanwhile stay. Only bits the screen
+ * assigns.
+ */
+static void apply_bit(viewer_t *v, uint16_t tag, uint8_t bit, uint8_t on, uint8_t *buffer)
+{
+    const int32_t page            = v->page;
+    const hmi_access_write_t *how = page_write(page, tag);
+    const char *why               = NULL;
+    if (tag >= hmi_access_tag_count)
+        why = "no such variable";
+    else if (page < 0)
+        why = "no screen shown";
+    else if (!how || ((how->bits >> bit) & 1u) == 0)
+        why = "the screen shown does not set that bit";
+    else if (bit >= bit_width(hmi_access_tags[tag].type))
+        why = "the variable has no such bit";
+    else if (!tag_read(tag, buffer))
+        why = "the variable cannot be read";
+
+    if (why)
+    {
+        refuse_write(v, tag, why);
+    }
+    else
+    {
+        const uint8_t mask = (uint8_t)(1u << (bit % 8u));
+        buffer[bit / 8u]   = (uint8_t)(on ? buffer[bit / 8u] | mask : buffer[bit / 8u] & ~mask);
+        tag_write(v, tag, bit, buffer);
+    }
+    count_write(v, page, tag);
+}
+
+/** Applies the viewer's queued requests in arrival order. */
+static void apply_requests(viewer_t *v, hmi_buf_t *scratch, uint8_t *buffer)
+{
+    pthread_mutex_lock(&g_lock);
+    hmi_buf_t taken  = v->requests;
+    v->requests      = *scratch;
+    v->requests.len  = 0;
+    v->request_count = 0;
+    pthread_mutex_unlock(&g_lock);
+
+    size_t off = 0;
+    while (off + REQUEST_HEADER <= taken.len)
+    {
+        const uint8_t *r   = taken.data + off;
+        const uint8_t kind = r[0];
+        const uint16_t id  = (uint16_t)(r[1] | (r[2] << 8));
+        const uint16_t len = (uint16_t)(r[3] | (r[4] << 8));
+        off += REQUEST_HEADER + len;
+        if (kind == REQUEST_SHOW)
+            apply_show(v, id);
+        else if (kind == REQUEST_BIT && len == 2)
+            apply_bit(v, id, r[REQUEST_HEADER], r[REQUEST_HEADER + 1], buffer);
+        else
+            apply_write(v, id, r + REQUEST_HEADER, len, buffer);
+    }
+    taken.len = 0;
+    *scratch  = taken;
+}
+
+/** Reads the shown page's tags and offers them to the viewer's pending message. */
+static bool serve_values(viewer_t *v, uint8_t *buffer, uint8_t *wire)
+{
+    const int32_t page = v->page;
+    bool stored        = false;
+    if (page >= 0)
+    {
+        const hmi_access_page_t *p = &hmi_access_pages[page];
+        for (uint16_t i = 0; i < p->read_count; i++)
+        {
+            const int tag = p->reads[i];
+            if (!tag_read(tag, buffer))
+                continue;
+            const hmi_access_tag_t *t = &hmi_access_tags[tag];
+            const size_t len          = hmi_codec_to_wire(t->type, t->max_len, buffer, wire);
+            pthread_mutex_lock(&g_lock);
+            if (hmi_values_offer(&v->values, &g_layout, tag, wire, (uint16_t)len))
+                v->announce = true;
+            pthread_mutex_unlock(&g_lock);
+        }
+    }
+    pthread_mutex_lock(&g_lock);
+    if (v->announce && !v->closing)
+    {
+        const uint16_t wire_page = page >= 0 ? (uint16_t)page : UINT16_MAX;
+        if (hmi_values_encode(&v->values, &g_layout, v->id, wire_page, v->writes))
+        {
+            v->announce      = false;
+            g_values_pending = true;
+            stored           = true;
+        }
+        else
+        {
+            hmi_log(LOG_ERROR, "viewer %u: its values could not be queued", (unsigned)v->id);
+        }
+    }
+    pthread_mutex_unlock(&g_lock);
+    return stored;
+}
+
+/** Frees closing viewers. */
+static void free_closing(void)
 {
     viewer_t *to_free = NULL;
-
     pthread_mutex_lock(&g_lock);
-    g_structural  = false;
     viewer_t **pp = &g_viewers;
     while (*pp)
     {
         viewer_t *v = *pp;
-        if (v->state == VIEWER_CLOSING)
+        if (v->closing)
         {
             *pp     = v->next;
             v->next = to_free;
@@ -451,210 +704,14 @@ static void frame_structural(void)
         }
         pp = &v->next;
     }
-    /* Pending viewers stay listed (so messages reach their queue); collect pointers only. */
-    size_t npending = 0;
-    for (viewer_t *v = g_viewers; v; v = v->next)
-        if (v->state == VIEWER_PENDING && !v->session)
-            npending++;
+    const size_t count = g_open_count;
     pthread_mutex_unlock(&g_lock);
-
     while (to_free)
     {
-        viewer_t *v         = to_free;
-        to_free             = v->next;
-        const uint32_t id   = v->id;
-        const bool was_open = v->was_open;
+        viewer_t *v = to_free;
+        to_free     = v->next;
+        hmi_log(LOG_INFO, "viewer %u closed: %zu viewer(s)", (unsigned)v->id, count);
         viewer_free(v);
-        if (was_open)
-        {
-            pthread_mutex_lock(&g_lock);
-            size_t count = g_open_count;
-            pthread_mutex_unlock(&g_lock);
-            hmi_log(LOG_INFO, "viewer %u closed: %zu viewer(s)", (unsigned)id, count);
-        }
-    }
-
-    while (npending > 0)
-    {
-        npending--;
-        viewer_t *v = NULL;
-        uint16_t w = 0, h = 0;
-        uint8_t role = 0;
-        pthread_mutex_lock(&g_lock);
-        for (viewer_t *it = g_viewers; it; it = it->next)
-        {
-            if (it->state == VIEWER_PENDING && !it->session)
-            {
-                v                  = it;
-                w                  = it->width;
-                h                  = it->height;
-                role               = it->role;
-                it->viewport_dirty = false;
-                break;
-            }
-        }
-        pthread_mutex_unlock(&g_lock);
-        if (!v)
-            break;
-
-        /* v cannot be freed meanwhile: only this thread frees viewers. */
-        hmi_session_t *session = hmi_session_create();
-        void *unit             = session ? hmi_unit_create() : NULL;
-        if (session && unit)
-        {
-            hmi_session_use(session);
-            hmi_core_init(css_to_lu(w), css_to_lu(h));
-            hmi_unit_set_role(unit, role);
-        }
-
-        pthread_mutex_lock(&g_lock);
-        v->session   = session;
-        v->unit      = unit;
-        bool opened  = false;
-        size_t count = 0;
-        if (!session || !unit)
-        {
-            if (v->state == VIEWER_PENDING)
-                control_viewer(HMI_MSG_BUSY, v->id);
-            v->state     = VIEWER_CLOSING;
-            g_structural = true;
-        }
-        else if (v->state == VIEWER_PENDING)
-        {
-            v->state    = VIEWER_OPEN;
-            v->was_open = true;
-            g_open_count++;
-            count  = g_open_count;
-            opened = true;
-            control_viewer(HMI_MSG_OPENED, v->id);
-        }
-        const uint32_t id = v->id;
-        char account[HMI_WIRE_NAME_MAX + 1];
-        memcpy(account, v->account, sizeof account);
-        const uint8_t vrole = v->role;
-        pthread_mutex_unlock(&g_lock);
-        wake_io();
-
-        if (opened)
-            hmi_log(LOG_INFO, "viewer %u opened by %s (%s): %zu viewer(s)", (unsigned)id, account,
-                    role_name(vrole), count);
-        else if (!session || !unit)
-            hmi_log(LOG_WARN, "viewer %u refused: no memory for its screens", (unsigned)id);
-    }
-}
-
-static void apply_input(const hmi_input_event_t *ev, size_t n)
-{
-    for (size_t i = 0; i < n; i++)
-    {
-        if (ev[i].kind == HMI_INPUT_POINTER)
-            hmi_input_pointer(ev[i].ptr_kind, ev[i].x_q4, ev[i].y_q4);
-        else
-            hmi_input_key(ev[i].code);
-    }
-}
-
-/** Closes a viewer whose screen code raised an IEC fault and tells the web server with FAULT. */
-static void viewer_fault(viewer_t *v)
-{
-    pthread_mutex_lock(&g_lock);
-    const bool was_open = v->state == VIEWER_OPEN;
-    if (was_open)
-    {
-        viewer_close_locked(v);
-        control_viewer(HMI_MSG_FAULT, v->id);
-    }
-    pthread_mutex_unlock(&g_lock);
-    hmi_log(LOG_WARN, "screen fault for %s: viewer %u closed", v->account, (unsigned)v->id);
-    if (was_open)
-        wake_io();
-}
-
-static void render_viewer(viewer_t *v, uint32_t time_ms, bool *stored_any)
-{
-    hmi_input_event_t ev[HMI_INPUT_QUEUE_CAP];
-    size_t n     = 0;
-    bool resize  = false;
-    int32_t w_lu = 0;
-    int32_t h_lu = 0;
-
-    pthread_mutex_lock(&g_lock);
-    if (v->state != VIEWER_OPEN)
-    {
-        pthread_mutex_unlock(&g_lock);
-        return;
-    }
-    n = hmi_input_take_frame(&v->input, ev, HMI_INPUT_QUEUE_CAP);
-    if (v->viewport_dirty)
-    {
-        resize            = true;
-        w_lu              = css_to_lu(v->width);
-        h_lu              = css_to_lu(v->height);
-        v->viewport_dirty = false;
-    }
-    pthread_mutex_unlock(&g_lock);
-
-    hmi_session_use(v->session);
-    if (resize)
-        hmi_set_screen_size(w_lu, h_lu);
-    apply_input(ev, n);
-    hmi_set_time_ms(time_ms);
-
-    g_current = v;
-    hmi_frame_begin();
-    const bool ran      = hmi_unit_frame(v->unit);
-    size_t len          = 0;
-    const uint8_t *dl   = hmi_frame_end(&len);
-    const uint64_t hash = hmi_frame_hash();
-    g_current           = NULL;
-    if (!ran)
-    {
-        viewer_fault(v);
-        return;
-    }
-
-    if (hmi_frame_sign_out() && !v->sign_out_sent)
-    {
-        v->sign_out_sent = true;
-        pthread_mutex_lock(&g_lock);
-        const bool open = v->state == VIEWER_OPEN;
-        if (open)
-            control_viewer(HMI_MSG_SIGN_OUT, v->id);
-        pthread_mutex_unlock(&g_lock);
-        if (open)
-        {
-            hmi_log(LOG_INFO, "%s signed out from the screen (viewer %u)", v->account,
-                    (unsigned)v->id);
-            wake_io();
-        }
-    }
-
-    const uint32_t status = hmi_frame_status();
-    if (status & ~v->status_warned)
-    {
-        v->status_warned |= status;
-        hmi_log(LOG_WARN, "viewer %u: the screen exceeds the HMI's limits (status 0x%X)",
-                (unsigned)v->id, (unsigned)status);
-    }
-
-    pthread_mutex_lock(&g_lock);
-    hmi_slot_result_t r = HMI_SLOT_UNCHANGED;
-    if (v->state == VIEWER_OPEN)
-    {
-        r = hmi_slot_offer(&v->slot, v->id, dl, len, hash);
-        if (r == HMI_SLOT_STORED)
-        {
-            g_frames_pending = true;
-            *stored_any      = true;
-        }
-    }
-    pthread_mutex_unlock(&g_lock);
-
-    if (r == HMI_SLOT_FAILED && !v->offer_warned)
-    {
-        v->offer_warned = true;
-        hmi_log(LOG_ERROR, "viewer %u: frame of %zu bytes could not be queued", (unsigned)v->id,
-                len);
     }
 }
 
@@ -667,43 +724,49 @@ static void set_default_priority(void)
 #endif
 }
 
-static void *frame_main(void *arg)
+/**
+ * The value thread: every period it frees closing viewers, then applies each open viewer's
+ * requests and serves its values. Viewers stay allocated until this thread frees them, so the
+ * list it snapshots stays valid without g_lock.
+ */
+static void *value_main(void *arg)
 {
     (void)arg;
     set_default_priority();
 
     viewer_t **list       = NULL;
     size_t list_cap       = 0;
-    const uint64_t t0     = now_ns();
-    uint64_t next         = t0;
-    const uint64_t period = (uint64_t)g_frame_ms * 1000000u;
+    uint64_t next         = now_ns();
+    const uint64_t period = (uint64_t)g_period_ms * 1000000u;
+    hmi_buf_t scratch     = {0};
+    uint8_t *buffer       = malloc(g_value_max);
+    uint8_t *wire         = malloc(g_value_max);
+    if (!buffer || !wire)
+        hmi_log(LOG_ERROR, "no memory for the value thread: no values are served");
 
     for (;;)
     {
         pthread_mutex_lock(&g_lock);
-        while (!g_stop && !g_structural && now_ns() < next)
+        while (!g_stop && now_ns() < next)
             cond_wait_until(next);
-        const bool stop       = g_stop;
-        const bool structural = g_structural;
+        const bool stop = g_stop;
         pthread_mutex_unlock(&g_lock);
         if (stop)
             break;
-        if (structural)
-            frame_structural();
-
         const uint64_t now = now_ns();
-        if (now < next)
-            continue;
         next += period;
         if (next <= now)
             next = now + period;
 
-        /* Snapshot the open viewers; they stay allocated until this thread frees them. */
+        free_closing();
+        if (!buffer || !wire)
+            continue;
+
         size_t count = 0;
         pthread_mutex_lock(&g_lock);
         for (viewer_t *v = g_viewers; v; v = v->next)
         {
-            if (v->state != VIEWER_OPEN)
+            if (v->closing)
                 continue;
             if (count == list_cap)
             {
@@ -718,15 +781,20 @@ static void *frame_main(void *arg)
         }
         pthread_mutex_unlock(&g_lock);
 
-        const uint32_t time_ms = (uint32_t)((now - t0) / 1000000u);
-        bool stored            = false;
+        bool stored = false;
         for (size_t i = 0; i < count; i++)
-            render_viewer(list[i], time_ms, &stored);
+        {
+            apply_requests(list[i], &scratch, buffer);
+            stored |= serve_values(list[i], buffer, wire);
+        }
         if (stored)
             wake_io();
     }
 
     free(list);
+    free(buffer);
+    free(wire);
+    hmi_buf_free(&scratch);
     pthread_mutex_lock(&g_lock);
     viewer_t *all = g_viewers;
     g_viewers     = NULL;
@@ -738,10 +806,6 @@ static void *frame_main(void *arg)
         all         = v->next;
         viewer_free(v);
     }
-    pthread_mutex_lock(&g_lock);
-    g_frame_done = true;
-    pthread_cond_broadcast(&g_cond);
-    pthread_mutex_unlock(&g_lock);
     return NULL;
 }
 
@@ -758,17 +822,6 @@ typedef struct
     size_t out_off;
 } conn_t;
 
-/** CSS pixels x100 to Q4 logical units (1/16 of a CSS pixel), clamped. */
-static int32_t to_q4(int32_t v100)
-{
-    int64_t q = ((int64_t)v100 * 16) / 100;
-    if (q > POINTER_Q4_LIMIT)
-        q = POINTER_Q4_LIMIT;
-    if (q < -POINTER_Q4_LIMIT)
-        q = -POINTER_Q4_LIMIT;
-    return (int32_t)q;
-}
-
 /** Drops every viewer and the connection. */
 static void conn_close(conn_t *c, const char *why)
 {
@@ -784,29 +837,72 @@ static void conn_close(conn_t *c, const char *why)
     pthread_mutex_lock(&g_lock);
     for (viewer_t *v = g_viewers; v; v = v->next)
     {
-        if (v->state != VIEWER_CLOSING)
+        if (!v->closing)
         {
             viewer_close_locked(v);
             dropped++;
         }
     }
     g_control.len    = 0;
-    g_frames_pending = false;
-    pthread_cond_signal(&g_cond);
+    g_values_pending = false;
     pthread_mutex_unlock(&g_lock);
     hmi_log(LOG_INFO, "web server connection closed (%s): %zu viewer(s) dropped", why, dropped);
 }
 
-/** Queues input (g_lock held); returns false when the viewer was dropped for overflowing. */
-static bool push_input(viewer_t *v, const hmi_input_event_t *ev)
+/** Queues a SHOW, WRITE or BIT request (g_lock held); false when the viewer was dropped for
+ * overflowing its queue: more requests than the value thread takes, so it cannot be served. */
+static bool push_request(viewer_t *v, uint8_t kind, uint16_t id, const uint8_t *value, uint16_t len)
 {
-    if (hmi_input_push(&v->input, ev))
+    const uint8_t head[REQUEST_HEADER] = {kind, (uint8_t)id, (uint8_t)(id >> 8), (uint8_t)len,
+                                          (uint8_t)(len >> 8)};
+    const size_t need                  = v->requests.len + REQUEST_HEADER + len;
+    if (v->request_count < REQUEST_QUEUE_CAP && need <= REQUEST_QUEUE_BYTES &&
+        hmi_buf_reserve(&v->requests, need))
+    {
+        memcpy(v->requests.data + v->requests.len, head, REQUEST_HEADER);
+        if (len > 0)
+            memcpy(v->requests.data + v->requests.len + REQUEST_HEADER, value, len);
+        v->requests.len = need;
+        v->request_count++;
         return true;
-    /* More presses, releases and keys than frames apply: the viewer cannot be served. */
+    }
     viewer_close_locked(v);
     control_viewer(HMI_MSG_BUSY, v->id);
-    pthread_cond_signal(&g_cond);
     return false;
+}
+
+/** Opens a viewer (g_lock held). */
+static void open_viewer(const hmi_wire_msg_t *m)
+{
+    if (!g_live)
+    {
+        control_status(HMI_STATE_OUT_OF_DATE);
+        return;
+    }
+    if (!m->name_valid)
+    {
+        hmi_log(LOG_WARN, "viewer %u refused: its account name is not printable UTF-8",
+                (unsigned)m->viewer);
+        control_viewer(HMI_MSG_BUSY, m->viewer);
+        return;
+    }
+    viewer_t *nv = calloc(1, sizeof *nv);
+    if (!nv || !hmi_values_init(&nv->values, &g_layout))
+    {
+        free(nv);
+        hmi_log(LOG_WARN, "viewer %u refused: no memory", (unsigned)m->viewer);
+        control_viewer(HMI_MSG_BUSY, m->viewer);
+        return;
+    }
+    nv->id   = m->viewer;
+    nv->role = m->role;
+    nv->page = -1;
+    memcpy(nv->account, m->name, (size_t)m->name_len + 1u);
+    viewer_append(nv);
+    g_open_count++;
+    control_viewer(HMI_MSG_OPENED, nv->id);
+    hmi_log(LOG_INFO, "viewer %u opened by %s (%s): %zu viewer(s)", (unsigned)nv->id, nv->account,
+            role_name(nv->role), g_open_count);
 }
 
 /** Applies one message; returns false when it breaks the protocol. */
@@ -815,74 +911,33 @@ static bool handle_message(const hmi_wire_msg_t *m)
     bool ok         = true;
     bool overflowed = false;
     pthread_mutex_lock(&g_lock);
-    viewer_t *v = m->type == HMI_MSG_OPEN ? NULL : viewer_find(m->viewer);
+    viewer_t *v = viewer_find(m->viewer);
 
     switch (m->type)
     {
     case HMI_MSG_OPEN:
-    {
-        if (!g_live)
-        {
-            control_status(HMI_STATE_OUT_OF_DATE);
-            break;
-        }
-        if (viewer_find(m->viewer))
-        {
+        if (v)
             ok = false;
-            break;
-        }
-        if (!m->name_valid)
-        {
-            hmi_log(LOG_WARN, "viewer %u refused: its account name is not printable UTF-8",
-                    (unsigned)m->viewer);
-            control_viewer(HMI_MSG_BUSY, m->viewer);
-            break;
-        }
-        viewer_t *nv = calloc(1, sizeof *nv);
-        if (!nv)
-        {
-            control_viewer(HMI_MSG_BUSY, m->viewer);
-            break;
-        }
-        nv->id     = m->viewer;
-        nv->state  = VIEWER_PENDING;
-        nv->role   = m->role;
-        nv->width  = m->width;
-        nv->height = m->height;
-        memcpy(nv->account, m->name, (size_t)m->name_len + 1u);
-        hmi_input_reset(&nv->input);
-        viewer_append(nv);
-        g_structural = true;
-        pthread_cond_signal(&g_cond);
+        else
+            open_viewer(m);
         break;
-    }
     case HMI_MSG_CLOSE:
         if (v)
-        {
             viewer_close_locked(v);
-            pthread_cond_signal(&g_cond);
-        }
         break;
-    case HMI_MSG_VIEWPORT:
+    case HMI_MSG_SHOW:
+        if (v)
+            overflowed = !push_request(v, REQUEST_SHOW, m->page, NULL, 0);
+        break;
+    case HMI_MSG_WRITE:
+        if (v)
+            overflowed = !push_request(v, REQUEST_WRITE, m->tag, m->value, m->value_len);
+        break;
+    case HMI_MSG_BIT:
         if (v)
         {
-            v->width          = m->width;
-            v->height         = m->height;
-            v->viewport_dirty = true;
-        }
-        break;
-    case HMI_MSG_POINTER:
-        if (v)
-        {
-            hmi_input_event_t ev = {HMI_INPUT_POINTER, m->kind, to_q4(m->x100), to_q4(m->y100), 0};
-            overflowed           = !push_input(v, &ev);
-        }
-        break;
-    case HMI_MSG_KEY:
-        if (v)
-        {
-            hmi_input_event_t ev = {HMI_INPUT_KEY, 0, 0, 0, m->code};
-            overflowed           = !push_input(v, &ev);
+            const uint8_t bit[2] = {m->bit, m->bit_value};
+            overflowed           = !push_request(v, REQUEST_BIT, m->tag, bit, sizeof bit);
         }
         break;
     default:
@@ -891,7 +946,7 @@ static bool handle_message(const hmi_wire_msg_t *m)
     }
     pthread_mutex_unlock(&g_lock);
     if (overflowed)
-        hmi_log(LOG_WARN, "viewer %u dropped: its input queue overflowed", (unsigned)m->viewer);
+        hmi_log(LOG_WARN, "viewer %u dropped: its request queue overflowed", (unsigned)m->viewer);
     return ok;
 }
 
@@ -943,7 +998,7 @@ static bool conn_read(conn_t *c, const char **why)
     }
 }
 
-/** Moves the next message to send into c->out: control first, then frames in turn. */
+/** Moves the next message to send into c->out: control first, then VALUES in turn. */
 static bool next_output(conn_t *c)
 {
     bool got = false;
@@ -956,12 +1011,12 @@ static bool next_output(conn_t *c)
         g_control.len = 0;
         got           = true;
     }
-    else if (g_frames_pending)
+    else if (g_values_pending)
     {
         viewer_t *taken = NULL;
         for (viewer_t *v = g_viewers; v; v = v->next)
         {
-            if (v->state == VIEWER_OPEN && hmi_slot_take(&v->slot, &c->out))
+            if (!v->closing && hmi_values_take(&v->values, &g_layout, &c->out))
             {
                 taken = v;
                 break;
@@ -976,7 +1031,7 @@ static bool next_output(conn_t *c)
         }
         else
         {
-            g_frames_pending = false;
+            g_values_pending = false;
         }
     }
     pthread_mutex_unlock(&g_lock);
@@ -989,7 +1044,7 @@ static bool conn_has_output(const conn_t *c)
     if (c->out_off < c->out.len)
         return true;
     pthread_mutex_lock(&g_lock);
-    bool pending = g_control.len > 0 || g_frames_pending;
+    bool pending = g_control.len > 0 || g_values_pending;
     pthread_mutex_unlock(&g_lock);
     return pending;
 }
@@ -1130,21 +1185,83 @@ static void *io_main(void *arg)
 /* Plugin interface                                                                          */
 /* ---------------------------------------------------------------------------------------- */
 
-static bool tag_table_valid(void)
+/** Whether a page's id list is ascending, without repeats, and names only known tags. */
+static bool id_list_valid(const uint16_t *ids, uint16_t count)
 {
-    if (hmi_tag_count < 0)
-        return false;
-    for (int i = 0; i < hmi_tag_count; i++)
-    {
-        const hmi_tag_t *t = &hmi_tags[i];
-        const size_t size  = hmi_codec_buffer_size(t->type, t->max_len);
-        if (size == 0 || hmi_tag_size(i) != size || t->arr > UINT8_MAX || t->elem > UINT16_MAX)
-        {
-            hmi_log(LOG_ERROR, "tag %d (%s) cannot be served", i, t->path ? t->path : "?");
+    for (uint16_t i = 0; i < count; i++)
+        if (ids[i] >= hmi_access_tag_count || (i > 0 && ids[i] <= ids[i - 1]))
             return false;
-        }
+    return true;
+}
+
+/**
+ * Whether a page's write list is ascending by tag without repeats, names only known tags, writes
+ * each one somehow, and sets bits only of integer and bit-string tags, within their width.
+ */
+static bool write_list_valid(const hmi_access_write_t *w, uint16_t count)
+{
+    for (uint16_t i = 0; i < count; i++)
+    {
+        if (w[i].tag >= hmi_access_tag_count || (i > 0 && w[i].tag <= w[i - 1].tag))
+            return false;
+        if (!w[i].whole && w[i].bits == 0)
+            return false;
+        if (w[i].limited && (!w[i].whole || !(w[i].min <= w[i].max)))
+            return false;
+        const unsigned width = bit_width(hmi_access_tags[w[i].tag].type);
+        if (w[i].bits != 0 && (width == 0 || (width < 64u && (w[i].bits >> width) != 0)))
+            return false;
     }
     return true;
+}
+
+/** Checks the manifest and builds the value layout; false when it cannot be served. */
+static bool manifest_valid(void)
+{
+    if (hmi_access_tag_count < 0 || hmi_access_tag_count > UINT16_MAX ||
+        hmi_access_page_count <= 0 || hmi_access_page_count >= UINT16_MAX)
+    {
+        hmi_log(LOG_ERROR, "the HMI manifest has %d tags and %d screens", hmi_access_tag_count,
+                hmi_access_page_count);
+        return false;
+    }
+    uint16_t *max = calloc(hmi_access_tag_count > 0 ? (size_t)hmi_access_tag_count : 1u, 2);
+    if (!max)
+        return false;
+    bool ok     = true;
+    g_value_max = 1;
+    for (int i = 0; i < hmi_access_tag_count && ok; i++)
+    {
+        const hmi_access_tag_t *t = &hmi_access_tags[i];
+        const size_t size         = hmi_codec_buffer_size(t->type, t->max_len);
+        const size_t wire         = t->type == HMI_CODEC_STRING ? t->max_len : size;
+        if (size == 0 || wire > HMI_WIRE_VALUE_MAX || t->arr > UINT8_MAX || t->elem > UINT16_MAX)
+        {
+            hmi_log(LOG_ERROR, "tag %d (%s) cannot be served", i, tag_path(i));
+            ok = false;
+            break;
+        }
+        max[i] = (uint16_t)wire;
+        if (size > g_value_max)
+            g_value_max = size;
+    }
+    for (int p = 0; p < hmi_access_page_count && ok; p++)
+    {
+        const hmi_access_page_t *page = &hmi_access_pages[p];
+        if (!id_list_valid(page->reads, page->read_count) ||
+            !write_list_valid(page->writes, page->write_count))
+        {
+            hmi_log(LOG_ERROR, "screen %d of the HMI manifest lists its tags wrongly", p);
+            ok = false;
+        }
+    }
+    if (ok)
+    {
+        hmi_values_layout_free(&g_layout);
+        ok = hmi_values_layout_init(&g_layout, max, hmi_access_tag_count);
+    }
+    free(max);
+    return ok;
 }
 
 /** The HMI never touches the image tables, so any per-table sizes suit it. */
@@ -1163,21 +1280,21 @@ HMI_EXPORT int init(void *args)
     g_have_args                                       = true;
     g_args.program_md5[sizeof g_args.program_md5 - 1] = '\0';
 
-    g_frame_ms = hmi_frame_ms;
-    if (g_frame_ms == 0)
-        g_frame_ms = FRAME_MS_DEFAULT;
-    if (g_frame_ms < FRAME_MS_MIN)
-        g_frame_ms = FRAME_MS_MIN;
-    if (g_frame_ms > FRAME_MS_MAX)
-        g_frame_ms = FRAME_MS_MAX;
+    g_period_ms = hmi_access_period_ms;
+    if (g_period_ms == 0)
+        g_period_ms = PERIOD_MS_DEFAULT;
+    if (g_period_ms < PERIOD_MS_MIN)
+        g_period_ms = PERIOD_MS_MIN;
+    if (g_period_ms > PERIOD_MS_MAX)
+        g_period_ms = PERIOD_MS_MAX;
 
-    g_live = hmi_md5_live(g_args.program_md5, hmi_plc_md5) && tag_table_valid();
+    g_live = hmi_md5_live(g_args.program_md5, hmi_access_plc_md5) && manifest_valid();
     if (g_live)
-        hmi_log(LOG_INFO, "screens match the PLC program (%d tags, frame %u ms)", hmi_tag_count,
-                (unsigned)g_frame_ms);
+        hmi_log(LOG_INFO, "screens match the PLC program (%d tags, %d screens, values every %u ms)",
+                hmi_access_tag_count, hmi_access_page_count, (unsigned)g_period_ms);
     else
         hmi_log(LOG_INFO, "screens out of date: PLC program '%s', screens built for '%s'",
-                g_args.program_md5, hmi_plc_md5);
+                g_args.program_md5, hmi_access_plc_md5);
     return 0;
 }
 
@@ -1298,20 +1415,16 @@ HMI_EXPORT int start_loop(void)
 
     pthread_mutex_lock(&g_lock);
     g_stop           = false;
-    g_frame_done     = false;
-    g_structural     = false;
-    g_frames_pending = false;
+    g_values_pending = false;
     g_open_count     = 0;
     g_control.len    = 0;
     pthread_mutex_unlock(&g_lock);
 
-    hmi_set_tag_access(&g_access);
-    if (start_thread(&g_frame_thread, frame_main) != 0)
+    if (start_thread(&g_value_thread, value_main) != 0)
     {
-        hmi_set_tag_access(NULL);
         close_fds();
         (void)unlink(HMI_SOCKET_PATH);
-        hmi_log(LOG_ERROR, "cannot start the frame thread");
+        hmi_log(LOG_ERROR, "cannot start the value thread");
         return -1;
     }
     if (start_thread(&g_io_thread, io_main) != 0)
@@ -1320,8 +1433,7 @@ HMI_EXPORT int start_loop(void)
         g_stop = true;
         pthread_cond_signal(&g_cond);
         pthread_mutex_unlock(&g_lock);
-        pthread_join(g_frame_thread, NULL);
-        hmi_set_tag_access(NULL);
+        pthread_join(g_value_thread, NULL);
         close_fds();
         (void)unlink(HMI_SOCKET_PATH);
         hmi_log(LOG_ERROR, "cannot start the socket thread");
@@ -1330,28 +1442,6 @@ HMI_EXPORT int start_loop(void)
     g_running = true;
     hmi_log(LOG_INFO, "serving viewers on %s", HMI_SOCKET_PATH);
     return 0;
-}
-
-/**
- * Joins the frame thread once its current frame returns. Screen code that never returns would keep
- * running code plc_main is about to unload, so past HMI_STOP_TIMEOUT_MS plc_main exits and the
- * runtime restarts it.
- */
-static void join_frame_thread(void)
-{
-    const uint64_t deadline = now_ns() + (uint64_t)HMI_STOP_TIMEOUT_MS * 1000000u;
-    pthread_mutex_lock(&g_lock);
-    while (!g_frame_done && now_ns() < deadline)
-        cond_wait_until(deadline);
-    const bool done = g_frame_done;
-    pthread_mutex_unlock(&g_lock);
-    if (!done)
-    {
-        hmi_log(LOG_ERROR, "screen code has not returned for %u ms; ending plc_main",
-                (unsigned)HMI_STOP_TIMEOUT_MS);
-        _exit(HMI_EXIT_SCREEN_STUCK);
-    }
-    pthread_join(g_frame_thread, NULL);
 }
 
 HMI_EXPORT void stop_loop(void)
@@ -1364,10 +1454,9 @@ HMI_EXPORT void stop_loop(void)
     pthread_mutex_unlock(&g_lock);
     wake_io();
     pthread_join(g_io_thread, NULL);
-    join_frame_thread();
+    pthread_join(g_value_thread, NULL);
     g_running = false;
 
-    hmi_set_tag_access(NULL);
     close_fds();
     if (unlink(HMI_SOCKET_PATH) != 0 && errno != ENOENT)
         hmi_log(LOG_WARN, "could not remove %s: %s", HMI_SOCKET_PATH, strerror(errno));
@@ -1380,5 +1469,6 @@ HMI_EXPORT void stop_loop(void)
 HMI_EXPORT void cleanup(void)
 {
     stop_loop();
+    hmi_values_layout_free(&g_layout);
     g_have_args = false;
 }

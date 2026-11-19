@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 
-// Host test of the HMI plugin's pure parts: wire protocol, input queue and coalescing,
-// latest-frame slot, buffer <-> debug conversion and the MD5 gate.
+// Host test of the HMI plugin's pure parts: wire protocol, per-viewer values, buffer <-> debug
+// and wire conversion with the checks on viewers' values, and the MD5 gate.
 
 #include "drivers/plugins/native/hmi/hmi_codec.h"
-#include "drivers/plugins/native/hmi/hmi_input.h"
-#include "drivers/plugins/native/hmi/hmi_slot.h"
+#include "drivers/plugins/native/hmi/hmi_values.h"
 #include "drivers/plugins/native/hmi/hmi_wire.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,16 @@ static void put_u32(Bytes &b, uint32_t v)
         b.push_back((uint8_t)(v >> (8 * i)));
 }
 
+static uint16_t get_u16(const uint8_t *p)
+{
+    return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+static uint32_t get_u32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
 static Bytes message(uint8_t type, const Bytes &payload)
 {
     Bytes b;
@@ -49,17 +60,23 @@ static Bytes message(uint8_t type, const Bytes &payload)
     return b;
 }
 
-static Bytes open_payload(uint32_t viewer, uint8_t role, uint16_t w, uint16_t h, uint16_t d,
-                          const std::string &name)
+static Bytes open_payload(uint32_t viewer, uint8_t role, const std::string &name)
 {
     Bytes p;
     put_u32(p, viewer);
     p.push_back(role);
-    put_u16(p, w);
-    put_u16(p, h);
-    put_u16(p, d);
     p.push_back((uint8_t)name.size());
     p.insert(p.end(), name.begin(), name.end());
+    return p;
+}
+
+static Bytes write_payload(uint32_t viewer, uint16_t tag, const Bytes &value)
+{
+    Bytes p;
+    put_u32(p, viewer);
+    put_u16(p, tag);
+    put_u16(p, (uint16_t)value.size());
+    p.insert(p.end(), value.begin(), value.end());
     return p;
 }
 
@@ -72,332 +89,201 @@ static hmi_wire_result_t decode(const Bytes &b, hmi_wire_msg_t *m, size_t *used)
 
 static void test_wire_decode()
 {
-    std::printf("wire decoder\n");
+    std::printf("wire: decode\n");
     hmi_wire_msg_t m;
     size_t used = 0;
 
-    Bytes open = message(0x01, open_payload(42, 2, 1280, 800, 150, "Jos\xC3\xA9"));
-    CHECK(decode(open, &m, &used) == HMI_WIRE_DECODED, "OPEN decodes");
-    CHECK(used == open.size(), "OPEN consumes the whole message");
-    CHECK(m.viewer == 42 && m.role == 2 && m.width == 1280 && m.height == 800 && m.density == 150,
+    Bytes open = message(0x01, open_payload(7, 2, "alice"));
+    CHECK(decode(open, &m, &used) == HMI_WIRE_DECODED && used == open.size(), "OPEN decoded");
+    CHECK(m.type == HMI_MSG_OPEN && m.viewer == 7 && m.role == 2 && m.name_valid &&
+              std::strcmp(m.name, "alice") == 0,
           "OPEN fields");
-    CHECK(m.name_valid && m.name_len == 5 && std::strcmp(m.name, "Jos\xC3\xA9") == 0,
-          "OPEN name, UTF-8");
 
-    for (size_t cut = 0; cut < open.size(); cut++)
-    {
-        Bytes part(open.begin(), open.begin() + (long)cut);
-        if (decode(part, &m, &used) != HMI_WIRE_NEED_MORE)
-        {
-            CHECK(false, "a prefix of a valid message needs more");
-            break;
-        }
-    }
+    Bytes bad_name = message(0x01, open_payload(8, 0, std::string("a\x01b")));
+    CHECK(decode(bad_name, &m, &used) == HMI_WIRE_DECODED && !m.name_valid && m.name[0] == 0,
+          "a control character makes the name invalid, not the message");
 
-    Bytes two = message(0x02, {7, 0, 0, 0});
-    Bytes key = message(0x05, {7, 0, 0, 0, 65, 0, 0, 0});
-    two.insert(two.end(), key.begin(), key.end());
-    CHECK(decode(two, &m, &used) == HMI_WIRE_DECODED && m.type == 0x02 && m.viewer == 7 &&
-              used == 9,
-          "first of two messages");
-    Bytes rest(two.begin() + (long)used, two.end());
-    CHECK(decode(rest, &m, &used) == HMI_WIRE_DECODED && m.type == 0x05 && m.code == 65,
-          "second of two messages");
+    Bytes close;
+    put_u32(close, 7);
+    CHECK(decode(message(0x02, close), &m, &used) == HMI_WIRE_DECODED && m.type == HMI_MSG_CLOSE &&
+              m.viewer == 7,
+          "CLOSE");
 
-    Bytes vp;
-    put_u32(vp, 3);
-    put_u16(vp, 8192);
-    put_u16(vp, 1);
-    put_u16(vp, 800);
-    CHECK(decode(message(0x03, vp), &m, &used) == HMI_WIRE_DECODED && m.width == 8192 &&
-              m.height == 1 && m.density == 800,
-          "VIEWPORT at the bounds");
+    Bytes show;
+    put_u32(show, 7);
+    put_u16(show, 3);
+    CHECK(decode(message(0x03, show), &m, &used) == HMI_WIRE_DECODED && m.type == HMI_MSG_SHOW &&
+              m.viewer == 7 && m.page == 3,
+          "SHOW");
 
-    Bytes ptr;
-    put_u32(ptr, 3);
-    ptr.push_back(1);
-    put_u32(ptr, (uint32_t)-1250);
-    put_u32(ptr, 99999);
-    CHECK(decode(message(0x04, ptr), &m, &used) == HMI_WIRE_DECODED && m.kind == 1 &&
-              m.x100 == -1250 && m.y100 == 99999,
-          "POINTER with a negative coordinate");
+    Bytes write = message(0x04, write_payload(7, 2, {0x34, 0x12}));
+    CHECK(decode(write, &m, &used) == HMI_WIRE_DECODED && m.type == HMI_MSG_WRITE && m.tag == 2 &&
+              m.value_len == 2 && m.value[0] == 0x34 && m.value[1] == 0x12,
+          "WRITE");
+    Bytes empty = message(0x04, write_payload(7, 9, {}));
+    CHECK(decode(empty, &m, &used) == HMI_WIRE_DECODED && m.value_len == 0,
+          "a WRITE of an empty STRING");
+
+    Bytes bit;
+    put_u32(bit, 7);
+    put_u16(bit, 4);
+    bit.push_back(63);
+    bit.push_back(1);
+    CHECK(decode(message(0x05, bit), &m, &used) == HMI_WIRE_DECODED && m.type == HMI_MSG_BIT &&
+              m.tag == 4 && m.bit == 63 && m.bit_value == 1,
+          "BIT");
+
+    Bytes two = open;
+    two.insert(two.end(), write.begin(), write.end());
+    CHECK(decode(two, &m, &used) == HMI_WIRE_DECODED && used == open.size(),
+          "only the first message is taken");
+    Bytes part(write.begin(), write.end() - 1);
+    CHECK(decode(part, &m, &used) == HMI_WIRE_NEED_MORE, "a partial message needs more");
 }
 
 static void test_wire_malformed()
 {
-    std::printf("wire decoder refuses\n");
+    std::printf("wire: malformed\n");
     hmi_wire_msg_t m;
     size_t used = 0;
-    struct Case
-    {
-        const char *what;
-        Bytes bytes;
-    };
-    Bytes vp_small;
-    put_u32(vp_small, 1);
-    put_u16(vp_small, 0);
-    put_u16(vp_small, 10);
-    put_u16(vp_small, 100);
-    Bytes vp_density;
-    put_u32(vp_density, 1);
-    put_u16(vp_density, 10);
-    put_u16(vp_density, 10);
-    put_u16(vp_density, 24);
-    Bytes vp_big;
-    put_u32(vp_big, 1);
-    put_u16(vp_big, 8193);
-    put_u16(vp_big, 10);
-    put_u16(vp_big, 100);
-    Bytes ptr_kind;
-    put_u32(ptr_kind, 1);
-    ptr_kind.push_back(3);
-    put_u32(ptr_kind, 0);
-    put_u32(ptr_kind, 0);
-    Bytes open_len = open_payload(1, 0, 10, 10, 100, "abc");
-    open_len.push_back('x'); // one byte past the name
-    Bytes long_name = open_payload(1, 0, 10, 10, 100, std::string(65, 'a'));
-    const std::vector<Case> cases = {
-        {"zero length", {0, 0, 0, 0}},
-        {"length past the largest message", {0xFF, 0, 0, 0, 0x01}},
-        {"4 MiB length", {0, 0, 0x40, 0}},
-        {"unknown type, before its payload", {3, 0, 0, 0, 0x06}},
-        {"host type sent by the web server", {2, 0, 0, 0, 0x82, 0}},
-        {"FAULT sent by the web server", message(0x85, {1, 0, 0, 0})},
-        {"CLOSE too short", message(0x02, {1, 0, 0})},
-        {"CLOSE too long", message(0x02, {1, 0, 0, 0, 0})},
-        {"KEY code 0", message(0x05, {1, 0, 0, 0, 0, 0, 0, 0})},
-        {"KEY past U+10FFFF", message(0x05, {1, 0, 0, 0, 0, 0, 0x11, 0})},
-        {"OPEN role 4", message(0x01, open_payload(1, 4, 10, 10, 100, "a"))},
-        {"OPEN width 0", message(0x01, open_payload(1, 0, 0, 10, 100, "a"))},
-        {"OPEN density 801", message(0x01, open_payload(1, 0, 10, 10, 801, "a"))},
-        {"OPEN name length disagrees", message(0x01, open_len)},
-        {"OPEN name of 65 bytes", message(0x01, long_name)},
-        {"VIEWPORT width 0", message(0x03, vp_small)},
-        {"VIEWPORT density 24", message(0x03, vp_density)},
-        {"VIEWPORT width 8193", message(0x03, vp_big)},
-        {"POINTER kind 3", message(0x04, ptr_kind)},
-    };
-    for (const Case &c : cases)
-        CHECK(decode(c.bytes, &m, &used) == HMI_WIRE_MALFORMED, c.what);
 
-    /* A bad name refuses that viewer only: the message decodes, flagged, with no name. */
-    const Case refused[] = {
-        {"OPEN name with a control character",
-         message(0x01, open_payload(1, 0, 10, 10, 100, "a\nb"))},
-        {"OPEN name with a C1 control",
-         message(0x01, open_payload(1, 0, 10, 10, 100, "a\xC2\x85"))},
-        {"OPEN name with invalid UTF-8", message(0x01, open_payload(1, 0, 10, 10, 100, "a\xC3"))},
-        {"OPEN name with an overlong form",
-         message(0x01, open_payload(1, 0, 10, 10, 100, "\xC0\xAF"))},
-        {"OPEN name with a surrogate",
-         message(0x01, open_payload(1, 0, 10, 10, 100, "\xED\xA0\x80"))},
-    };
-    for (const Case &c : refused)
-        CHECK(decode(c.bytes, &m, &used) == HMI_WIRE_DECODED && !m.name_valid && m.name_len == 0 &&
-                  m.name[0] == '\0',
-              c.what);
+    Bytes unknown = message(0x06, {0, 0, 0, 0});
+    CHECK(decode(unknown, &m, &used) == HMI_WIRE_MALFORMED, "unknown type");
+    Bytes old_frame = message(0x81, {0, 0, 0, 0});
+    CHECK(decode(old_frame, &m, &used) == HMI_WIRE_MALFORMED, "a host message type");
+    Bytes head = {6, 0, 0, 0, 0x06};
+    CHECK(decode(head, &m, &used) == HMI_WIRE_MALFORMED, "an unknown type fails before its payload");
+
+    Bytes zero = {0, 0, 0, 0};
+    CHECK(decode(zero, &m, &used) == HMI_WIRE_MALFORMED, "zero length");
+    Bytes huge;
+    put_u32(huge, HMI_WIRE_MAX_INBOUND);
+    huge.push_back(0x04);
+    CHECK(decode(huge, &m, &used) == HMI_WIRE_MALFORMED, "longer than any web server message");
+
+    CHECK(decode(message(0x01, open_payload(1, 4, "x")), &m, &used) == HMI_WIRE_MALFORMED,
+          "role past viewer");
+    Bytes long_name = open_payload(1, 0, std::string(65, 'n'));
+    CHECK(decode(message(0x01, long_name), &m, &used) == HMI_WIRE_MALFORMED, "name over 64 bytes");
+    Bytes short_open = open_payload(1, 0, "abc");
+    short_open.pop_back();
+    CHECK(decode(message(0x01, short_open), &m, &used) == HMI_WIRE_MALFORMED,
+          "name length past the payload");
+
+    Bytes show;
+    put_u32(show, 1);
+    put_u16(show, 0);
+    show.push_back(0);
+    CHECK(decode(message(0x03, show), &m, &used) == HMI_WIRE_MALFORMED, "SHOW with extra bytes");
+
+    for (const Bytes &bad : {Bytes{1, 0, 0, 0, 4, 0, 64, 1}, Bytes{1, 0, 0, 0, 4, 0, 2, 2},
+                             Bytes{1, 0, 0, 0, 4, 0, 2}})
+        CHECK(decode(message(0x05, bad), &m, &used) == HMI_WIRE_MALFORMED,
+              "BIT past bit 63, with a value other than 0 or 1, or cut short");
+
+    Bytes lying = write_payload(1, 0, {1, 2, 3});
+    lying[6] = 4; /* says 4 value bytes, carries 3 */
+    CHECK(decode(message(0x04, lying), &m, &used) == HMI_WIRE_MALFORMED,
+          "WRITE whose length does not match its value");
+    Bytes big = write_payload(1, 0, Bytes(HMI_WIRE_VALUE_MAX + 1, 'x'));
+    CHECK(decode(message(0x04, big), &m, &used) == HMI_WIRE_MALFORMED, "WRITE value over the limit");
 }
 
 static void test_wire_encode()
 {
-    std::printf("wire encoders\n");
-    uint8_t b[16];
-    CHECK(hmi_wire_encode_viewer(HMI_MSG_OPENED, 0x01020304u, b) == 9, "OPENED length");
-    const uint8_t opened[] = {5, 0, 0, 0, 0x83, 4, 3, 2, 1};
-    CHECK(std::memcmp(b, opened, 9) == 0, "OPENED bytes");
-    CHECK(hmi_wire_encode_viewer(HMI_MSG_BUSY, 9, b) == 9 && b[4] == 0x84, "BUSY");
-    CHECK(HMI_MSG_FAULT == 0x85, "FAULT is type 0x85");
-    CHECK(hmi_wire_encode_viewer(HMI_MSG_FAULT, 0x0A0B0C0Du, b) == HMI_WIRE_VIEWER_MSG,
-          "FAULT length");
-    const uint8_t fault[] = {5, 0, 0, 0, 0x85, 0x0D, 0x0C, 0x0B, 0x0A};
-    CHECK(std::memcmp(b, fault, 9) == 0, "FAULT bytes");
-    CHECK(hmi_wire_encode_status(HMI_STATE_OUT_OF_DATE, b) == 6, "STATUS length");
-    const uint8_t status[] = {2, 0, 0, 0, 0x82, 1};
-    CHECK(std::memcmp(b, status, 6) == 0, "STATUS bytes");
-    CHECK(hmi_wire_frame_header(7, 100, b), "FRAME header");
-    const uint8_t frame[] = {105, 0, 0, 0, 0x81, 7, 0, 0, 0};
-    CHECK(std::memcmp(b, frame, 9) == 0, "FRAME header bytes");
-    CHECK(hmi_wire_frame_header(7, HMI_WIRE_MAX_MESSAGE - 5u, b), "largest FRAME");
-    CHECK(!hmi_wire_frame_header(7, HMI_WIRE_MAX_MESSAGE - 4u, b), "FRAME past 4 MiB refused");
+    std::printf("wire: encode\n");
+    uint8_t out[32];
+    CHECK(hmi_wire_encode_viewer(HMI_MSG_OPENED, 0x01020304, out) == 9 && get_u32(out) == 5 &&
+              out[4] == 0x82 && get_u32(out + 5) == 0x01020304,
+          "OPENED");
+    CHECK(hmi_wire_encode_status(HMI_STATE_OUT_OF_DATE, out) == 6 && out[4] == 0x81 && out[5] == 1,
+          "STATUS");
+    CHECK(hmi_wire_encode_refused(9, HMI_REFUSED_WRITE, 0x0203, out) == 12 && get_u32(out) == 8 &&
+              out[4] == 0x85 && get_u32(out + 5) == 9 && out[9] == 1 && get_u16(out + 10) == 0x0203,
+          "REFUSED");
+    CHECK(hmi_wire_values_header(5, 2, 7, 3, 20, out) && get_u32(out) == 33 && out[4] == 0x84 &&
+              get_u32(out + 5) == 5 && get_u16(out + 9) == 2 && get_u32(out + 11) == 7 &&
+              get_u16(out + 15) == 3,
+          "VALUES header");
+    CHECK(!hmi_wire_values_header(5, 2, 7, 3, HMI_WIRE_MAX_MESSAGE, out),
+          "VALUES past the message limit refused");
 }
 
-/* ---- input queue --------------------------------------------------------- */
+/* ---- values -------------------------------------------------------------- */
 
-static hmi_input_event_t ptr(uint8_t kind, int32_t x)
+/** The records of a VALUES message, as (tag, bytes). */
+static std::vector<std::pair<uint16_t, Bytes>> records(const hmi_buf_t &msg, uint32_t *writes)
 {
-    hmi_input_event_t e{};
-    e.kind     = HMI_INPUT_POINTER;
-    e.ptr_kind = kind;
-    e.x_q4     = x;
-    e.y_q4     = -x;
-    return e;
+    std::vector<std::pair<uint16_t, Bytes>> out;
+    if (msg.len < HMI_WIRE_VALUES_HEADER)
+        return out;
+    *writes            = get_u32(msg.data + 11);
+    const uint16_t n   = get_u16(msg.data + 15);
+    size_t off         = HMI_WIRE_VALUES_HEADER;
+    for (uint16_t i = 0; i < n; i++)
+    {
+        const uint16_t tag = get_u16(msg.data + off);
+        const uint16_t len = get_u16(msg.data + off + 2);
+        out.emplace_back(tag, Bytes(msg.data + off + 4, msg.data + off + 4 + len));
+        off += 4u + len;
+    }
+    return out;
 }
 
-static hmi_input_event_t key(uint32_t code)
+static void test_values()
 {
-    hmi_input_event_t e{};
-    e.kind = HMI_INPUT_KEY;
-    e.code = code;
-    return e;
-}
+    std::printf("values: changes, snapshots and takes\n");
+    const uint16_t max[3] = {1, 2, 20};
+    hmi_values_layout_t layout;
+    CHECK(hmi_values_layout_init(&layout, max, 3) && layout.total == 23, "layout");
+    hmi_values_t v;
+    CHECK(hmi_values_init(&v, &layout), "init");
 
-static void test_input_order_and_frames()
-{
-    std::printf("input queue: order and frames\n");
-    hmi_input_queue_t q;
-    hmi_input_reset(&q);
-    hmi_input_event_t e = ptr(HMI_INPUT_MOVE, 1);
-    hmi_input_push(&q, &e);
-    e = ptr(HMI_INPUT_DOWN, 2);
-    hmi_input_push(&q, &e);
-    e = key('a');
-    hmi_input_push(&q, &e);
-    e = ptr(HMI_INPUT_UP, 3);
-    hmi_input_push(&q, &e);
-    e = ptr(HMI_INPUT_MOVE, 4);
-    hmi_input_push(&q, &e);
+    const uint8_t on = 1, off = 0;
+    const uint8_t speed[2] = {5, 0};
+    CHECK(hmi_values_offer(&v, &layout, 0, &on, 1), "a first value is a change");
+    CHECK(hmi_values_offer(&v, &layout, 1, speed, 2), "a second tag too");
+    CHECK(!hmi_values_offer(&v, &layout, 0, &on, 1), "the same value again is not");
+    const uint8_t text[25] = {};
+    CHECK(!hmi_values_offer(&v, &layout, 2, text, 25), "longer than the tag's most is refused");
+    CHECK(!hmi_values_offer(&v, &layout, 3, &on, 1), "an unknown tag is refused");
+    CHECK(hmi_values_encode(&v, &layout, 4, 0, 0), "encoded");
 
-    hmi_input_event_t out[HMI_INPUT_QUEUE_CAP];
-    size_t n = hmi_input_take_frame(&q, out, HMI_INPUT_QUEUE_CAP);
-    CHECK(n == 2 && out[0].ptr_kind == HMI_INPUT_MOVE && out[1].ptr_kind == HMI_INPUT_DOWN,
-          "a frame takes events up to the first press");
-    n = hmi_input_take_frame(&q, out, HMI_INPUT_QUEUE_CAP);
-    CHECK(n == 2 && out[0].kind == HMI_INPUT_KEY && out[1].ptr_kind == HMI_INPUT_UP,
-          "then up to the release, keys in order");
-    n = hmi_input_take_frame(&q, out, HMI_INPUT_QUEUE_CAP);
-    CHECK(n == 1 && out[0].x_q4 == 4, "then the trailing move");
-    CHECK(hmi_input_take_frame(&q, out, HMI_INPUT_QUEUE_CAP) == 0, "then nothing");
+    hmi_buf_t out = {};
+    uint32_t writes = 99;
+    CHECK(hmi_values_take(&v, &layout, &out), "taken");
+    auto r = records(out, &writes);
+    CHECK(r.size() == 2 && r[0].first == 0 && r[0].second == Bytes{1} && r[1].first == 1 &&
+              r[1].second == (Bytes{5, 0}) && writes == 0,
+          "both changes in tag order");
+    CHECK(!hmi_values_take(&v, &layout, &out), "nothing pending after a take");
 
-    for (uint32_t i = 1; i <= HMI_INPUT_KEYS_PER_FRAME + 3; i++)
-    {
-        e = key(i);
-        hmi_input_push(&q, &e);
-    }
-    n = hmi_input_take_frame(&q, out, HMI_INPUT_QUEUE_CAP);
-    CHECK(n == HMI_INPUT_KEYS_PER_FRAME && out[0].code == 1, "keys per frame are capped");
-    n = hmi_input_take_frame(&q, out, HMI_INPUT_QUEUE_CAP);
-    CHECK(n == 3 && out[0].code == HMI_INPUT_KEYS_PER_FRAME + 1, "the rest follow next frame");
-}
+    CHECK(hmi_values_offer(&v, &layout, 0, &off, 1), "a change after the take");
+    CHECK(hmi_values_encode(&v, &layout, 4, 0, 1), "encoded");
+    const uint8_t speed2[2] = {6, 0};
+    CHECK(hmi_values_offer(&v, &layout, 1, speed2, 2), "another change before the writer took it");
+    CHECK(hmi_values_encode(&v, &layout, 4, 0, 2), "the pending message rebuilt");
+    CHECK(hmi_values_take(&v, &layout, &out), "taken");
+    r = records(out, &writes);
+    CHECK(r.size() == 2 && r[0].second == Bytes{0} && r[1].second == (Bytes{6, 0}) && writes == 2,
+          "a message not yet taken keeps every change since the last take");
 
-static void test_input_coalescing()
-{
-    std::printf("input queue: coalescing\n");
-    hmi_input_queue_t q;
-    hmi_input_reset(&q);
-    hmi_input_event_t e;
+    hmi_values_forget(&v, &layout, 1);
+    CHECK(hmi_values_offer(&v, &layout, 1, speed2, 2), "a forgotten tag is sent again unchanged");
+    CHECK(hmi_values_encode(&v, &layout, 4, 0, 3), "encoded");
+    hmi_values_forget_all(&v, &layout);
+    CHECK(!hmi_values_take(&v, &layout, &out), "forgetting all drops the pending message");
+    CHECK(hmi_values_offer(&v, &layout, 0, &off, 1) && hmi_values_offer(&v, &layout, 2, text, 0),
+          "after forgetting all, every value is sent again, an empty STRING too");
+    CHECK(hmi_values_encode(&v, &layout, 4, 1, 3) && hmi_values_take(&v, &layout, &out), "taken");
+    r = records(out, &writes);
+    CHECK(r.size() == 2 && r[0].first == 0 && r[1].first == 2 && r[1].second.empty() &&
+              get_u16(out.data + 9) == 1,
+          "the snapshot of the new page");
 
-    /* Fill with moves around one press and one release, then overflow with a press. */
-    for (int i = 0; i < 60; i++)
-    {
-        e = ptr(HMI_INPUT_MOVE, i);
-        CHECK(hmi_input_push(&q, &e), "move queued");
-    }
-    e = ptr(HMI_INPUT_DOWN, 100);
-    hmi_input_push(&q, &e);
-    for (int i = 0; i < 60; i++)
-    {
-        e = ptr(HMI_INPUT_MOVE, 200 + i);
-        hmi_input_push(&q, &e);
-    }
-    e = ptr(HMI_INPUT_UP, 300);
-    hmi_input_push(&q, &e);
-    for (int i = 0; (size_t)q.count < HMI_INPUT_QUEUE_CAP; i++)
-    {
-        e = ptr(HMI_INPUT_MOVE, 400 + i);
-        hmi_input_push(&q, &e);
-    }
-    CHECK(q.count == HMI_INPUT_QUEUE_CAP, "queue full");
-    e = ptr(HMI_INPUT_DOWN, 500);
-    CHECK(hmi_input_push(&q, &e), "a press into a full queue coalesces moves");
-
-    hmi_input_event_t out[HMI_INPUT_QUEUE_CAP];
-    std::vector<hmi_input_event_t> all;
-    size_t n;
-    while ((n = hmi_input_take_frame(&q, out, HMI_INPUT_QUEUE_CAP)) > 0)
-        all.insert(all.end(), out, out + n);
-    int presses = 0, releases = 0;
-    for (const auto &x : all)
-    {
-        presses += x.ptr_kind == HMI_INPUT_DOWN;
-        releases += x.ptr_kind == HMI_INPUT_UP;
-    }
-    CHECK(presses == 2 && releases == 1, "no press or release lost");
-    CHECK(all.size() >= 4 && all[0].ptr_kind == HMI_INPUT_DOWN && all[0].x_q4 == 100 &&
-              all[1].ptr_kind == HMI_INPUT_UP && all[1].x_q4 == 300 &&
-              all.back().ptr_kind == HMI_INPUT_DOWN && all.back().x_q4 == 500,
-          "presses and releases keep their order");
-    bool latest_move_kept = false;
-    for (const auto &x : all)
-        latest_move_kept |= x.ptr_kind == HMI_INPUT_MOVE && x.x_q4 >= 400;
-    CHECK(latest_move_kept, "the latest move before the press survives");
-
-    /* A queue of presses only: a move is coalesced away, a press is refused. */
-    hmi_input_reset(&q);
-    for (size_t i = 0; i < HMI_INPUT_QUEUE_CAP; i++)
-    {
-        e = ptr(i % 2 ? HMI_INPUT_UP : HMI_INPUT_DOWN, (int32_t)i);
-        hmi_input_push(&q, &e);
-    }
-    e = ptr(HMI_INPUT_MOVE, 7);
-    CHECK(hmi_input_push(&q, &e) && q.count == HMI_INPUT_QUEUE_CAP,
-          "a move into a queue of presses is coalesced away");
-    e = ptr(HMI_INPUT_DOWN, 8);
-    CHECK(!hmi_input_push(&q, &e), "a press that cannot fit is reported, never dropped silently");
-    e = key('k');
-    CHECK(!hmi_input_push(&q, &e), "a key that cannot fit is reported");
-
-    /* Full with one trailing move: an incoming move replaces it. */
-    hmi_input_reset(&q);
-    for (size_t i = 0; i + 1 < HMI_INPUT_QUEUE_CAP; i++)
-    {
-        e = key((uint32_t)i + 1);
-        hmi_input_push(&q, &e);
-    }
-    e = ptr(HMI_INPUT_MOVE, 1);
-    hmi_input_push(&q, &e);
-    e = ptr(HMI_INPUT_MOVE, 2);
-    CHECK(hmi_input_push(&q, &e) && q.count == HMI_INPUT_QUEUE_CAP, "moves merge when full");
-    bool found = false;
-    for (size_t i = 0; i < q.count; i++)
-    {
-        const hmi_input_event_t &x = q.ev[(q.head + i) % HMI_INPUT_QUEUE_CAP];
-        if (x.kind == HMI_INPUT_POINTER)
-            found = x.x_q4 == 2;
-    }
-    CHECK(found, "the newest move wins");
-}
-
-/* ---- latest-frame slot --------------------------------------------------- */
-
-static void test_slot()
-{
-    std::printf("latest-frame slot\n");
-    hmi_slot_t slot{};
-    hmi_buf_t out{};
-    const uint8_t dl1[] = {1, 2, 3};
-    const uint8_t dl2[] = {4, 5, 6, 7};
-
-    CHECK(!hmi_slot_take(&slot, &out), "empty slot gives nothing");
-    CHECK(hmi_slot_offer(&slot, 5, dl1, sizeof dl1, 111) == HMI_SLOT_STORED, "first frame stored");
-    CHECK(hmi_slot_offer(&slot, 5, dl1, sizeof dl1, 111) == HMI_SLOT_UNCHANGED,
-          "same hash not stored");
-    CHECK(hmi_slot_offer(&slot, 5, dl2, sizeof dl2, 222) == HMI_SLOT_STORED,
-          "a newer frame replaces the pending one");
-    CHECK(hmi_slot_take(&slot, &out), "pending frame taken");
-    CHECK(out.len == HMI_WIRE_FRAME_HEADER + sizeof dl2 && out.data[4] == 0x81 && out.data[5] == 5 &&
-              std::memcmp(out.data + HMI_WIRE_FRAME_HEADER, dl2, sizeof dl2) == 0,
-          "only the latest frame, as a FRAME message");
-    CHECK(!hmi_slot_take(&slot, &out), "taken once");
-    CHECK(hmi_slot_offer(&slot, 5, dl2, sizeof dl2, 222) == HMI_SLOT_UNCHANGED,
-          "an unchanged frame after a send is skipped");
-    hmi_slot_invalidate(&slot);
-    CHECK(hmi_slot_offer(&slot, 5, dl2, sizeof dl2, 222) == HMI_SLOT_STORED,
-          "invalidate forces the next frame");
-    hmi_buf_t again{};
-    CHECK(hmi_slot_take(&slot, &again) && again.data != out.data, "buffers swap, no sharing");
     hmi_buf_free(&out);
-    hmi_buf_free(&again);
-    hmi_slot_free(&slot);
+    hmi_values_free(&v);
+    hmi_values_layout_free(&layout);
 }
 
 /* ---- codec --------------------------------------------------------------- */
@@ -536,6 +422,73 @@ static void test_codec_format()
     CHECK(std::strlen(small) < sizeof small && small[0] == '\'', "bounded by the output size");
 }
 
+
+static void test_codec_wire()
+{
+    std::printf("codec: viewers' values\n");
+    uint8_t buf[32];
+    uint8_t out[32];
+
+    const uint8_t t = 1, two = 2;
+    CHECK(hmi_codec_from_wire(HMI_CODEC_BOOL, 0, &t, 1, buf) && buf[0] == 1, "BOOL 1");
+    CHECK(!hmi_codec_from_wire(HMI_CODEC_BOOL, 0, &two, 1, buf), "BOOL 2 refused");
+    const uint8_t i16[2] = {0x2E, 0xFB};
+    CHECK(hmi_codec_from_wire(HMI_CODEC_INT, 0, i16, 2, buf) && std::memcmp(buf, i16, 2) == 0,
+          "INT taken as it is");
+    CHECK(!hmi_codec_from_wire(HMI_CODEC_INT, 0, i16, 1, buf), "INT with one byte refused");
+    CHECK(!hmi_codec_from_wire(HMI_CODEC_DINT, 0, i16, 2, buf), "DINT with two bytes refused");
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    const float ok  = 2.5f;
+    CHECK(!hmi_codec_from_wire(HMI_CODEC_REAL, 0, (const uint8_t *)&nan, 4, buf), "REAL NaN refused");
+    CHECK(!hmi_codec_from_wire(HMI_CODEC_REAL, 0, (const uint8_t *)&inf, 4, buf),
+          "REAL infinity refused");
+    CHECK(hmi_codec_from_wire(HMI_CODEC_REAL, 0, (const uint8_t *)&ok, 4, buf), "REAL taken");
+    const double dinf = -std::numeric_limits<double>::infinity();
+    CHECK(!hmi_codec_from_wire(HMI_CODEC_LREAL, 0, (const uint8_t *)&dinf, 8, buf),
+          "LREAL infinity refused");
+    const int64_t day = 86400000000000LL, last = 86399999999999LL, neg = -1;
+    CHECK(!hmi_codec_from_wire(HMI_CODEC_TOD, 0, (const uint8_t *)&day, 8, buf), "TOD of 24 h refused");
+    CHECK(!hmi_codec_from_wire(HMI_CODEC_TOD, 0, (const uint8_t *)&neg, 8, buf), "negative TOD refused");
+    CHECK(hmi_codec_from_wire(HMI_CODEC_TOD, 0, (const uint8_t *)&last, 8, buf), "TOD within a day");
+    CHECK(!hmi_codec_from_wire(99, 0, &t, 1, buf), "unknown type refused");
+
+    CHECK(hmi_codec_from_wire(HMI_CODEC_STRING, 5, (const uint8_t *)"hello", 5, buf) &&
+              std::strcmp((const char *)buf, "hello") == 0,
+          "STRING up to its length, NUL terminated");
+    CHECK(!hmi_codec_from_wire(HMI_CODEC_STRING, 4, (const uint8_t *)"hello", 5, buf),
+          "STRING past its length refused");
+    CHECK(!hmi_codec_from_wire(HMI_CODEC_STRING, 9, (const uint8_t *)"he\0lo", 5, buf),
+          "STRING holding a NUL refused");
+    CHECK(hmi_codec_from_wire(HMI_CODEC_STRING, 9, nullptr, 0, buf) && buf[0] == 0, "empty STRING");
+
+    std::memcpy(buf, "abc\0zzz", 8);
+    CHECK(hmi_codec_to_wire(HMI_CODEC_STRING, 7, buf, out) == 3 && std::memcmp(out, "abc", 3) == 0,
+          "STRING to wire without its NUL");
+    std::memcpy(buf, "abcdefgh", 8);
+    CHECK(hmi_codec_to_wire(HMI_CODEC_STRING, 4, buf, out) == 4, "never past max_len");
+    CHECK(hmi_codec_to_wire(HMI_CODEC_LREAL, 0, buf, out) == 8, "numbers keep their width");
+}
+
+static void test_codec_within()
+{
+    std::printf("codec: write limits\n");
+    const int16_t i = 30000, top = 100, neg = -1;
+    CHECK(!hmi_codec_within(HMI_CODEC_INT, 0, &i, 0.0, 100.0), "INT 30000 outside 0..100");
+    CHECK(hmi_codec_within(HMI_CODEC_INT, 0, &top, 0.0, 100.0), "INT 100 inside 0..100");
+    CHECK(!hmi_codec_within(HMI_CODEC_INT, 0, &neg, 0.0, 100.0), "INT -1 outside 0..100");
+    const uint16_t big = 65535;
+    CHECK(hmi_codec_within(HMI_CODEC_UINT, 0, &big, 0.0, 65535.0), "UINT read unsigned");
+    const float tenth = 0.1f;
+    CHECK(hmi_codec_within(HMI_CODEC_REAL, 0, &tenth, 0.0, (double)0.1f), "REAL at a float bound");
+    CHECK(!hmi_codec_within(HMI_CODEC_REAL, 0, &tenth, 0.0, 0.1), "REAL 0.1f past the double 0.1");
+    const double d = -2.5;
+    CHECK(hmi_codec_within(HMI_CODEC_LREAL, 0, &d, -2.5, 0.0), "LREAL at its minimum");
+    CHECK(hmi_codec_within(HMI_CODEC_STRING, 20, "hello", 0.0, 5.0), "STRING of 5 within 5");
+    CHECK(!hmi_codec_within(HMI_CODEC_STRING, 20, "hello!", 0.0, 5.0), "STRING of 6 past 5");
+    CHECK(!hmi_codec_within(99, 0, &i, -1e9, 1e9), "unknown type");
+}
+
 static void test_md5_gate()
 {
     std::printf("MD5 gate\n");
@@ -555,12 +508,12 @@ int main()
     test_wire_decode();
     test_wire_malformed();
     test_wire_encode();
-    test_input_order_and_frames();
-    test_input_coalescing();
-    test_slot();
+    test_values();
     test_codec_numbers();
     test_codec_strings();
     test_codec_format();
+    test_codec_wire();
+    test_codec_within();
     test_md5_gate();
 
     if (g_failures == 0)

@@ -7,7 +7,9 @@
 #   IMAGE        runtime image built from this tree (default openplc-runtime:p9)
 #   EDITOR_ROOT  openplc-editor worktree with openplc-cli.dev.js built from it
 # Env: HMI_E2E_PORT (host port, default 18543), HMI_E2E_WORK (work dir, default a temp dir),
-#      HMI_E2E_KEEP=1 (leave the container and work dir in place).
+#      HMI_E2E_KEEP=1 (leave the container and work dir in place), HMI_E2E_CONTAINER (container
+#      name, replaced if it exists; default openplc-hmi-e2e), HMI_E2E_PLAYWRIGHT (path of the
+#      playwright package whose installed Chromium the browser half uses; default the editor's).
 
 set -euo pipefail
 
@@ -16,6 +18,8 @@ RUNTIME="$(cd "$HERE/../.." && pwd)"
 IMAGE="${1:-openplc-runtime:p9}"
 EDITOR="$(cd "${2:-${OPENPLC_EDITOR:-$RUNTIME/../openplc-editor}}" && pwd)"
 PORT="${HMI_E2E_PORT:-18543}"
+CONTAINER="${HMI_E2E_CONTAINER:-openplc-hmi-e2e}"
+PLAYWRIGHT="${HMI_E2E_PLAYWRIGHT:-$EDITOR/node_modules/playwright}"
 WORK="${HMI_E2E_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/hmi-e2e.XXXXXX")}"
 PY="$RUNTIME/venvs/test-env/bin/python"
 TARGET="OpenPLC Runtime v4"
@@ -75,4 +79,5 @@ echo "### run against $IMAGE on port $PORT"
 KEEP=()
 [ "${HMI_E2E_KEEP:-0}" = "1" ] && KEEP=(--keep)
 "$PY" "$HERE/e2e_hmi.py" --image "$IMAGE" --port "$PORT" --bundle "$B1" --hmi "$WORK/gen" \
-    --bundle2 "$B2" --vpp "$HERE/vpp_plugin" "${KEEP[@]+"${KEEP[@]}"}"
+    --bundle2 "$B2" --vpp "$HERE/vpp_plugin" --container "$CONTAINER" --playwright "$PLAYWRIGHT" \
+    --shots "$WORK/shots" "${KEEP[@]+"${KEEP[@]}"}"
