@@ -59,6 +59,7 @@ static std::vector<std::string> g_logs;
 static std::vector<std::vector<uint8_t>> g_writes; // elem, then the debug bytes
 static std::atomic<int> g_reads{0};
 static float g_temp = 21.5f;
+static int32_t g_flags;
 
 static const uint16_t STRING_WIDTH = 127; // STruC++ DEBUG_STRING_WIDTH
 
@@ -75,6 +76,7 @@ static uint16_t dbg_size(uint8_t arr, uint16_t elem)
     case 3:
         return STRING_WIDTH;
     case 4:
+    case 5:
         return 4;
     default:
         return 0;
@@ -103,6 +105,9 @@ static uint16_t dbg_read(uint8_t arr, uint16_t elem, uint8_t *dest)
     {
         std::memcpy(dest, &g_temp, 4);
         break;
+    case 5:
+        std::memcpy(dest, &g_flags, 4);
+        break;
     }
     default:
         return 0;
@@ -125,6 +130,8 @@ static uint8_t dbg_write(uint8_t arr, uint16_t elem, const uint8_t *bytes, uint1
         std::memcpy(&g_speed, bytes, 2);
     else if (elem == 3)
         g_label.assign((const char *)bytes + 1, bytes[0]);
+    else if (elem == 5)
+        std::memcpy(&g_flags, bytes, 4);
     return 0x7E;
 }
 
@@ -266,6 +273,16 @@ static std::vector<uint8_t> write_message(uint32_t viewer, uint16_t tag, const s
     b.push_back(0x04);
     b.insert(b.end(), p.begin(), p.end());
     return b;
+}
+
+static void send_bit(int fd, uint32_t viewer, uint16_t tag, uint8_t bit, uint8_t value)
+{
+    std::vector<uint8_t> p;
+    put_u32(p, viewer);
+    put_u16(p, tag);
+    p.push_back(bit);
+    p.push_back(value);
+    send_msg(fd, 0x05, p);
 }
 
 static void send_write(int fd, uint32_t viewer, uint16_t tag, const std::vector<uint8_t> &value)
@@ -432,6 +449,7 @@ static void test_values_and_writes()
         g_speed = 40;
         g_label = "pump";
         g_temp  = 21.5f;
+        g_flags = 0;
         g_writes.clear();
         g_logs.clear();
     }
@@ -450,7 +468,7 @@ static void test_values_and_writes()
     CHECK(read_msg(fd, 200).type == 0, "no values before a screen is shown");
 
     send_show(fd, 1, 0);
-    Values v = values_until(fd, 1, [](const Values &x) { return x.tags.size() == 4; });
+    Values v = values_until(fd, 1, [](const Values &x) { return x.tags.size() == 5; });
     CHECK(v.ok && v.page == 0 && v.writes == 0, "SHOW of a granted screen sends its snapshot");
     CHECK(v.tags[0] == std::vector<uint8_t>{0} && v.tags[1] == (std::vector<uint8_t>{40, 0}) &&
               v.tags[2] == (std::vector<uint8_t>{'p', 'u', 'm', 'p'}) && v.tags[3] == f32(21.5f),
@@ -473,6 +491,31 @@ static void test_values_and_writes()
     v = values_until(fd, 1, [](const Values &x) { return x.writes == 2; });
     CHECK(v.ok && g_label == "valve", "a STRING write");
 
+    /* Bit assignments: applied to the PLC's current value, only the bits the screen sets. */
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_flags = 32; /* the PLC set bit 5 after the browser last saw flags */
+    }
+    send_bit(fd, 1, 4, 2, 1);
+    v = values_until(fd, 1, [](const Values &x) { return x.writes == 3; });
+    CHECK(v.ok && g_flags == 36, "a bit assignment keeps the bit the PLC set meanwhile (32 | 4)");
+    CHECK(v.tags[4] == (std::vector<uint8_t>{36, 0, 0, 0}), "and the resulting value is sent back");
+    CHECK(logged("write by alice: CONFIG0.RES0.INSTANCE0.MAIN.FLAGS.2 = TRUE (now 36)"),
+          "the bit write is logged with the bit and the resulting value");
+    send_bit(fd, 1, 4, 2, 0);
+    v = values_until(fd, 1, [](const Values &x) { return x.writes == 4; });
+    CHECK(v.ok && g_flags == 32, "clearing the bit leaves the PLC's bit 5");
+    const size_t bits_applied = write_count();
+    send_write(fd, 1, 4, {0xFF, 0xFF, 0xFF, 0xFF});
+    CHECK(refused(fd, 1) == std::make_pair(1, 4), "a whole write of a tag the screen only sets bits of is refused");
+    CHECK(logged("FLAGS refused: the screen shown only sets single bits of it"), "and logged");
+    send_bit(fd, 1, 4, 3, 1);
+    CHECK(refused(fd, 1) == std::make_pair(1, 4), "a bit the screen does not set is refused");
+    send_bit(fd, 1, 1, 0, 1);
+    CHECK(refused(fd, 1) == std::make_pair(1, 1), "a bit of a tag the screen writes only whole is refused");
+    v = values_until(fd, 1, [](const Values &x) { return x.writes == 7; });
+    CHECK(v.ok && write_count() == bits_applied && g_flags == 32, "no refused bit or forged word reached the PLC");
+
     /* Refused writes: none reaches the debugger, each is answered and counted. */
     const size_t applied = write_count();
     send_write(fd, 1, 3, f32(99.0f));
@@ -489,7 +532,7 @@ static void test_values_and_writes()
     CHECK(refused(fd, 1) == std::make_pair(1, 2), "a STRING holding a NUL is refused");
     send_write(fd, 1, 99, {1});
     CHECK(refused(fd, 1) == std::make_pair(1, 99), "an unknown tag is refused");
-    v = values_until(fd, 1, [](const Values &x) { return x.writes == 8; });
+    v = values_until(fd, 1, [](const Values &x) { return x.writes == 13; });
     CHECK(v.ok, "refused writes are counted too");
     CHECK(write_count() == applied && g_temp == 30.0f && g_lamp == 1, "no refused write reached the PLC");
 

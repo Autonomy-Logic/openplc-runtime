@@ -99,7 +99,7 @@ hmi_wire_result_t hmi_wire_decode(const uint8_t *buf, size_t len, hmi_wire_msg_t
     if (len > HMI_WIRE_PREFIX)
     {
         const uint8_t t = buf[HMI_WIRE_PREFIX];
-        if (t < HMI_MSG_OPEN || t > HMI_MSG_WRITE)
+        if (t < HMI_MSG_OPEN || t > HMI_MSG_BIT)
             return HMI_WIRE_MALFORMED;
     }
     if (len < HMI_WIRE_PREFIX + (size_t)mlen)
@@ -152,6 +152,16 @@ hmi_wire_result_t hmi_wire_decode(const uint8_t *buf, size_t len, hmi_wire_msg_t
         if (out->value_len > HMI_WIRE_VALUE_MAX || plen != 8u + out->value_len)
             return HMI_WIRE_MALFORMED;
         memcpy(out->value, p + 8, out->value_len);
+        break;
+    case HMI_MSG_BIT:
+        if (plen != 8)
+            return HMI_WIRE_MALFORMED;
+        out->viewer    = rd_u32(p);
+        out->tag       = rd_u16(p + 4);
+        out->bit       = p[6];
+        out->bit_value = p[7];
+        if (out->bit > HMI_WIRE_BIT_MAX || out->bit_value > 1u)
+            return HMI_WIRE_MALFORMED;
         break;
     default:
         return HMI_WIRE_MALFORMED;

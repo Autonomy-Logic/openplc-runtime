@@ -57,6 +57,7 @@ MSG_OPEN = 0x01
 MSG_CLOSE = 0x02
 MSG_SHOW = 0x03
 MSG_WRITE = 0x04
+MSG_BIT = 0x05
 # Wire protocol, host to web server.
 MSG_STATUS = 0x81
 MSG_OPENED = 0x82
@@ -83,6 +84,7 @@ STATE_UNAVAILABLE = "unavailable"
 # Ranges of the client events.
 MAX_ID = 0xFFFE
 MAX_VALUE_BYTES = 1024
+MAX_BIT = 63
 MAX_SEQUENCE = 2**53
 
 # Events held back per viewer while an earlier sequence number is missing.
@@ -294,13 +296,22 @@ class WriteEvent:
     value: bytes
 
 
-ClientEvent = OpenEvent | ShowEvent | WriteEvent
+@dataclass(frozen=True)
+class BitEvent:
+    """A screen's assignment of bit ``bit`` of tag ``tag`` to ``value`` (0 or 1)."""
+
+    tag: int
+    bit: int
+    value: int
+
+
+ClientEvent = OpenEvent | ShowEvent | WriteEvent | BitEvent
 
 
 def parse_event(data: object) -> ClientEvent | None:
     """Rebuilds a client event from its whitelisted, range-checked fields.
 
-    A show or write that does not check out is kept as one naming NO_ID, so the host refuses it
+    A show, write or bit write that does not check out is kept as one naming NO_ID, so the host refuses it
     in its place; None only for an event that is none of the three.
     """
     if not isinstance(data, dict):
@@ -322,6 +333,17 @@ def parse_event(data: object) -> ClientEvent | None:
         ):
             return WriteEvent(NO_ID, b"")
         return WriteEvent(tag, bytes(value))
+    if kind == "b":
+        tag, bit, on = _integer(data, "g"), _integer(data, "b"), _integer(data, "v")
+        if (
+            tag is None
+            or not 0 <= tag <= MAX_ID
+            or bit is None
+            or not 0 <= bit <= MAX_BIT
+            or on not in (0, 1)
+        ):
+            return WriteEvent(NO_ID, b"")
+        return BitEvent(tag, bit, on)
     return None
 
 
@@ -353,10 +375,12 @@ def encode_open(viewer: int, role: int, name: str) -> bytes:
     return encode(MSG_OPEN, payload)
 
 
-def encode_event(viewer: int, event: ShowEvent | WriteEvent) -> bytes:
-    """The SHOW or WRITE message of a client event."""
+def encode_event(viewer: int, event: ShowEvent | WriteEvent | BitEvent) -> bytes:
+    """The SHOW, WRITE or BIT message of a client event."""
     if isinstance(event, ShowEvent):
         return encode(MSG_SHOW, struct.pack("<IH", viewer, event.page))
+    if isinstance(event, BitEvent):
+        return encode(MSG_BIT, struct.pack("<IHBB", viewer, event.tag, event.bit, event.value))
     return encode(MSG_WRITE, struct.pack("<IHH", viewer, event.tag, len(event.value)) + event.value)
 
 

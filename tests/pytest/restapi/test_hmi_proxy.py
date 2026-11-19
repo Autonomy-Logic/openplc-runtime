@@ -492,6 +492,8 @@ def test_a_page_load_of_the_screens_module_without_a_token_goes_to_the_sign_in_p
         ({"t": "w", "g": 0, "v": b""}, hp.WriteEvent(0, b"")),
         ({"t": "w", "g": 1, "v": bytearray(b"ab")}, hp.WriteEvent(1, b"ab")),
         ({"t": "w", "g": 1, "v": b"x" * 1024}, hp.WriteEvent(1, b"x" * 1024)),
+        ({"t": "b", "g": 4, "b": 2, "v": 1}, hp.BitEvent(4, 2, 1)),
+        ({"t": "b", "g": 4, "b": 63, "v": 0}, hp.BitEvent(4, 63, 0)),
     ],
 )
 def test_valid_events_are_rebuilt(data, expected):
@@ -512,6 +514,10 @@ def test_valid_events_are_rebuilt(data, expected):
         ({"t": "w", "g": 1, "v": b"x" * 1025}, hp.WriteEvent(hp.NO_ID, b"")),
         ({"t": "w", "g": 0x10000, "v": b"\x01"}, hp.WriteEvent(hp.NO_ID, b"")),
         ({"t": "w", "g": False, "v": b"\x01"}, hp.WriteEvent(hp.NO_ID, b"")),
+        ({"t": "b", "g": 4, "b": 64, "v": 1}, hp.WriteEvent(hp.NO_ID, b"")),
+        ({"t": "b", "g": 4, "b": 2, "v": 2}, hp.WriteEvent(hp.NO_ID, b"")),
+        ({"t": "b", "g": 4, "b": 2, "v": True}, hp.WriteEvent(hp.NO_ID, b"")),
+        ({"t": "b", "g": 4, "v": 1}, hp.WriteEvent(hp.NO_ID, b"")),
     ],
 )
 def test_invalid_show_and_write_events_become_requests_the_host_refuses(data, expected):
@@ -545,6 +551,7 @@ def test_sequence_numbers_are_range_checked(data, expected):
 
 def test_messages_are_encoded_as_the_wire_protocol():
     assert hp.encode_event(7, hp.ShowEvent(2)) == struct.pack("<IBIH", 7, 0x03, 7, 2)
+    assert hp.encode_event(7, hp.BitEvent(4, 2, 1)) == struct.pack("<IBIHBB", 9, 0x05, 7, 4, 2, 1)
     assert (
         hp.encode_event(7, hp.WriteEvent(3, b"ab"))
         == struct.pack("<IBIHH", 11, 0x04, 7, 3, 2) + b"ab"

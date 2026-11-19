@@ -103,7 +103,8 @@ _Static_assert(SAME_VALUE(HMI_CODEC_BOOL, HMI_ACCESS_BOOL) &&
 typedef enum
 {
     REQUEST_SHOW  = HMI_MSG_SHOW,
-    REQUEST_WRITE = HMI_MSG_WRITE
+    REQUEST_WRITE = HMI_MSG_WRITE,
+    REQUEST_BIT   = HMI_MSG_BIT
 } request_kind_t;
 
 typedef struct viewer
@@ -379,10 +380,48 @@ static bool page_reads(int32_t page, uint16_t tag)
            list_has(hmi_access_pages[page].reads, hmi_access_pages[page].read_count, tag);
 }
 
-static bool page_writes(int32_t page, uint16_t tag)
+/** How the shown page writes tag, or NULL when it does not write it. */
+static const hmi_access_write_t *page_write(int32_t page, uint16_t tag)
 {
-    return page >= 0 && page < hmi_access_page_count &&
-           list_has(hmi_access_pages[page].writes, hmi_access_pages[page].write_count, tag);
+    if (page < 0 || page >= hmi_access_page_count)
+        return NULL;
+    const hmi_access_write_t *w = hmi_access_pages[page].writes;
+    size_t lo = 0, hi = hmi_access_pages[page].write_count;
+    while (lo < hi)
+    {
+        const size_t mid = lo + (hi - lo) / 2u;
+        if (w[mid].tag == tag)
+            return &w[mid];
+        if (w[mid].tag < tag)
+            lo = mid + 1u;
+        else
+            hi = mid;
+    }
+    return NULL;
+}
+
+/** Whether a tag's type takes bit assignments (integers and bit strings); its width in bits, else
+ * 0. */
+static unsigned bit_width(uint8_t type)
+{
+    switch (type)
+    {
+    case HMI_CODEC_SINT:
+    case HMI_CODEC_INT:
+    case HMI_CODEC_DINT:
+    case HMI_CODEC_LINT:
+    case HMI_CODEC_USINT:
+    case HMI_CODEC_UINT:
+    case HMI_CODEC_UDINT:
+    case HMI_CODEC_ULINT:
+    case HMI_CODEC_BYTE:
+    case HMI_CODEC_WORD:
+    case HMI_CODEC_DWORD:
+    case HMI_CODEC_LWORD:
+        return (unsigned)hmi_codec_width(type) * 8u;
+    default:
+        return 0;
+    }
 }
 
 /* ---------------------------------------------------------------------------------------- */
@@ -418,8 +457,11 @@ static bool tag_read(int tag, uint8_t *dest)
     return hmi_codec_from_debug(t->type, t->max_len, wire, dsize, dest);
 }
 
-/** Soft-writes a checked value in buffer format, logged with the viewer's account. */
-static void tag_write(const viewer_t *v, int tag, const uint8_t *src)
+/**
+ * Soft-writes a checked value in buffer format, logged with the viewer's account; bit >= 0 names
+ * the one bit a bit assignment changed, logged with the variable's resulting value.
+ */
+static void tag_write(const viewer_t *v, int tag, int bit, const uint8_t *src)
 {
     uint8_t arr;
     uint16_t elem;
@@ -449,8 +491,12 @@ static void tag_write(const viewer_t *v, int tag, const uint8_t *src)
                 value, status);
         return;
     }
-    hmi_log(LOG_INFO, "write by %s: %s = %s%s", v->account, tag_path(tag), value,
-            truncated ? " (cut to the debugger's string length)" : "");
+    if (bit >= 0)
+        hmi_log(LOG_INFO, "write by %s: %s.%d = %s (now %s)", v->account, tag_path(tag), bit,
+                (src[bit / 8] >> (bit % 8)) & 1u ? "TRUE" : "FALSE", value);
+    else
+        hmi_log(LOG_INFO, "write by %s: %s = %s%s", v->account, tag_path(tag), value,
+                truncated ? " (cut to the debugger's string length)" : "");
 }
 
 /* ---------------------------------------------------------------------------------------- */
@@ -483,39 +529,86 @@ static void apply_show(viewer_t *v, uint16_t page)
     }
 }
 
-/** WRITE: applied when the shown screen writes the tag and the value fits its type and range. */
-static void apply_write(viewer_t *v, uint16_t tag, const uint8_t *value, uint16_t len,
-                        uint8_t *buffer)
+/** Counts a processed write and has a tag the shown page reads sent again with its value after it.
+ */
+static void count_write(viewer_t *v, int32_t page, uint16_t tag)
 {
-    const int32_t page = v->page;
-    const char *why    = NULL;
-    if (tag >= hmi_access_tag_count)
-        why = "no such variable";
-    else if (page < 0)
-        why = "no screen shown";
-    else if (!page_writes(page, tag))
-        why = "the screen shown does not write it";
-    else if (!hmi_codec_from_wire(hmi_access_tags[tag].type, hmi_access_tags[tag].max_len, value,
-                                  len, buffer))
-        why = "the value does not fit its type";
-
-    if (why)
-    {
-        hmi_log(LOG_WARN, "write by %s (%s) of %s refused: %s", v->account, role_name(v->role),
-                tag < hmi_access_tag_count ? tag_path(tag) : "an unknown tag", why);
-        refuse(v, HMI_REFUSED_WRITE, tag);
-    }
-    else
-    {
-        tag_write(v, tag, buffer);
-    }
-
     pthread_mutex_lock(&g_lock);
     v->writes++;
     v->announce = true;
     if (page_reads(page, tag))
         hmi_values_forget(&v->values, &g_layout, tag);
     pthread_mutex_unlock(&g_lock);
+}
+
+static void refuse_write(viewer_t *v, uint16_t tag, const char *why)
+{
+    hmi_log(LOG_WARN, "write by %s (%s) of %s refused: %s", v->account, role_name(v->role),
+            tag < hmi_access_tag_count ? tag_path(tag) : "an unknown tag", why);
+    refuse(v, HMI_REFUSED_WRITE, tag);
+}
+
+/**
+ * WRITE: applied when the shown screen writes the tag as a whole value and the value fits its type
+ * and range. A tag the screen only assigns bit by bit takes no whole value.
+ */
+static void apply_write(viewer_t *v, uint16_t tag, const uint8_t *value, uint16_t len,
+                        uint8_t *buffer)
+{
+    const int32_t page            = v->page;
+    const hmi_access_write_t *how = page_write(page, tag);
+    const char *why               = NULL;
+    if (tag >= hmi_access_tag_count)
+        why = "no such variable";
+    else if (page < 0)
+        why = "no screen shown";
+    else if (!how)
+        why = "the screen shown does not write it";
+    else if (!how->whole)
+        why = "the screen shown only sets single bits of it";
+    else if (!hmi_codec_from_wire(hmi_access_tags[tag].type, hmi_access_tags[tag].max_len, value,
+                                  len, buffer))
+        why = "the value does not fit its type";
+
+    if (why)
+        refuse_write(v, tag, why);
+    else
+        tag_write(v, tag, -1, buffer);
+    count_write(v, page, tag);
+}
+
+/**
+ * BIT: one bit assignment of the shown screen, applied to the variable's current value (read,
+ * change the bit, soft-write), so bits the PLC changed meanwhile stay. Only bits the screen
+ * assigns.
+ */
+static void apply_bit(viewer_t *v, uint16_t tag, uint8_t bit, uint8_t on, uint8_t *buffer)
+{
+    const int32_t page            = v->page;
+    const hmi_access_write_t *how = page_write(page, tag);
+    const char *why               = NULL;
+    if (tag >= hmi_access_tag_count)
+        why = "no such variable";
+    else if (page < 0)
+        why = "no screen shown";
+    else if (!how || ((how->bits >> bit) & 1u) == 0)
+        why = "the screen shown does not set that bit";
+    else if (bit >= bit_width(hmi_access_tags[tag].type))
+        why = "the variable has no such bit";
+    else if (!tag_read(tag, buffer))
+        why = "the variable cannot be read";
+
+    if (why)
+    {
+        refuse_write(v, tag, why);
+    }
+    else
+    {
+        const uint8_t mask = (uint8_t)(1u << (bit % 8u));
+        buffer[bit / 8u]   = (uint8_t)(on ? buffer[bit / 8u] | mask : buffer[bit / 8u] & ~mask);
+        tag_write(v, tag, bit, buffer);
+    }
+    count_write(v, page, tag);
 }
 
 /** Applies the viewer's queued requests in arrival order. */
@@ -538,6 +631,8 @@ static void apply_requests(viewer_t *v, hmi_buf_t *scratch, uint8_t *buffer)
         off += REQUEST_HEADER + len;
         if (kind == REQUEST_SHOW)
             apply_show(v, id);
+        else if (kind == REQUEST_BIT && len == 2)
+            apply_bit(v, id, r[REQUEST_HEADER], r[REQUEST_HEADER + 1], buffer);
         else
             apply_write(v, id, r + REQUEST_HEADER, len, buffer);
     }
@@ -748,7 +843,7 @@ static void conn_close(conn_t *c, const char *why)
     hmi_log(LOG_INFO, "web server connection closed (%s): %zu viewer(s) dropped", why, dropped);
 }
 
-/** Queues a SHOW or WRITE request (g_lock held); false when the viewer was dropped for
+/** Queues a SHOW, WRITE or BIT request (g_lock held); false when the viewer was dropped for
  * overflowing its queue: more requests than the value thread takes, so it cannot be served. */
 static bool push_request(viewer_t *v, uint8_t kind, uint16_t id, const uint8_t *value, uint16_t len)
 {
@@ -831,6 +926,13 @@ static bool handle_message(const hmi_wire_msg_t *m)
     case HMI_MSG_WRITE:
         if (v)
             overflowed = !push_request(v, REQUEST_WRITE, m->tag, m->value, m->value_len);
+        break;
+    case HMI_MSG_BIT:
+        if (v)
+        {
+            const uint8_t bit[2] = {m->bit, m->bit_value};
+            overflowed           = !push_request(v, REQUEST_BIT, m->tag, bit, sizeof bit);
+        }
         break;
     default:
         ok = false;
@@ -1086,6 +1188,25 @@ static bool id_list_valid(const uint16_t *ids, uint16_t count)
     return true;
 }
 
+/**
+ * Whether a page's write list is ascending by tag without repeats, names only known tags, writes
+ * each one somehow, and sets bits only of integer and bit-string tags, within their width.
+ */
+static bool write_list_valid(const hmi_access_write_t *w, uint16_t count)
+{
+    for (uint16_t i = 0; i < count; i++)
+    {
+        if (w[i].tag >= hmi_access_tag_count || (i > 0 && w[i].tag <= w[i - 1].tag))
+            return false;
+        if (!w[i].whole && w[i].bits == 0)
+            return false;
+        const unsigned width = bit_width(hmi_access_tags[w[i].tag].type);
+        if (w[i].bits != 0 && (width == 0 || (width < 64u && (w[i].bits >> width) != 0)))
+            return false;
+    }
+    return true;
+}
+
 /** Checks the manifest and builds the value layout; false when it cannot be served. */
 static bool manifest_valid(void)
 {
@@ -1120,7 +1241,7 @@ static bool manifest_valid(void)
     {
         const hmi_access_page_t *page = &hmi_access_pages[p];
         if (!id_list_valid(page->reads, page->read_count) ||
-            !id_list_valid(page->writes, page->write_count))
+            !write_list_valid(page->writes, page->write_count))
         {
             hmi_log(LOG_ERROR, "screen %d of the HMI manifest lists its tags wrongly", p);
             ok = false;

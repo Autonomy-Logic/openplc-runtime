@@ -43,6 +43,8 @@ extern "C"
 #define HMI_WIRE_VALUES_HEADER (HMI_WIRE_PREFIX + 1u + 12u)
 /** Bytes before each value in a VALUES record: tag and length. */
 #define HMI_WIRE_RECORD_HEADER 4u
+/** Highest bit index a BIT message may name (bit 63 of a 64-bit tag). */
+#define HMI_WIRE_BIT_MAX 63u
 /** Highest role code: 0 admin, 1 engineer, 2 operator, 3 viewer. */
 #define HMI_WIRE_ROLE_MAX 3u
 
@@ -52,6 +54,7 @@ extern "C"
         HMI_MSG_CLOSE   = 0x02,
         HMI_MSG_SHOW    = 0x03,
         HMI_MSG_WRITE   = 0x04,
+        HMI_MSG_BIT     = 0x05,
         HMI_MSG_STATUS  = 0x81,
         HMI_MSG_OPENED  = 0x82,
         HMI_MSG_BUSY    = 0x83,
@@ -80,6 +83,8 @@ extern "C"
         uint8_t role;
         uint16_t page;
         uint16_t tag;
+        uint8_t bit;       /**< BIT: the bit index */
+        uint8_t bit_value; /**< BIT: 0 or 1 */
         uint16_t value_len;
         uint8_t value[HMI_WIRE_VALUE_MAX];
         uint8_t name_len;

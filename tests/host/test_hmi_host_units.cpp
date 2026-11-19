@@ -124,6 +124,15 @@ static void test_wire_decode()
     CHECK(decode(empty, &m, &used) == HMI_WIRE_DECODED && m.value_len == 0,
           "a WRITE of an empty STRING");
 
+    Bytes bit;
+    put_u32(bit, 7);
+    put_u16(bit, 4);
+    bit.push_back(63);
+    bit.push_back(1);
+    CHECK(decode(message(0x05, bit), &m, &used) == HMI_WIRE_DECODED && m.type == HMI_MSG_BIT &&
+              m.tag == 4 && m.bit == 63 && m.bit_value == 1,
+          "BIT");
+
     Bytes two = open;
     two.insert(two.end(), write.begin(), write.end());
     CHECK(decode(two, &m, &used) == HMI_WIRE_DECODED && used == open.size(),
@@ -138,11 +147,11 @@ static void test_wire_malformed()
     hmi_wire_msg_t m;
     size_t used = 0;
 
-    Bytes unknown = message(0x05, {0, 0, 0, 0});
+    Bytes unknown = message(0x06, {0, 0, 0, 0});
     CHECK(decode(unknown, &m, &used) == HMI_WIRE_MALFORMED, "unknown type");
     Bytes old_frame = message(0x81, {0, 0, 0, 0});
     CHECK(decode(old_frame, &m, &used) == HMI_WIRE_MALFORMED, "a host message type");
-    Bytes head = {6, 0, 0, 0, 0x05};
+    Bytes head = {6, 0, 0, 0, 0x06};
     CHECK(decode(head, &m, &used) == HMI_WIRE_MALFORMED, "an unknown type fails before its payload");
 
     Bytes zero = {0, 0, 0, 0};
@@ -166,6 +175,11 @@ static void test_wire_malformed()
     put_u16(show, 0);
     show.push_back(0);
     CHECK(decode(message(0x03, show), &m, &used) == HMI_WIRE_MALFORMED, "SHOW with extra bytes");
+
+    for (const Bytes &bad : {Bytes{1, 0, 0, 0, 4, 0, 64, 1}, Bytes{1, 0, 0, 0, 4, 0, 2, 2},
+                             Bytes{1, 0, 0, 0, 4, 0, 2}})
+        CHECK(decode(message(0x05, bad), &m, &used) == HMI_WIRE_MALFORMED,
+              "BIT past bit 63, with a value other than 0 or 1, or cut short");
 
     Bytes lying = write_payload(1, 0, {1, 2, 3});
     lying[6] = 4; /* says 4 value bytes, carries 3 */
