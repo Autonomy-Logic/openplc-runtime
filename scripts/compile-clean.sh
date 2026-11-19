@@ -21,4 +21,11 @@ UNIQUE_LIBPLC="libplc_${TIMESTAMP}.so"
 # Move resulting shared library to unique name
 mv "$BUILD_DIR/new_libplc.so" "$BUILD_DIR/$UNIQUE_LIBPLC"
 
-sync -- "$BUILD_DIR/$UNIQUE_LIBPLC" "$BUILD_DIR"
+case "$(uname -s)" in
+    MSYS*|MINGW*|CYGWIN*)
+        sync
+        ;;
+    *)
+        sync -- "$BUILD_DIR/$UNIQUE_LIBPLC" "$BUILD_DIR"
+        ;;
+esac
