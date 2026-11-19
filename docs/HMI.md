@@ -219,7 +219,11 @@ draws the same pixels as the editor's preview and a panel. Licence texts ship be
   the wait from `Retry-After`. The token is kept in the browser's `localStorage`, so a reload or a
   browser restart on the same device stays signed in while the token is valid.
 - Renewal: `/api/renew` three minutes before the 15-minute expiry, retried every 30 seconds while the
-  device cannot be reached. A token that expires first, a refused renewal or a disconnect whose
+  device cannot be reached. Tabs of one browser share the stored token, and a renewed token is refused
+  (presented again after 10 seconds it ends the whole session), so tabs renew one at a time (a Web
+  Lock) and a tab whose token another tab renewed takes the stored successor of the same session
+  instead of presenting its own: before renewing, when a renewal or a request is refused, and on the
+  browser's storage event. The form clears the stored token only when it belongs to the same session. A token that expires first, a refused renewal or a disconnect whose
   `/api/whoami` answers 401 return to the form.
 - Screens: on `live` the client starts the screens with the role the device sent, runs a frame every
   frame period (layout, input, keyboard, popups and animation all local), sends a show for the page
