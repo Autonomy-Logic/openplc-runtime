@@ -46,6 +46,28 @@ def _install_sync_shim(root: Path) -> Path:
     return shim_dir
 
 
+def _install_uname_shim(shim_dir: Path, kernel_name: str, os_name: str) -> None:
+    """Write a `uname` stand-in into `shim_dir`.
+
+    `uname` and `uname -s` print `kernel_name`, `uname -o` prints `os_name`, and any other
+    invocation exits 1.
+    """
+    shim = shim_dir / "uname"
+    shim.write_text(
+        "#!/bin/bash\n"
+        'if [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "$1" = "-s" ]; }; then\n'
+        f"  printf '%s\\n' '{kernel_name}'\n"
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$#" -eq 1 ] && [ "$1" = "-o" ]; then\n'
+        f"  printf '%s\\n' '{os_name}'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
 def _run_compile_clean(root: Path, shim_dir: Path | None) -> subprocess.CompletedProcess:
     """Run scripts/compile-clean.sh from `root`, with the `sync` shim first on PATH when given."""
     env = dict(os.environ)
@@ -72,6 +94,15 @@ def _sync_calls(root: Path) -> list[tuple[list[str], list[str]]]:
         arguments = joined.split("\x1f") if int(argc) else []
         calls.append((arguments, listing.split()))
     return calls
+
+
+def _the_installed_library(build: Path) -> str:
+    """Return the one libplc_<n>.so in build/, asserting its new bytes and no new_libplc.so left."""
+    libraries = sorted(p.name for p in build.iterdir() if _LIBPLC.match(p.name))
+    assert len(libraries) == 1, sorted(p.name for p in build.iterdir())
+    assert (build / libraries[0]).read_bytes() == _NEW_LIBRARY_BYTES
+    assert not (build / "new_libplc.so").exists()
+    return libraries[0]
 
 
 @pytest.fixture
@@ -128,3 +159,48 @@ def test_the_real_sync_accepts_the_library_and_the_build_directory(build_root):
     libraries = sorted(p.name for p in build.iterdir() if _LIBPLC.match(p.name))
     assert len(libraries) == 1, sorted(p.name for p in build.iterdir())
     assert (build / libraries[0]).read_bytes() == _NEW_LIBRARY_BYTES
+
+
+@pytest.mark.parametrize(
+    ("kernel_name", "os_name"),
+    [
+        ("MSYS_NT-10.0-19045", "Msys"),
+        ("MINGW64_NT-10.0-19045", "Msys"),
+        ("CYGWIN_NT-10.0-19045", "Cygwin"),
+    ],
+    ids=["MSYS", "MinGW", "Cygwin"],
+)
+def test_on_msys2_and_cygwin_the_build_ends_with_a_plain_sync(
+    build_root: Path, kernel_name: str, os_name: str
+) -> None:
+    build = build_root / "build"
+    (build / "new_libplc.so").write_bytes(_NEW_LIBRARY_BYTES)
+    shim_dir = _install_sync_shim(build_root)
+    _install_uname_shim(shim_dir, kernel_name, os_name)
+
+    result = _run_compile_clean(build_root, shim_dir)
+
+    assert result.returncode == 0, result.stderr
+    library = _the_installed_library(build)
+    calls = _sync_calls(build_root)
+    assert calls, "compile-clean.sh never called sync after installing the new library"
+    last_arguments, last_listing = calls[-1]
+    assert library in last_listing, last_listing
+    assert last_arguments == [], "on MSYS2, MinGW and Cygwin the last sync must take no arguments"
+
+
+def test_on_linux_the_build_ends_with_the_targeted_sync(build_root: Path) -> None:
+    build = build_root / "build"
+    (build / "new_libplc.so").write_bytes(_NEW_LIBRARY_BYTES)
+    shim_dir = _install_sync_shim(build_root)
+    _install_uname_shim(shim_dir, "Linux", "GNU/Linux")
+
+    result = _run_compile_clean(build_root, shim_dir)
+
+    assert result.returncode == 0, result.stderr
+    library = _the_installed_library(build)
+    calls = _sync_calls(build_root)
+    assert calls, "compile-clean.sh never called sync after installing the new library"
+    last_arguments, _ = calls[-1]
+    expected = ["--", f"build/{library}", "build"]
+    assert last_arguments == expected, "on Linux sync must flush only the new library and build/"
