@@ -201,6 +201,14 @@ plc_switch_gate_t plc_switch_gate(void)
     return gate;
 }
 
+bool plc_switch_has_owner(void)
+{
+    registry_enter();
+    const bool has_owner = owner_count > 0 || owner_overflow;
+    pthread_mutex_unlock(&registry_lock);
+    return has_owner;
+}
+
 bool plc_switch_await_report(unsigned timeout_ms)
 {
     const struct timespec deadline = monotonic_deadline_ms(timeout_ms);

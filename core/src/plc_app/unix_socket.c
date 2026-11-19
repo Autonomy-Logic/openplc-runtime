@@ -237,8 +237,8 @@ static void format_switch_response(char *response, size_t response_size)
     }
 }
 
-// START while a switch owner has not reported: begin the start, then reply once
-// its switch gate decided, after its plugin re-init. RUN does not mean the cycle
+// START while a switch owner is registered: begin the start, then reply once its
+// switch gate decided, after the plugin re-init. RUN does not mean the cycle
 // thread is running yet.
 static void start_awaiting_switch_gate(char *response, size_t response_size)
 {
@@ -347,7 +347,7 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
             strncpy(response, "START:ERROR_ALREADY_RUNNING\n", response_size);
             log_error("Received START command but PLC is already RUNNING");
         }
-        else if (gate == PLC_SWITCH_GATE_UNKNOWN)
+        else if (gate == PLC_SWITCH_GATE_UNKNOWN || plc_switch_has_owner())
         {
             start_awaiting_switch_gate(response, response_size);
         }

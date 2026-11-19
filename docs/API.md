@@ -130,13 +130,15 @@ Authorization: Bearer <token>
 waits up to 15 s for it.
 
 **Possible Status Values:**
-- `"START:OK"` - The start was accepted. While a run/stop switch owner had not reported a
-  position, the reply comes once the switch gate let the start through, after the plugin
-  re-initialisation and the wait of up to 2 s, and before the PLC cycle thread is created; a
-  failure after that point lands ERROR, which `/api/status` reports.
+- `"START:OK"` - The start was accepted. On a device with a run/stop switch owner plugin, the
+  reply comes once the switch gate let the start through, after the plugin re-initialisation and
+  the wait of up to 2 s, and before the PLC cycle thread is created; a failure after that point
+  lands ERROR, which `/api/status` reports. With no switch owner, the reply comes as soon as the
+  start begins.
 - `"START:ERROR_ALREADY_RUNNING"` - PLC was already in RUNNING state
-- `"START:ERROR_SWITCH_STOP"` - The run/stop mode switch is in STOP; no scan ran and the PLC
-  stays STOPPED
+- `"START:ERROR_SWITCH_STOP"` - The run/stop mode switch was in STOP before the start began, or
+  the switch owner reported STOP after the start re-initialised the plugins; no scan ran and the
+  PLC ends STOPPED
 - `"START:ERROR_SWITCH_UNKNOWN"` - A switch owner plugin did not report a position within 2 s
   of the start re-initialising the plugins; no scan ran and the PLC stays STOPPED
 - `"START:ERROR"` - The start could not begin or failed (another state change in flight, no

@@ -365,8 +365,8 @@ class RuntimeManager:
         """
         Send START command.
 
-        Waits up to START_REPLY_TIMEOUT_S for the reply: while a switch owner has
-        not reported, the runtime answers only once the start has landed.
+        Waits up to START_REPLY_TIMEOUT_S for the reply: while a switch owner is
+        registered, the runtime answers once the start's switch gate decided.
         """
         try:
             return self.runtime_socket.send_and_receive("START\n", timeout=START_REPLY_TIMEOUT_S)

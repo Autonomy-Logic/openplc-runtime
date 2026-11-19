@@ -111,10 +111,11 @@ and forgotten when the plugin leaves the configuration. A report stops counting 
 de-initialised (`cleanup()`), not when it detaches.
 
 **Gate 1, before a transition begins.** RUN proceeds. STOP refuses with no transition
-(`START:ERROR_SWITCH_STOP`). On UNKNOWN, socket START begins the start and replies only once it
-has landed, after gate 2 (at most `PLC_START_OUTCOME_WAIT_MS`, 12 s; past that the start is
-cancelled, lands STOPPED and the reply is `START:ERROR`). A plugin start request is refused, and
-the post-landing correction never starts.
+(`START:ERROR_SWITCH_STOP`). When a switch owner is registered (`plc_switch_has_owner()`, gate 1
+RUN or UNKNOWN), socket START begins the start and replies only once gate 2 has decided (at most
+`PLC_START_OUTCOME_WAIT_MS`, 12 s; past that the start is cancelled, lands STOPPED and the reply
+is `START:ERROR`). With no owner, socket START replies as soon as the start begins. On UNKNOWN, a
+plugin start request is refused, and the post-landing correction never starts.
 
 **Gate 2, inside the start.** After the program loads and the plugins are re-initialised, and
 before the PLC cycle thread is created, the start waits up to `PLC_SWITCH_REPORT_WAIT_MS` (2 s) for

@@ -106,6 +106,17 @@ void plc_switch_owners_forget_absent(const char *const *present_ids, size_t coun
 plc_switch_gate_t plc_switch_gate(void);
 
 /**
+ * @brief Whether at least one switch owner is registered.
+ *
+ * Counts a declared owner that has not reported, an owner by an earlier report
+ * and an owner whose report was invalidated, until plc_switch_owners_forget_absent
+ * drops it. True as well when the registry overflowed. Safe from any thread.
+ *
+ * @return true when an owner is registered or the registry overflowed
+ */
+bool plc_switch_has_owner(void);
+
+/**
  * @brief Wait until the gate is no longer UNKNOWN, for at most @p timeout_ms.
  *
  * Returns at once when the gate is RUN or STOP, and as soon as the last missing
