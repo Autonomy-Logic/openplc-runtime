@@ -130,11 +130,25 @@ Authorization: Bearer <token>
 waits up to 15 s for it.
 
 **Possible Status Values:**
-- `"START:OK"` - The start was accepted. On a device with a run/stop switch owner plugin, the
-  reply comes once the switch gate let the start through, after the plugin re-initialisation and
-  the wait of up to 2 s, and before the PLC cycle thread is created; a failure after that point
-  lands ERROR, which `/api/status` reports. With no switch owner, the reply comes as soon as the
-  start begins.
+- `"START:OK"` - The start was accepted. While the runtime process has a switch owner registered,
+  the reply comes once the switch gate let the start through, after the plugin re-initialisation
+  and the wait of up to 2 s, and before the PLC cycle thread is created; a failure after that point
+  lands ERROR, which `/api/status` reports. A switch owner is registered once the process has
+  initialised a switch owner plugin from its plugin configuration, at boot or during an earlier
+  start, and that plugin declared ownership (`owns_mode_switch`) or reported a position; it stays
+  registered until a start loads a plugin configuration without it. With no switch owner
+  registered, the reply comes as soon as the start begins.
+
+  The exception is the first START after an upload whose plugin configuration adds a switch owner
+  plugin, on a process with no switch owner registered yet (for example a freshly installed
+  runtime, or one that was running a project without such a plugin). That START replies
+  `START:OK` at once, and the switch gate can then refuse it before the first scan: no scan runs,
+  the PLC lands STOPPED, and `/api/status` reports `"STOPPED"` with `switchPosition` `"stop"`
+  (switch in STOP) or `"unknown"` (no report within 2 s). The log says
+  `Start refused: the mode switch is in STOP` or
+  `Start refused: no switch owner has reported a position within 2000 ms`. Later STARTs in the
+  same process reply with the gate's decision. A client that needs to know whether the PLC is
+  running after `START:OK` polls `/api/status`.
 - `"START:ERROR_ALREADY_RUNNING"` - PLC was already in RUNNING state
 - `"START:ERROR_SWITCH_STOP"` - The run/stop mode switch was in STOP before the start began, or
   the switch owner reported STOP after the start re-initialised the plugins; no scan ran and the

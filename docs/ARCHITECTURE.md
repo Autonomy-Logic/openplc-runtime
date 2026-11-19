@@ -115,14 +115,20 @@ de-initialised (`cleanup()`), not when it detaches.
 RUN or UNKNOWN), socket START begins the start and replies only once gate 2 has decided (at most
 `PLC_START_OUTCOME_WAIT_MS`, 12 s; past that the start is cancelled, lands STOPPED and the reply
 is `START:ERROR`). With no owner, socket START replies as soon as the start begins. On UNKNOWN, a
-plugin start request is refused, and the post-landing correction never starts.
+plugin start request is refused, and the post-landing correction never starts. An owner enters the
+registry only when `plugin_driver_init` declares it or the plugin reports, at boot or inside a
+load. So on the first START after a plugin configuration adds an owner, with none registered,
+`plc_switch_has_owner()` is false and socket START replies `START:OK` as soon as the start begins;
+gate 2 can still refuse that start, with zero scans, and the PLC lands STOPPED.
 
 **Gate 2, inside the start.** After the program loads and the plugins are re-initialised, and
 before the PLC cycle thread is created, the start waits up to `PLC_SWITCH_REPORT_WAIT_MS` (2 s) for
 every owner to report. RUN creates the thread. STOP, or UNKNOWN once the wait ran out, refuses: no
 plugin `start_loop` and no scan, the load rollback steps of the stop sequence above (a keep-alive
-owner detaches and keeps watching the switch), and the state lands STOPPED. The socket reply is
-`START:ERROR_SWITCH_STOP` or `START:ERROR_SWITCH_UNKNOWN`; the latter is logged as
+owner detaches and keeps watching the switch), and the state lands STOPPED. When the socket START
+waited for gate 2 (an owner was registered, see Gate 1), the reply is `START:ERROR_SWITCH_STOP` or
+`START:ERROR_SWITCH_UNKNOWN`; on the first START after a plugin configuration adds an owner, with
+none registered, the reply was already `START:OK`. The UNKNOWN refusal is logged as
 `Start refused: no switch owner has reported a position within 2000 ms`. The socket reply comes as
 soon as the gate refuses, before the rollback: until the state lands STOPPED, `STATUS` answers
 `STATUS:TRANSITIONING` and other commands answer `COMMAND:BUSY`. A refusal never lands ERROR.

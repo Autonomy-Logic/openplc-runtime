@@ -139,9 +139,15 @@ Response:
 
 `status` forwards the runtime's START reply: `START:OK`, `START:ERROR_ALREADY_RUNNING`,
 `START:ERROR_SWITCH_STOP` (the run/stop switch is in STOP), `START:ERROR_SWITCH_UNKNOWN` (a
-switch owner plugin did not report a position within 2 s) or `START:ERROR`. On a device with a
-switch owner plugin, the reply comes once the switch gate decided the start, which can still land
-ERROR afterwards (poll `/api/status`), so allow up to 15 s for it.
+switch owner plugin did not report a position within 2 s) or `START:ERROR`. While the runtime has
+a switch owner registered (see `START:OK` in [API.md](API.md#start-plc)), the reply comes once the
+switch gate decided the start, which can still land ERROR afterwards, so allow up to 15 s for it.
+
+The exception: after a Build & Upload that adds a switch owner plugin to a runtime with no switch
+owner registered, the first START replies `START:OK` at once. The switch gate can still refuse
+that start before the first scan (switch in STOP, or no report within 2 s), and the PLC then stays
+STOPPED with no scan. Later STARTs reply with the gate's decision. So poll `/api/status` after
+`START:OK`, and take the reason for a refusal from `switchPosition` (`"stop"` or `"unknown"`).
 
 **Stop PLC:**
 ```
