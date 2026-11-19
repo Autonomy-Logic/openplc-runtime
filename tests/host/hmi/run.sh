@@ -61,7 +61,7 @@ for pair in "${PAIRS[@]}"; do
     # 1. compile-hmi.sh
     build_root="$OUT/build-$cc"
     make_generated "$build_root"
-    if (cd "$build_root" && HMI_SRC_ROOT="$ROOT" HMI_CC="$cc" HMI_CXX="$cxx" \
+    if (cd "$build_root" && HMI_SRC_ROOT="$ROOT" HMI_CC="$cc" \
         HMI_EXTRA_FLAGS="-Werror" bash "$ROOT/scripts/compile-hmi.sh" > "$OUT/compile-$cc.log" 2>&1); then
         echo "  ok    compile-hmi.sh builds with -Wall -Wextra -Werror"
         so="$build_root/build/hmi/libhmi_plugin.so"
@@ -95,7 +95,7 @@ for pair in "${PAIRS[@]}"; do
         fi
         sealed_before=$(cat "$seal")
         printf 'this is not C\n' > "$build_root/core/generated/hmi/src/broken.c"
-        if (cd "$build_root" && HMI_SRC_ROOT="$ROOT" HMI_CC="$cc" HMI_CXX="$cxx" \
+        if (cd "$build_root" && HMI_SRC_ROOT="$ROOT" HMI_CC="$cc" \
             bash "$ROOT/scripts/compile-hmi.sh" > /dev/null 2>&1); then
             fail "a broken HMI source builds"
         elif [ "$(cat "$seal" 2>/dev/null)" = "$sealed_before" ] && [ -f "$so" ] &&

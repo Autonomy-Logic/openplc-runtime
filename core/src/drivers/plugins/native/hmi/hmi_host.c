@@ -623,6 +623,11 @@ static void set_default_priority(void)
 #endif
 }
 
+/**
+ * The value thread: every period it frees closing viewers, then applies each open viewer's
+ * requests and serves its values. Viewers stay allocated until this thread frees them, so the
+ * list it snapshots stays valid without g_lock.
+ */
 static void *value_main(void *arg)
 {
     (void)arg;
@@ -656,7 +661,6 @@ static void *value_main(void *arg)
         if (!buffer || !wire)
             continue;
 
-        /* Viewers stay allocated until this thread frees them. */
         size_t count = 0;
         pthread_mutex_lock(&g_lock);
         for (viewer_t *v = g_viewers; v; v = v->next)
@@ -745,7 +749,7 @@ static void conn_close(conn_t *c, const char *why)
 }
 
 /** Queues a SHOW or WRITE request (g_lock held); false when the viewer was dropped for
- * overflowing its queue. */
+ * overflowing its queue: more requests than the value thread takes, so it cannot be served. */
 static bool push_request(viewer_t *v, uint8_t kind, uint16_t id, const uint8_t *value, uint16_t len)
 {
     const uint8_t head[REQUEST_HEADER] = {kind, (uint8_t)id, (uint8_t)(id >> 8), (uint8_t)len,
@@ -761,7 +765,6 @@ static bool push_request(viewer_t *v, uint8_t kind, uint16_t id, const uint8_t *
         v->request_count++;
         return true;
     }
-    /* More requests than the value thread takes: the viewer cannot be served. */
     viewer_close_locked(v);
     control_viewer(HMI_MSG_BUSY, v->id);
     return false;

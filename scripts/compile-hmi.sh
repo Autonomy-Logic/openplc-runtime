@@ -8,8 +8,8 @@
 # (hmi/src/hmi_access.c); screens run in the browser, not here. The build goes
 # to build/hmi.new and replaces build/hmi only when it succeeds.
 
-# HMI_CC: C compiler (gcc); HMI_CXX is accepted and unused; HMI_EXTRA_FLAGS:
-# added to every compile; HMI_SRC_ROOT: runtime source tree (default .).
+# HMI_CC: C compiler (gcc); HMI_EXTRA_FLAGS: added to every compile;
+# HMI_SRC_ROOT: runtime source tree (default .).
 
 set -euo pipefail
 
