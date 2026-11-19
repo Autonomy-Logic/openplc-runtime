@@ -774,6 +774,18 @@ def stays_stopped(group, tag, seconds=3.0, after="the START"):
     record(group, f"{tag}: zero scans after {after}", zero, detail)
 
 
+def lands_then_stays_stopped(group, tag):
+    """Wait for a refused start to land, record STOPPED, then check it stays stopped, no scan.
+
+    A refusal after the plugin re-init is answered before the rollback, so STATUS can read
+    the transition briefly after the reply.
+    """
+    st, secs = wait_final()
+    landed = st == "STATUS:STOPPED"
+    record(group, f"{tag}: the refused start lands STATUS:STOPPED", landed, f"{st} in {secs:.2f}s")
+    stays_stopped(group, tag)
+
+
 def socket_stop(rt):
     """Send STOP and wait for the final state. Returns (journal offset, final state, detail)."""
     mark = len(rt.journal())
@@ -1076,7 +1088,7 @@ def gate_legacy_stop_case():
         reply = cmd("START")
         refused = reply == "START:ERROR_SWITCH_STOP"
         record("gate", f"{tag}: START answers START:ERROR_SWITCH_STOP", refused, reply)
-        stays_stopped("gate", tag)
+        lands_then_stays_stopped("gate", tag)
         corrected = CORRECTION_LINE in rt.journal()[mark:]
         record("gate", f"{tag}: no switch correction after the START", not corrected)
         rt.kill()
@@ -1156,7 +1168,7 @@ def gate_silent_owner_case():
     record("gate", f"{tag}: START answers START:ERROR_SWITCH_UNKNOWN", refused, detail)
     name = f"{tag}: refused once the 2 s switch-report wait has elapsed"
     record("gate", name, secs >= PLC_SWITCH_REPORT_WAIT_S - 0.1, f"{secs:.2f}s")
-    stays_stopped("gate", tag)
+    lands_then_stays_stopped("gate", tag)
     sw = cmd("SWITCH")
     record("gate", f"{tag}: SWITCH answers SWITCH:UNKNOWN", sw == "SWITCH:UNKNOWN", sw)
     logged = NO_REPORT_LINE in rt.journal()[mark:]
@@ -1184,7 +1196,7 @@ def gate_fallback_stop_case():
         record("gate", f"{tag}: START answers START:ERROR_SWITCH_STOP", refused, detail)
         name = f"{tag}: answered within the 2 s switch-report wait"
         record("gate", name, secs < PLC_SWITCH_REPORT_WAIT_S, f"{secs:.2f}s")
-        stays_stopped("gate", tag)
+        lands_then_stays_stopped("gate", tag)
         rt.kill()
 
 
@@ -1234,6 +1246,133 @@ def gate_two_owners_case():
         rt.kill()
 
 
+SWITCH_STOP_REFUSED_LINE = "Start refused: the mode switch is in STOP"
+FAKEVPP_SWITCH_SILENT_TEXT = "SILENT"
+
+
+def start_then(rt, needle, action, limit=10.0):
+    """Send START, run `action` once the journal holds `needle`, then read the reply.
+
+    Returns (reply, whether `needle` appeared within `limit` seconds, seconds from the send
+    to the reply).
+    """
+    mark = len(rt.journal())
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(20)
+    s.connect(SOCK)
+    t0 = time.time()
+    try:
+        s.sendall(b"START\n")
+        seen = False
+        while time.time() - t0 < limit:
+            if needle in rt.journal()[mark:]:
+                seen = True
+                break
+            time.sleep(0.01)
+        action()
+        try:
+            reply = s.recv(4096).decode().strip()
+        except OSError as exc:
+            reply = f"no reply: {exc}"
+    finally:
+        s.close()
+    return reply, seen, time.time() - t0
+
+
+def gate_reinit_stop_case():
+    """Keep-alive owner: a STOP reported during the start's re-init refuses the socket START."""
+    tag = "gate_reinit_stop"
+    with VppLayout():
+        rt, ran = boot_switch_owner(tag, group="gate", init_ms=REINIT_MS)
+        if not ran:
+            rt.kill()
+            set_switch("RUN")
+            return
+        _, st, landed = socket_stop(rt)
+        record("gate", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+        sw = wait_switch("SWITCH:RUN")
+        name = f"{tag}: SWITCH answers SWITCH:RUN before the START"
+        record("gate", name, sw == "SWITCH:RUN", sw)
+
+        mark = len(rt.journal())
+        reply, seen, secs = start_then(rt, "Loading PLC application", lambda: set_switch("STOP"))
+        name = f"{tag}: the START began its transition before the switch moved to STOP"
+        record("gate", name, seen)
+        refused = reply == "START:ERROR_SWITCH_STOP"
+        detail = f"{reply} in {secs:.2f}s"
+        record("gate", f"{tag}: START answers START:ERROR_SWITCH_STOP", refused, detail)
+        lands_then_stays_stopped("gate", tag)
+        logged = SWITCH_STOP_REFUSED_LINE in rt.journal()[mark:]
+        record("gate", f"{tag}: journal says the start was refused for the switch in STOP", logged)
+        rt.kill()
+    set_switch("RUN")
+
+
+def gate_reinit_silent_case():
+    """Keep-alive owner: an owner silent after the start's re-init refuses the socket START."""
+    tag = "gate_reinit_silent"
+    with VppLayout():
+        rt, ran = boot_switch_owner(tag, group="gate", init_ms=300)
+        if not ran:
+            rt.kill()
+            set_switch("RUN")
+            return
+        _, st, landed = socket_stop(rt)
+        record("gate", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+        sw = wait_switch("SWITCH:RUN")
+        name = f"{tag}: SWITCH answers SWITCH:RUN before the switch goes silent"
+        record("gate", name, sw == "SWITCH:RUN", sw)
+
+        set_switch(FAKEVPP_SWITCH_SILENT_TEXT)
+        time.sleep(0.3)
+        sw = cmd("SWITCH")
+        name = f"{tag}: SWITCH still answers SWITCH:RUN once the switch is silent"
+        record("gate", name, sw == "SWITCH:RUN", sw)
+
+        mark = len(rt.journal())
+        reply, secs = timed_cmd("START")
+        refused = reply == "START:ERROR_SWITCH_UNKNOWN"
+        detail = f"{reply} in {secs:.2f}s"
+        record("gate", f"{tag}: START answers START:ERROR_SWITCH_UNKNOWN", refused, detail)
+        name = f"{tag}: refused once the 2 s switch-report wait has elapsed"
+        record("gate", name, secs >= PLC_SWITCH_REPORT_WAIT_S - 0.1, f"{secs:.2f}s")
+        lands_then_stays_stopped("gate", tag)
+        sw = cmd("SWITCH")
+        record("gate", f"{tag}: SWITCH answers SWITCH:UNKNOWN", sw == "SWITCH:UNKNOWN", sw)
+        logged = NO_REPORT_LINE in rt.journal()[mark:]
+        record("gate", f"{tag}: journal says no switch owner has reported a position", logged)
+        rt.kill()
+    set_switch("RUN")
+
+
+def gate_refusal_first_case():
+    """A switch refusal is answered before the rollback's slow cleanup() finishes."""
+    tag = "gate_refusal_first"
+    with VppLayout():
+        env = dict(FAKEVPP_FALLBACK, FAKEVPP_CLEANUP_MS="1500")
+        rt, ran = boot_switch_owner(tag, env, group="gate")
+        if not ran:
+            rt.kill()
+            set_switch("RUN")
+            return
+        _, st, landed = socket_stop(rt)
+        record("gate", f"{tag}: STOP lands STATUS:STOPPED", st == "STATUS:STOPPED", landed)
+
+        set_switch("STOP")
+        mark = len(rt.journal())
+        reply = cmd("START")
+        after = status()
+        refused = reply == "START:ERROR_SWITCH_STOP"
+        record("gate", f"{tag}: START answers START:ERROR_SWITCH_STOP", refused, reply)
+        name = f"{tag}: STATUS right after the reply answers STATUS:TRANSITIONING"
+        record("gate", name, after == "STATUS:TRANSITIONING", after)
+        lands_then_stays_stopped("gate", tag)
+        cleaned = FAKEVPP_CLEANUP in rt.journal()[mark:]
+        record("gate", f"{tag}: the rollback ran fakevpp: cleanup", cleaned)
+        rt.kill()
+    set_switch("RUN")
+
+
 def test_gate():
     """No start runs a scan while the switch reads STOP or an owner has not reported."""
     banner("start gate: every start honours the switch")
@@ -1245,6 +1384,9 @@ def test_gate():
     gate_fallback_stop_case()
     gate_python_owner_case()
     gate_two_owners_case()
+    gate_reinit_stop_case()
+    gate_reinit_silent_case()
+    gate_refusal_first_case()
     set_switch("RUN")
 
 

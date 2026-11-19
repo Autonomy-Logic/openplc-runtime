@@ -43,7 +43,7 @@ get a backtrace out of a crash with `SUITE_GDB=1` (needs `gdb` in the image).
 | File | Why it exists |
 |---|---|
 | `suite.py` | The tests. One group per review finding, each with an oracle that fails on the unfixed code. |
-| `fakevpp_plugin.c` | Stands in for a board's VPP package: a configurable sleep in `init()`/`stop_loop()` widens a transition enough to aim at, and a file-driven mode switch (`/tmp/fakevpp_switch`, "RUN"/"STOP") drives `set_switch_position` + `request_plc_start`/`request_plc_stop` the way real hardware does. It exports `detach_image`, so by default it stays alive across a stop with its watcher running; `FAKEVPP_FALLBACK=1` makes `detach_image` refuse with -1, and the `-DFAKEVPP_LEGACY` build (`libfakevpp_legacy_plugin.so`) does not export it. Both fallbacks are cleaned up on the stop and log `fakevpp: cleanup`. It also exports `owns_mode_switch`, which returns 1 with `FAKEVPP_SWITCH_OWNER=1` or `FAKEVPP_SWITCH_SILENT=1` and is absent from the legacy build; `FAKEVPP_SWITCH_SILENT=1` never reports a position, requests nothing and logs `fakevpp: switch silent, no position reported`. |
+| `fakevpp_plugin.c` | Stands in for a board's VPP package: a configurable sleep in `init()`/`stop_loop()` widens a transition enough to aim at, and a file-driven mode switch (`/tmp/fakevpp_switch`, "RUN"/"STOP") drives `set_switch_position` + `request_plc_start`/`request_plc_stop` the way real hardware does. It exports `detach_image`, so by default it stays alive across a stop with its watcher running; `FAKEVPP_FALLBACK=1` makes `detach_image` refuse with -1, and the `-DFAKEVPP_LEGACY` build (`libfakevpp_legacy_plugin.so`) does not export it. Both fallbacks are cleaned up on the stop and log `fakevpp: cleanup`. It also exports `owns_mode_switch`, which returns 1 with `FAKEVPP_SWITCH_OWNER=1` or `FAKEVPP_SWITCH_SILENT=1` and is absent from the legacy build; `FAKEVPP_SWITCH_SILENT=1` never reports a position, requests nothing and logs `fakevpp: switch silent, no position reported`. When the switch file reads "SILENT", `init()` likewise reports no position, requests nothing and logs that line, and the watcher ignores it and keeps its last position. `FAKEVPP_CLEANUP_MS` (default 0) makes `cleanup()` sleep that many ms after logging `fakevpp: cleanup`, which widens a rollback. |
 | `failinject.c` | `LD_PRELOAD` shim that fails exactly one `pthread_create`, one-shot and self-disarming, so the "transition worker could not be spawned" path is reachable without inducing real thread exhaustion. |
 | `stopfail/` | A Python plugin whose `stop_loop` returns False, or raises with `STOPFAIL_MODE=raise`, while its worker thread keeps running until `cleanup()`. With `STOPFAIL_MODE=none` it stops and joins the worker, then returns None. Only the `stopfail` group adds it to `plugins.conf`, loaded from `/fixtures`. |
 | `plugin_detach.h` | Shared by the native fixtures: `plugin_args_drop_image()` clears every image table, image lock, journal and debug entry point of an args copy, and `plugin_args_hold_image()` reports whether a table pointer remains. |
@@ -100,7 +100,11 @@ runs it again, a runtime with no owner starts as before and reads `SWITCH:RUN`, 
 declared owner that never reports (native or Python, alone or next to an owner that
 reported RUN) refuses START with `START:ERROR_SWITCH_UNKNOWN` after the 2 s
 switch-report wait, and the same owner holds the boot auto-start with the PLC never
-loaded.
+loaded; and, with a switch owner registered, socket START answers the decision of the
+start's switch gate after the plugin re-init, so a keep-alive owner that reports STOP or
+stays silent during the re-init refuses START with `START:ERROR_SWITCH_STOP` or
+`START:ERROR_SWITCH_UNKNOWN` rather than `START:OK`, and a refusal is answered before the
+rollback finishes (`STATUS:TRANSITIONING` right after the reply, then STOPPED).
 
 Not covered:
 

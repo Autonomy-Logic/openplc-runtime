@@ -182,6 +182,44 @@ static void test_await_report_times_out()
     CHECK(took < (long)timeout_ms + 1000, "gives up once the bound has elapsed");
 }
 
+static void test_has_owner()
+{
+    std::printf("has_owner: which plugins count as switch owners\n");
+    reset();
+    CHECK(!plc_switch_has_owner(), "no owner after reset: has_owner is false");
+
+    plc_switch_owner_declare(VPP, true);
+    CHECK(plc_switch_gate() == PLC_SWITCH_GATE_UNKNOWN, "declared, unreported: gate is UNKNOWN");
+    CHECK(plc_switch_has_owner(), "a declared owner that has not reported counts");
+
+    reset();
+    plc_switch_owner_declare(VPP, false);
+    CHECK(!plc_switch_has_owner(), "a zero declaration makes no owner");
+
+    reset();
+    plc_switch_owner_report(IOMOD, PLC_SWITCH_RUN);
+    CHECK(plc_switch_has_owner(), "an implicit owner (one that reported) counts");
+    plc_switch_owner_invalidate(IOMOD);
+    CHECK(plc_switch_has_owner(), "an owner whose report was invalidated still counts");
+    plc_switch_owners_forget_absent(nullptr, 0);
+    CHECK(!plc_switch_has_owner(), "every owner forgotten: has_owner is false");
+}
+
+static void test_has_owner_on_overflow()
+{
+    std::printf("has_owner: more owners than the registry holds\n");
+    reset();
+    char ids[PLC_SWITCH_MAX_OWNERS + 1][32];
+    for (int i = 0; i < PLC_SWITCH_MAX_OWNERS + 1; i++)
+    {
+        std::snprintf(ids[i], sizeof(ids[i]), "owner%d|./owner%d.so", i, i);
+        plc_switch_owner_declare(ids[i], true);
+    }
+    CHECK(plc_switch_has_owner(), "registry overflowed: has_owner is true");
+    plc_switch_owners_forget_absent(nullptr, 0);
+    CHECK(!plc_switch_has_owner(), "overflow cleared by forget_absent: has_owner is false");
+}
+
 int main()
 {
     test_no_owner_reads_run();
@@ -195,6 +233,8 @@ int main()
     test_two_owners_one_reported();
     test_await_report_returns_on_a_report();
     test_await_report_times_out();
+    test_has_owner();
+    test_has_owner_on_overflow();
 
     if (g_failures == 0)
         std::printf("all cases passed\n");
