@@ -214,9 +214,10 @@ bool plc_stop_failed_latched(void);
  * @brief How a start ended, published once per start.
  *
  * RUN when the switch gate let the PLC cycle thread start; SWITCH_STOP or
- * SWITCH_UNKNOWN when the gate refused after the plugin re-init (the start
- * landed STOPPED with no scan); ERROR on any other failure, and when a caller
- * cancelled the start before the gate decided.
+ * SWITCH_UNKNOWN when the gate refused after the plugin re-init (the start runs
+ * no scan and lands STOPPED; the outcome is published when the gate refuses,
+ * before the rollback); ERROR on any other failure, and when a caller cancelled
+ * the start before the gate decided.
  */
 typedef enum
 {
@@ -241,8 +242,9 @@ uint64_t plc_start_outcome_arm(void);
 /**
  * @brief Wait up to @p timeout_ms for the outcome of the start @p ticket names.
  *
- * Returns once the start has landed: RUN once the switch gate let the start
- * through, any other outcome after its final state was published.
+ * Returns at RUN once the switch gate let the start through, at SWITCH_STOP or
+ * SWITCH_UNKNOWN once the gate refused, and at any other outcome after its final
+ * state was published.
  *
  * @return true with @p outcome set, false when the wait ran out
  */

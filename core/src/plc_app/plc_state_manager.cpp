@@ -1556,9 +1556,9 @@ extern "C" int load_plc_program(PluginManager *pm)
         const plc_start_outcome_t gate = switch_gate_before_first_scan();
         if (gate != PLC_START_OUTCOME_RUN)
         {
+            start_outcome_publish(gate);
             retire_image(pm, false);
             plc_publish_final_state(PLC_STATE_STOPPED);
-            start_outcome_publish(gate);
             return 1;
         }
 

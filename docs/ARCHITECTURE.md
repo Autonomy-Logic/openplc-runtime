@@ -123,8 +123,9 @@ every owner to report. RUN creates the thread. STOP, or UNKNOWN once the wait ra
 plugin `start_loop` and no scan, the load rollback steps of the stop sequence above (a keep-alive
 owner detaches and keeps watching the switch), and the state lands STOPPED. The socket reply is
 `START:ERROR_SWITCH_STOP` or `START:ERROR_SWITCH_UNKNOWN`; the latter is logged as
-`Start refused: no switch owner has reported a position within 2000 ms`. A refusal never lands
-ERROR.
+`Start refused: no switch owner has reported a position within 2000 ms`. The socket reply comes as
+soon as the gate refuses, before the rollback: until the state lands STOPPED, `STATUS` answers
+`STATUS:TRANSITIONING` and other commands answer `COMMAND:BUSY`. A refusal never lands ERROR.
 
 **Boot.** Inside the plugin request hold, the auto-start waits up to 2 s for a missing report.
 STOP stays stopped, RUN starts, and still UNKNOWN stays stopped with the log line

@@ -138,9 +138,12 @@ waits up to 15 s for it.
 - `"START:ERROR_ALREADY_RUNNING"` - PLC was already in RUNNING state
 - `"START:ERROR_SWITCH_STOP"` - The run/stop mode switch was in STOP before the start began, or
   the switch owner reported STOP after the start re-initialised the plugins; no scan ran and the
-  PLC ends STOPPED
+  PLC ends STOPPED. After a refusal at the re-initialisation, the reply comes before the rollback
+  ends, so `/api/status` can report the transition briefly until the PLC lands STOPPED
 - `"START:ERROR_SWITCH_UNKNOWN"` - A switch owner plugin did not report a position within 2 s
-  of the start re-initialising the plugins; no scan ran and the PLC stays STOPPED
+  of the start re-initialising the plugins; no scan ran and the PLC ends STOPPED. The reply
+  comes before the rollback ends, so `/api/status` can report the transition briefly until the
+  PLC lands STOPPED
 - `"START:ERROR"` - The start could not begin or failed (another state change in flight, no
   program, a failed load, or the start did not land within 12 s)
 - `null` - Runtime process not responding
