@@ -15,9 +15,31 @@ import sys
 import threading
 import traceback
 from datetime import datetime
-from typing import Awaitable, List, Optional, Dict, Any, TypeVar
+from pathlib import Path
+from typing import (
+    TYPE_CHECKING,
+    Awaitable,
+    Callable,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Dict,
+    Any,
+    TypeVar,
+)
 
 from asyncua import Server, ua
+
+try:
+    from asyncua.server.internal_server import InternalServer
+    from asyncua.server.standard_address_space import standard_address_space
+except ImportError:
+    InternalServer = None
+    standard_address_space = None
+
+if TYPE_CHECKING:
+    from asyncua.server.address_space import NodeManagementService
 
 # Add directories to path for module access
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -51,6 +73,76 @@ from shared import SafeBufferAccess
 from shared.plugin_config_decode.opcua_config_model import OpcuaConfig
 
 _PhaseResult = TypeVar("_PhaseResult")
+_FillItem = TypeVar("_FillItem")
+
+
+class StartupStopped(asyncio.CancelledError):
+    """
+    Raised at a start-up check once a stop was requested. It is a
+    cancellation, so no handler of Exception on the way reports it as an
+    error, and the start-up phase of run() ends as one cancelled by a stop.
+    """
+
+
+class _StopCheckingNodeService:
+    """
+    The node management service as asyncua's standard address-space fill
+    sees it: checks for a stop before each node and each reference it adds,
+    whatever the size of the batch.
+    """
+
+    def __init__(self, service: "NodeManagementService", check_stop: Callable[[], None]):
+        self._service = service
+        self._check_stop = check_stop
+
+    def try_add_nodes(
+        self, nodes: Iterable[ua.AddNodesItem], check: bool = True
+    ) -> Iterator[ua.AddNodesItem]:
+        return self._service.try_add_nodes(self._checked(nodes), check=check)
+
+    def try_add_references(
+        self, refs: Iterable[ua.AddReferencesItem]
+    ) -> Iterator[ua.AddReferencesItem]:
+        return self._service.try_add_references(self._checked(refs))
+
+    def _checked(self, items: Iterable[_FillItem]) -> Iterator[_FillItem]:
+        for item in items:
+            self._check_stop()
+            yield item
+
+
+def _stoppable_internal_server(
+    user_manager: OpenPLCUserManager, check_stop: Callable[[], None]
+) -> Optional["InternalServer"]:
+    """
+    Build an asyncua InternalServer whose standard address-space fill
+    calls check_stop before each node and reference.
+
+    Returns:
+        The internal server, or None when the asyncua internals it relies
+        on (InternalServer.load_standard_address_space, node_mgt_service,
+        standard_address_space.fill_address_space) are missing
+    """
+    fill = getattr(standard_address_space, "fill_address_space", None)
+    if (
+        InternalServer is None
+        or fill is None
+        or not hasattr(InternalServer, "load_standard_address_space")
+    ):
+        return None
+
+    class _StoppableInternalServer(InternalServer):
+        async def load_standard_address_space(self, shelf_file: Optional[Path] = None) -> None:
+            if shelf_file:
+                await super().load_standard_address_space(shelf_file)
+                return
+            fill(_StopCheckingNodeService(self.node_mgt_service, check_stop))
+
+    iserver = _StoppableInternalServer(user_manager=user_manager)
+    if getattr(iserver, "node_mgt_service", None) is None:
+        return None
+    return iserver
+
 
 class OpcuaServerManager:
     """
@@ -65,8 +157,9 @@ class OpcuaServerManager:
 
     Usage:
         manager = OpcuaServerManager(config, buffer_accessor, plugin_dir)
-        await manager.run()  # Blocks until stop() is called
-        await manager.stop()
+        await manager.run()  # Blocks until a stop is requested
+        await manager.stop()  # On the manager's event loop
+        manager.request_stop()  # From any thread, even while the start-up blocks the loop
     """
 
     SERVER_STOP_TIMEOUT_S = 1.0
@@ -93,7 +186,8 @@ class OpcuaServerManager:
         self.server: Optional[Server] = None
         self.running = False
         self.namespace_idx: Optional[int] = None
-        self._stop_requested = False
+        self._stop_request = threading.Event()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._phase_task: Optional[asyncio.Future] = None
         self._listener_lock = threading.Lock()
         self._listener: Optional[asyncio.AbstractServer] = None
@@ -102,7 +196,9 @@ class OpcuaServerManager:
         self._listener_closed = False
 
         # Security manager
-        self.security_manager = OpcuaSecurityManager(config, plugin_dir)
+        self.security_manager = OpcuaSecurityManager(
+            config, plugin_dir, stop_check=self._check_stop
+        )
 
         # User manager for authentication
         self.user_manager = OpenPLCUserManager(config)
@@ -136,27 +232,36 @@ class OpcuaServerManager:
         3. Starts the server
         4. Runs the sync loop (Phase 3)
 
-        Blocks until stop() is called or an error occurs. A stop requested
-        before the server listens means it never listens.
+        Blocks until a stop is requested, through stop() or request_stop(),
+        or an error occurs. A stop requested before the server listens
+        means it never listens: the start-up checks for the request before
+        and after each of its steps and inside the long ones (the security
+        setup, asyncua's standard address-space fill, the address-space
+        build), even while it blocks the event loop, and ends at the first
+        check after the request. A stopped start-up is not an error: run()
+        logs one DEBUG line, cleans up and returns.
         """
+        self._loop = asyncio.get_running_loop()
         try:
-            if self._stop_requested:
+            if self._stop_request.is_set():
                 return
 
             log_info("OpcuaServerManager starting...")
 
-            if not await self._run_phase(self._prepare()):
+            prepared = await self._run_phase(self._prepare())
+            if prepared is False:
                 return
 
             # Start server
-            if self._stop_requested:
+            if prepared is None or self._stop_request.is_set():
+                log_debug("OPC-UA start-up stopped before the server listened")
                 return
             if not await self._start_server():
                 log_error("Failed to start server")
                 return
 
             # Run main loop
-            if self._stop_requested:
+            if self._stop_request.is_set():
                 return
             log_debug("Server running, entering main loop...")
             await self._run_phase(self._main_loop())
@@ -166,19 +271,57 @@ class OpcuaServerManager:
             traceback.print_exc()
         finally:
             await self._cleanup()
+            self._loop = None
 
     async def stop(self) -> None:
         """
-        Request the stop of run().
+        Request the stop of run(), on the manager's event loop.
 
-        Cancels the start-up phase still in progress or the main loop, so
-        run() goes straight to its cleanup, which closes the client
-        sessions and the listening port.
+        Makes the same request as request_stop() and cancels the start-up
+        phase still in progress or the main loop, so run() goes straight
+        to its cleanup, which closes the client sessions and the listening
+        port.
         """
         log_debug("Stop requested...")
-        self._stop_requested = True
+        self._stop_request.set()
+        self._cancel_phase()
+
+    def request_stop(self) -> None:
+        """
+        Request the stop of run(), from any thread, at any time.
+
+        Sets a thread-safe flag that the start-up checks without its event
+        loop, so a start-up that blocks the loop ends at its next check and
+        never listens. While run() is running, the cancellation stop() does
+        is also scheduled on its event loop, so a running server goes to
+        its cleanup. Never waits on the event loop. Idempotent.
+        """
+        self._stop_request.set()
+        loop = self._loop
+        if loop is None:
+            return
+        if self._runs_on(loop):
+            self._cancel_phase()
+            return
+        try:
+            loop.call_soon_threadsafe(self._cancel_phase)
+        except RuntimeError as e:
+            log_debug(f"Stop not scheduled on the server event loop: {e}")
+
+    def _cancel_phase(self) -> None:
+        """Cancel the phase of run() in progress, if any."""
         if self._phase_task is not None and not self._phase_task.done():
             self._phase_task.cancel()
+
+    def _check_stop(self) -> None:
+        """
+        Start-up check, thread-safe and with no event loop needed.
+
+        Raises:
+            StartupStopped: a stop was requested
+        """
+        if self._stop_request.is_set():
+            raise StartupStopped()
 
     async def _run_phase(self, phase: Awaitable[_PhaseResult]) -> Optional[_PhaseResult]:
         """
@@ -186,12 +329,13 @@ class OpcuaServerManager:
 
         Returns:
             The phase result, or None when the phase was cancelled by a stop
+            or ended at a start-up check
         """
         self._phase_task = asyncio.ensure_future(phase)
         try:
             return await self._phase_task
         except asyncio.CancelledError:
-            if not self._stop_requested:
+            if not self._stop_request.is_set():
                 raise
             return None
         finally:
@@ -202,26 +346,34 @@ class OpcuaServerManager:
         Set up the server, its address space, permission callbacks and
         sync manager, everything that comes before it listens. Permission
         callbacks are registered after the address space and before the
-        server starts.
+        server starts. Checks for a stop request before and after each step.
 
         Returns:
             True if the server is ready to start, False otherwise
+
+        Raises:
+            StartupStopped: a stop was requested
         """
+        self._check_stop()
         if not await self._setup_server():
             log_error("Failed to setup server")
             return False
 
+        self._check_stop()
         if not await self._create_address_space():
             log_error("Failed to create address space")
             return False
 
+        self._check_stop()
         if not await self._register_callbacks():
             log_warn("Failed to register permission callbacks - continuing without access control")
 
+        self._check_stop()
         if not await self._initialize_sync_manager():
             log_error("Failed to initialize sync manager")
             return False
 
+        self._check_stop()
         return True
 
     def close_listener(self) -> None:
@@ -306,12 +458,19 @@ class OpcuaServerManager:
         6. Register namespace (AFTER init)
         7. Set build info (AFTER init)
 
+        Checks for a stop request before and after the security setup,
+        server.init() (and inside its standard address-space fill), the
+        namespace registration and the build info.
+
         Returns:
             True if setup successful, False otherwise
+
+        Raises:
+            StartupStopped: a stop was requested
         """
         try:
             # Create server with user manager for authentication
-            self.server = Server(user_manager=self.user_manager)
+            self.server = self._create_server()
 
             # Normalize and set endpoint URL (BEFORE init)
             try:
@@ -330,6 +489,7 @@ class OpcuaServerManager:
             self.server.application_uri = self.config.server.application_uri
 
             # Configure security (BEFORE init)
+            self._check_stop()
             await self.security_manager.setup_server_security(
                 self.server,
                 self.config.server.security_profiles,
@@ -344,10 +504,12 @@ class OpcuaServerManager:
                 )
 
             # Initialize the server
+            self._check_stop()
             await self.server.init()
             log_debug("OPC-UA server initialized")
 
             # Register namespace (AFTER init)
+            self._check_stop()
             self.namespace_idx = await self.server.register_namespace(
                 self.config.address_space.namespace_uri
             )
@@ -357,6 +519,7 @@ class OpcuaServerManager:
             )
 
             # Set build info (AFTER init)
+            self._check_stop()
             await self.server.set_build_info(
                 product_uri=self.config.server.product_uri,
                 manufacturer_name="Autonomy Logic",
@@ -365,6 +528,7 @@ class OpcuaServerManager:
                 build_number="1.0.0.0",
                 build_date=datetime.now()
             )
+            self._check_stop()
 
             log_debug("OPC-UA server setup completed successfully")
             return True
@@ -373,6 +537,23 @@ class OpcuaServerManager:
             log_error(f"Failed to setup OPC-UA server: {e}")
             traceback.print_exc()
             return False
+
+    def _create_server(self) -> Server:
+        """
+        Create the asyncua Server with the user manager, on an internal
+        server whose standard address-space fill checks for a stop request
+        before each node and reference. When the asyncua internals this
+        relies on are missing, logs a warning and creates a plain Server,
+        whose fill a stop request cannot interrupt.
+        """
+        iserver = _stoppable_internal_server(self.user_manager, self._check_stop)
+        if iserver is None:
+            log_warn(
+                "asyncua internals for a stoppable address-space fill not found; "
+                "a stop during the server start-up waits for the fill"
+            )
+            return Server(user_manager=self.user_manager)
+        return Server(iserver=iserver, user_manager=self.user_manager)
 
     async def _start_server(self) -> bool:
         """
@@ -419,13 +600,13 @@ class OpcuaServerManager:
         if self.sync_manager:
             # Run the sync manager's loop (blocks until stopped)
             await self.sync_manager.run(
-                is_running=lambda: self.running and not self._stop_requested,
+                is_running=lambda: self.running and not self._stop_request.is_set(),
                 cycle_time_seconds=cycle_time
             )
         else:
             # Fallback: simple keepalive loop (no sync)
             log_warn("No sync manager - running without synchronization")
-            while self.running and not self._stop_requested:
+            while self.running and not self._stop_request.is_set():
                 try:
                     await asyncio.sleep(cycle_time)
                 except asyncio.CancelledError:
@@ -486,7 +667,8 @@ class OpcuaServerManager:
             self.address_space_builder = AddressSpaceBuilder(
                 self.server,
                 self.namespace_idx,
-                self.config
+                self.config,
+                stop_check=self._check_stop
             )
 
             if not await self.address_space_builder.build():

@@ -213,13 +213,15 @@ def stop_loop() -> bool:
     """
     Stop the OPC UA server.
 
-    Signals the stop and waits up to 2 s for the server thread. The stop
-    cancels a start-up still in progress, or ends the sync loop, then the
-    server manager closes the listening port and the client sessions
-    (server.stop() capped at 1 s), so a normal stop needs no forced
-    cancellation whatever the clients do. Only if the thread is still alive
-    after 2 s are all asyncio tasks on its event loop cancelled, with 3 s
-    more to exit.
+    Signals the stop, requests it from the server manager through
+    request_stop(), then waits up to 2 s for the server thread. The request
+    ends a start-up still in progress at its next check, even one that
+    blocks the event loop, before the server listens, or ends the sync
+    loop; then the server manager closes the listening port and the client
+    sessions (server.stop() capped at 1 s), so a normal stop, or a stop
+    during the start-up, needs no forced cancellation whatever the clients
+    do. Only if the thread is still alive after 2 s are all asyncio tasks
+    on its event loop cancelled, with 3 s more to exit.
 
     Whatever the outcome, before returning it invalidates the buffer
     accessor handed to the server manager and closes the listening port, at
@@ -239,6 +241,8 @@ def stop_loop() -> bool:
     try:
         # Phase 1: Graceful stop — signal and wait briefly.
         _stop_event.set()
+        if manager is not None:
+            manager.request_stop()
 
         if _server_thread and _server_thread.is_alive():
             _server_thread.join(timeout=2.0)
