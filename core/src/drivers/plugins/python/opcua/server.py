@@ -233,13 +233,16 @@ class OpcuaServerManager:
         4. Runs the sync loop (Phase 3)
 
         Blocks until a stop is requested, through stop() or request_stop(),
-        or an error occurs. A stop requested before the server listens
-        means it never listens: the start-up checks for the request before
-        and after each of its steps and inside the long ones (the security
-        setup, asyncua's standard address-space fill, the address-space
-        build), even while it blocks the event loop, and ends at the first
-        check after the request. A stopped start-up is not an error: run()
-        logs one DEBUG line, cleans up and returns.
+        or an error occurs. A stop requested before server.start() begins
+        means the server never listens: the start-up checks for the request
+        before and after each of its steps and inside the long ones (the
+        security setup, asyncua's standard address-space fill, the
+        address-space build), even while they block the event loop, and ends
+        at the first check after the request. A stop requested while
+        server.start() runs does not interrupt it: the port opens, and run()
+        then goes to its cleanup, which closes it within the grace period. A
+        stopped start-up is not an error: run() logs one DEBUG line, cleans up
+        and returns.
         """
         self._loop = asyncio.get_running_loop()
         try:
