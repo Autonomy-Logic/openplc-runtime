@@ -15,8 +15,8 @@ extern "C" {
  * @brief Physical run/stop mode-switch position.
  *
  * Every platform has a mode switch. A device with no switch-owner plugin never
- * reports a position, so the gate stays at its RUN default and every start path
- * behaves exactly as before this interface existed.
+ * reports a position, so the gate stays at its RUN default and no start path is
+ * gated.
  */
 typedef enum
 {
@@ -41,13 +41,10 @@ typedef enum
     PLC_SWITCH_GATE_UNKNOWN
 } plc_switch_gate_t;
 
-/** Longest a start or the boot decision waits for an owner's first report after init. */
 #define PLC_SWITCH_REPORT_WAIT_MS 2000
 
-/** Size of a switch-owner identity buffer: "<config name>|<path>" and its NUL. */
 #define PLC_SWITCH_OWNER_ID_SIZE 320
 
-/** Most switch-owner identities the registry remembers at once. */
 #define PLC_SWITCH_MAX_OWNERS 32
 
 /**
@@ -73,10 +70,8 @@ void plc_switch_owner_declare(const char *id, bool owns);
  * and then asks for the matching transition through request_plc_start /
  * request_plc_stop.
  *
- * The ordering matters and is part of the plugin contract: report the position
- * BEFORE requesting the transition. On a falling edge that closes the window
- * where a start could slip in; on a rising edge it stops the request being
- * refused by the guard still reading the stale STOP.
+ * Part of the plugin contract: report the position BEFORE requesting the
+ * transition.
  *
  * A change of the stored position logs once and records movement (see
  * plc_switch_take_movement). Re-reporting the stored value after an invalidation
@@ -128,9 +123,8 @@ plc_switch_t plc_get_switch_position(void);
 /**
  * @brief Whether a start is permitted right now: plc_switch_gate() is RUN.
  *
- * False while the switch reads STOP -- hardware is authoritative, and a start
- * is refused rather than queued so the editor can tell the user to flip the
- * switch -- and while an owner has not reported since its last init.
+ * False while the switch reads STOP (a start is refused, not queued) and while
+ * an owner has not reported since its last init.
  */
 bool plc_switch_allows_run(void);
 

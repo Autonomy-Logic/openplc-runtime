@@ -43,10 +43,8 @@ enum class SwitchPlugin
     DeclaredReportsStopLater
 };
 
-/* The switch-aware plugin's identity: its config name and path. */
 static const char *const VPP_ID = "fakevpp|./build/plugins/libfakevpp_plugin.so";
 
-/* How long after init() a watcher thread reports, inside the boot's switch-report wait. */
 static const int LATE_REPORT_MS = 100;
 
 static SwitchPlugin g_switch_plugin; // the switch-aware plugin, shipped in vpp_plugins.conf
@@ -57,9 +55,7 @@ static PLCState g_state;                    // fake transitions land at once
 static std::vector<std::string> g_errors;
 static std::vector<std::string> g_warns;
 static std::vector<std::string> g_infos;
-/* Guards the fakes: the late reporter thread logs and requests concurrently. */
 static std::mutex g_mu;
-/* The plugin's watcher thread, for the late-report modes. */
 static std::thread g_reporter;
 
 static bool logged(const std::vector<std::string> &log, const char *needle)

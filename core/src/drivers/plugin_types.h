@@ -170,7 +170,7 @@ typedef void (*plugin_request_plc_start_func_t)(const char *reason);
  * 2 s after the plugin re-init for the report and is refused without one. A
  * de-initialised owner (cleanup) must report again from its next init(); one
  * that detaches keeps its report. A plugin that never reports and does not
- * declare ownership leaves every start ungated, as before.
+ * declare ownership leaves every start ungated.
  *
  * Sample the switch from a thread started in init() and torn down in cleanup(),
  * NOT in start_loop() / stop_loop(): the runtime calls stop_loop when the PLC

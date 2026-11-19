@@ -26,7 +26,6 @@ extern "C" void log_debug(const char *, ...) {}
 extern "C" void log_warn(const char *, ...) {}
 extern "C" void log_error(const char *, ...) {}
 
-/* Plugin identities: config name and path, as the plugin driver names a plugin. */
 static const char *const VPP   = "fakevpp|./build/plugins/libfakevpp_plugin.so";
 static const char *const IOMOD = "iomod|./build/plugins/libiomod_plugin.so";
 static const char *const OTHER = "modbus|./core/src/drivers/plugins/python/modbus.py";

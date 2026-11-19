@@ -86,7 +86,6 @@ void plugin_request_plc_start(const char *reason)
     }
 }
 
-/** Switch-owner identity of each plugin slot, guarded by slot_ids_lock. */
 static char slot_ids[MAX_PLUGINS][PLC_SWITCH_OWNER_ID_SIZE];
 static pthread_mutex_t slot_ids_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -130,7 +129,6 @@ SLOT_REPORTER(13)
 SLOT_REPORTER(14)
 SLOT_REPORTER(15)
 
-/** One reporter per plugin slot, indexed by slot. */
 static const plugin_switch_reporter_t slot_reporters[] = {
     slot_reporter_0,  slot_reporter_1,  slot_reporter_2,  slot_reporter_3,
     slot_reporter_4,  slot_reporter_5,  slot_reporter_6,  slot_reporter_7,

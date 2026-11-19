@@ -11,8 +11,8 @@
  * thread). Each report is attributed to the plugin that made it, so the gate
  * knows whether every owner has reported since its last init.
  *
- * With no owner the gate is RUN, so a runtime with no switch-owner plugin
- * behaves exactly as it did before this file existed.
+ * With no owner the gate is RUN, so a runtime with no switch-owner plugin has
+ * no start path gated.
  */
 
 #include "plc_switch.h"
@@ -31,19 +31,15 @@ typedef struct
     bool reported;
 } switch_owner_t;
 
-/** Owner registry, guarded by registry_lock; registry_changed is signalled on every change. */
 static switch_owner_t owners[PLC_SWITCH_MAX_OWNERS];
-static size_t owner_count = 0;
-/** Set when an owner could not be registered; the gate then reads UNKNOWN. */
+static size_t owner_count            = 0;
 static bool owner_overflow           = false;
 static pthread_mutex_t registry_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t registry_changed;
 static pthread_once_t registry_once = PTHREAD_ONCE_INIT;
 
-/** Last reported position; RUN until an owner reports. */
 static atomic_int switch_position = PLC_SWITCH_RUN;
 
-/** Set when the stored position changes, cleared when someone acts on it. */
 static atomic_bool switch_moved = false;
 
 /** Creates registry_changed on CLOCK_MONOTONIC. */

@@ -42,7 +42,6 @@ RUNTIME_SHUTDOWN_TIMEOUT_S = 15
 # How long a freshly started runtime gets to open its command socket (a few seconds on an SLM-RP4)
 RUNTIME_SOCKET_WAIT_S = 10.0
 
-# START reply timeout; exceeds the runtime's start-outcome wait (PLC_START_OUTCOME_WAIT_MS)
 START_REPLY_TIMEOUT_S = 15.0
 
 

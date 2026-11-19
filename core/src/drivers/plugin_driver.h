@@ -129,9 +129,7 @@ typedef struct
     /* Optional; NULL means this plugin does not understand per-table sizes and
      * the image stays square for the run. */
     plugin_set_image_sizes_func_t set_image_sizes;
-    /* Optional; NULL means this plugin is cleaned up on every stop. */
     plugin_detach_image_func_t detach_image;
-    /* Optional; NULL means the plugin owns the switch only once it reports. */
     plugin_owns_mode_switch_func_t owns_mode_switch;
 } plugin_funct_bundle_t;
 
@@ -151,11 +149,7 @@ typedef struct plugin_instance_s
      * runtime dep). Slot kept but its *_plugin pointers are NULL;
      * init/start/cycle skip it. Keeps the runtime out of ERROR. */
     int degraded;
-    /* Set when the last Python stop_loop returned False or raised. The slot
-     * then keeps `running` and `initialized`: its thread may be live. */
     int stop_failed;
-    /* Set when detach_image accepted. The slot stays `initialized`, holds no
-     * image pointer and is never started; cleared when it is cleaned up. */
     int detached;
     plugin_config_t config;
 } plugin_instance_t;
@@ -198,11 +192,7 @@ int plugin_driver_detach_images(plugin_driver_t *driver);
  * Does any plugin still hold the I/O image?
  *
  * True if and only if some slot is initialised and not detached. Asked before
- * releasing the image, which is the half of the ordering requirement that had
- * no check. The allocate-before-init half is guarded by a real runtime refusal
- * in generate_structured_args_with_driver; this is its counterpart, so a
- * refactor that frees the image while a plugin still holds the base pointers it
- * copied by value at init() gets a diagnostic instead of a use-after-free.
+ * releasing the image.
  *
  * Not the same as "still running": a native plugin with no `cleanup` symbol
  * keeps its by-value args copy until it is cleaned up either way.

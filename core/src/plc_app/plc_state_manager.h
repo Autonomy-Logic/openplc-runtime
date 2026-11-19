@@ -226,7 +226,6 @@ typedef enum
     PLC_START_OUTCOME_ERROR
 } plc_start_outcome_t;
 
-/** Longest the socket START waits for a start's outcome; below the webserver's 15 s timeout. */
 #define PLC_START_OUTCOME_WAIT_MS 12000
 
 /**

@@ -23,7 +23,6 @@ typedef enum
     PLC_BOOT_START_HELD_BY_SWITCH,
     PLC_BOOT_START_BEGUN,
     PLC_BOOT_START_FAILED,
-    /* A switch owner had not reported a position when the wait ran out. */
     PLC_BOOT_START_HELD_SWITCH_UNKNOWN
 } plc_boot_start_t;
 

@@ -612,7 +612,6 @@ def stop_failed_case(tag, env, stop_marker):
 def stop_none_case(tag):
     """Stop a PLC whose stopfail plugin stops and returns None, and check the normal teardown.
 
-    Pre-fix a None result counted as a failed stop: the stop landed ERROR and latched.
     The runtime is left alive for the caller.
     """
     set_switch("RUN")
@@ -657,11 +656,7 @@ def stop_none_case(tag):
 
 
 def test_stop_failed():
-    """A plugin whose stop fails keeps the image, journal and library, and latches ERROR.
-
-    Pre-fix plugin_driver_stop's result was ignored: the teardown went on, the image
-    was released, the stop landed STOPPED and a START was accepted.
-    """
+    """A plugin whose stop fails keeps the image, journal and library, and latches ERROR."""
     banner("a plugin that does not stop: image kept, ERROR latched until restart")
     with StopFailPlugin():
         rt, mark, ran = stop_failed_case(
@@ -788,7 +783,7 @@ def socket_stop(rt):
 
 
 def keepalive_switch_case():
-    """AC1: a keep-alive switch owner still reads the switch after a socket STOP."""
+    """A keep-alive switch owner still reads the switch after a socket STOP."""
     tag = "keepalive_ac1"
     with VppLayout():
         rt, ran = boot_switch_owner(tag)
@@ -824,7 +819,7 @@ def keepalive_switch_case():
 
 
 def keepalive_stale_switch_case():
-    """ABUSE-01: a START after a stop does not use the switch position stored before the stop."""
+    """A START after a stop does not use the switch position stored before the stop."""
     tag = "keepalive_abuse01"
     with VppLayout():
         rt, ran = boot_switch_owner(tag)
@@ -923,12 +918,7 @@ def keepalive_python_case():
 
 
 def test_keepalive():
-    """A plugin that detaches stays alive across a stop; one that cannot is cleaned up.
-
-    Pre-fix every plugin was cleaned up on stop, so the switch watcher died with it: the
-    switch was no longer read, a START used the position stored before the stop, and no
-    detach was ever offered.
-    """
+    """A plugin that detaches stays alive across a stop; one that cannot is cleaned up."""
     banner("keep-alive across a stop: detach_image")
     keepalive_switch_case()
     keepalive_stale_switch_case()
@@ -939,7 +929,7 @@ def test_keepalive():
 
 
 def test_ptrprobe_cycles(cycles=50):
-    """ABUSE-02: stop/start cycling never leaves a surviving plugin holding a freed image.
+    """Stop/start cycling never leaves a surviving plugin holding a freed image.
 
     Every STOP must have ptrprobe drop its image before the runtime clears the image, and
     every START must hand it a non-null image through a fresh init().
@@ -1042,7 +1032,7 @@ def settle_stopped(rt, limit=PLC_SWITCH_REPORT_WAIT_S + 4):
 
 
 def gate_known_owner_case():
-    """AC2, known owner: a current STOP report refuses START before the transition begins."""
+    """Known owner: a current STOP report refuses START before the transition begins."""
     tag = "gate_known_owner"
     with VppLayout():
         rt, ran = boot_switch_owner(tag, group="gate")
@@ -1069,7 +1059,7 @@ def gate_known_owner_case():
 
 
 def gate_legacy_stop_case():
-    """AC2, legacy owner: a fallback owner reporting STOP during the start's re-init stops it."""
+    """Legacy owner: a fallback owner reporting STOP during the start's re-init stops it."""
     tag = "gate_legacy_stop"
     exports = exports_symbol(FAKEVPP_LEGACY_SO, "owns_mode_switch")
     record("gate", f"{tag}: the legacy fake VPP has no owns_mode_switch", exports is False)
@@ -1093,7 +1083,7 @@ def gate_legacy_stop_case():
 
 
 def gate_legacy_recovery_case():
-    """AC11: a fallback owner reads unknown after a stop; a START in RUN runs the PLC again."""
+    """A fallback owner reads unknown after a stop; a START in RUN runs the PLC again."""
     tag = "gate_legacy_recover"
     with VppLayout(path=FAKEVPP_LEGACY_SO):
         rt, ran = boot_switch_owner(tag, group="gate", init_ms=REINIT_MS)
@@ -1120,7 +1110,7 @@ def gate_legacy_recovery_case():
 
 
 def gate_no_owner_case():
-    """AC8: with no switch owner a start behaves as today and SWITCH reads RUN."""
+    """With no switch owner a start is not gated and SWITCH reads RUN."""
     tag = "gate_no_owner"
     with PluginsConf(drop=(FAKEVPP_ENTRY,)):
         set_switch("RUN")
@@ -1147,7 +1137,7 @@ def gate_no_owner_case():
 
 
 def gate_silent_owner_case():
-    """ABUSE-05, socket: START with an owner that never reports is refused after the wait."""
+    """Socket: START with an owner that never reports is refused after the wait."""
     tag = "gate_abuse05"
     set_switch("RUN")
     rt = Runtime(tag, init_ms=100, env=FAKEVPP_SILENT)
@@ -1175,7 +1165,7 @@ def gate_silent_owner_case():
 
 
 def gate_fallback_stop_case():
-    """ABUSE-07: a declared fallback owner reporting STOP during the start's re-init refuses it."""
+    """A declared fallback owner reporting STOP during the start's re-init refuses it."""
     tag = "gate_abuse07"
     exports = exports_symbol(FAKEVPP_SO, "owns_mode_switch")
     record("gate", f"{tag}: the fake VPP exports owns_mode_switch", exports is True)
@@ -1245,12 +1235,7 @@ def gate_two_owners_case():
 
 
 def test_gate():
-    """No start runs a scan while the switch reads STOP or an owner has not reported.
-
-    Pre-fix a START used the position stored before a fallback cleanup, so a legacy owner
-    reporting STOP during the re-init still ran one scan before the correction; an owner that
-    never reported read RUN; SWITCH had no unknown answer.
-    """
+    """No start runs a scan while the switch reads STOP or an owner has not reported."""
     banner("start gate: every start honours the switch")
     gate_known_owner_case()
     gate_legacy_stop_case()
@@ -1264,10 +1249,7 @@ def test_gate():
 
 
 def test_boot_gate():
-    """ABUSE-05, boot: a declared switch owner that never reports holds the boot auto-start.
-
-    Pre-fix ownership did not exist: the silent owner left the RUN default and the PLC started.
-    """
+    """A declared switch owner that never reports holds the boot auto-start."""
     banner("power-on with a switch owner that never reports")
     tag = "bootgate_abuse05"
     with VppLayout():

@@ -71,7 +71,6 @@ static void image_tables_free_when_unheld(void)
     image_tables_free();
 }
 
-/* Set once a plugin failed to stop; never cleared, so only a process restart ends it. */
 static std::atomic<bool> g_stop_failed_latched{false};
 
 extern "C" bool plc_stop_failed_latched(void)
@@ -144,8 +143,6 @@ static void retire_image(PluginManager *pm, bool journal_initialised)
     plugin_manager_destroy(pm);
 }
 
-/* Start-outcome rendezvous. Starts are serialised by plc_claim_transition, so the
- * latest start is the one in flight. Guarded by start_outcome_mutex. */
 static pthread_mutex_t     start_outcome_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t      start_outcome_cond;
 static pthread_once_t      start_outcome_once  = PTHREAD_ONCE_INIT;
