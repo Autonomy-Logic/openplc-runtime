@@ -549,8 +549,10 @@ static void refuse_write(viewer_t *v, uint16_t tag, const char *why)
 }
 
 /**
- * WRITE: applied when the shown screen writes the tag as a whole value and the value fits its type
- * and range. A tag the screen only assigns bit by bit takes no whole value.
+ * WRITE: applied when the shown screen writes the tag as a whole value, the value fits its type and
+ * range, and lies within the screen's limit for the tag when it has one (its widgets' ranges and
+ * the literals it assigns). A tag the screen only assigns bit by bit takes no whole value.
+ * Conditions in screen code are not checked: they run in the browser.
  */
 static void apply_write(viewer_t *v, uint16_t tag, const uint8_t *value, uint16_t len,
                         uint8_t *buffer)
@@ -569,6 +571,10 @@ static void apply_write(viewer_t *v, uint16_t tag, const uint8_t *value, uint16_
     else if (!hmi_codec_from_wire(hmi_access_tags[tag].type, hmi_access_tags[tag].max_len, value,
                                   len, buffer))
         why = "the value does not fit its type";
+    else if (how->limited &&
+             !hmi_codec_within(hmi_access_tags[tag].type, hmi_access_tags[tag].max_len, buffer,
+                               how->min, how->max))
+        why = "the value is outside what the screen shown can set";
 
     if (why)
         refuse_write(v, tag, why);
@@ -1199,6 +1205,8 @@ static bool write_list_valid(const hmi_access_write_t *w, uint16_t count)
         if (w[i].tag >= hmi_access_tag_count || (i > 0 && w[i].tag <= w[i - 1].tag))
             return false;
         if (!w[i].whole && w[i].bits == 0)
+            return false;
+        if (w[i].limited && (!w[i].whole || !(w[i].min <= w[i].max)))
             return false;
         const unsigned width = bit_width(hmi_access_tags[w[i].tag].type);
         if (w[i].bits != 0 && (width == 0 || (width < 64u && (w[i].bits >> width) != 0)))

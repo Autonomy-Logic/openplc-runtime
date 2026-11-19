@@ -470,6 +470,25 @@ static void test_codec_wire()
     CHECK(hmi_codec_to_wire(HMI_CODEC_LREAL, 0, buf, out) == 8, "numbers keep their width");
 }
 
+static void test_codec_within()
+{
+    std::printf("codec: write limits\n");
+    const int16_t i = 30000, top = 100, neg = -1;
+    CHECK(!hmi_codec_within(HMI_CODEC_INT, 0, &i, 0.0, 100.0), "INT 30000 outside 0..100");
+    CHECK(hmi_codec_within(HMI_CODEC_INT, 0, &top, 0.0, 100.0), "INT 100 inside 0..100");
+    CHECK(!hmi_codec_within(HMI_CODEC_INT, 0, &neg, 0.0, 100.0), "INT -1 outside 0..100");
+    const uint16_t big = 65535;
+    CHECK(hmi_codec_within(HMI_CODEC_UINT, 0, &big, 0.0, 65535.0), "UINT read unsigned");
+    const float tenth = 0.1f;
+    CHECK(hmi_codec_within(HMI_CODEC_REAL, 0, &tenth, 0.0, (double)0.1f), "REAL at a float bound");
+    CHECK(!hmi_codec_within(HMI_CODEC_REAL, 0, &tenth, 0.0, 0.1), "REAL 0.1f past the double 0.1");
+    const double d = -2.5;
+    CHECK(hmi_codec_within(HMI_CODEC_LREAL, 0, &d, -2.5, 0.0), "LREAL at its minimum");
+    CHECK(hmi_codec_within(HMI_CODEC_STRING, 20, "hello", 0.0, 5.0), "STRING of 5 within 5");
+    CHECK(!hmi_codec_within(HMI_CODEC_STRING, 20, "hello!", 0.0, 5.0), "STRING of 6 past 5");
+    CHECK(!hmi_codec_within(99, 0, &i, -1e9, 1e9), "unknown type");
+}
+
 static void test_md5_gate()
 {
     std::printf("MD5 gate\n");
@@ -494,6 +513,7 @@ int main()
     test_codec_strings();
     test_codec_format();
     test_codec_wire();
+    test_codec_within();
     test_md5_gate();
 
     if (g_failures == 0)

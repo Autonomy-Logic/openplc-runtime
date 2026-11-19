@@ -102,6 +102,13 @@ extern "C"
     bool hmi_codec_from_wire(uint8_t type, uint16_t max_len, const uint8_t *value, size_t len,
                              void *dest);
 
+    /**
+     * Whether a value in buffer format lies within min..max: a number compared as its exact value
+     * (REAL and LREAL as they are, integers converted to double), a STRING by its length in bytes.
+     * TIME, DATE, TOD and DT compare as their integer counts. False for an unknown type.
+     */
+    bool hmi_codec_within(uint8_t type, uint16_t max_len, const void *buf, double min, double max);
+
     /** Whether the HMI is live: both MD5s non-empty and equal, ignoring hex case. */
     bool hmi_md5_live(const char *program_md5, const char *unit_md5);
 

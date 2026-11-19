@@ -532,9 +532,25 @@ static void test_values_and_writes()
     CHECK(refused(fd, 1) == std::make_pair(1, 2), "a STRING holding a NUL is refused");
     send_write(fd, 1, 99, {1});
     CHECK(refused(fd, 1) == std::make_pair(1, 99), "an unknown tag is refused");
-    v = values_until(fd, 1, [](const Values &x) { return x.writes == 13; });
+    send_write(fd, 1, 1, {0x30, 0x75});
+    CHECK(refused(fd, 1) == std::make_pair(1, 1), "speed 30000 is refused: the screen's slider stops at 100");
+    CHECK(logged("SPEED refused: the value is outside what the screen shown can set"), "and logged");
+    send_write(fd, 1, 1, {101, 0});
+    CHECK(refused(fd, 1) == std::make_pair(1, 1), "speed 101 is refused");
+    send_write(fd, 1, 1, {0xFF, 0xFF});
+    CHECK(refused(fd, 1) == std::make_pair(1, 1), "speed -1 is refused");
+    send_write(fd, 1, 2, std::vector<uint8_t>(11, 'x'));
+    CHECK(refused(fd, 1) == std::make_pair(1, 2), "a label of 11 bytes is refused: at most 10");
+    v = values_until(fd, 1, [](const Values &x) { return x.writes == 17; });
     CHECK(v.ok, "refused writes are counted too");
-    CHECK(write_count() == applied && g_temp == 30.0f && g_lamp == 1, "no refused write reached the PLC");
+    CHECK(write_count() == applied && g_temp == 30.0f && g_lamp == 1 && g_speed == 40,
+          "no refused write reached the PLC");
+    send_write(fd, 1, 1, {100, 0});
+    v = values_until(fd, 1, [](const Values &x) { return x.writes == 18; });
+    CHECK(v.ok && g_speed == 100, "speed 100, the slider's maximum, is applied");
+    send_write(fd, 1, 2, std::vector<uint8_t>(10, 'y'));
+    v = values_until(fd, 1, [](const Values &x) { return x.writes == 19; });
+    CHECK(v.ok && g_label == std::string(10, 'y'), "a label of 10 bytes is applied");
 
     /* A screen the role may not open: refused, and nothing is served or written afterwards. */
     send_show(fd, 1, 2);
@@ -544,7 +560,7 @@ static void test_values_and_writes()
     CHECK(v.ok && v.tags.empty(), "the viewer is served no tag");
     send_write(fd, 1, 1, {7, 0});
     CHECK(refused(fd, 1) == std::make_pair(1, 1), "and its writes are refused");
-    CHECK(g_speed == 40, "speed unchanged");
+    CHECK(g_speed == 100, "speed unchanged");
     send_show(fd, 1, 9);
     CHECK(refused(fd, 1) == std::make_pair(0, 9), "a screen past the last is refused");
 

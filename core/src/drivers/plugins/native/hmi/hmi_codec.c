@@ -392,3 +392,61 @@ bool hmi_codec_from_wire(uint8_t type, uint16_t max_len, const uint8_t *value, s
     memcpy(out, value, width);
     return true;
 }
+
+bool hmi_codec_within(uint8_t type, uint16_t max_len, const void *buf, double min, double max)
+{
+    const uint8_t *p = buf;
+    double v;
+    switch (type)
+    {
+    case HMI_CODEC_BOOL:
+        v = p[0] ? 1.0 : 0.0;
+        break;
+    case HMI_CODEC_SINT:
+    case HMI_CODEC_INT:
+    case HMI_CODEC_DINT:
+    case HMI_CODEC_LINT:
+    case HMI_CODEC_TIME:
+    case HMI_CODEC_LTIME:
+    case HMI_CODEC_DATE:
+    case HMI_CODEC_TOD:
+    case HMI_CODEC_DT:
+        v = (double)le_signed(p, hmi_codec_width(type));
+        break;
+    case HMI_CODEC_USINT:
+    case HMI_CODEC_UINT:
+    case HMI_CODEC_UDINT:
+    case HMI_CODEC_ULINT:
+    case HMI_CODEC_BYTE:
+    case HMI_CODEC_WORD:
+    case HMI_CODEC_DWORD:
+    case HMI_CODEC_LWORD:
+        v = (double)le_unsigned(p, hmi_codec_width(type));
+        break;
+    case HMI_CODEC_REAL:
+    {
+        const uint32_t u = (uint32_t)le_unsigned(p, 4);
+        float f;
+        memcpy(&f, &u, sizeof f);
+        v = (double)f;
+        break;
+    }
+    case HMI_CODEC_LREAL:
+    {
+        const uint64_t u = le_unsigned(p, 8);
+        memcpy(&v, &u, sizeof v);
+        break;
+    }
+    case HMI_CODEC_STRING:
+    {
+        size_t n = 0;
+        while (n < max_len && p[n] != '\0')
+            n++;
+        v = (double)n;
+        break;
+    }
+    default:
+        return false;
+    }
+    return v >= min && v <= max;
+}
