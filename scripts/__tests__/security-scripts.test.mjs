@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { writeFileSync, mkdtempSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseCsv } from '../lib/csv.mjs';
 import { indexAdvisories as indexAdv, tallyBySeverity as tally } from '../lib/severity.mjs';
 
@@ -17,6 +17,11 @@ const wText = (name, text) => { const p = join(dir, name); writeFileSync(p, text
 const adv = (id, sev, extra = {}) => ({ id, ...(sev ? { database_specific: { severity: sev } } : {}), ...extra });
 const scan = (...pkgs) => ({ results: [{ packages: pkgs.map(([name, vulns]) => ({ package: { name, version: '1' }, vulnerabilities: vulns })) }] });
 const run = (script, args, env = {}) => spawnSync('node', [join(SCRIPTS, script), ...args], { env: { ...process.env, ...env }, encoding: 'utf8' });
+// One advisory on one package installed at two versions: the index joins them as '4.17.15 | 4.17.20'.
+const multiVersion = () => ({ results: [{ packages: ['4.17.20', '4.17.15'].map((version) => ({
+  package: { name: 'lodash', version, ecosystem: 'npm' }, vulnerabilities: [adv('GHSA-mv-crit', 'CRITICAL', { summary: 'a | b' })] })) }] });
+// Cells of a markdown table row, splitting only on unescaped '|'.
+const cellsOf = (line) => line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim());
 
 // ===================== pr-gate-diff =====================
 
@@ -72,6 +77,15 @@ test('gate: a new alias record of an advisory already in base is not introduced'
   const head = w('h-alias.json', scan(['p', [adv('GHSA-1', 'HIGH', { aliases: ['CVE-1'] }), adv('PYSEC-1', null, { aliases: ['CVE-1'] })]]));
   assert.equal(gate(base, head).status, 0);
 });
+test('gate: a multi-version advisory is ONE comment row with the versions escaped', () => {
+  const r = gate(w('b.json', { results: [] }), w('h-mv.json', multiVersion()), 'CRITICAL');
+  assert.equal(r.status, 1, r.stderr);
+  const rows = readFileSync(join(dir, 'c.md'), 'utf8').split('\n').filter((l) => l.includes('GHSA-mv-crit'));
+  assert.equal(rows.length, 1);
+  const cells = cellsOf(rows[0]);
+  assert.equal(cells.length, 5, rows[0]);
+  assert.equal(cells[2], '4.17.15 \\| 4.17.20');
+});
 test('gate: CVSS 3.1 vector (9.8) scored as blocking', () => {
   const head = w('h.json', scan(['c', [adv('CVE-CVSS', null, { severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H' }] })]]));
   assert.equal(gate(w('b.json', { results: [] }), head).status, 1);
@@ -79,7 +93,7 @@ test('gate: CVSS 3.1 vector (9.8) scored as blocking', () => {
 
 // ===================== severity (shared by gate and report) =====================
 
-const { cvss3Base, roundup, severityOf, indexAdvisories, tallyBySeverity, sevStr } = await import(join(SCRIPTS, 'lib/severity.mjs'));
+const { cvss3Base, roundup, severityOf, indexAdvisories, tallyBySeverity, sevStr } = await import(pathToFileURL(join(SCRIPTS, 'lib/severity.mjs')).href);
 
 test('severity: CVSS 3.1 Roundup is the integer form, not ceil(x*10)/10', () => {
   // The counter-example from the v3.1 spec's Appendix A rationale: the naive form
@@ -138,6 +152,25 @@ test('severity: group max_severity scores an advisory whose records carry no sev
   const data = { results: [{ packages: [{ package: { name: 'p', version: '1' }, groups: [{ ids: ['PYSEC-9'], aliases: ['PYSEC-9'], max_severity: '9.1' }], vulnerabilities: [{ id: 'PYSEC-9' }] }] }] };
   assert.equal([...indexAdvisories(data).values()][0].sev, 'CRITICAL');
 });
+test('severity: fixed_in lists only the fix versions of the same package (and ecosystem)', () => {
+  const ev = (fixed) => [{ type: 'ECOSYSTEM', events: [{ introduced: '0' }, { fixed }] }];
+  const multi = adv('GHSA-multi', 'HIGH', { affected: [
+    { package: { name: 'a', ecosystem: 'npm' }, ranges: ev('1.2.0') },
+    { package: { name: 'a', ecosystem: 'npm' }, ranges: ev('2.0.1') },
+    { package: { name: 'b', ecosystem: 'npm' }, ranges: ev('9.9.9') },
+    { package: { name: 'a', ecosystem: 'PyPI' }, ranges: ev('7.7.7') },
+  ] });
+  const idx = indexAdvisories({ results: [{ packages: [
+    { package: { name: 'a', version: '1.0.0', ecosystem: 'npm' }, vulnerabilities: [multi] },
+    { package: { name: 'b', version: '9.0.0', ecosystem: 'npm' }, vulnerabilities: [multi] },
+  ] }] });
+  assert.equal(idx.get('GHSA-multi|a').fixed, '1.2.0, 2.0.1');
+  assert.equal(idx.get('GHSA-multi|b').fixed, '9.9.9');
+  const py = adv('PYSEC-x', 'LOW', { affected: [{ package: { name: 'Foo_Bar', ecosystem: 'PyPI' }, ranges: ev('3.0') }, { package: { name: 'other', ecosystem: 'PyPI' }, ranges: ev('4.0') }] });
+  assert.equal(indexAdvisories(scan(['foo-bar', [py]])).get('PYSEC-x|foo-bar').fixed, '3.0', 'PyPI names compare normalized');
+  const none = adv('GHSA-none', 'LOW', { affected: [{ package: { name: 'zzz' }, ranges: ev('5.0') }] });
+  assert.equal(indexAdvisories(scan(['q', [none]])).get('GHSA-none|q').fixed, '5.0', 'no entry names the package: all fixes kept');
+});
 test('severity: index counts one row per (advisory, package) in both directions', () => {
   const idx = indexAdvisories(scan(['a', [adv('CVE-SAME', 'HIGH')]], ['b', [adv('CVE-SAME', 'HIGH')]]));
   assert.equal(idx.size, 2, 'one CVE across two packages is two rows, matching vulnerabilities.csv');
@@ -175,6 +208,25 @@ test('cdx-to-spdx: supplier comes from supplier, manufacturer, publisher or auth
     p: 'Organization: Publisher Co', a: 'Person: Jane Doe (jane@example.com)', n: 'NOASSERTION',
   });
   assert.doesNotMatch(readFileSync(join(SCRIPTS, 'cdx-to-spdx.mjs'), 'utf8'), /NTIA/, 'no conformance claim in the converter');
+});
+test('cdx-to-spdx: registry author strings with stray quotes or nested brackets give a clean Person', () => {
+  const doc = spdx({ components: [
+    { 'bom-ref': 'q@1', name: 'q', version: '1', authors: [{ name: '"Guido van Rossum' }] },
+    { 'bom-ref': 'n@1', name: 'n', version: '1', authors: [{ name: 'Bob Halley <Bob Halley <halley@dnspython.org>>' }] },
+    { 'bom-ref': 'd@1', name: 'd', version: '1', author: '"Jane Doe" <jane@example.com>' },
+    { 'bom-ref': 'p@1', name: 'p', version: '1', author: 'Ann (ann@example.com)' },
+    { 'bom-ref': 'e@1', name: 'e', version: '1', author: '<only@example.com>' },
+    { 'bom-ref': 'g@1', name: 'g', version: '1', author: '"<>"' },
+  ] });
+  const sup = Object.fromEntries(doc.packages.map((x) => [x.name, x.supplier]));
+  assert.deepEqual(sup, {
+    q: 'Person: Guido van Rossum', n: 'Person: Bob Halley (halley@dnspython.org)', d: 'Person: Jane Doe (jane@example.com)',
+    p: 'Person: Ann (ann@example.com)', e: 'Person: only@example.com', g: 'NOASSERTION',
+  });
+});
+test('cdx-to-spdx: created is UTC with second precision (SPDX 2.3), with or without a CycloneDX timestamp', () => {
+  assert.equal(spdx({ metadata: { timestamp: '2026-11-20T10:11:12.345Z' }, components: [] }).creationInfo.created, '2026-11-20T10:11:12Z');
+  assert.match(spdx({ components: [] }).creationInfo.created, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
 });
 test('cdx-to-spdx: multiple licenses join with OR (dual-licensed), not AND', () => {
   const doc = spdx({ components: [{ 'bom-ref': 'x@1', name: 'x', version: '1', licenses: [{ license: { id: 'MIT' } }, { license: { id: 'GPL-3.0-only' } }] }] });
@@ -231,6 +283,14 @@ test('assert-sbom: rejects an empty BOM, accepts a populated one', () => {
 test('assert-sbom: rejects a BOM with no root component', () => {
   const headless = w('headless.cdx.json', { components: Array.from({ length: 60 }, (_, i) => ({ name: `c${i}` })) });
   assert.equal(run('assert-sbom.mjs', [headless, '50']).status, 1);
+});
+test('assert-sbom: an empty or non-numeric floor is refused, not treated as 0 or NaN', () => {
+  const one = w('one.cdx.json', { metadata: { component: { 'bom-ref': 'r', name: 'p' } }, components: [{ 'bom-ref': 'c', name: 'c' }] });
+  for (const floor of ['', 'fifty', '0', '-3', '2.5']) {
+    const r = run('assert-sbom.mjs', [one, floor]);
+    assert.equal(r.status, 1, `floor "${floor}" must fail closed`);
+    assert.match(r.stderr, /not a positive integer/);
+  }
 });
 
 // ===================== scan-vulns =====================
@@ -313,6 +373,20 @@ test('gen-osv-ignores: expiries are staggered, and a suppressed CRITICAL expires
 });
 test('gen-osv-ignores: rejects a malformed review date', () => {
   assert.equal(ignores(CSV_HEADER + 'HIGH,a,1,GHSA-aaaa-aaaa-aaaa,2,not_affected,x\n', 'october').status, 1);
+});
+test('gen-osv-ignores: only exact suppressible verdicts suppress ("not mitigated" stays visible)', () => {
+  const r = ignores(CSV_HEADER
+    + 'HIGH,a,1,GHSA-aaaa-aaaa-aaaa,2.0,not mitigated,no control in place\n'
+    + 'HIGH,b,1,GHSA-bbbb-bbbb-bbbb,2.0,mitigation pending,ticket open\n'
+    + 'HIGH,c,1,GHSA-cccc-cccc-cccc,2.0,Not Affected,component_not_present\n'
+    + 'HIGH,d,1,GHSA-dddd-dddd-dddd,2.0,not-applicable,component_not_present\n');
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(parseIgnores(r.stdout).map((g) => g.id).sort(), ['GHSA-cccc-cccc-cccc', 'GHSA-dddd-dddd-dddd']);
+});
+test('gen-osv-ignores: an end-of-month review date is clamped, never rolled into the next month', () => {
+  const r = ignores(CSV_HEADER + 'LOW,a,1,GHSA-aaaa-aaaa-aaaa,2.0,not_affected,component_not_present\n', '2026-11-30');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(parseIgnores(r.stdout)[0].until.slice(0, 10), '2027-02-28', '3 months after Nov 30 is Feb 28, not Mar 2');
 });
 
 // ===================== build-report =====================
@@ -419,6 +493,17 @@ test('build-report: the register row count equals the vulnerabilities.csv rows f
   const { md } = report(minimalConfig({ affected: [{ priority: 'P1', component: 'tar', installed: '6.2.0', fixedIn: '7', severity: 'High', ids: ['GHSA-dup-tar'], rationale: 'r' }] }), ['--osv-raw', dup, '--osv-delta', dup]);
   assert.match(md, new RegExp(`advisory register \\(${csvRows} rows\\)`));
 });
+test('build-report: a multi-version advisory and a piped config value each stay ONE table row', () => {
+  const mv = w('mv.json', multiVersion());
+  const { md } = report(minimalConfig({ affected: [{ priority: 'P1', component: 'x', installed: '1.0 | 2.0', fixedIn: '3.0', severity: 'High', ids: ['GHSA-other'], rationale: 'a|b\nc' }] }), ['--osv-raw', mv, '--osv-delta', mv]);
+  const untriaged = md.split('\n').filter((l) => l.includes('GHSA-mv-crit'));
+  assert.equal(untriaged.length, 1);
+  assert.equal(cellsOf(untriaged[0]).length, 6, untriaged[0]);
+  assert.equal(cellsOf(untriaged[0])[2], '4.17.15 \\| 4.17.20');
+  const affected = md.split('\n').filter((l) => l.startsWith('| P1 |'));
+  assert.equal(affected.length, 1, 'a newline in a cell must not split the row');
+  assert.equal(cellsOf(affected[0]).length, 6, affected[0]);
+});
 test('scan-vulns: an alias group is one row, listing every record id and the other aliases', () => {
   const src = w('alias-csv.json', scan(['p', [adv('PYSEC-1', null, { aliases: ['CVE-1'] }), adv('GHSA-1', 'HIGH', { aliases: ['CVE-1'] })]]));
   const out = join(dir, 'alias.csv');
@@ -505,6 +590,30 @@ test('workflows: monthly triage treats advisory text as data, requires ids and c
   assert.match(m, /must carry an `ids` array/);
   assert.match(m, /MAX_NEW_SUPPRESSIONS=15/);
   assert.match(m, /\$\(\(AFTER - BEFORE\)\) -gt "\$MAX_NEW_SUPPRESSIONS"/);
+});
+test('workflows: monthly rescans with the triaged baseline before rendering the report and CSV', () => {
+  const m = wf('security-monthly.yml');
+  const build = m.slice(m.indexOf('- name: Build report'));
+  // Here every scan goes through scripts/osv-scan.sh, whose 4th argument becomes --config.
+  const rescan = build.indexOf('osv-scan.sh . /tmp/py /tmp/osv.json osv-scanner.toml');
+  assert.ok(rescan > 0, 'no rescan in the Build report step');
+  assert.ok(build.indexOf('scan-vulns.mjs', rescan) > rescan, 'the CSV must be rewritten from the rescan');
+  assert.ok(build.indexOf('build-report.mjs', rescan) > rescan, 'the report must render after the rescan');
+});
+test('workflows: the gate scans the merge commit first parent, not the stale event base sha', () => {
+  const g = wf('security-pr-gate.yml');
+  assert.ok(!g.includes('pull_request.base.sha'), 'the event base sha is not refreshed when the base branch moves');
+  assert.match(g, /BASE_SHA="\$\(git rev-parse HEAD\^1\)"/);
+  assert.match(g, /git worktree add -f \/tmp\/base "\$BASE_SHA"/);
+  const depth = (g.match(/fetch-depth:\s*(\d+)/) || [])[1];
+  assert.ok(depth === '0' || Number(depth) >= 2, `the gate checkout needs the merge parents (fetch-depth ${depth})`);
+});
+test('workflows: release checkouts do not persist the token', () => {
+  for (const name of ['security-sbom.yml', 'security-release-vulns.yml']) {
+    const steps = wf(name).split(/\n(?=\s+- )/).filter((st) => /uses: actions\/checkout@/.test(st));
+    assert.ok(steps.length > 0, name);
+    for (const st of steps) assert.match(st, /persist-credentials: false/, name);
+  }
 });
 test('report-config: every affected, mitigated and notAffected entry lists its ids', () => {
   const cfg = JSON.parse(readFileSync(join(ROOT, 'security', 'report-config.json'), 'utf8'));

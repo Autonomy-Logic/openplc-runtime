@@ -17,6 +17,11 @@ import { collectComponents } from './lib/cdx.mjs';
 const [src, minArg] = process.argv.slice(2);
 const MIN = Number(minArg ?? process.env.MIN_COMPONENTS ?? 50);
 if (!src) { console.error('usage: assert-sbom.mjs <cdx.json> [minComponents]'); process.exit(1); }
+// An empty or non-numeric floor would make the check pass everything: refuse it.
+if (!Number.isInteger(MIN) || MIN < 1) {
+  console.error(`ASSERT-SBOM ERROR: minComponents "${minArg ?? process.env.MIN_COMPONENTS}" is not a positive integer.`);
+  process.exit(1);
+}
 
 const fail = (msg) => { console.error(`::error::SBOM validation failed: ${msg}`); process.exit(1); };
 

@@ -96,12 +96,17 @@ nothing. Three guards do that:
   UNKNOWN is counted and listed, and never blocks the gate. `vulnerabilities.csv`
   is written from the same index, so its row count equals the register count in
   the report. The release SBOM flow asserts the three component counts agree
-  before archiving.
+  before archiving. `fixed_in` lists only the fix versions OSV gives for that
+  package (and ecosystem); one advisory can cover several packages. Values that
+  hold `|` (an advisory installed at several versions) are escaped in every
+  Markdown table.
 - **SPDX supplier** — taken from the CycloneDX `supplier`, `manufacturer`,
   `publisher` or `authors` of each component (the entries of
-  `security/components.json` carry `supplier`), and `NOASSERTION` otherwise. The
-  SBOM does not claim NTIA minimum-elements conformance: most registry packages
-  carry no supplier.
+  `security/components.json` carry `supplier`), and `NOASSERTION` otherwise.
+  Registry author strings are cleaned to `Person: <name> (<email>)` (stray quotes
+  and nested `<...>` dropped). The SBOM does not claim NTIA minimum-elements
+  conformance: most registry packages carry no supplier. `created` is UTC with
+  second precision.
 
 ## The suppression baseline (`../osv-scanner.toml`)
 
@@ -117,7 +122,10 @@ clearing that marker is the reviewer's acknowledgement that a person checked it.
 A step after the triage re-parses both files, refuses a net *loss* of
 suppressions, refuses more than **15 new suppressions in one run**, and refuses a
 triage entry without `ids`, before anything is rendered. The prompt tells the
-model that advisory text is untrusted data, never instructions.
+model that advisory text is untrusted data, never instructions. When the triage
+changed `osv-scanner.toml`, the job rescans with it (same wrapper and resolved
+Python closure), so the report and `vulnerabilities.csv` reflect the new
+suppressions.
 
 To re-baseline by hand from a triaged register:
 
@@ -126,7 +134,10 @@ node scripts/gen-osv-ignores.mjs sbom/vulnerabilities.csv 2027-01-01 >> osv-scan
 ```
 
 It refuses to run without a per-row verdict column, and it will not suppress an
-advisory that any row triages as requiring action.
+advisory that any row triages as requiring action. Only the exact verdicts
+`not_affected`, `mitigated` and `not_applicable` suppress (case, spaces and
+hyphens folded); "not mitigated" stays visible. An expiry that would fall past the
+end of a month is clamped to its last day.
 
 ## One-time setup — run Claude on your subscription (no API key)
 
@@ -145,9 +156,10 @@ This repository is public. The triage step only runs from the schedule or a
 manual dispatch, never from a pull request, so the secret is not exposed to
 forks.
 
-> To move billing off a personal account later (e.g. an org API key), replace the
-> secret with `ANTHROPIC_API_KEY` and swap the one input in the workflow — nothing
-> else changes.
+> To move billing off a personal account later (e.g. an org API key), add an
+> `ANTHROPIC_API_KEY` secret and, in `security-monthly.yml`, map it in the job `env`,
+> change the Claude step's `if:` to test `env.ANTHROPIC_API_KEY`, and replace the
+> `claude_code_oauth_token` input with `anthropic_api_key`.
 
 ## Reviewing the monthly PR
 

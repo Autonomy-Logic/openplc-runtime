@@ -37,7 +37,9 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PR head
+      # pull_request checks out the merge commit (base + PR); full history keeps
+      # its first parent, the base it was computed on, available to Scan BASE.
+      - name: Checkout PR merge commit
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -74,8 +76,12 @@ jobs:
 
       - name: Scan BASE
         run: |
-          git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
-          git worktree add -f /tmp/base "${{ github.event.pull_request.base.sha }}"
+          # The event's base sha is not refreshed when the base branch moves; the merge
+          # commit's first parent is the base this PR is actually merged onto.
+          git rev-parse --verify -q HEAD^2 >/dev/null || { echo "::error::HEAD is not the PR merge commit"; exit 1; }
+          BASE_SHA="$(git rev-parse HEAD^1)"
+          echo "Base commit: $BASE_SHA"
+          git worktree add -f /tmp/base "$BASE_SHA"
           CFG=""; [ -f /tmp/head-config.toml ] && CFG="/tmp/head-config.toml"
           bash scripts/resolve-python-deps.sh /tmp/base /tmp/py-base
           bash scripts/osv-scan.sh /tmp/base /tmp/py-base /tmp/base.json "$CFG"

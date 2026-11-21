@@ -160,6 +160,13 @@ jobs:
       - name: Build report (md + html)
         id: report
         run: |
+          # A suppression added by the triage step must be reflected in the report and
+          # the CSV, so rescan with the baseline as it will be committed, through the
+          # same wrapper and resolved Python closure as the Scan step.
+          if [ -n "$(git status --porcelain -- osv-scanner.toml)" ]; then
+            bash scripts/osv-scan.sh . /tmp/py /tmp/osv.json osv-scanner.toml
+            node scripts/scan-vulns.mjs /tmp/osv.json /tmp/out/vulnerabilities.csv
+          fi
           node scripts/build-report.mjs \
             --config security/report-config.json \
             --osv-raw /tmp/osv-raw.json \
