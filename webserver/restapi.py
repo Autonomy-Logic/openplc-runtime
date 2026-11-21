@@ -800,8 +800,8 @@ def get_hardware_id():
     """Return the hardware ID v2 this runtime is bound to, with its element hashes.
 
     Any authenticated user. ``hardwareId`` is null when no ID can be derived on
-    this device. ``source`` is ``device`` for an ID computed on this hardware and
-    ``orchestrator`` for the host ID orchestrator-agent placed in a vPLC.
+    this device. In a vPLC the elements include the host's and an ``instance``
+    element placed by orchestrator-agent.
     ---
     tags:
       - Runtime
@@ -816,9 +816,6 @@ def get_hardware_id():
             hardwareId:
               type: string
               description: hw2 followed by 64 lowercase hex characters, or null
-            source:
-              type: string
-              description: device or orchestrator, or null
             elements:
               type: array
               items:
@@ -833,12 +830,11 @@ def get_hardware_id():
     """
     record = hardware_id.current()
     if record is None:
-        return jsonify({"hardwareId": None, "source": None, "elements": []}), 200
+        return jsonify({"hardwareId": None, "elements": []}), 200
     return (
         jsonify(
             {
                 "hardwareId": record.value,
-                "source": record.source,
                 "elements": [{"kind": e.kind, "hash": e.hash} for e in record.elements],
             }
         ),
@@ -847,38 +843,29 @@ def get_hardware_id():
 
 
 @restapi_bp.route("/runtime-license", methods=["GET"])
-@jwt_required()
 def get_runtime_licenses():
-    """Return this runtime's hardware ID and the commercial licences it holds, as stored.
+    """Return this runtime's hardware ID and the commercial licence it holds, as stored.
 
-    Any authenticated user. The runtime does not verify the licences; the editor
-    checks each signature and hardware ID. On its own hardware the stored
-    licences are listed, at most 100, those for this device's hardware ID first;
-    in a vPLC only the licence of the seat orchestrator-agent assigned to it.
+    Public: no login. The runtime does not verify the licence; the editor checks
+    its signature and hardware ID. ``licenses`` holds the one stored licence, or
+    nothing.
     ---
     tags:
       - Runtime
-    security:
-      - BearerAuth: []
     responses:
       200:
-        description: Licences retrieved
+        description: Licence retrieved
         schema:
           type: object
           properties:
             hardwareId:
               type: string
               description: hw2 followed by 64 lowercase hex characters, or null
-            source:
-              type: string
-              description: device or orchestrator, or null
             licenses:
               type: array
               items:
                 type: object
                 description: the licence file exactly as Edge issued it
-      401:
-        description: Authentication required
     """
     return jsonify(runtime_license.report()), 200
 
@@ -890,8 +877,7 @@ def upload_runtime_license():
 
     Any authenticated user. The body is the licence file exactly as Edge serves
     it. Only its shape is checked; the editor verifies it before uploading and
-    again when it reads it back. In a vPLC it goes to the host's licences and
-    orchestrator-agent assigns the seat.
+    again when it reads it back. It replaces the stored licence.
     ---
     tags:
       - Runtime
@@ -908,7 +894,7 @@ def upload_runtime_license():
             orderId:
               type: string
       400:
-        description: Not a runtime licence, or this device has no hardware ID
+        description: Not a runtime licence
       401:
         description: Authentication required
       413:
@@ -926,6 +912,38 @@ def upload_runtime_license():
     if not result.ok:
         return jsonify({"error": result.error}), 500 if result.internal else 400
     return jsonify({"orderId": result.order_id}), 200
+
+
+@restapi_bp.route("/runtime-license", methods=["DELETE"])
+@jwt_required()
+def delete_runtime_license():
+    """Remove the stored commercial runtime licence.
+
+    Any authenticated user.
+    ---
+    tags:
+      - Runtime
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Done; removed is false when no valid licence was stored
+        schema:
+          type: object
+          properties:
+            removed:
+              type: boolean
+      401:
+        description: Authentication required
+      500:
+        description: The licence could not be removed
+    """
+    try:
+        removed = runtime_license.remove()
+    except OSError as exc:
+        logger.error("Could not remove the runtime licence: %s", exc)
+        return jsonify({"error": "Licence could not be removed"}), 500
+    return jsonify({"removed": removed}), 200
 
 
 @restapi_bp.route("/login", methods=["POST"])

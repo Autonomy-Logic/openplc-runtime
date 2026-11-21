@@ -10,7 +10,8 @@
 #        hardware-id.sh --record      print the ID line followed by the element lines
 #        hardware-id.sh --store FILE  write the record to FILE unless it already holds it; keep a
 #                                     well-formed record when no ID can be derived
-# OPENPLC_HWID_ROOT replaces / for every read (tests only).
+# OPENPLC_HWID_ROOT replaces / for every read (tests only). Element lines in
+# /etc/openplc-runtime/elements (OPENPLC_HWID_ELEMENTS_FILE overrides the path) are added.
 
 # BEGIN hardware-id v2
 hw2_root() { printf '%s' "${OPENPLC_HWID_ROOT:-}"; }
@@ -130,32 +131,25 @@ hw2_macs() {
 
 hw2_element() { printf '%s %s\n' "$1" "$(printf 'openplc-hw-v2|%s|%s' "$1" "$2" | hw2_sha256)"; }
 
-# Prints "<kind> <hash>" per element; returns 1 when the host is refused or has no strong element.
-hw2_elements() {
-    local r v strong=0 mac vendor model
+# Prints "<kind> <hash>" per element read from this hardware.
+hw2_hw_elements() {
+    local r v mac vendor model
     r="$(hw2_root)"
-    if hw2_refused_host; then
-        return 1
-    fi
     v="$(hw2_read "$r/proc/device-tree/serial-number")"
     if [ -n "$v" ]; then
         hw2_element serial "$v"
-        strong=1
     fi
     v="$(hw2_read "$r/sys/class/dmi/id/product_uuid")"
     if hw2_uuid_ok "$v"; then
         hw2_element uuid "$v"
-        strong=1
     fi
     v="$(hw2_read "$r/sys/class/dmi/id/board_serial")"
     if hw2_board_serial_ok "$v"; then
         hw2_element board "$v"
-        strong=1
     fi
     if ! hw2_is_vm; then
         for mac in $(hw2_macs); do
             hw2_element mac "$mac"
-            strong=1
         done
     fi
     vendor="$(hw2_cpuinfo_field vendor_id)"
@@ -167,7 +161,33 @@ hw2_elements() {
     if [ -n "$vendor$model" ]; then
         hw2_element cpu "$vendor|$model"
     fi
-    [ "$strong" -eq 1 ]
+    return 0
+}
+
+# Prints the valid "<kind> <hash>" lines of the elements file (OPENPLC_HWID_ELEMENTS_FILE).
+hw2_file_elements() {
+    local f line
+    f="${OPENPLC_HWID_ELEMENTS_FILE:-$(hw2_root)/etc/openplc-runtime/elements}"
+    [ -r "$f" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        if [[ "$line" =~ ^(serial|uuid|board|mac|cpu|instance)\ [0-9a-f]{64}$ ]]; then
+            printf '%s\n' "$line"
+        fi
+    done <"$f"
+    return 0
+}
+
+# Prints "<kind> <hash>" per element: this hardware's (none on a refused host), then the elements
+# file's, without duplicate hashes. Returns 1 when no strong element is present.
+hw2_elements() {
+    local computed="" added all
+    hw2_refused_host || computed="$(hw2_hw_elements)"
+    added="$(hw2_file_elements)"
+    all="$(printf '%s\n%s\n' "$computed" "$added" | awk 'NF && !seen[$2]++')"
+    [ -z "$all" ] || printf '%s\n' "$all"
+    grep -qE '^(serial|uuid|board|mac|instance) ' <<<"$all"
 }
 
 hw2_id_of() { printf 'hw2:%s\n' "$(printf '%s\n' "$1" | cut -d' ' -f2 | sort | hw2_sha256)"; }
@@ -200,7 +220,7 @@ hw2_record_ok() {
             [[ "$line" =~ ^hw2:[0-9a-f]{64}$ ]] || return 1
             first=0
         else
-            [[ "$line" =~ ^(serial|uuid|board|mac|cpu)\ [0-9a-f]{64}$ ]] || return 1
+            [[ "$line" =~ ^(serial|uuid|board|mac|cpu|instance)\ [0-9a-f]{64}$ ]] || return 1
         fi
     done <"$1"
     [ "$first" -eq 0 ]

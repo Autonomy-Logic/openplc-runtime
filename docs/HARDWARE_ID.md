@@ -32,6 +32,7 @@ hw2:<64 lowercase hex characters>
 | `board` | `/sys/class/dmi/id/board_serial` | Not empty, `to be filled by o.e.m.`, `default string`, `not specified` or `0123456789` | Yes |
 | `mac` | `/sys/class/net/*/address`, one element per NIC | See NIC rules; never inside a VM | Yes |
 | `cpu` | `/proc/cpuinfo`, first match of each field | x86: `<vendor_id>\|<model name>`; ARM: `<CPU implementer>\|<CPU part>` | No |
+| `instance` | Elements file only (below); the value is a random UUID per vPLC | Element hash given in the file | Yes |
 
 NIC rules, all of which must hold:
 
@@ -50,7 +51,13 @@ Other rules:
   `product_name` names VMware, QEMU, KVM, VirtualBox (innotek), Xen, Amazon EC2, Google Compute
   Engine, Parallels or Microsoft Corporation "Virtual Machine", NICs are left out.
 - **Refused hosts.** When `/proc/sys/kernel/osrelease` or `/proc/version` mentions `microsoft`,
-  `wsl` or `linuxkit` (WSL2, Docker Desktop), no ID is produced.
+  `wsl` or `linuxkit` (WSL2, Docker Desktop), no element is read from the hardware.
+- **Elements file.** The lines of the optional read-only file `/etc/openplc-runtime/elements`
+  (`OPENPLC_HWID_ELEMENTS_FILE` overrides the path) are added to the elements read from the
+  hardware: one `<kind> <64 lowercase hex element hash>` per line, invalid lines ignored, duplicate
+  hashes kept once. They never replace a computed element. orchestrator-agent writes it into each
+  vPLC with the host's element lines plus `instance <hash>`, so a vPLC's ID is the hash over the
+  host's elements and its instance element.
 - **No strong element, no ID.** The CPU alone never yields an ID.
 - **Frozen.** Every rule and placeholder above is part of v2. Any change after licences are issued is
   a new version, v3.
@@ -80,34 +87,26 @@ the file already holds exactly that record. A stored record that differs (a clon
 hardware) or is malformed is replaced. When no ID can be derived, a well-formed stored record is
 kept as the fallback and `--store` succeeds; without one it exits with status 2 and writes nothing.
 
-The installers run `--store` at installation, and the runtime runs it again on every start where it
-sees the host hardware, so a disk cloned to another machine never keeps the original machine's ID.
+The installers run `--store` at installation, and the runtime runs it again on every start, so a
+disk cloned to another machine never keeps the original machine's ID.
 
 | Install | Who computes it | Record |
 | --- | --- | --- |
 | Native Linux (`install.sh --native`) | `install.sh`, then the runtime on every start | `/var/lib/openplc-runtime/hardware-id` |
-| Container (`scripts/install-docker.sh`) | `install-docker.sh` on the host, then the runtime on every start in the bootloader's privileged, host-network container | `<data dir>/hardware-id`, default `/var/lib/openplc-runtime/hardware-id` |
-| vPLC | orchestrator-agent's installer, on the host | `/etc/openplc-runtime/hardware-id` inside the container, read-only |
-| Windows (MSYS2) | nobody | none: no hardware ID |
-| Any other container, or one without the privileges to see the host hardware | nobody | none: no hardware ID, a stored record is not advertised |
+| Container (`scripts/install-docker.sh`) | `install-docker.sh` on the host, then the runtime on every start | `<data dir>/hardware-id`, default `/var/lib/openplc-runtime/hardware-id` |
+| vPLC | the runtime on every start, with the elements file orchestrator-agent mounts | `/var/run/runtime/hardware-id` |
+| Windows (MSYS2) | the runtime, which reads no hardware element there | none unless an elements file supplies a strong element |
 
-The runtime sees the host hardware natively on Linux, and in a container only when it is the
-bootloader's runtime container (`OPENPLC_PERSISTENT_DATA_DIR` set), its capability bounding set
-holds every capability up to `CAP_AUDIT_READ` (a privileged container) and a network interface
-backed by a device is visible (the host network). In both cases the process must be able
-to read the root-only DMI files (`product_uuid`, `board_serial`) where they exist. Anywhere else a
-partial view of the hardware would give a different ID, so the runtime neither computes nor
-advertises one, and the device is not licensable: it runs under the GPLv3 and licences cannot be
-stored on it. A vPLC's injected record is always advertised, and a vPLC never computes one.
+Every runtime computes its ID the same way; there is no injected record and no container gating.
+A runtime that sees only part of the hardware derives the ID of what it sees plus its elements file.
 
 The runtime advertises the record on `GET /api/hardware-id` (any authenticated user):
 
 ```json
-{"hardwareId": "hw2:…", "source": "device", "elements": [{"kind": "serial", "hash": "…"}]}
+{"hardwareId": "hw2:…", "elements": [{"kind": "serial", "hash": "…"}]}
 ```
 
-`source` is `orchestrator` in a vPLC. Without an ID, `hardwareId` and `source` are null and
-`elements` is empty.
+Without an ID, `hardwareId` is null and `elements` is empty.
 
 ## Test vectors
 

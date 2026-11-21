@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
-"""The hardware ID record: which source the runtime advertises, the endpoint, and
-when the runtime computes the record itself."""
+"""The hardware ID record: what the runtime advertises, the endpoint, and how the
+runtime recomputes the record on start."""
 
 import json
-import os
 import pathlib
 import subprocess
 
@@ -20,54 +19,17 @@ VECTORS_PATH = pathlib.Path(__file__).resolve().parents[1] / "hardware_id" / "ve
 RECORD = f"{ID}\nserial {'1' * 64}\nmac {'2' * 64}\ncpu {'3' * 64}\n"
 
 
-FULL_CAPS = "000001ffffffffff"
-DOCKER_DEFAULT_CAPS = "00000000a80425fb"
-
-
 @pytest.fixture()
 def paths(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, pathlib.Path]:
-    """Record paths plus fake /proc and /sys; the default view is native Linux."""
     stored = tmp_path / "data" / "hardware-id"
-    injected = tmp_path / "etc" / "hardware-id"
-    proc = tmp_path / "proc"
-    sys_dir = tmp_path / "sys"
-    for directory in (stored.parent, injected.parent, proc, sys_dir):
-        directory.mkdir()
+    stored.parent.mkdir()
     monkeypatch.setattr(hardware_id, "STORED_PATH", stored)
-    monkeypatch.setattr(hardware_id, "INJECTED_PATH", injected)
-    monkeypatch.setattr(hardware_id, "PROC_DIR", proc)
-    monkeypatch.setattr(hardware_id, "SYS_DIR", sys_dir)
-    monkeypatch.setattr(hardware_id.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(hardware_id, "is_running_in_container", lambda: False)
-    return {"stored": stored, "injected": injected, "proc": proc, "sys": sys_dir}
-
-
-def _container(
-    monkeypatch: pytest.MonkeyPatch,
-    paths: dict[str, pathlib.Path],
-    caps: str = FULL_CAPS,
-    physical_nic: bool = True,
-    bootloader: bool = True,
-) -> None:
-    """A container with bounding set ``caps`` that sees eth0, device-backed or not, started by the bootloader or not."""
-    monkeypatch.setattr(hardware_id, "is_running_in_container", lambda: True)
-    if bootloader:
-        monkeypatch.setenv(hardware_id.BOOTLOADER_CONTAINER_ENV, "/var/lib/openplc-runtime")
-    else:
-        monkeypatch.delenv(hardware_id.BOOTLOADER_CONTAINER_ENV, raising=False)
-    kernel = paths["proc"] / "sys" / "kernel"
-    kernel.mkdir(parents=True)
-    (kernel / "cap_last_cap").write_text("40\n")
-    (paths["proc"] / "self").mkdir()
-    (paths["proc"] / "self" / "status").write_text(f"Name:\tpython3\nCapBnd:\t{caps}\n")
-    nic = paths["sys"] / "class" / "net" / "eth0"
-    nic.mkdir(parents=True)
-    if physical_nic:
-        (nic / "device").mkdir()
+    monkeypatch.delenv("OPENPLC_HWID_ELEMENTS_FILE", raising=False)
+    return {"stored": stored}
 
 
 def test_parse_record() -> None:
-    record = hardware_id.parse_record(RECORD, "device")
+    record = hardware_id.parse_record(RECORD)
     assert record is not None
     assert record.value == ID
     assert [e.kind for e in record.elements] == ["serial", "mac", "cpu"]
@@ -78,20 +40,19 @@ def test_parse_record() -> None:
     ["", "hw2:abc\n", ID.upper() + "\n", f"{ID}\nwifi {'1' * 64}\n", f"{ID}\nmac 12\n"],
 )
 def test_malformed_records_are_ignored(text: str) -> None:
-    assert hardware_id.parse_record(text, "device") is None
+    assert hardware_id.parse_record(text) is None
 
 
 def test_stored_record_is_advertised(paths: dict[str, pathlib.Path]) -> None:
     paths["stored"].write_text(RECORD)
     record = hardware_id.current()
-    assert record is not None and record.value == ID and record.source == "device"
+    assert record is not None and record.value == ID
 
 
-def test_injected_record_wins(paths: dict[str, pathlib.Path]) -> None:
-    paths["stored"].write_text(RECORD)
-    paths["injected"].write_text(RECORD.replace(ID, OTHER_ID))
+def test_record_with_an_instance_element(paths: dict[str, pathlib.Path]) -> None:
+    paths["stored"].write_text(RECORD + f"instance {'4' * 64}\n")
     record = hardware_id.current()
-    assert record is not None and record.value == OTHER_ID and record.source == "orchestrator"
+    assert record is not None and record.elements[-1].kind == "instance"
 
 
 def test_no_record_means_none(paths: dict[str, pathlib.Path]) -> None:
@@ -107,7 +68,6 @@ def test_endpoint_returns_the_record(client, admin_token, paths) -> None:
     body = client.get("/api/hardware-id", headers=auth(admin_token)).get_json()
     assert body == {
         "hardwareId": ID,
-        "source": "device",
         "elements": [
             {"kind": "serial", "hash": "1" * 64},
             {"kind": "mac", "hash": "2" * 64},
@@ -128,7 +88,7 @@ def test_endpoint_open_to_non_admin_users(client, admin_token, paths) -> None:
 
 def test_endpoint_without_an_id(client, admin_token, paths) -> None:
     body = client.get("/api/hardware-id", headers=auth(admin_token)).get_json()
-    assert body == {"hardwareId": None, "source": None, "elements": []}
+    assert body == {"hardwareId": None, "elements": []}
 
 
 class _Recorder:
@@ -171,88 +131,6 @@ def test_cloned_record_is_replaced(paths, recorder) -> None:
     paths["stored"].write_text(RECORD.replace(ID, OTHER_ID))
     hardware_id.ensure_stored()
     assert hardware_id.current().value == ID
-
-
-@pytest.mark.parametrize("caps", [FULL_CAPS, "0000003fffffffff"], ids=["all", "up-to-audit-read"])
-def test_privileged_host_network_container_computes(paths, recorder, monkeypatch, caps) -> None:
-    _container(monkeypatch, paths, caps=caps)
-    hardware_id.ensure_stored()
-    assert len(recorder.calls) == 1
-    assert hardware_id.current().value == ID
-
-
-@pytest.mark.parametrize(
-    "caps,physical_nic",
-    [(DOCKER_DEFAULT_CAPS, True), (FULL_CAPS, False), (DOCKER_DEFAULT_CAPS, False)],
-    ids=["unprivileged-host-network", "privileged-bridged", "unprivileged-bridged"],
-)
-def test_container_without_host_view_has_no_id(
-    paths, recorder, monkeypatch, caps: str, physical_nic: bool
-) -> None:
-    _container(monkeypatch, paths, caps=caps, physical_nic=physical_nic)
-    paths["stored"].write_text(RECORD)
-    hardware_id.ensure_stored()
-    assert recorder.calls == []
-    assert hardware_id.current() is None
-
-
-def test_privileged_host_network_container_not_started_by_the_bootloader_has_no_id(
-    paths, recorder, monkeypatch
-) -> None:
-    _container(monkeypatch, paths, bootloader=False)
-    paths["stored"].write_text(RECORD)
-    hardware_id.ensure_stored()
-    assert recorder.calls == []
-    assert hardware_id.current() is None
-
-
-def test_container_without_capability_data_has_no_id(paths, recorder, monkeypatch) -> None:
-    monkeypatch.setattr(hardware_id, "is_running_in_container", lambda: True)
-    paths["stored"].write_text(RECORD)
-    hardware_id.ensure_stored()
-    assert recorder.calls == []
-    assert hardware_id.current() is None
-
-
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads files whatever their mode")
-def test_unreadable_dmi_means_no_id(paths, recorder) -> None:
-    dmi = paths["sys"] / "class" / "dmi" / "id"
-    dmi.mkdir(parents=True)
-    (dmi / "product_uuid").write_text("uuid\n")
-    (dmi / "product_uuid").chmod(0o000)
-    paths["stored"].write_text(RECORD)
-    hardware_id.ensure_stored()
-    assert recorder.calls == []
-    assert hardware_id.current() is None
-
-
-def test_vplc_never_computes(paths, recorder, monkeypatch) -> None:
-    _container(monkeypatch, paths, caps=DOCKER_DEFAULT_CAPS, physical_nic=False)
-    paths["injected"].write_text(RECORD)
-    hardware_id.ensure_stored()
-    assert recorder.calls == []
-    assert hardware_id.current().source == "orchestrator"
-
-
-def test_injected_record_skips_computation(paths, recorder, monkeypatch) -> None:
-    _container(monkeypatch, paths)
-    paths["injected"].write_text(RECORD)
-    hardware_id.ensure_stored()
-    assert recorder.calls == []
-
-
-def test_windows_has_no_id(paths, recorder, monkeypatch) -> None:
-    monkeypatch.setattr(hardware_id.platform, "system", lambda: "Windows")
-    paths["stored"].write_text(RECORD)
-    hardware_id.ensure_stored()
-    assert recorder.calls == []
-    assert hardware_id.current() is None
-
-
-def test_windows_endpoint_reports_no_id(client, admin_token, paths, monkeypatch) -> None:
-    monkeypatch.setattr(hardware_id.platform, "system", lambda: "MINGW64_NT-10.0")
-    body = client.get("/api/hardware-id", headers=auth(admin_token)).get_json()
-    assert body == {"hardwareId": None, "source": None, "elements": []}
 
 
 def _vector_root(root: pathlib.Path, name: str) -> pathlib.Path:
@@ -326,4 +204,27 @@ def test_shell_and_python_agree_on_well_formed_records(tmp_path: pathlib.Path, t
     target.write_text(text)
     script = f'set -euo pipefail; source "{hardware_id.SCRIPT_PATH}"; hw2_record_ok "{target}"'
     shell_ok = subprocess.run(["bash", "-c", script], check=False).returncode == 0
-    assert shell_ok == (hardware_id.parse_record(text, "device") is not None)
+    assert shell_ok == (hardware_id.parse_record(text) is not None)
+
+
+def test_reader_adds_the_elements_file(paths, tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENPLC_HWID_ROOT", str(_vector_root(tmp_path / "hw", "raspberry-pi")))
+    elements = tmp_path / "elements"
+    elements.write_text(f"instance {'4' * 64}\n")
+    monkeypatch.setenv("OPENPLC_HWID_ELEMENTS_FILE", str(elements))
+    paths["stored"].write_text(RECORD)
+    hardware_id.ensure_stored()
+    record = hardware_id.current()
+    assert record is not None and record.value != _vector_id("raspberry-pi")
+    assert ("instance", "4" * 64) in [(e.kind, e.hash) for e in record.elements]
+
+
+def test_reader_derives_an_id_from_the_elements_file_alone(paths, tmp_path, monkeypatch) -> None:
+    (tmp_path / "empty").mkdir()
+    monkeypatch.setenv("OPENPLC_HWID_ROOT", str(tmp_path / "empty"))
+    elements = tmp_path / "elements"
+    elements.write_text(f"instance {'4' * 64}\n")
+    monkeypatch.setenv("OPENPLC_HWID_ELEMENTS_FILE", str(elements))
+    hardware_id.ensure_stored()
+    record = hardware_id.current()
+    assert record is not None and [e.kind for e in record.elements] == ["instance"]

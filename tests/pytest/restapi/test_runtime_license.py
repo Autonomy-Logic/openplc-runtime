@@ -47,36 +47,16 @@ def as_bytes(data: dict[str, object]) -> bytes:
 def env(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, pathlib.Path]:
     paths = {
         "stored": tmp_path / "data" / "hardware-id",
-        "injected": tmp_path / "etc" / "hardware-id",
-        "seat": tmp_path / "etc" / "runtime.license",
-        "device_dir": tmp_path / "data" / "licenses",
-        "vplc_dir": tmp_path / "var" / "licenses",
+        "license": tmp_path / "data" / "runtime.license",
     }
-    for key in ("stored", "injected"):
-        paths[key].parent.mkdir(parents=True, exist_ok=True)
+    paths["stored"].parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(hardware_id, "STORED_PATH", paths["stored"])
-    monkeypatch.setattr(hardware_id, "INJECTED_PATH", paths["injected"])
-    monkeypatch.setattr(hardware_id, "_sees_host_hardware", lambda: True)
-    monkeypatch.setattr(runtime_license, "SEAT_FILE_PATH", paths["seat"])
-    monkeypatch.setattr(runtime_license, "DEVICE_LICENSES_DIR", paths["device_dir"])
-    monkeypatch.setattr(runtime_license, "VPLC_LICENSES_DIR", paths["vplc_dir"])
+    monkeypatch.setattr(runtime_license, "LICENSE_PATH", paths["license"])
     return paths
 
 
 def on_device(paths: dict[str, pathlib.Path]) -> None:
     paths["stored"].write_text(RECORD)
-
-
-def in_vplc(paths: dict[str, pathlib.Path]) -> None:
-    paths["injected"].write_text(RECORD)
-
-
-def seat(paths: dict[str, pathlib.Path], content: bytes) -> None:
-    paths["seat"].write_bytes(content)
-
-
-def seat_file(**kwargs: object) -> bytes:
-    return json.dumps({"fmt": 1, "vplc": "vplc-1", "license": make_license(**kwargs)}).encode()
 
 
 # --- shape ----------------------------------------------------------------
@@ -137,50 +117,36 @@ def test_module_exposes_no_signature_verification() -> None:
 # --- storage ----------------------------------------------------------------
 
 
-def test_store_keeps_a_device_licence_unverified(env) -> None:
+def test_store_keeps_a_licence_unverified(env) -> None:
     on_device(env)
     data = make_license()
     result = runtime_license.store(as_bytes(data))
     assert result == runtime_license.StoreResult(True, order_id="ord_1")
-    assert json.loads((env["device_dir"] / "ord_1.license").read_bytes()) == data
+    assert json.loads(env["license"].read_bytes()) == data
 
 
 def test_store_keeps_a_licence_for_another_hardware_id(env) -> None:
     on_device(env)
     assert runtime_license.store(as_bytes(make_license(hardware=OTHER_ID))).ok
-    assert (env["device_dir"] / "ord_1.license").exists()
+    assert env["license"].exists()
 
 
-def test_store_in_a_vplc_uses_the_agent_folder(env) -> None:
-    in_vplc(env)
+def test_store_works_without_a_hardware_id(env) -> None:
     assert runtime_license.store(as_bytes(make_license())).ok
-    assert (env["vplc_dir"] / "ord_1.license").exists()
-    assert not env["device_dir"].exists()
+    assert env["license"].exists()
 
 
 @pytest.mark.parametrize(
-    ("setup", "raw", "error"),
-    [
-        (on_device, b"x" * 4097, "larger than 4096"),
-        (on_device, b"{}", "Not an OpenPLC Runtime licence"),
-        (lambda p: None, as_bytes(make_license()), "no hardware ID"),
-    ],
+    ("raw", "error"),
+    [(b"x" * 4097, "larger than 4096"), (b"{}", "Not an OpenPLC Runtime licence")],
 )
-def test_store_refuses(env, setup, raw, error) -> None:
-    setup(env)
+def test_store_refuses(env, raw, error) -> None:
+    on_device(env)
     result = runtime_license.store(raw)
     assert not result.ok
     assert error in result.error
     assert not result.internal
-    assert not env["device_dir"].exists()
-
-
-def test_store_refuses_where_the_host_hardware_is_not_visible(env, monkeypatch) -> None:
-    on_device(env)
-    monkeypatch.setattr(hardware_id, "_sees_host_hardware", lambda: False)
-    result = runtime_license.store(as_bytes(make_license()))
-    assert not result.ok and "no hardware ID" in result.error
-    assert not env["device_dir"].exists()
+    assert not env["license"].exists()
 
 
 def test_store_reports_a_write_failure(env, monkeypatch) -> None:
@@ -194,45 +160,58 @@ def test_store_reports_a_write_failure(env, monkeypatch) -> None:
     assert not result.ok and result.internal
 
 
+def test_store_replaces_the_previous_licence(env) -> None:
+    on_device(env)
+    assert runtime_license.store(as_bytes(make_license(order_id="ord_1"))).ok
+    newer = make_license(order_id="ord_2", hardware=OTHER_ID)
+    assert runtime_license.store(as_bytes(newer)).ok
+    assert runtime_license.report()["licenses"] == [newer]
+    assert sorted(p.name for p in env["license"].parent.iterdir()) == [
+        "hardware-id",
+        "runtime.license",
+    ]
+
+
+def test_remove(env) -> None:
+    on_device(env)
+    assert runtime_license.remove() is False
+    assert runtime_license.store(as_bytes(make_license())).ok
+    assert runtime_license.remove() is True
+    assert not env["license"].exists()
+    assert runtime_license.report()["licenses"] == []
+
+
+@pytest.mark.parametrize(
+    "content", [b"", b"{", b" " * 5000], ids=["empty", "malformed", "too-large"]
+)
+def test_remove_an_unusable_slot_reports_nothing_removed(env, content) -> None:
+    env["license"].parent.mkdir(parents=True, exist_ok=True)
+    env["license"].write_bytes(content)
+    assert runtime_license.remove() is False
+    assert not env["license"].exists()
+
+
 # --- report -----------------------------------------------------------------
 
 
 def test_report_without_a_hardware_id(env) -> None:
-    assert runtime_license.report() == {"hardwareId": None, "source": None, "licenses": []}
+    assert runtime_license.report() == {"hardwareId": None, "licenses": []}
 
 
-def test_report_on_a_device_lists_every_stored_licence(env) -> None:
+def test_report_lists_the_stored_licence(env) -> None:
     on_device(env)
-    first = make_license(order_id="ord_1")
-    foreign = make_license(order_id="ord_2", hardware=OTHER_ID)
-    assert runtime_license.store(as_bytes(first)).ok
-    assert runtime_license.store(as_bytes(foreign)).ok
-    assert runtime_license.report() == {
-        "hardwareId": ID,
-        "source": "device",
-        "licenses": [first, foreign],
-    }
+    data = make_license()
+    assert runtime_license.store(as_bytes(data)).ok
+    assert runtime_license.report() == {"hardwareId": ID, "licenses": [data]}
 
 
-def test_report_skips_unusable_files(env) -> None:
+@pytest.mark.parametrize(
+    "content", [b"", b"{", b"\xff", b" " * 5000], ids=["empty", "malformed", "binary", "too-large"]
+)
+def test_report_skips_an_unusable_stored_file(env, content) -> None:
     on_device(env)
-    env["device_dir"].mkdir(parents=True)
-    (env["device_dir"] / "notes.txt").write_bytes(as_bytes(make_license()))
-    (env["device_dir"] / "bad.license").write_bytes(b"{")
-    (env["device_dir"] / "big.license").write_bytes(b" " * 5000)
+    env["license"].write_bytes(content)
     assert runtime_license.report()["licenses"] == []
-
-
-def test_report_lists_this_device_first_within_the_cap(env, monkeypatch) -> None:
-    on_device(env)
-    mine = make_license(order_id="zzz_mine")
-    assert runtime_license.store(as_bytes(mine)).ok
-    for i in range(3):
-        assert runtime_license.store(as_bytes(make_license(order_id=f"a{i}", hardware=OTHER_ID))).ok
-    monkeypatch.setattr(runtime_license, "MAX_STORED_LICENSES", 2)
-    listed = runtime_license.report()["licenses"]
-    assert len(listed) == 2
-    assert listed[0] == mine
 
 
 def test_report_reads_the_hardware_id_once(env, monkeypatch) -> None:
@@ -249,33 +228,6 @@ def test_report_reads_the_hardware_id_once(env, monkeypatch) -> None:
     assert len(calls) == 1
 
 
-def test_report_in_a_vplc_lists_only_the_seat_licence(env) -> None:
-    in_vplc(env)
-    assert runtime_license.store(as_bytes(make_license(order_id="host_only"))).ok
-    assert runtime_license.report() == {"hardwareId": ID, "source": "orchestrator", "licenses": []}
-    seat(env, seat_file(order_id="ord_seat"))
-    assert runtime_license.report()["licenses"] == [make_license(order_id="ord_seat")]
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        b"",
-        b"{",
-        b"\xff",
-        json.dumps({"fmt": 2, "vplc": "v", "license": make_license()}).encode(),
-        json.dumps({"fmt": 1, "vplc": "", "license": make_license()}).encode(),
-        json.dumps({"fmt": 1, "vplc": "v", "license": {}}).encode(),
-        json.dumps([1]).encode(),
-        pytest.param(b" " * 9000, id="too-large"),
-    ],
-)
-def test_report_in_a_vplc_skips_a_malformed_seat_file(env, content) -> None:
-    in_vplc(env)
-    seat(env, content)
-    assert runtime_license.report()["licenses"] == []
-
-
 # --- endpoints ----------------------------------------------------------------
 
 
@@ -285,9 +237,43 @@ def user_token(client) -> str:
     return token_for(client, "admin", "admin-pass-123")
 
 
-def test_endpoints_need_a_login(client, env) -> None:
+def test_write_endpoints_need_a_login(client, env) -> None:
     assert client.post("/api/runtime-license", data=b"{}").status_code == 401
-    assert client.get("/api/runtime-license").status_code == 401
+    assert client.delete("/api/runtime-license").status_code == 401
+
+
+def test_read_endpoint_is_public(client, env) -> None:
+    on_device(env)
+    assert runtime_license.store(as_bytes(make_license())).ok
+    resp = client.get("/api/runtime-license")
+    assert resp.status_code == 200
+    assert resp.get_json() == {"hardwareId": ID, "licenses": [make_license()]}
+
+
+def test_delete_endpoint(client, env, user_token) -> None:
+    on_device(env)
+    assert runtime_license.store(as_bytes(make_license())).ok
+    resp = client.delete("/api/runtime-license", headers=auth(user_token))
+    assert resp.status_code == 200 and resp.get_json() == {"removed": True}
+    resp = client.delete("/api/runtime-license", headers=auth(user_token))
+    assert resp.status_code == 200 and resp.get_json() == {"removed": False}
+    assert client.get("/api/runtime-license").get_json()["licenses"] == []
+
+
+def test_delete_endpoint_on_an_emptied_slot(client, env, user_token) -> None:
+    env["license"].parent.mkdir(parents=True, exist_ok=True)
+    env["license"].write_bytes(b"")
+    resp = client.delete("/api/runtime-license", headers=auth(user_token))
+    assert resp.status_code == 200 and resp.get_json() == {"removed": False}
+    assert not env["license"].exists()
+
+
+def test_delete_endpoint_reports_a_failure(client, env, user_token, monkeypatch) -> None:
+    def fail() -> bool:
+        raise OSError("read-only")
+
+    monkeypatch.setattr(runtime_license, "remove", fail)
+    assert client.delete("/api/runtime-license", headers=auth(user_token)).status_code == 500
 
 
 def test_upload_then_read_back(client, env, user_token) -> None:
@@ -303,7 +289,7 @@ def test_upload_then_read_back(client, env, user_token) -> None:
     assert resp.get_json() == {"orderId": "ord_1"}
     resp = client.get("/api/runtime-license", headers=auth(user_token))
     assert resp.status_code == 200
-    assert resp.get_json() == {"hardwareId": ID, "source": "device", "licenses": [data]}
+    assert resp.get_json() == {"hardwareId": ID, "licenses": [data]}
 
 
 def test_upload_refuses_another_shape(client, env, user_token) -> None:
