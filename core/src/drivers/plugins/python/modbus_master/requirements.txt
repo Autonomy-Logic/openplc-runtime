@@ -2,3 +2,4 @@ pymodbus==3.11.2
 pyserial>=3.5
 asyncio-mqtt==0.16.2
 pytest
+Django==2.2.1
