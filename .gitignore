@@ -24,6 +24,9 @@ __pycache__/
 
 # Temporary files
 *.txt
+# Negated so the SBOM scanner can read them: osv-scanner honours .gitignore.
+!CMakeLists.txt
+!requirements.txt
 *.log
 *.env
 *.pem
