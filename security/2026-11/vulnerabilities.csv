@@ -1,0 +1,44 @@
+severity,package,version,advisory,fixed_in,summary,url,aliases
+CRITICAL,django,2.2,GHSA-2gwj-7jmv-h26r | PYSEC-2022-190,2.2.28 | 3.2.13 | 4.0.4,SQL Injection in Django,https://osv.dev/GHSA-2gwj-7jmv-h26r,BIT-django-2022-28346 | CVE-2022-28346
+CRITICAL,django,2.2,GHSA-6r97-cj55-9hrq | PYSEC-2019-13,1.11.23 | 2.1.11 | 2.2.4,SQL Injection in Django,https://osv.dev/GHSA-6r97-cj55-9hrq,CVE-2019-14234
+CRITICAL,django,2.2,GHSA-frmv-pr5f-9mcr,5.2.8 | 5.1.14 | 4.2.26,Django vulnerable to SQL injection via _connector keyword argument in QuerySet and Q objects.,https://osv.dev/GHSA-frmv-pr5f-9mcr,BIT-django-2025-64459 | CVE-2025-64459 | PYSEC-2025-108
+CRITICAL,django,2.2,GHSA-hmr4-m2h5-33qx | PYSEC-2020-35,1.11.28 | 2.2.10 | 3.0.3 | eb31d845323618d688ad429479c6dda973056136,SQL injection in Django,https://osv.dev/GHSA-hmr4-m2h5-33qx,BIT-django-2020-7471 | CVE-2020-7471
+CRITICAL,django,2.2,GHSA-vfq6-hq5r-27r6 | PYSEC-2019-16,1.11.27 | 2.2.9 | 3.0.1,Django Potential account hijack via password reset form,https://osv.dev/GHSA-vfq6-hq5r-27r6,CVE-2019-19844
+CRITICAL,django,2.2,GHSA-w24h-v9qh-8gxj | PYSEC-2022-191,2.2.28 | 3.2.13 | 4.0.4,SQL Injection in Django,https://osv.dev/GHSA-w24h-v9qh-8gxj,BIT-django-2022-28347 | CVE-2022-28347
+HIGH,django,2.2,GHSA-3gh2-xw74-jmcw | PYSEC-2020-36,1.11.29 | 2.2.11 | 3.0.4,SQL injection in Django,https://osv.dev/GHSA-3gh2-xw74-jmcw,BIT-django-2020-9402 | CVE-2020-9402
+HIGH,django,2.2,GHSA-53qw-q765-4fww | PYSEC-2022-1,2.2.26 | 3.2.11 | 4.0.1,Denial-of-service in Django,https://osv.dev/GHSA-53qw-q765-4fww,BIT-django-2021-45115 | CVE-2021-45115
+HIGH,django,2.2,GHSA-6cw3-g6wv-c2xv | PYSEC-2022-20,2.2.27 | 3.2.12 | 4.0.2,Infinite Loop in Django,https://osv.dev/GHSA-6cw3-g6wv-c2xv,BIT-django-2022-23833 | CVE-2022-23833
+HIGH,django,2.2,GHSA-6w2r-r2m5-xq5w,4.2.24 | 5.1.12 | 5.2.6,Django is subject to SQL injection through its column aliases,https://osv.dev/GHSA-6w2r-r2m5-xq5w,BIT-django-2025-57833 | CVE-2025-57833 | PYSEC-2025-105
+HIGH,django,2.2,GHSA-8c5j-9r9f-c6w8 | PYSEC-2022-2,2.2.26 | 3.2.11 | 4.0.1,Information disclosure in Django,https://osv.dev/GHSA-8c5j-9r9f-c6w8,BIT-django-2021-45116 | CVE-2021-45116
+HIGH,django,2.2,GHSA-8x94-hmjh-97hq,3.2.15 | 4.0.7,Django vulnerable to Reflected File Download attack,https://osv.dev/GHSA-8x94-hmjh-97hq,BIT-django-2022-36359 | CVE-2022-36359 | PYSEC-2022-245
+HIGH,django,2.2,GHSA-c4qh-4vgv-qc6g | PYSEC-2019-11,1.11.23 | 2.1.11 | 2.2.4,Django Denial-of-service in django.utils.text.Truncator,https://osv.dev/GHSA-c4qh-4vgv-qc6g,CVE-2019-14232
+HIGH,django,2.2,GHSA-fr28-569j-53c4 | PYSEC-2020-34,2.2.16 | 3.0.10 | 3.1.1,Django Incorrect Default Permissions,https://osv.dev/GHSA-fr28-569j-53c4,BIT-django-2020-24584 | CVE-2020-24584
+HIGH,django,2.2,GHSA-h5jv-4p7w-64jg | PYSEC-2019-12,1.11.23 | 2.1.11 | 2.2.4,Django Denial-of-service in strip_tags(),https://osv.dev/GHSA-h5jv-4p7w-64jg,CVE-2019-14233
+HIGH,django,2.2,GHSA-hvmf-r92r-27hr | PYSEC-2019-15,2.1.15 | 2.2.8,Django allows unintended model editing,https://osv.dev/GHSA-hvmf-r92r-27hr,CVE-2019-19118
+HIGH,django,2.2,GHSA-m6gj-h9gm-gw44 | PYSEC-2020-33,2.2.16 | 3.0.10 | 3.1.1,Django Incorrect Default Permissions,https://osv.dev/GHSA-m6gj-h9gm-gw44,BIT-django-2020-24583 | CVE-2020-24583
+HIGH,django,2.2,GHSA-p99v-5w3c-jqq9 | PYSEC-2021-99,2.2.24 | 3.1.12 | 3.2.4,"Django Access Control Bypass possibly leading to SSRF, RFI, and LFI attacks",https://osv.dev/GHSA-p99v-5w3c-jqq9,BIT-django-2021-33571 | CVE-2021-33571
+HIGH,django,2.2,GHSA-qw25-v68c-qjf3,5.2.8 | 5.1.14 | 4.2.26,Django has a denial-of-service vulnerability in HttpResponseRedirect and HttpResponsePermanentRedirect on Windows,https://osv.dev/GHSA-qw25-v68c-qjf3,BIT-django-2025-64458 | CVE-2025-64458 | PYSEC-2025-107
+HIGH,django,2.2,GHSA-rxjp-mfm9-w4wr | PYSEC-2021-7,2.2.21 | 3.1.9 | 3.2.1,Path Traversal in Django,https://osv.dev/GHSA-rxjp-mfm9-w4wr,BIT-django-2021-31542 | CVE-2021-31542
+HIGH,django,2.2,GHSA-v6rh-hp5x-86rv | PYSEC-2021-439,2.2.25 | 3.1.14 | 3.2.10,Potential bypass of an upstream access control based on URL paths in Django,https://osv.dev/GHSA-v6rh-hp5x-86rv,BIT-django-2021-44420 | CVE-2021-44420
+HIGH,django,2.2,GHSA-v9qg-3j8p-r63v | PYSEC-2019-14,1.11.23 | 2.1.11 | 2.2.4,Uncontrolled Recursion in Django,https://osv.dev/GHSA-v9qg-3j8p-r63v,CVE-2019-14235
+HIGH,django,2.2,GHSA-wpjr-j57x-wxfw | PYSEC-2020-31,2.2.13 | 3.0.7,Data leakage via cache key collision in Django,https://osv.dev/GHSA-wpjr-j57x-wxfw,BIT-django-2020-13254 | CVE-2020-13254
+HIGH,django,2.2,GHSA-wvqv-fj8w-qmhm | PYSEC-2026-4035,5.2.17 | 6.0.8,Django GeoDjango spatial lookups allow file writes and outbound requests through GDAL raster parsing,https://osv.dev/GHSA-wvqv-fj8w-qmhm,BIT-django-2026-15307 | CVE-2026-15307
+MODERATE,django,2.2,GHSA-2m34-jcjv-45xf | PYSEC-2020-32,2.2.13 | 3.0.7,XSS in Django,https://osv.dev/GHSA-2m34-jcjv-45xf,BIT-django-2020-13596 | CVE-2020-13596
+MODERATE,django,2.2,GHSA-68w8-qjq3-2gfm | PYSEC-2021-98,2.2.24 | 3.1.12 | 3.2.4,Path Traversal in Django,https://osv.dev/GHSA-68w8-qjq3-2gfm,BIT-django-2021-33203 | CVE-2021-33203
+MODERATE,django,2.2,GHSA-6c3j-c64m-qhgq | PYSEC-2026-628,2.1.9 | 2.2.2,"XSS in jQuery as used in Drupal, Backdrop CMS, and other products",https://osv.dev/GHSA-6c3j-c64m-qhgq,CVE-2019-11358 | DRUPAL-CORE-2019-006 | SNYK-JS-JQUERY-174006
+MODERATE,django,2.2,GHSA-6c7v-2f49-8h26 | PYSEC-2019-10,2.1.10 | 2.2.3 | 1.11.22,Django Incorrect HTTP detection with reverse-proxy connecting via HTTPS,https://osv.dev/GHSA-6c7v-2f49-8h26,CVE-2019-12781
+MODERATE,django,2.2,GHSA-7rp2-fm2h-wchj | PYSEC-2019-79,1.11.21 | 2.1.9 | 2.2.2,Django Cross-site Scripting in AdminURLFieldWidget,https://osv.dev/GHSA-7rp2-fm2h-wchj,CVE-2019-12308
+MODERATE,django,2.2,GHSA-7xr5-9hcq-chf9,5.2.2 | 5.1.10 | 4.2.22,Django Improper Output Neutralization for Logs vulnerability,https://osv.dev/GHSA-7xr5-9hcq-chf9,BIT-django-2025-48432 | CVE-2025-48432 | PYSEC-2025-47
+MODERATE,django,2.2,GHSA-8qcx-xf44-272x,5.2.16 | 6.0.7,Django: DomainNameValidator permits newline characters that may enable HTTP header injection,https://osv.dev/GHSA-8qcx-xf44-272x,BIT-django-2026-53878 | CVE-2026-53878 | PYSEC-2026-2092
+MODERATE,django,2.2,GHSA-95rw-fx8r-36v6 | PYSEC-2022-19,2.2.27 | 3.2.12 | 4.0.2,Cross-site Scripting in Django,https://osv.dev/GHSA-95rw-fx8r-36v6,BIT-django-2022-22818 | CVE-2022-22818
+MODERATE,django,2.2,GHSA-crhf-3pfg-w68w,5.2.16 | 6.0.7,Django: GDALRaster may over-read heap memory when constructed from bytes,https://osv.dev/GHSA-crhf-3pfg-w68w,BIT-django-2026-53877 | CVE-2026-53877 | PYSEC-2026-2091
+MODERATE,django,2.2,GHSA-fvgf-6h6h-3322 | PYSEC-2021-9,2.2.18 | 3.1.6 | 3.0.12,Django Directory Traversal via archive.extract,https://osv.dev/GHSA-fvgf-6h6h-3322,BIT-django-2021-3281 | CVE-2021-3281
+MODERATE,django,2.2,GHSA-jrh2-hc4r-7jwx | PYSEC-2022-3,2.2.26 | 3.2.11 | 4.0.1,Directory-traversal in Django,https://osv.dev/GHSA-jrh2-hc4r-7jwx,BIT-django-2021-45452 | CVE-2021-45452
+MODERATE,django,2.2,GHSA-q238-5cxm-5c9h | PYSEC-2026-3717,5.2.17 | 6.0.8 | 6.1.1,Django GeoDjango vulnerable to denial of service through deeply nested geometry collections,https://osv.dev/GHSA-q238-5cxm-5c9h,BIT-django-2026-15830 | CVE-2026-15830
+MODERATE,django,2.2,GHSA-qm57-vhq3-3fwf | PYSEC-2021-8,2.2.22 | 3.1.10 | 3.2.2,Header injection possible in Django,https://osv.dev/GHSA-qm57-vhq3-3fwf,BIT-django-2021-32052 | CVE-2021-32052
+MODERATE,django,2.2,GHSA-rrqc-c2jx-6jgv | PYSEC-2026-1297,5.1.1 | 5.0.9 | 4.2.16,Django allows enumeration of user e-mail addresses,https://osv.dev/GHSA-rrqc-c2jx-6jgv,BIT-django-2024-45231 | CVE-2024-45231
+MODERATE,django,2.2,GHSA-xgxc-v2qg-chmh | PYSEC-2021-6,2.2.20 | 3.0.14 | 3.1.8,Directory Traversal in Django,https://osv.dev/GHSA-xgxc-v2qg-chmh,BIT-django-2021-28658 | CVE-2021-28658
+LOW,django,2.2,GHSA-3h9f-r86x-qvjx,5.2.16 | 6.0.7,Django: cache middleware may expose private responses when unrelated request cookies are present,https://osv.dev/GHSA-3h9f-r86x-qvjx,BIT-django-2026-48588 | CVE-2026-48588 | PYSEC-2026-2090
+LOW,django,2.2,GHSA-8cjm-8mp7-r2xf,5.2.15 | 6.0.6,Django: UpdateCacheMiddleware may disclose cached responses due to case-sensitive Cache-Control handling,https://osv.dev/GHSA-8cjm-8mp7-r2xf,BIT-django-2026-8404 | CVE-2026-8404 | PYSEC-2026-201
+LOW,django,2.2,GHSA-923m-gv2p-w5qp,5.2.15 | 6.0.6,Django: has_vary_header may expose cached responses when Vary values contain whitespace,https://osv.dev/GHSA-923m-gv2p-w5qp,BIT-django-2026-48587 | CVE-2026-48587 | PYSEC-2026-198
+LOW,django,2.2,GHSA-h7pc-vwp9-298g,5.2.15 | 6.0.6,Django: signed cookies are vulnerable to salt namespace collisions,https://osv.dev/GHSA-h7pc-vwp9-298g,BIT-django-2026-6873 | CVE-2026-6873 | PYSEC-2026-199
