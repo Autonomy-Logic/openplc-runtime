@@ -352,7 +352,7 @@ Authorization: Bearer <token>
 ## Runtime Licence
 
 OpenPLC Runtime is free under the GPLv3. A commercial licence is a JSON file Autonomy Edge signs for
-one hardware ID v2 ([HARDWARE_ID.md](HARDWARE_ID.md)). The runtime stores licences and reports them
+one hardware ID v2 ([HARDWARE_ID.md](HARDWARE_ID.md)). The runtime stores one licence and reports it
 with its hardware ID; it never checks a signature, never contacts Edge and never limits anything.
 The editor fetches licences from Edge, uploads them, and decides the GPLv3 or commercial status by
 verifying what the runtime reports.
@@ -361,16 +361,14 @@ verifying what the runtime reports.
 
 ```http
 GET /api/runtime-license
-Authorization: Bearer <token>
 ```
 
-Any authenticated user.
+Public: no login (runtimes before this change answer 401).
 
 **Response (200):**
 ```json
 {
   "hardwareId": "hw2:...",
-  "source": "device",
   "licenses": [
     {"fmt":1,"product":"com.autonomy.openplc-runtime","hardware_id":"hw2:...","seats":2,
      "order_id":"...","issued_at":"2026-10-28T12:00:00.000Z","key_id":0,"sig":"..."}
@@ -378,10 +376,10 @@ Any authenticated user.
 }
 ```
 
-`hardwareId` and `source` are as in `GET /api/hardware-id`
+`hardwareId` is as in `GET /api/hardware-id`
 ([HARDWARE_ID.md](HARDWARE_ID.md#record-and-storage)), `null` when no ID can be derived.
-`licenses` holds each licence exactly as stored, unverified, and may include licences for other
-hardware IDs. The editor counts a licence only when its `hardware_id` equals `hardwareId` and its
+`licenses` holds the one stored licence exactly as stored, unverified, or nothing; it may be for
+another hardware ID. The editor counts a licence only when its `hardware_id` equals `hardwareId` and its
 signature verifies: ECDSA P-256 over SHA-256 of the payload without `sig`, keys sorted, no
 whitespace, UTF-8, with `sig` the raw r and s (64 bytes) in base64 and the public key selected by
 `key_id`.
@@ -398,8 +396,8 @@ Content-Type: application/json
 ```
 
 Any authenticated user. The body is the licence file exactly as Edge serves it, at most 4 KiB. Only
-its shape is checked (exact field set, `product`, `fmt`, value ranges, `order_id` safe as a file
-name); a licence with the same `order_id` replaces the stored one.
+its shape is checked (exact field set, `product`, `fmt`, value ranges); it replaces the stored
+licence.
 
 **Response (200):**
 ```json
@@ -408,23 +406,25 @@ name); a licence with the same `order_id` replaces the stored one.
 
 | Status | Meaning |
 |--------|---------|
-| 400 | Not a runtime licence, or no hardware ID on this device |
+| 400 | Not a runtime licence |
 | 401 | Authentication required |
 | 413 | Body larger than 4 KiB |
 | 500 | The licence could not be written |
 
-A device without a hardware ID cannot store licences. That includes Windows (MSYS2) installs and
-containers without the privileges to see the host hardware (privileged with the host network, as
-the bootloader runs it); see [HARDWARE_ID.md](HARDWARE_ID.md#record-and-storage).
+The licence lives in `runtime.license` in the persistent data directory, on a device and in a vPLC
+alike (`/var/run/runtime/runtime.license` in a container). In a vPLC, orchestrator-agent empties that
+file on `remove_license`; an empty, malformed or oversized file reads as no licence.
 
-**Where licences live:**
-- On its own hardware: `licenses/<order_id>.license` in the persistent data directory. Stored
-  licences are reported, at most 100, those whose `hardware_id` is this device's first.
-- In a vPLC (hardware ID injected by orchestrator-agent): uploads go to
-  `/var/lib/openplc-runtime/licenses/`, where the agent collects the host's licences. Only the
-  licence inside the seat file the agent writes to `/etc/openplc-runtime/runtime.license`
-  (`{fmt, vplc, license}`) is reported; an uploaded host licence alone is not. Its `vplc` name is
-  not compared, since a vPLC cannot see its container name.
+### Remove Runtime Licence
+
+```http
+DELETE /api/runtime-license
+Authorization: Bearer <token>
+```
+
+Any authenticated user. **Response (200):** `{"removed": true}` when the slot held a licence, or
+`false` when it was missing, empty or malformed (the file is deleted either way). 500 when the file
+could not be removed.
 
 ---
 

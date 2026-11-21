@@ -345,3 +345,117 @@ def test_store_cli(tmp_path: pathlib.Path) -> None:
     target = tmp_path / "hardware-id"
     assert run(root, "--store", str(target)).code == 0
     assert target.read_text().splitlines()[0] == vector("raspberry-pi")["id"]
+
+
+# --- elements file ----------------------------------------------------------------
+
+INSTANCE_UUID = "6f1c9b0e-2d4a-4c1b-9a77-3e5d2f8b1a90"
+
+
+def _elements_file(root: pathlib.Path, text: str) -> None:
+    path = root / "etc" / "openplc-runtime" / "elements"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def _instance_line() -> str:
+    return f"instance {element_hash('instance', INSTANCE_UUID)}"
+
+
+def test_elements_file_adds_an_instance(tmp_path: pathlib.Path) -> None:
+    vec = vector("raspberry-pi")
+    root = build(tmp_path, vec)
+    _elements_file(root, _instance_line() + "\n")
+    elements = [*vec["elements"], ["instance", INSTANCE_UUID]]
+    assert run(root) == Result(0, expected_id(elements) + "\n")
+    assert run(root, "--elements").out.splitlines()[-1] == _instance_line()
+
+
+def test_elements_file_alone_gives_an_id(tmp_path: pathlib.Path) -> None:
+    _elements_file(tmp_path, _instance_line() + "\n")
+    assert run(tmp_path) == Result(0, expected_id([["instance", INSTANCE_UUID]]) + "\n")
+
+
+def test_elements_file_with_only_weak_elements_gives_no_id(tmp_path: pathlib.Path) -> None:
+    _elements_file(tmp_path, f"cpu {element_hash('cpu', 'x')}\n")
+    assert run(tmp_path).code == 2
+
+
+def test_elements_file_skips_invalid_lines_and_duplicates(tmp_path: pathlib.Path) -> None:
+    vec = vector("raspberry-pi")
+    root = build(tmp_path, vec)
+    serial = f"serial {element_hash('serial', '10000000a1b2c3d4')}"
+    _elements_file(
+        root,
+        "\n".join(
+            [
+                "garbage",
+                f"wifi {'1' * 64}",
+                f"instance {'A' * 64}",
+                f"instance {'1' * 63}",
+                serial,
+                f"  {_instance_line()}  ",
+                _instance_line(),
+            ]
+        )
+        + "\n",
+    )
+    lines = run(root, "--elements").out.splitlines()
+    assert lines.count(serial) == 1
+    assert lines.count(_instance_line()) == 1
+    assert len(lines) == len(vec["elements"]) + 1
+
+
+@pytest.mark.parametrize(
+    "name, kind", [("raspberry-pi", "serial"), ("vm", "uuid"), ("raspberry-pi", "cpu")]
+)
+def test_elements_file_cannot_relabel_a_computed_element(
+    tmp_path: pathlib.Path, name: str, kind: str
+) -> None:
+    vec = vector(name)
+    root = build(tmp_path, vec)
+    before = run(root, "--elements").out
+    value = next(v for k, v in vec["elements"] if k == kind)
+    _elements_file(root, f"instance {element_hash(kind, value)}\n")
+    assert run(root, "--elements").out == before
+    assert run(root) == Result(0, vec["id"] + "\n")
+
+
+def test_elements_file_cannot_make_a_cpu_only_host_strong(tmp_path: pathlib.Path) -> None:
+    vec = vector("placeholders-only")
+    root = build(tmp_path, vec)
+    kind, value = vec["elements"][0]
+    _elements_file(root, f"instance {element_hash(kind, value)}\n")
+    assert run(root).code == 2
+    assert run(root, "--elements").code == 2
+
+
+def test_elements_file_path_override(tmp_path: pathlib.Path) -> None:
+    custom = tmp_path / "custom-elements"
+    custom.write_text(_instance_line() + "\n")
+    env = dict(
+        os.environ,
+        OPENPLC_HWID_ROOT=str(tmp_path / "empty"),
+        OPENPLC_HWID_ELEMENTS_FILE=str(custom),
+    )
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, check=False
+    )
+    assert proc.stdout == expected_id([["instance", INSTANCE_UUID]]) + "\n"
+
+
+def test_refused_host_still_uses_the_elements_file(tmp_path: pathlib.Path) -> None:
+    vec = vector("x86-industrial-pc")
+    vec["files"]["proc/version"] = "Linux version 6.10.14-linuxkit (root@buildkitsandbox)\n"
+    root = build(tmp_path, vec)
+    _elements_file(root, _instance_line() + "\n")
+    assert run(root) == Result(0, expected_id([["instance", INSTANCE_UUID]]) + "\n")
+
+
+def test_store_accepts_a_record_with_an_instance(tmp_path: pathlib.Path) -> None:
+    root = build(tmp_path / "root", vector("raspberry-pi"))
+    _elements_file(root, _instance_line() + "\n")
+    target = tmp_path / "hardware-id"
+    assert _store(root, target) == 0
+    assert target.read_text() == run(root, "--record").out
+    assert _store(root, target) == 0
