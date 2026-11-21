@@ -11,8 +11,10 @@ config (same path the bundle + the .so use).
 Blob integrity is exercised against the REAL signed golden blob rather than a
 made-up 98 bytes: see ``_GOLDEN_BLOB_HEX``.
 """
+
 import logging
 import os
+import tempfile
 import zlib
 
 import pytest
@@ -305,7 +307,7 @@ def test_write_maps_a_failing_filesystem_to_io_error(tmp_path, monkeypatch):
     def _read_only(*_args, **_kwargs):
         raise PermissionError(13, "Read-only file system")
 
-    monkeypatch.setattr(lic.tempfile, "mkstemp", _read_only)
+    monkeypatch.setattr(tempfile, "mkstemp", _read_only)
 
     cmd = _hex(bytes([0x49, 0x00, 0x62]) + _golden_blob())
     assert lic.handle_license_command(cmd) == "49 82"  # IO_ERROR
@@ -530,7 +532,9 @@ def test_resolve_license_path_returns_none_for_a_prefix_sibling(tmp_path):
     escaping = str(tmp_path / "runtime-evil" / "plugin.json")
 
     assert lic.resolve_license_path(escaping, str(root)) is None
-    assert lic.resolve_license_path(str(root / "plugin.json"), str(root)) == str(root / "plugin.license")
+    assert lic.resolve_license_path(str(root / "plugin.json"), str(root)) == str(
+        root / "plugin.license"
+    )
 
 
 def test_resolve_license_path_accepts_the_persistent_dir(tmp_path, monkeypatch):
@@ -545,7 +549,9 @@ def test_resolve_license_path_accepts_the_persistent_dir(tmp_path, monkeypatch):
 
     # A config_path under the persistent dir resolves, even though it is NOT
     # under the runtime root passed in.
-    assert lic.resolve_license_path(str(persist / "rpi.json"), str(root)) == str(persist / "rpi.license")
+    assert lic.resolve_license_path(str(persist / "rpi.json"), str(root)) == str(
+        persist / "rpi.license"
+    )
     # Still fails closed for a path outside BOTH roots.
     assert lic.resolve_license_path(str(tmp_path / "elsewhere" / "x.json"), str(root)) is None
 
