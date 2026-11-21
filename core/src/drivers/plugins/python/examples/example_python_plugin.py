@@ -147,6 +147,7 @@ def stop_loop():
     """
     Called when the plugin loop should stop
     Optional function - not all plugins need this
+    Returns True once stopped; only False or an exception is a failed stop
     """
     print("Plugin stop_loop called")
     global _mainthread
@@ -157,6 +158,7 @@ def stop_loop():
         _mainthread.join()
         _mainthread = None
         print("(PASS) Main thread stopped")
+    return True
 
 
 def cleanup():
