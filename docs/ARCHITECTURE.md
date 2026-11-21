@@ -67,7 +67,92 @@ EMPTY → INIT → RUNNING ⟷ STOPPED → ERROR
 - **INIT**: Program loaded, initializing
 - **RUNNING**: Actively executing scan cycles
 - **STOPPED**: Program loaded but not executing
-- **ERROR**: Recoverable error state
+- **ERROR**: Recoverable error state, except after a failed plugin stop (below)
+
+### The Stop Sequence
+
+When every plugin stops, a stop runs these steps in order:
+
+1. Join the PLC thread, which ends the scan.
+2. Flush the retained variables.
+3. Call every running plugin's `stop_loop` (`plugin_driver_stop`).
+4. Ask every initialised plugin that exports `detach_image` to detach from the I/O image
+   (`plugin_driver_detach_images`), while the image is still allocated.
+5. Clean up the journal and the debug-write journal.
+6. Call `cleanup()` on every initialised plugin that did not detach
+   (`plugin_driver_cleanup_attached`).
+7. Under the image-tables mutex, clear the image pointers and free the image, which is refused
+   while a plugin that did not detach is still initialised.
+8. Release the Python blocks and unload the program library.
+9. Publish STOPPED.
+
+A plugin that detaches stays initialised with its threads, so a board package keeps reading the
+run/stop switch while the PLC is stopped and can start it again. The runtime never calls its
+`start_loop`; the next start reloads the plugin configuration, which cleans it up, unloads it and
+initialises it again with the new image. The load rollbacks (a plugin `init()` failure or a PLC
+thread that cannot be created) run steps 4, 6, 7 and 8 the same way, since no journal exists yet. See "Keep-alive across a stop" in
+`core/src/drivers/README.md` for the plugin contract.
+
+### The Start Gates
+
+Every start path honours the run/stop mode switch: socket START (and `GET /api/start-plc`,
+which forwards it), upload-then-start, the boot auto-start, a plugin's `request_plc_start` and
+the correction that runs after a transition lands. The switch gate (`plc_switch_gate()` in
+`core/src/plc_app/plc_switch.c`) reads:
+
+- **RUN** when no plugin owns the switch, or when every owner has reported since its last
+  `init()` and the last report is RUN;
+- **STOP** when every owner has reported since its last `init()` and the last report is STOP;
+- **UNKNOWN** while any owner has not reported since its last `init()`.
+
+A plugin owns the switch once it reports a position, or when it declares it through the optional
+`owns_mode_switch` symbol before its `init()`. Ownership is remembered per plugin across re-inits
+and forgotten when the plugin leaves the configuration. A report stops counting when the plugin is
+de-initialised (`cleanup()`), not when it detaches.
+
+**Gate 1, before a transition begins.** RUN proceeds. STOP refuses with no transition
+(`START:ERROR_SWITCH_STOP`). When a switch owner is registered (`plc_switch_has_owner()`, gate 1
+RUN or UNKNOWN), socket START begins the start and replies only once gate 2 has decided (at most
+`PLC_START_OUTCOME_WAIT_MS`, 12 s; past that the start is cancelled, lands STOPPED and the reply
+is `START:ERROR`). With no owner, socket START replies as soon as the start begins. On UNKNOWN, a
+plugin start request is refused, and the post-landing correction never starts. An owner enters the
+registry only when `plugin_driver_init` declares it or the plugin reports, at boot or inside a
+load. So on the first START after a plugin configuration adds an owner, with none registered,
+`plc_switch_has_owner()` is false and socket START replies `START:OK` as soon as the start begins;
+gate 2 can still refuse that start, with zero scans, and the PLC lands STOPPED.
+
+**Gate 2, inside the start.** After the program loads and the plugins are re-initialised, and
+before the PLC cycle thread is created, the start waits up to `PLC_SWITCH_REPORT_WAIT_MS` (2 s) for
+every owner to report. RUN creates the thread. STOP, or UNKNOWN once the wait ran out, refuses: no
+plugin `start_loop` and no scan, the load rollback steps of the stop sequence above (a keep-alive
+owner detaches and keeps watching the switch), and the state lands STOPPED. When the socket START
+waited for gate 2 (an owner was registered, see Gate 1), the reply is `START:ERROR_SWITCH_STOP` or
+`START:ERROR_SWITCH_UNKNOWN`; on the first START after a plugin configuration adds an owner, with
+none registered, the reply was already `START:OK`. The UNKNOWN refusal is logged as
+`Start refused: no switch owner has reported a position within 2000 ms`. The socket reply comes as
+soon as the gate refuses, before the rollback: until the state lands STOPPED, `STATUS` answers
+`STATUS:TRANSITIONING` and other commands answer `COMMAND:BUSY`. A refusal never lands ERROR.
+
+**Boot.** Inside the plugin request hold, the auto-start waits up to 2 s for a missing report.
+STOP stays stopped, RUN starts, and still UNKNOWN stays stopped with the log line
+`no switch owner has reported a position`.
+
+`SWITCH` answers `SWITCH:RUN`, `SWITCH:STOP` or `SWITCH:UNKNOWN` from the same gate, and
+`/api/status` reports it as `switchPosition` `"run"`, `"stop"` or `"unknown"`.
+
+### A Plugin That Does Not Stop
+
+A stop calls every running plugin's `stop_loop`. A Python `stop_loop` that returns
+`False`, or raises, is a failed stop; any other result, `None` (no `return`)
+included, is a successful stop. The runtime then logs
+`Stop failed: plugin <name> did not stop; keeping the I/O image and entering ERROR
+until the runtime restarts` for each such plugin and stops the teardown there: the
+journal, the plugins' init state, the I/O image and the program library are all
+kept, because the plugin's thread may still be using them. The state lands on
+ERROR and stays there: every start or stop request is refused (`START:ERROR` on the
+socket) until the runtime process restarts. On SIGINT or SIGTERM the process exits
+without tearing down what the failed stop kept. A native `stop_loop` returns
+nothing, so a native plugin cannot report a failed stop.
 
 **State Manager:** `core/src/plc_app/plc_state_manager.cpp`
 
@@ -113,6 +198,9 @@ The runtime supports dynamically loaded plugins for hardware I/O:
 - **Configuration**: `plugins.conf` file
 - **Virtual Environments**: Isolated Python dependencies per plugin
 - **Buffer Protection**: Mutex-protected I/O buffers during scan cycles
+- **Keep-alive across a stop**: A plugin that exports the optional `detach_image` symbol drops its
+  I/O image pointers on a stop and stays initialised with its threads until the next start reloads
+  it; any other plugin gets `cleanup()` on the stop (see [The Stop Sequence](#the-stop-sequence))
 
 **Documentation:** See `docs/PLUGIN_VENV_GUIDE.md` and `core/src/drivers/README.md`
 
@@ -174,7 +262,8 @@ defaults of the constants in `core/src/plc_app/task_policy.h`.
    program code then gets `SIGUSR2`, whose handler jumps to the task's recovery
    point. A stop that aborted a task lands in ERROR. On every stop, plugin writes
    are fenced off (the journal is closed), all `%Q` outputs are written to 0 and
-   pushed by a final I/O cycle, and held for 500 ms before plugins stop. Runtime
+   pushed by a final I/O cycle, and held for 500 ms before plugins stop (a plugin
+   that fails to stop latches ERROR, see "A Plugin That Does Not Stop"). Runtime
    code reached from IEC bodies that must not be interrupted (the Python block
    loader) blocks `SIGUSR2`; user C function blocks are not protected, and an abort
    landing inside one that holds a C-library lock ends in layer 3.

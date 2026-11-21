@@ -23,6 +23,24 @@
  *   3. A RUNAWAY-FREE STOP. stop_loop()/cleanup() return promptly, so a slow
  *      teardown never confuses a slow start.
  *
+ *   4. A KEEP-ALIVE STOP. detach_image() drops the image entry points from the
+ *      args copy and keeps the watcher, so a switch owner survives a stop.
+ *      FAKEVPP_FALLBACK=1 makes it refuse with -1, and a -DFAKEVPP_LEGACY build
+ *      does not export it. cleanup() logs "fakevpp: cleanup".
+ *
+ *   5. A DECLARED SWITCH OWNER. owns_mode_switch() returns 1 when
+ *      FAKEVPP_SWITCH_OWNER=1 or FAKEVPP_SWITCH_SILENT=1, and the -DFAKEVPP_LEGACY
+ *      build does not export it. FAKEVPP_SWITCH_SILENT=1 never reports a position
+ *      and requests nothing: an owner whose switch reading never arrives.
+ *
+ *   6. A SWITCH THAT GOES SILENT. When the switch file reads "SILENT", init()
+ *      reports no position and requests nothing, and the watcher treats it as no
+ *      reading: it reports nothing, requests nothing and keeps its last position,
+ *      so a later "RUN" or "STOP" is still an edge from that position.
+ *
+ *   7. A SLOW ROLLBACK. cleanup() sleeps FAKEVPP_CLEANUP_MS (default 0) after
+ *      logging "fakevpp: cleanup" and before joining the watcher.
+ *
  * Everything is env-driven so one .so covers every scenario, and nothing here
  * touches the process image -- it declares no located variables.
  */
@@ -44,8 +62,11 @@
  * includes the real header rather than re-declaring the struct. */
 #include "plugin_types.h"
 
-#define SWITCH_RUN  1
-#define SWITCH_STOP 0
+#include "plugin_detach.h"
+
+#define SWITCH_RUN    1
+#define SWITCH_STOP   0
+#define SWITCH_SILENT (-1)
 
 static plugin_runtime_args_t *g_args      = NULL;
 static atomic_int             g_running    = 0;
@@ -77,8 +98,8 @@ static const char *switch_file(void)
     return (v && *v) ? v : "/tmp/fakevpp_switch";
 }
 
-/* Read the switch file. Absent or unparseable means RUN, matching the runtime's
- * own default for a device with no switch-aware plugin. */
+/* Read the switch file: "SILENT" means no reading (SWITCH_SILENT); absent or
+ * unparseable means RUN, the runtime's default for a device with no switch-aware plugin. */
 static int read_switch_file(void)
 {
     FILE *f = fopen(switch_file(), "r");
@@ -91,6 +112,8 @@ static int read_switch_file(void)
         return SWITCH_RUN;
     }
     fclose(f);
+    if (strncmp(buf, "SILENT", 6) == 0)
+        return SWITCH_SILENT;
     return (strncmp(buf, "STOP", 4) == 0) ? SWITCH_STOP : SWITCH_RUN;
 }
 
@@ -103,7 +126,7 @@ static void *watcher_thread(void *arg)
     while (atomic_load(&g_running))
     {
         const int pos = read_switch_file();
-        if (pos != g_last_pos)
+        if (pos != SWITCH_SILENT && pos != g_last_pos)
         {
             g_last_pos = pos;
             /* Contract order: store the position BEFORE requesting, so the start
@@ -137,6 +160,12 @@ static int switch_owner(void)
     return env_long("FAKEVPP_SWITCH_OWNER", 0) != 0;
 }
 
+/* FAKEVPP_SWITCH_SILENT=1: never report a position and never request a transition. */
+static int switch_silent(void)
+{
+    return env_long("FAKEVPP_SWITCH_SILENT", 0) != 0;
+}
+
 static int start_watcher(void)
 {
     if (atomic_exchange(&g_running, 1) == 1)
@@ -165,15 +194,20 @@ int init(void *args)
 
     /* Adopt whatever the switch file already says before anything else, so a test
      * can boot a device with the switch in STOP. */
-    g_last_pos = read_switch_file();
-    if (g_args && g_args->set_switch_position)
+    const int reading = read_switch_file();
+    const int silent  = switch_silent() || reading == SWITCH_SILENT;
+    if (reading != SWITCH_SILENT)
+        g_last_pos = reading;
+    if (silent)
+        plog("info", "fakevpp: switch silent, no position reported");
+    else if (g_args && g_args->set_switch_position)
         g_args->set_switch_position(g_last_pos);
 
-    if (switch_owner())
+    if (switch_owner() && !switch_silent())
     {
-        if (g_last_pos == SWITCH_RUN && g_args && g_args->request_plc_start)
+        if (!silent && g_last_pos == SWITCH_RUN && g_args && g_args->request_plc_start)
             g_args->request_plc_start("fake mode switch is RUN at init");
-        else if (g_last_pos == SWITCH_STOP && g_args && g_args->request_plc_stop)
+        else if (!silent && g_last_pos == SWITCH_STOP && g_args && g_args->request_plc_stop)
             g_args->request_plc_stop("fake mode switch is STOP at init");
         if (start_watcher() != 0)
             return -1;
@@ -199,7 +233,7 @@ int init(void *args)
 int start_loop(void *args)
 {
     (void)args;
-    if (switch_owner())
+    if (switch_owner() || switch_silent())
         return 0;
     return start_watcher();
 }
@@ -231,9 +265,42 @@ int stop_loop(void *args)
     return 0;
 }
 
+#ifndef FAKEVPP_LEGACY
+/* Declares switch ownership when FAKEVPP_SWITCH_OWNER=1 or FAKEVPP_SWITCH_SILENT=1. */
+int owns_mode_switch(void)
+{
+    return switch_owner() || switch_silent();
+}
+
+/* Detaches from the I/O image and keeps the watcher; returns -1 instead when
+ * FAKEVPP_FALLBACK=1. */
+int detach_image(void)
+{
+    if (env_long("FAKEVPP_FALLBACK", 0) != 0)
+    {
+        plog("info", "fakevpp: detach_image returning -1");
+        return -1;
+    }
+    if (g_args)
+        plugin_args_drop_image(g_args);
+    plog("info", "fakevpp: detach_image returning 0");
+    return 0;
+}
+#endif
+
 int cleanup(void *args)
 {
     (void)args;
+    plog("info", "fakevpp: cleanup");
+    const long slow_ms = env_long("FAKEVPP_CLEANUP_MS", 0);
+    if (slow_ms > 0)
+    {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "fake VPP cleanup: sleeping %ld ms in cleanup()", slow_ms);
+        plog("info", msg);
+        struct timespec t = { .tv_sec = slow_ms / 1000, .tv_nsec = (slow_ms % 1000) * 1000000L };
+        nanosleep(&t, NULL);
+    }
     if (atomic_exchange(&g_running, 0) == 1 && g_watcher_up)
     {
         pthread_join(g_watcher, NULL);

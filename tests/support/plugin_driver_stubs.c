@@ -3,8 +3,12 @@
 
 #include "image_tables.h"
 #include "journal_buffer.h"
+#include "plc_state_manager.h"
 #include "plugin_config.h"
 #include "plugin_driver.h"
+#include "plc_switch.h"
+#include "plugin_plc_requests.h"
+#include "vpp_plugin_seal.h"
 
 #include <pthread.h>
 #include <stdarg.h>
@@ -98,6 +102,73 @@ uint32_t image_table_capacity(image_table_id_t id)
 {
     (void)id;
     return g_image.byte_input ? STUB_IMAGE_ELEMENTS : 0u;
+}
+
+// Stub: image_lock (image_tables.cpp); weak, so a target linking the real one keeps it.
+__attribute__((weak)) void image_lock(void) {}
+
+// Stub: image_unlock (image_tables.cpp); weak, so a target linking the real one keeps it.
+__attribute__((weak)) void image_unlock(void) {}
+
+// Stub: plc_get_state (plc_state_manager.cpp); weak, reports STOPPED.
+__attribute__((weak)) PLCState plc_get_state(void)
+{
+    return PLC_STATE_STOPPED;
+}
+
+// Stub: plugin_request_plc_stop (plugin_plc_requests.c); weak, drops the request.
+__attribute__((weak)) void plugin_request_plc_stop(const char *reason)
+{
+    (void)reason;
+}
+
+// Stub: plugin_request_plc_start (plugin_plc_requests.c); weak, drops the request.
+__attribute__((weak)) void plugin_request_plc_start(const char *reason)
+{
+    (void)reason;
+}
+
+// Stub: plugin_switch_reporter_bind (plugin_plc_requests.c); weak, binds no reporter.
+__attribute__((weak)) plugin_switch_reporter_t plugin_switch_reporter_bind(int slot, const char *id)
+{
+    (void)slot;
+    (void)id;
+    return NULL;
+}
+
+// Stub: plc_switch_owner_declare (plc_switch.c); weak, records no owner.
+__attribute__((weak)) void plc_switch_owner_declare(const char *id, bool owns)
+{
+    (void)id;
+    (void)owns;
+}
+
+// Stub: plc_switch_owner_invalidate (plc_switch.c); weak, does nothing.
+__attribute__((weak)) void plc_switch_owner_invalidate(const char *id)
+{
+    (void)id;
+}
+
+// Stub: plc_switch_owners_forget_absent (plc_switch.c); weak, does nothing.
+__attribute__((weak)) void plc_switch_owners_forget_absent(const char *const *present_ids,
+                                                           size_t count)
+{
+    (void)present_ids;
+    (void)count;
+}
+
+// Stub: vpp_plugin_seal_required (vpp_plugin_seal.c); weak, no path needs a seal.
+__attribute__((weak)) int vpp_plugin_seal_required(const char *path)
+{
+    (void)path;
+    return 0;
+}
+
+// Stub: vpp_plugin_seal_verify (vpp_plugin_seal.c); weak, every seal verifies.
+__attribute__((weak)) int vpp_plugin_seal_verify(const char *path)
+{
+    (void)path;
+    return 0;
 }
 
 // Stub: plugin_manager_destroy (plcapp_manager.c)

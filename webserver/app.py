@@ -160,8 +160,10 @@ def parse_timing_stats(stats_response: Optional[str]) -> Optional[dict]:
 def parse_switch_position(switch_response: Optional[str]) -> Optional[str]:
     """
     Parse the SWITCH response from the runtime.
-    Expected format: ``SWITCH:RUN`` / ``SWITCH:STOP``.
-    Returns ``"run"`` / ``"stop"``, or None when the response is unusable.
+    Expected format: ``SWITCH:RUN`` / ``SWITCH:STOP`` / ``SWITCH:UNKNOWN``.
+    Returns ``"run"`` / ``"stop"`` / ``"unknown"``, or None when the response is
+    unusable. ``SWITCH:UNKNOWN`` means a switch owner has not reported a
+    position since its last init.
     """
     if switch_response is None:
         return None
@@ -170,6 +172,8 @@ def parse_switch_position(switch_response: Optional[str]) -> Optional[str]:
         return "run"
     if value == "SWITCH:STOP":
         return "stop"
+    if value == "SWITCH:UNKNOWN":
+        return "unknown"
     return None
 
 
@@ -238,8 +242,8 @@ def handle_list_serial_ports(data: dict) -> dict:
 def handle_switch(data: dict) -> dict:
     """
     Report the run/stop mode-switch position on its own, for callers that want
-    it without a full status poll. Devices with no switch-aware VPP plugin
-    always answer "run".
+    it without a full status poll. Devices with no switch owner always answer
+    "run"; "unknown" means a switch owner has not reported a position.
     """
     position = parse_switch_position(runtime_manager.switch_plc())
     return {"switchPosition": position if position is not None else "unknown"}
