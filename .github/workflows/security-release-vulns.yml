@@ -9,8 +9,9 @@ name: Security — release vulnerability report
 # Output goes to the orphan branch `security-archive` under pr-<n>-<date>/ (see
 # scripts/security-archive.sh), next to that release's SBOM.
 #
-# workflow_dispatch exists for testing: any ref other than main writes the
-# security-archive-test branch, so real evidence is not touched.
+# workflow_dispatch exists for testing: from any ref other than main it writes
+# archive_branch (default security-archive-test); security-archive.sh refuses
+# security-archive outside main.
 
 on:
   push:
@@ -22,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       archive_branch:
-        description: "Archive branch (must start with security-archive)"
+        description: "Archive branch for runs outside main (must start with security-archive-)"
         required: true
         default: security-archive-test
 
@@ -37,8 +38,9 @@ jobs:
   vulns:
     runs-on: ubuntu-latest
     env:
-      # Only main writes the real evidence branch; any other ref writes the test one.
-      ARCHIVE_BRANCH: ${{ inputs.archive_branch || (github.ref == 'refs/heads/main' && 'security-archive' || 'security-archive-test') }}
+      # main always writes security-archive (the input is ignored there); other refs
+      # write the input or security-archive-test.
+      ARCHIVE_BRANCH: ${{ github.ref == 'refs/heads/main' && 'security-archive' || inputs.archive_branch || 'security-archive-test' }}
     steps:
       - name: Checkout (release state)
         uses: actions/checkout@v4
@@ -65,7 +67,10 @@ jobs:
           bash scripts/resolve-python-deps.sh . /tmp/py
           CFG=""; [ -f osv-scanner.toml ] && CFG="osv-scanner.toml"
           bash scripts/osv-scan.sh . /tmp/py /tmp/osv.json "$CFG"
-          bash scripts/osv-scan.sh . /tmp/py /tmp/osv-raw.json
+          # The raw scan needs an explicit empty config: without --config, osv-scanner
+          # loads osv-scanner.toml from the scanned directory and applies it.
+          [ -f security/osv-raw.toml ] || { echo "::error::security/osv-raw.toml is missing"; exit 1; }
+          bash scripts/osv-scan.sh . /tmp/py /tmp/osv-raw.json security/osv-raw.toml
           node scripts/scan-vulns.mjs /tmp/osv.json /tmp/out/vulnerabilities.csv
 
       - name: Build report (md + html)

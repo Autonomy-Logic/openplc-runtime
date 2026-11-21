@@ -5,7 +5,7 @@
 // Why this exists: every other stage in the pipeline validates only the SHAPE of
 // its input. Feed the chain a `{"components":[]}` BOM and cdx-to-csv, cdx-to-spdx,
 // scan-vulns, build-report and pr-gate-diff all succeed — the result being a
-// document classified Confidential and aligned to EO 14028 / NTIA / CISA VEX that
+// document classified Confidential, prepared with reference to EO 14028 / CISA VEX, that
 // attests a clean security posture over zero inventoried components. A generator
 // that silently produced nothing must fail the run, not pass it.
 //
