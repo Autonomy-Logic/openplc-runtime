@@ -42,6 +42,8 @@ RUNTIME_SHUTDOWN_TIMEOUT_S = 15
 # How long a freshly started runtime gets to open its command socket (a few seconds on an SLM-RP4)
 RUNTIME_SOCKET_WAIT_S = 10.0
 
+START_REPLY_TIMEOUT_S = 15.0
+
 
 class RuntimeManager:
     def __init__(self, runtime_path, plc_socket, log_socket, print_debug=False):
@@ -361,10 +363,13 @@ class RuntimeManager:
 
     def start_plc(self):
         """
-        Send START command
+        Send START command.
+
+        Waits up to START_REPLY_TIMEOUT_S for the reply: while a switch owner is
+        registered, the runtime answers once the start's switch gate decided.
         """
         try:
-            return self.runtime_socket.send_and_receive("START\n")
+            return self.runtime_socket.send_and_receive("START\n", timeout=START_REPLY_TIMEOUT_S)
         except (OSError, socket.error) as e:
             logger.error("Failed to start PLC runtime: %s", e)
             return "START:ERROR\n"
@@ -402,8 +407,10 @@ class RuntimeManager:
         """
         Send SWITCH command to read the run/stop mode-switch position.
 
-        Answers ``SWITCH:RUN`` or ``SWITCH:STOP``. Devices with no switch-aware
-        VPP plugin always report RUN, so callers need no special case for them.
+        Answers ``SWITCH:RUN``, ``SWITCH:STOP``, or ``SWITCH:UNKNOWN`` while a
+        switch owner has not reported a position since its last init. Devices
+        with no switch owner always report RUN, so callers need no special case
+        for them.
         """
         try:
             return self.runtime_socket.send_and_receive("SWITCH\n")

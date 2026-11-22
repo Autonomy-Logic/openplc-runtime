@@ -11,7 +11,7 @@ from configuration. It handles simple variables, structures, and arrays.
 import os
 import sys
 import traceback
-from typing import Dict, Any, Optional, Tuple
+from typing import Callable, Dict, Any, Optional, Tuple
 
 from asyncua import Server, ua
 from asyncua.common.node import Node
@@ -73,7 +73,8 @@ class AddressSpaceBuilder:
         self,
         server: Server,
         namespace_idx: int,
-        config: OpcuaConfig
+        config: OpcuaConfig,
+        stop_check: Optional[Callable[[], None]] = None
     ):
         """
         Initialize the address space builder.
@@ -82,10 +83,14 @@ class AddressSpaceBuilder:
             server: The asyncua Server instance
             namespace_idx: Namespace index for created nodes
             config: Typed OpcuaConfig instance
+            stop_check: Called before each variable, structure, structure
+                field and array; raises a cancellation, which no handler of
+                Exception catches, to end the build once a stop was requested
         """
         self.server = server
         self.namespace_idx = namespace_idx
         self.config = config
+        self._stop_check = stop_check or (lambda: None)
 
         # Output mappings (populated during build). Keyed by
         # (arr, elem) tuple — the same address space the runtime's
@@ -163,10 +168,14 @@ class AddressSpaceBuilder:
 
     async def build(self) -> bool:
         """
-        Create all nodes from configuration.
+        Create all nodes from configuration, calling the stop check before
+        each variable, structure, structure field and array.
 
         Returns:
             True if all nodes created successfully, False on error
+
+        Raises:
+            The stop check's exception, once a stop was requested
         """
         try:
             # Get the Objects folder as parent
@@ -174,6 +183,7 @@ class AddressSpaceBuilder:
 
             # Create simple variables
             for var in self.config.address_space.variables:
+                self._stop_check()
                 try:
                     await self._create_simple_variable(objects, var)
                 except Exception as e:
@@ -182,6 +192,7 @@ class AddressSpaceBuilder:
 
             # Create structures
             for struct in self.config.address_space.structures:
+                self._stop_check()
                 try:
                     await self._create_struct(objects, struct)
                 except Exception as e:
@@ -190,6 +201,7 @@ class AddressSpaceBuilder:
 
             # Create arrays
             for arr in self.config.address_space.arrays:
+                self._stop_check()
                 try:
                     await self._create_array(objects, arr)
                 except Exception as e:
@@ -335,7 +347,11 @@ class AddressSpaceBuilder:
             parent_node: Parent struct object node
             struct_node_id: Parent struct's node_id for building field path
             field: VariableField configuration
+
+        Raises:
+            The stop check's exception, once a stop was requested
         """
+        self._stop_check()
         field_node_id = f"{struct_node_id}.{field.name}"
 
         # Check if this is a complex type with nested fields
