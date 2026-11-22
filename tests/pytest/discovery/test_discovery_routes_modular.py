@@ -23,6 +23,12 @@ from flask_jwt_extended import JWTManager, create_access_token
 
 from webserver.discovery.discovery_routes import discovery_bp
 
+
+class _Engineer:
+    """The account the token stands for: discovery is open to engineering roles."""
+
+    role = "engineer"
+
 _STATUS: dict[str, object] = {
     "configured": True,
     "masters": [{"name": "ethercat0"}, {"name": "ethercat1"}],
@@ -64,7 +70,7 @@ class _FakeManager:
 def app():
     app = Flask(__name__)
     app.config["JWT_SECRET_KEY"] = "test-secret"
-    JWTManager(app)
+    JWTManager(app).user_lookup_loader(lambda _header, _payload: _Engineer())
     app.register_blueprint(discovery_bp)
     return app
 

@@ -121,13 +121,13 @@ func (p *Provider) CountUsers(ctx context.Context) (int, error) {
 	return users.CountUsers(ctx)
 }
 
-// RoleByID reports the role of the account a token was issued for.
-func (p *Provider) RoleByID(ctx context.Context, userID string) (string, error) {
+// AccountByID reports the role and cut-off of the account a token was issued for.
+func (p *Provider) AccountByID(ctx context.Context, userID string) (*Account, error) {
 	p.mu.Lock()
 	p.refresh()
 	users := p.users
 	p.mu.Unlock()
-	return users.RoleByID(ctx, userID)
+	return users.AccountByID(ctx, userID)
 }
 
 // Close releases the database handle.

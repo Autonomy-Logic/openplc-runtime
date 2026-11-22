@@ -79,10 +79,10 @@ def test_endpoint_returns_the_record(client, admin_token, paths) -> None:
 def test_endpoint_open_to_non_admin_users(client, admin_token, paths) -> None:
     paths["stored"].write_text(RECORD)
     assert (
-        create_user(client, "operator", "operator-pass", admin_token, role="user").status_code
+        create_user(client, "viewer", "viewer-pass", admin_token, role="viewer").status_code
         == 201
     )
-    token = token_for(client, "operator", "operator-pass")
+    token = token_for(client, "viewer", "viewer-pass")
     assert client.get("/api/hardware-id", headers=auth(token)).get_json()["hardwareId"] == ID
 
 

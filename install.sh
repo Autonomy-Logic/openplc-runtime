@@ -264,7 +264,7 @@ install_deps_apt() {
 install_deps_yum() {
     yum install -y \
         gcc gcc-c++ make cmake ccache git \
-        python3 python3-devel python3-pip python3-venv \
+        python3 python3-devel python3-pip \
     && yum clean all
 }
 
@@ -272,7 +272,7 @@ install_deps_yum() {
 install_deps_dnf() {
     dnf install -y \
         gcc gcc-c++ make cmake ccache git \
-        python3 python3-devel python3-pip python3-venv \
+        python3 python3-devel python3-pip \
     && dnf clean all
 }
 

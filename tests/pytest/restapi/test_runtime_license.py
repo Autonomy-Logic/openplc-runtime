@@ -242,6 +242,35 @@ def test_write_endpoints_need_a_login(client, env) -> None:
     assert client.delete("/api/runtime-license").status_code == 401
 
 
+@pytest.mark.parametrize("role", ["operator", "viewer"])
+def test_write_endpoints_refuse_operators_and_viewers(client, env, user_token, role) -> None:
+    on_device(env)
+    assert create_user(client, role, f"{role}-pass", user_token, role=role).status_code == 201
+    token = token_for(client, role, f"{role}-pass")
+    upload = client.post(
+        "/api/runtime-license",
+        data=as_bytes(make_license()),
+        headers=auth(token),
+        content_type="application/json",
+    )
+    assert upload.status_code == 403
+    assert client.delete("/api/runtime-license", headers=auth(token)).status_code == 403
+    assert client.get("/api/runtime-license").get_json()["licenses"] == []
+
+
+def test_write_endpoints_accept_an_engineer(client, env, user_token) -> None:
+    on_device(env)
+    assert create_user(client, "eng", "eng-pass", user_token, role="engineer").status_code == 201
+    token = token_for(client, "eng", "eng-pass")
+    resp = client.post(
+        "/api/runtime-license",
+        data=as_bytes(make_license()),
+        headers=auth(token),
+        content_type="application/json",
+    )
+    assert resp.status_code == 200, resp.get_json()
+
+
 def test_read_endpoint_is_public(client, env) -> None:
     on_device(env)
     assert runtime_license.store(as_bytes(make_license())).ok

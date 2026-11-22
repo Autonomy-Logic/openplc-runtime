@@ -206,6 +206,35 @@ static uint8_t plugin_debug_write(uint8_t arr, uint16_t elem, const uint8_t *byt
     return (rc == 0) ? 0x7E : 0x82;
 }
 
+/* MD5 of the loaded program, handed to plugins in plugin_runtime_args_t.program_md5. Set by the
+ * load path before plugin_driver_init and cleared on unload. */
+static pthread_mutex_t g_program_md5_lock = PTHREAD_MUTEX_INITIALIZER;
+static char g_program_md5[PLUGIN_PROGRAM_MD5_SIZE];
+
+void plugin_driver_set_program_md5(const char *md5)
+{
+    pthread_mutex_lock(&g_program_md5_lock);
+    size_t n = 0;
+    if (md5)
+    {
+        /* The .so exports a fixed 32-char hex string; never read past it. */
+        while (n < PLUGIN_PROGRAM_MD5_SIZE - 1 && md5[n] != '\0')
+        {
+            g_program_md5[n] = md5[n];
+            n++;
+        }
+    }
+    g_program_md5[n] = '\0';
+    pthread_mutex_unlock(&g_program_md5_lock);
+}
+
+static void copy_program_md5(char *out)
+{
+    pthread_mutex_lock(&g_program_md5_lock);
+    memcpy(out, g_program_md5, PLUGIN_PROGRAM_MD5_SIZE);
+    pthread_mutex_unlock(&g_program_md5_lock);
+}
+
 // Map PLCState to FC 0x49 LED values (0 STOPPED, 1 RUNNING, 2 ERROR).
 // INIT/EMPTY report as STOPPED (not executing).
 static int plugin_get_plc_state(void)
@@ -527,6 +556,39 @@ int plugin_driver_append_config(plugin_driver_t *driver, const char *config_file
     }
 
     /* Failed symbol loads are non-fatal; the runtime continues without them. */
+    return 0;
+}
+
+int plugin_driver_append_hmi(plugin_driver_t *driver)
+{
+    if (!driver)
+    {
+        return -1;
+    }
+    if (access(PLUGIN_HMI_PATH, F_OK) != 0)
+    {
+        return 0;
+    }
+    if (driver->plugin_count >= MAX_PLUGINS)
+    {
+        log_warn("[PLUGIN] MAX_PLUGINS reached, the HMI plugin is not loaded");
+        return 0;
+    }
+
+    plugin_instance_t *plugin = &driver->plugins[driver->plugin_count];
+    memset(plugin, 0, sizeof(*plugin));
+    snprintf(plugin->config.name, sizeof(plugin->config.name), "%s", PLUGIN_HMI_NAME);
+    snprintf(plugin->config.path, sizeof(plugin->config.path), "%s", PLUGIN_HMI_PATH);
+    plugin->config.enabled = 1;
+    plugin->config.type    = PLUGIN_TYPE_NATIVE;
+    driver->plugin_count++;
+
+    /* native_plugin_get_symbols checks build/hmi/hmi.seal before dlopen. */
+    if (native_plugin_get_symbols(plugin) != 0)
+    {
+        log_error("[PLUGIN] HMI plugin failed to load - continuing without it");
+        plugin->degraded = 1;
+    }
     return 0;
 }
 
@@ -1368,6 +1430,9 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
     args->set_switch_position = plugin_switch_reporter_bind(plugin_index, switch_owner_id);
     args->get_plc_state       = plugin_get_plc_state;
 
+    // MD5 of the loaded program, empty while none is loaded.
+    copy_program_md5(args->program_md5);
+
     // PLC base tick time. Runtime owns base_tick_ns; on first plugin init
     // (before symbols_init) it carries the 20 ms default, so plugins must
     // guard against the value being smaller than their needed resolution.
@@ -1630,11 +1695,10 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
         return -1;
     }
 
-    /* A VPP .so must match the hash compile.sh sealed when it built
-     * that .so on this device, so a post-compile swap is refused.
-     * Scoped to build/vpp/; built-in plugins are not sealed. */
-    if (vpp_plugin_seal_required(plugin->config.path) &&
-        vpp_plugin_seal_verify(plugin->config.path) != 0)
+    /* A VPP or HMI .so must match the hash compile.sh sealed when it
+     * built that .so on this device, so a post-compile swap is refused.
+     * Scoped to build/vpp/ and build/hmi/; built-in plugins are not sealed. */
+    if (plugin_seal_check(plugin->config.path) != 0)
     {
         free(native_bundle);
         return -1;

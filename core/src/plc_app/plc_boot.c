@@ -42,6 +42,10 @@ int plc_boot_init_plugins(plugin_driver_t *driver, bool load_program_plugins)
             log_error("[PLUGIN]: VPP plugin configuration could not be loaded at boot");
             rc = -1;
         }
+        if (load_program_plugins)
+        {
+            plugin_driver_append_hmi(driver);
+        }
         if (plugin_driver_init(driver) != 0)
         {
             log_error("[PLUGIN]: Plugin init failed at boot");

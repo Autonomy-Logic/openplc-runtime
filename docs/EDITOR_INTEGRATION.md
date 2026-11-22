@@ -49,7 +49,7 @@ POST /api/create-user
 {
   "username": "admin",
   "password": "password",
-  "role": "user"
+  "role": "engineer"
 }
 ```
 
@@ -243,7 +243,8 @@ fall back to `/api/version`; they see no minimum and refuse nothing.
 ### Authentication
 - `POST /api/create-user` - Create user account
 - `POST /api/login` - Login and get JWT token
-- `POST /api/logout` - Logout and revoke JWT token
+- `POST /api/logout` - End this session and revoke its token
+- `POST /api/renew` - Rotate the token: a new one for the same session, the presented one revoked
 - `GET /api/get-users-info` - Check if users exist
 - `GET /api/get-user-info/<user_id>` - Get user information
 - `PUT /api/update-user/<user_id>` - Update a user's username, password or role (admin, or your own account)
@@ -294,7 +295,8 @@ For runtime developers, see [DEVELOPMENT.md](DEVELOPMENT.md) for local developme
 
 - All API requests require HTTPS (port 8443)
 - JWT tokens are required for all operations except initial user creation and login
-- Tokens can be revoked via logout
+- Tokens expire after 15 minutes and are renewed with `POST /api/renew`; logout ends the session
+- Roles: `admin`, `engineer`, `operator` and `viewer` (see the role table in [API.md](API.md))
 - File uploads are validated for size, compression ratio, and file extensions
 - Path traversal protection is enforced during ZIP extraction
 
