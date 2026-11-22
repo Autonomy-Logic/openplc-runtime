@@ -503,6 +503,121 @@ static void test_md5_gate()
     CHECK(!hmi_md5_live(nullptr, a), "NULL is out of date");
 }
 
+/* Formats v, given as a buffer-format (little-endian) 8-byte value, and compares with expected. */
+static bool formats_as(uint8_t type, int64_t v, const char *expected)
+{
+    uint64_t u;
+    std::memcpy(&u, &v, sizeof u);
+    uint8_t buf[8];
+    for (int i = 0; i < 8; i++)
+        buf[i] = (uint8_t)(u >> (8 * i));
+    char out[160];
+    hmi_codec_format(type, 0, buf, out, sizeof out);
+    if (std::strcmp(out, expected) != 0)
+    {
+        std::printf("  got '%s', expected '%s'\n", out, expected);
+        return false;
+    }
+    return true;
+}
+
+static void test_codec_format_temporal_limits()
+{
+    std::printf("codec: write log values of TIME, DATE, TOD and DT at their limits\n");
+    const int64_t MIN    = std::numeric_limits<int64_t>::min();
+    const int64_t MAX    = std::numeric_limits<int64_t>::max();
+    const int64_t NS_DAY = 86400000000000LL;
+    const int64_t D40    = INT64_C(1) << 40;
+
+    CHECK(formats_as(HMI_CODEC_TIME, MIN, "T#-9223372036854775808ns"), "TIME at INT64_MIN");
+    CHECK(formats_as(HMI_CODEC_TIME, MAX, "T#9223372036854775807ns"), "TIME at INT64_MAX");
+    CHECK(formats_as(HMI_CODEC_TIME, 0, "T#0ns"), "TIME 0");
+    CHECK(formats_as(HMI_CODEC_TIME, -1, "T#-1ns"), "TIME -1");
+    CHECK(formats_as(HMI_CODEC_LTIME, MIN, "LT#-9223372036854775808ns"), "LTIME at INT64_MIN");
+    CHECK(formats_as(HMI_CODEC_LTIME, MAX, "LT#9223372036854775807ns"), "LTIME at INT64_MAX");
+    CHECK(formats_as(HMI_CODEC_LTIME, 0, "LT#0ns"), "LTIME 0");
+    CHECK(formats_as(HMI_CODEC_LTIME, -1, "LT#-1ns"), "LTIME -1");
+    CHECK(formats_as(HMI_CODEC_LTIME, 3600000000000LL, "LT#3600000000000ns"), "LTIME of an hour");
+
+    CHECK(formats_as(HMI_CODEC_DATE, 0, "D#1970-01-01"), "DATE 0");
+    CHECK(formats_as(HMI_CODEC_DATE, -1, "D#1969-12-31"), "DATE -1");
+    CHECK(formats_as(HMI_CODEC_DATE, 11016, "D#2000-02-29"), "DATE on a leap day");
+    CHECK(formats_as(HMI_CODEC_DATE, -719528, "D#0000-01-01"), "DATE in year 0");
+    CHECK(formats_as(HMI_CODEC_DATE, D40, "D#3010362559-12-15"), "DATE at +2^40 days");
+    CHECK(formats_as(HMI_CODEC_DATE, -D40, "D#-3010358620-01-18"), "DATE at -2^40 days");
+    CHECK(formats_as(HMI_CODEC_DATE, D40 + 1, "D#out-of-range(1099511627777 days)"),
+          "DATE beyond +2^40 days");
+    CHECK(formats_as(HMI_CODEC_DATE, -D40 - 1, "D#out-of-range(-1099511627777 days)"),
+          "DATE beyond -2^40 days");
+    CHECK(formats_as(HMI_CODEC_DATE, MAX, "D#out-of-range(9223372036854775807 days)"),
+          "DATE at INT64_MAX");
+    CHECK(formats_as(HMI_CODEC_DATE, MIN, "D#out-of-range(-9223372036854775808 days)"),
+          "DATE at INT64_MIN");
+
+    CHECK(formats_as(HMI_CODEC_TOD, 0, "TOD#00:00:00.000"), "TOD 0");
+    CHECK(formats_as(HMI_CODEC_TOD, NS_DAY - 1, "TOD#23:59:59.999"), "TOD at the last nanosecond");
+    CHECK(formats_as(HMI_CODEC_TOD, 45296789000000LL, "TOD#12:34:56.789"), "TOD at midday");
+    CHECK(formats_as(HMI_CODEC_TOD, -1, "TOD#out-of-range(-1ns)"), "negative TOD");
+    CHECK(formats_as(HMI_CODEC_TOD, -1000000, "TOD#out-of-range(-1000000ns)"),
+          "negative TOD of a millisecond");
+    CHECK(formats_as(HMI_CODEC_TOD, NS_DAY, "TOD#out-of-range(86400000000000ns)"), "TOD of 24 h");
+    CHECK(formats_as(HMI_CODEC_TOD, MAX, "TOD#out-of-range(9223372036854775807ns)"),
+          "TOD at INT64_MAX");
+    CHECK(formats_as(HMI_CODEC_TOD, MIN, "TOD#out-of-range(-9223372036854775808ns)"),
+          "TOD at INT64_MIN");
+
+    CHECK(formats_as(HMI_CODEC_DT, 0, "DT#1970-01-01-00:00:00.000"), "DT 0");
+    CHECK(formats_as(HMI_CODEC_DT, -1, "DT#1969-12-31-23:59:59.999"), "DT -1");
+    CHECK(formats_as(HMI_CODEC_DT, -NS_DAY, "DT#1969-12-31-00:00:00.000"),
+          "DT one day before 1970");
+    CHECK(formats_as(HMI_CODEC_DT, 951782400123000000LL, "DT#2000-02-29-00:00:00.123"),
+          "DT on a leap day");
+    CHECK(formats_as(HMI_CODEC_DT, MAX, "DT#2262-04-11-23:47:16.854"), "DT at INT64_MAX");
+    CHECK(formats_as(HMI_CODEC_DT, MIN, "DT#1677-09-21-00:12:43.145"), "DT at INT64_MIN");
+}
+
+static void test_codec_format_numbers_unchanged()
+{
+    std::printf("codec: write log values of numeric types\n");
+    char out[160];
+    const uint8_t int_bytes[2] = {0x00, 0x80};
+    hmi_codec_format(HMI_CODEC_INT, 0, int_bytes, out, sizeof out);
+    CHECK(std::strcmp(out, "-32768") == 0, "INT minimum");
+    const uint8_t dint_bytes[4] = {0xFE, 0xFF, 0xFF, 0xFF};
+    hmi_codec_format(HMI_CODEC_DINT, 0, dint_bytes, out, sizeof out);
+    CHECK(std::strcmp(out, "-2") == 0, "DINT sign");
+    const uint8_t sint_bytes[1] = {0x7F};
+    hmi_codec_format(HMI_CODEC_SINT, 0, sint_bytes, out, sizeof out);
+    CHECK(std::strcmp(out, "127") == 0, "SINT maximum");
+    CHECK(formats_as(HMI_CODEC_LINT, std::numeric_limits<int64_t>::min(), "-9223372036854775808"),
+          "LINT at INT64_MIN");
+    CHECK(formats_as(HMI_CODEC_LINT, std::numeric_limits<int64_t>::max(), "9223372036854775807"),
+          "LINT at INT64_MAX");
+    CHECK(formats_as(HMI_CODEC_ULINT, -1, "18446744073709551615"), "ULINT maximum");
+    CHECK(formats_as(HMI_CODEC_LWORD, 0x0123456789ABCDEFLL, "16#123456789ABCDEF"), "LWORD in hex");
+    const uint8_t usint_bytes[1] = {0xC8};
+    hmi_codec_format(HMI_CODEC_USINT, 0, usint_bytes, out, sizeof out);
+    CHECK(std::strcmp(out, "200") == 0, "USINT");
+    const uint8_t uint_bytes[2] = {0xE9, 0xFD};
+    hmi_codec_format(HMI_CODEC_UINT, 0, uint_bytes, out, sizeof out);
+    CHECK(std::strcmp(out, "65001") == 0, "UINT");
+    const uint8_t byte_bytes[1] = {0x0A};
+    hmi_codec_format(HMI_CODEC_BYTE, 0, byte_bytes, out, sizeof out);
+    CHECK(std::strcmp(out, "16#A") == 0, "BYTE in hex");
+    const uint8_t dword_bytes[4] = {0xEF, 0xBE, 0xAD, 0xDE};
+    hmi_codec_format(HMI_CODEC_DWORD, 0, dword_bytes, out, sizeof out);
+    CHECK(std::strcmp(out, "16#DEADBEEF") == 0, "DWORD in hex");
+    const uint8_t real_bytes[4] = {0x00, 0x00, 0x28, 0xC1}; // -10.5f
+    hmi_codec_format(HMI_CODEC_REAL, 0, real_bytes, out, sizeof out);
+    CHECK(std::strcmp(out, "-10.5") == 0, "REAL negative");
+    const uint8_t lreal_bytes[8] = {0x18, 0x2D, 0x44, 0x54, 0xFB, 0x21, 0x09, 0x40}; // pi
+    hmi_codec_format(HMI_CODEC_LREAL, 0, lreal_bytes, out, sizeof out);
+    CHECK(std::strcmp(out, "3.1415926535897931") == 0, "LREAL");
+    const uint8_t f = 0;
+    hmi_codec_format(HMI_CODEC_BOOL, 0, &f, out, sizeof out);
+    CHECK(std::strcmp(out, "FALSE") == 0, "BOOL FALSE");
+}
+
 int main()
 {
     test_wire_decode();
@@ -512,6 +627,8 @@ int main()
     test_codec_numbers();
     test_codec_strings();
     test_codec_format();
+    test_codec_format_temporal_limits();
+    test_codec_format_numbers_unchanged();
     test_codec_wire();
     test_codec_within();
     test_md5_gate();

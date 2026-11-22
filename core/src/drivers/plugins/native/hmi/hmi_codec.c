@@ -204,10 +204,23 @@ static void civil_from_days(int64_t z, int64_t *y, unsigned *m, unsigned *d)
     *y                 = (int64_t)yoe + era * 400 + (*m <= 2);
 }
 
-/* Floor division of a by b > 0. */
-static int64_t floor_div64(int64_t a, int64_t b)
+#define NS_PER_DAY INT64_C(86400000000000)
+
+/* Largest day count magnitude a DATE is shown as a calendar date for: 2^40 days. */
+#define DATE_DAYS_MAX (INT64_C(1) << 40)
+
+/* Splits ns into whole days (rounded down) and the nanoseconds left, 0 <= *rem < NS_PER_DAY. */
+static void split_days(int64_t ns, int64_t *day, int64_t *rem)
 {
-    return a / b - ((a % b != 0) && ((a < 0) != (b < 0)));
+    int64_t q = ns / NS_PER_DAY;
+    int64_t r = ns % NS_PER_DAY;
+    if (r < 0)
+    {
+        r += NS_PER_DAY;
+        q -= 1;
+    }
+    *day = q;
+    *rem = r;
 }
 
 /* hh:mm:ss.fff of a nanosecond count within a day. */
@@ -277,28 +290,40 @@ void hmi_codec_format(uint8_t type, uint16_t max_len, const void *buf, char *out
         return;
     case HMI_CODEC_DATE:
     {
+        const int64_t days = le_signed(p, 8);
+        if (days < -DATE_DAYS_MAX || days > DATE_DAYS_MAX)
+        {
+            snprintf(out, cap, "D#out-of-range(%" PRId64 " days)", days);
+            return;
+        }
         int64_t y;
         unsigned m, d;
-        civil_from_days(le_signed(p, 8), &y, &m, &d);
+        civil_from_days(days, &y, &m, &d);
         snprintf(out, cap, "D#%04" PRId64 "-%02u-%02u", y, m, d);
         return;
     }
     case HMI_CODEC_TOD:
     {
+        const int64_t ns = le_signed(p, 8);
+        if (ns < 0 || ns >= NS_PER_DAY)
+        {
+            snprintf(out, cap, "TOD#out-of-range(%" PRId64 "ns)", ns);
+            return;
+        }
         char clock[24];
-        format_clock(le_signed(p, 8), clock, sizeof clock);
+        format_clock(ns, clock, sizeof clock);
         snprintf(out, cap, "TOD#%s", clock);
         return;
     }
     case HMI_CODEC_DT:
     {
-        const int64_t ns  = le_signed(p, 8);
-        const int64_t day = floor_div64(ns, 86400000000000LL);
+        int64_t day, rem;
+        split_days(le_signed(p, 8), &day, &rem);
         int64_t y;
         unsigned m, d;
         char clock[24];
         civil_from_days(day, &y, &m, &d);
-        format_clock(ns - day * 86400000000000LL, clock, sizeof clock);
+        format_clock(rem, clock, sizeof clock);
         snprintf(out, cap, "DT#%04" PRId64 "-%02u-%02u-%s", y, m, d, clock);
         return;
     }
@@ -382,7 +407,7 @@ bool hmi_codec_from_wire(uint8_t type, uint16_t max_len, const uint8_t *value, s
     case HMI_CODEC_TOD:
     {
         const int64_t ns = le_signed(value, 8);
-        if (ns < 0 || ns >= 86400000000000LL)
+        if (ns < 0 || ns >= NS_PER_DAY)
             return false;
         break;
     }
