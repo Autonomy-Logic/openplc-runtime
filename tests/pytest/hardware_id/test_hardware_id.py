@@ -444,6 +444,18 @@ def test_elements_file_path_override(tmp_path: pathlib.Path) -> None:
     assert proc.stdout == expected_id([["instance", INSTANCE_UUID]]) + "\n"
 
 
+def test_elements_path_that_is_a_directory_is_ignored(tmp_path: pathlib.Path) -> None:
+    vec = vector("raspberry-pi")
+    root = build(tmp_path, vec)
+    (root / "etc" / "openplc-runtime" / "elements").mkdir(parents=True)
+    env = dict(os.environ, OPENPLC_HWID_ROOT=str(root))
+    proc = subprocess.run(
+        ["bash", str(SCRIPT), "--record"], env=env, capture_output=True, text=True, check=False
+    )
+    assert (proc.returncode, proc.stderr) == (0, "")
+    assert proc.stdout.splitlines()[0] == expected_id(vec["elements"])
+
+
 def test_refused_host_still_uses_the_elements_file(tmp_path: pathlib.Path) -> None:
     vec = vector("x86-industrial-pc")
     vec["files"]["proc/version"] = "Linux version 6.10.14-linuxkit (root@buildkitsandbox)\n"

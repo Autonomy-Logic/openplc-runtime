@@ -168,7 +168,7 @@ hw2_hw_elements() {
 hw2_file_elements() {
     local f line
     f="${OPENPLC_HWID_ELEMENTS_FILE:-$(hw2_root)/etc/openplc-runtime/elements}"
-    [ -r "$f" ] || return 0
+    [ -f "$f" ] && [ -r "$f" ] || return 0
     while IFS= read -r line || [ -n "$line" ]; do
         line="${line#"${line%%[![:space:]]*}"}"
         line="${line%"${line##*[![:space:]]}"}"
