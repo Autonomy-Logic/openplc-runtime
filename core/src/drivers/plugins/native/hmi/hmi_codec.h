@@ -83,6 +83,9 @@ extern "C"
     /**
      * Writes a value in buffer format as text for the write log: numbers in decimal, BOOL as
      * TRUE/FALSE, a STRING quoted with control characters, quotes and backslashes escaped.
+     * TIME and LTIME as T#<n>ns and LT#<n>ns; DATE as D#YYYY-MM-DD, or D#out-of-range(<n> days)
+     * beyond 2^40 days from 1970-01-01; TOD as TOD#hh:mm:ss.fff, or TOD#out-of-range(<n>ns)
+     * outside 0..24h; DT as DT#YYYY-MM-DD-hh:mm:ss.fff for every value.
      * Always NUL terminates out when cap > 0.
      */
     void hmi_codec_format(uint8_t type, uint16_t max_len, const void *buf, char *out, size_t cap);
