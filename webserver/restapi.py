@@ -23,7 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import webserver.config
-from webserver import project_snapshot
+from webserver import hardware_id, project_snapshot, runtime_license
 from webserver.logger import get_logger
 from webserver.version import MIN_EDITOR_VERSION, RUNTIME_VERSION
 
@@ -92,15 +92,13 @@ def restapi_capabilities():
     Unauthenticated, like ``/version`` — the editor calls this before
     login to decide whether it may talk to this device at all.
 
-    ``minEditorVersion`` is the oldest editor this runtime accepts
-    programs from.  The runtime only ADVERTISES it: the editor compares
-    the value against its own version and refuses to upload.  Nothing on
-    the upload path enforces it, so shipping a new runtime can never lock
-    out an editor already installed in the field.
+    ``minEditorVersion`` is the oldest editor version this runtime
+    advertises.  The runtime never checks it: nothing on the upload path
+    reads it.  An editor that reads this endpoint compares the value
+    against its own version and refuses to upload when it is older.
 
     Editors that predate this endpoint get a 404 and fall back to
-    ``/version``; they simply see no editor floor, which is exactly the
-    behaviour they had before.
+    ``/version``; they see no minimum and refuse nothing.
     ---
     tags:
       - Runtime
@@ -115,7 +113,7 @@ def restapi_capabilities():
               description: Runtime version string (GitHub release tag)
             minEditorVersion:
               type: string
-              description: Oldest OpenPLC Editor version this runtime accepts programs from
+              description: Oldest OpenPLC Editor version the editor uploads from (advertised only)
     """
     return (
         jsonify(
@@ -792,6 +790,158 @@ def get_project_snapshot():
         yield b'"}'
 
     return current_app.response_class(stream(), mimetype="application/json")
+
+
+@restapi_bp.route("/hardware-id", methods=["GET"])
+@jwt_required()
+def get_hardware_id():
+    """Return the hardware ID v2 this runtime is bound to, with its element hashes.
+
+    Any authenticated user. ``hardwareId`` is null when no ID can be derived on
+    this device. In a vPLC the elements include the host's and an ``instance``
+    element placed by orchestrator-agent.
+    ---
+    tags:
+      - Runtime
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Hardware ID retrieved
+        schema:
+          type: object
+          properties:
+            hardwareId:
+              type: string
+              description: hw2 followed by 64 lowercase hex characters, or null
+            elements:
+              type: array
+              items:
+                type: object
+                properties:
+                  kind:
+                    type: string
+                  hash:
+                    type: string
+      401:
+        description: Authentication required
+    """
+    record = hardware_id.current()
+    if record is None:
+        return jsonify({"hardwareId": None, "elements": []}), 200
+    return (
+        jsonify(
+            {
+                "hardwareId": record.value,
+                "elements": [{"kind": e.kind, "hash": e.hash} for e in record.elements],
+            }
+        ),
+        200,
+    )
+
+
+@restapi_bp.route("/runtime-license", methods=["GET"])
+def get_runtime_licenses():
+    """Return this runtime's hardware ID and the commercial licence it holds, as stored.
+
+    Public: no login. The runtime does not verify the licence; the editor checks
+    its signature and hardware ID. ``licenses`` holds the one stored licence, or
+    nothing.
+    ---
+    tags:
+      - Runtime
+    responses:
+      200:
+        description: Licence retrieved
+        schema:
+          type: object
+          properties:
+            hardwareId:
+              type: string
+              description: hw2 followed by 64 lowercase hex characters, or null
+            licenses:
+              type: array
+              items:
+                type: object
+                description: the licence file exactly as Edge issued it
+    """
+    return jsonify(runtime_license.report()), 200
+
+
+@restapi_bp.route("/runtime-license", methods=["POST"])
+@jwt_required()
+def upload_runtime_license():
+    """Store a commercial runtime licence issued by Autonomy Edge.
+
+    Any authenticated user. The body is the licence file exactly as Edge serves
+    it. Only its shape is checked; the editor verifies it before uploading and
+    again when it reads it back. It replaces the stored licence.
+    ---
+    tags:
+      - Runtime
+    security:
+      - BearerAuth: []
+    consumes:
+      - application/json
+    responses:
+      200:
+        description: Licence stored
+        schema:
+          type: object
+          properties:
+            orderId:
+              type: string
+      400:
+        description: Not a runtime licence
+      401:
+        description: Authentication required
+      413:
+        description: Body larger than 4 KiB
+      500:
+        description: The licence could not be written
+    """
+    limit = runtime_license.MAX_LICENSE_BYTES
+    if request.content_length is not None and request.content_length > limit:
+        return jsonify({"error": f"Licence is larger than {limit} bytes"}), 413
+    raw = request.stream.read(limit + 1)
+    if len(raw) > limit:
+        return jsonify({"error": f"Licence is larger than {limit} bytes"}), 413
+    result = runtime_license.store(raw)
+    if not result.ok:
+        return jsonify({"error": result.error}), 500 if result.internal else 400
+    return jsonify({"orderId": result.order_id}), 200
+
+
+@restapi_bp.route("/runtime-license", methods=["DELETE"])
+@jwt_required()
+def delete_runtime_license():
+    """Remove the stored commercial runtime licence.
+
+    Any authenticated user.
+    ---
+    tags:
+      - Runtime
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Done; removed is false when no valid licence was stored
+        schema:
+          type: object
+          properties:
+            removed:
+              type: boolean
+      401:
+        description: Authentication required
+      500:
+        description: The licence could not be removed
+    """
+    try:
+        removed = runtime_license.remove()
+    except OSError as exc:
+        logger.error("Could not remove the runtime licence: %s", exc)
+        return jsonify({"error": "Licence could not be removed"}), 500
+    return jsonify({"removed": removed}), 200
 
 
 @restapi_bp.route("/login", methods=["POST"])
