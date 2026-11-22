@@ -19,6 +19,17 @@ SafeBufferAccess(runtime_args: PluginRuntimeArgs)
 
 ### Public Methods
 
+#### Invalidation
+```python
+invalidate() -> None
+```
+Makes the accessor permanently unusable, for a plugin whose stop must cut its access to the
+runtime. Afterwards `is_valid` is `False`, `error_msg` is `"Buffer accessor invalidated"`, and
+every mutex, buffer, batch and configuration operation returns its failure result (`None` or
+`False`, `[]`/`{}` for batch and map results, `""` for the config path) with that message,
+without calling into `runtime_args`. A second call does nothing. Call it only when no mutex
+acquired through the accessor is held.
+
 #### Mutex Management
 ```python
 acquire_mutex() -> (bool, str)

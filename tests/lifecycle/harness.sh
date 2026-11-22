@@ -21,9 +21,17 @@ mkdir -p build/plugins
 gcc -shared -fPIC -O1 -Wall -o build/plugins/libfakevpp_plugin.so \
     /fixtures/fakevpp_plugin.c -I core/src/drivers -I "$(python3 -c 'import sysconfig;print(sysconfig.get_paths()["include"])')" \
     -lpthread 2>&1 | head -5 || { echo "FAKEVPP BUILD FAIL"; exit 1; }
+gcc -shared -fPIC -O1 -Wall -DFAKEVPP_LEGACY -o build/plugins/libfakevpp_legacy_plugin.so \
+    /fixtures/fakevpp_plugin.c -I core/src/drivers -I "$(python3 -c 'import sysconfig;print(sysconfig.get_paths()["include"])')" \
+    -lpthread 2>&1 | head -5
+gcc -shared -fPIC -O1 -Wall -o build/plugins/libptrprobe_plugin.so \
+    /fixtures/ptrprobe.c -I core/src/drivers -I "$(python3 -c 'import sysconfig;print(sysconfig.get_paths()["include"])')" \
+    2>&1 | head -5
 gcc -shared -fPIC -O1 -Wall -o /tmp/failinject.so /fixtures/failinject.c -ldl 2>&1 | head -5
 echo '{"name":"fakevpp","protocol":"NONE","config":{}}' > /tmp/fakevpp_config.json
-ls -la build/plugins/libfakevpp_plugin.so /tmp/failinject.so | sed 's/^/  /'
+echo '{"name":"ptrprobe","protocol":"NONE","config":{}}' > /tmp/ptrprobe_config.json
+ls -la build/plugins/libfakevpp_plugin.so build/plugins/libfakevpp_legacy_plugin.so \
+    build/plugins/libptrprobe_plugin.so /tmp/failinject.so | sed 's/^/  /'
 
 echo "### compile a real PLC program (through the webserver's own compile path)"
 mkdir -p /run/runtime core/generated && cp -r /payload/. core/generated/
