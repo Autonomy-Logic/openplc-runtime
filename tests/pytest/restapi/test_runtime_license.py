@@ -304,6 +304,20 @@ def test_upload_refuses_another_shape(client, env, user_token) -> None:
     assert "Not an OpenPLC Runtime licence" in resp.get_json()["error"]
 
 
+@pytest.mark.parametrize("field", ["hardware_id", "order_id", "sig"])
+def test_upload_refuses_a_trailing_newline(client, env, user_token, field) -> None:
+    on_device(env)
+    data = make_license()
+    resp = client.post(
+        "/api/runtime-license",
+        data=as_bytes({**data, field: f"{data[field]}\n"}),
+        headers=auth(user_token),
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert not env["license"].exists()
+
+
 def test_upload_refuses_a_large_body(client, env, user_token) -> None:
     resp = client.post("/api/runtime-license", data=b"x" * 5000, headers=auth(user_token))
     assert resp.status_code == 413

@@ -33,9 +33,9 @@ MAX_KEY_ID = 255
 
 LICENSE_PATH = PERSISTENT_DATA_DIR / "runtime.license"
 
-_HARDWARE_ID_RE = re.compile(r"^hw2:[0-9a-f]{64}$")
-_ORDER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-_SIG_RE = re.compile(r"^[A-Za-z0-9+/]{86}==$")
+_HARDWARE_ID_RE = re.compile(r"hw2:[0-9a-f]{64}")
+_ORDER_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_SIG_RE = re.compile(r"[A-Za-z0-9+/]{86}==")
 _FIELDS = frozenset(
     ("fmt", "product", "hardware_id", "seats", "order_id", "issued_at", "key_id", "sig")
 )
@@ -80,24 +80,24 @@ def parse_license(data: object) -> RuntimeLicense | None:
     order_id = data["order_id"]
     key_id = data["key_id"]
     sig = data["sig"]
-    if not isinstance(hw, str) or not _HARDWARE_ID_RE.match(hw):
+    if not isinstance(hw, str) or not _HARDWARE_ID_RE.fullmatch(hw):
         return None
     if not _is_int(data["seats"]) or not 1 <= data["seats"] <= MAX_SEATS:
         return None
-    if not isinstance(order_id, str) or not _ORDER_ID_RE.match(order_id):
+    if not isinstance(order_id, str) or not _ORDER_ID_RE.fullmatch(order_id):
         return None
     if not isinstance(data["issued_at"], str) or not data["issued_at"]:
         return None
     if not _is_int(key_id) or not 0 <= key_id <= MAX_KEY_ID:
         return None
-    if not isinstance(sig, str) or not _SIG_RE.match(sig):
+    if not isinstance(sig, str) or not _SIG_RE.fullmatch(sig):
         return None
     payload = {key: value for key, value in data.items() if key != "sig"}
     return RuntimeLicense(
         hardware_id=hw,
         order_id=order_id,
         key_id=key_id,
-        signature=base64.b64decode(sig),
+        signature=base64.b64decode(sig, validate=True),
         payload=payload,
     )
 
