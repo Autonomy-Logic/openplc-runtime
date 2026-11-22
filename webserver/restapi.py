@@ -92,15 +92,13 @@ def restapi_capabilities():
     Unauthenticated, like ``/version`` — the editor calls this before
     login to decide whether it may talk to this device at all.
 
-    ``minEditorVersion`` is the oldest editor this runtime accepts
-    programs from.  The runtime only ADVERTISES it: the editor compares
-    the value against its own version and refuses to upload.  Nothing on
-    the upload path enforces it, so shipping a new runtime can never lock
-    out an editor already installed in the field.
+    ``minEditorVersion`` is the oldest editor version this runtime
+    advertises.  The runtime never checks it: nothing on the upload path
+    reads it.  An editor that reads this endpoint compares the value
+    against its own version and refuses to upload when it is older.
 
     Editors that predate this endpoint get a 404 and fall back to
-    ``/version``; they simply see no editor floor, which is exactly the
-    behaviour they had before.
+    ``/version``; they see no minimum and refuse nothing.
     ---
     tags:
       - Runtime
@@ -115,7 +113,7 @@ def restapi_capabilities():
               description: Runtime version string (GitHub release tag)
             minEditorVersion:
               type: string
-              description: Oldest OpenPLC Editor version this runtime accepts programs from
+              description: Oldest OpenPLC Editor version the editor uploads from (advertised only)
     """
     return (
         jsonify(
