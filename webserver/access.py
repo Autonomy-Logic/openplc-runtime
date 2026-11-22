@@ -57,6 +57,8 @@ POLICY: dict[str, frozenset[str]] = {
     "discovery": ENGINEERING,
     "debugger": ENGINEERING,
     "hmi": EVERY_ROLE,
+    "hardware-id": EVERY_ROLE,
+    "runtime-license": ENGINEERING,
 }
 
 # Routes reached without a signed-in account, by endpoint name.
@@ -66,6 +68,8 @@ PUBLIC_ENDPOINTS: frozenset[str] = frozenset(
         "restapi_blueprint.restapi_version",
         "restapi_blueprint.restapi_capabilities",
         "restapi_blueprint.login",
+        # The stored runtime licence and hardware ID, read by the editor before it signs in.
+        "restapi_blueprint.get_runtime_licenses",
         # The HMI client (sealed static files); its page shows the sign-in form.
         "hmi_blueprint.hmi_redirect",
         "hmi_blueprint.hmi_index",

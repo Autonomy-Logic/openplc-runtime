@@ -232,14 +232,13 @@ The runtime uses self-signed TLS certificates by default. The OpenPLC Editor han
 ### Version and compatibility
 - `GET /api/version` - Runtime version string
 - `GET /api/capabilities` - Runtime version plus `minEditorVersion`, the oldest
-  editor this runtime accepts programs from
+  editor version the runtime advertises
 
 Both are unauthenticated: the Editor calls them before login to decide whether
-it may talk to this device. `minEditorVersion` is **advertised, not enforced** —
-the Editor compares it against its own version and refuses to upload, so a
-runtime release can never lock out an editor already installed in the field.
-Editors that predate `/api/capabilities` get a 404 and fall back to
-`/api/version`, seeing no editor floor (their previous behaviour).
+it may talk to this device. The runtime only advertises `minEditorVersion` and
+never checks it; the Editor compares it against its own version and refuses to
+upload when it is older. Editors that predate `/api/capabilities` get a 404 and
+fall back to `/api/version`; they see no minimum and refuse nothing.
 
 ### Authentication
 - `POST /api/create-user` - Create user account

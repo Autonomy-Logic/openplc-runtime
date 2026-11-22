@@ -1,0 +1,151 @@
+{
+  "format": "openplc-hardware-id-v2-vectors",
+  "vectors": [
+    {
+      "name": "raspberry-pi",
+      "files": {
+        "sys/class/net/eth0/address": "dc:a6:32:01:02:03\n",
+        "sys/class/net/eth0/addr_assign_type": "0\n",
+        "sys/class/net/wlan0/address": "dc:a6:32:01:02:04\n",
+        "sys/class/net/wlan0/addr_assign_type": "0\n",
+        "sys/class/net/lo/address": "00:00:00:00:00:00\n",
+        "sys/class/net/lo/addr_assign_type": "0\n",
+        "proc/device-tree/serial-number": "10000000a1b2c3d4\u0000",
+        "proc/cpuinfo": "processor\t: 0\nBogoMIPS\t: 108.00\nFeatures\t: fp asimd evtstrm crc32 cpuid\nCPU implementer\t: 0x41\nCPU architecture: 8\nCPU variant\t: 0x0\nCPU part\t: 0xd08\nCPU revision\t: 3\n\nprocessor\t: 1\nCPU implementer\t: 0x41\nCPU part\t: 0xd08\n\nRevision\t: c03111\nSerial\t\t: 10000000a1b2c3d4\nModel\t\t: Raspberry Pi 4 Model B Rev 1.1\n",
+        "proc/version": "Linux version 6.1.0-rpi7-rpi-v8 (debian-kernel@lists.debian.org) #1 SMP PREEMPT Debian 1:6.1.63-1+rpt1 aarch64\n",
+        "sys/class/net/wlan0/wireless/.present": "",
+        "sys/devices/platform/scb/fd580000.ethernet/.present": "",
+        "sys/devices/platform/soc/fe300000.mmcnr/mmc_host/mmc1/mmc1:0001/mmc1:0001:1/.present": ""
+      },
+      "links": {
+        "sys/class/net/eth0/device": "../../../devices/platform/scb/fd580000.ethernet",
+        "sys/class/net/wlan0/device": "../../../devices/platform/soc/fe300000.mmcnr/mmc_host/mmc1/mmc1:0001/mmc1:0001:1"
+      },
+      "elements": [
+        [
+          "serial",
+          "10000000a1b2c3d4"
+        ],
+        [
+          "mac",
+          "dc:a6:32:01:02:03"
+        ],
+        [
+          "cpu",
+          "0x41|0xd08"
+        ]
+      ],
+      "id": "hw2:363598c3230281d8cc2cfcdd1b772a6957aa6b8fbd631712ba1b195be5d22318"
+    },
+    {
+      "name": "x86-industrial-pc",
+      "files": {
+        "sys/class/net/enp1s0/address": "00:E0:4C:68:00:01\n",
+        "sys/class/net/enp1s0/addr_assign_type": "0\n",
+        "sys/class/net/enp2s0/address": "00:e0:4c:68:00:02\n",
+        "sys/class/net/enp2s0/addr_assign_type": "0\n",
+        "sys/class/net/enp3s0/address": "00:e0:4c:68:00:03\n",
+        "sys/class/net/enp3s0/addr_assign_type": "3\n",
+        "sys/class/net/enx00249b112233/address": "00:24:9b:11:22:33\n",
+        "sys/class/net/enx00249b112233/addr_assign_type": "0\n",
+        "sys/class/net/docker0/address": "02:42:ac:11:00:01\n",
+        "sys/class/net/docker0/addr_assign_type": "3\n",
+        "sys/class/dmi/id/product_uuid": "4C4C4544-0042-3510-8051-B2C04F4E3132\n",
+        "sys/class/dmi/id/board_serial": "CNWS2000900ABC\n",
+        "sys/class/dmi/id/sys_vendor": "Dell Inc.\n",
+        "sys/class/dmi/id/product_name": "OptiPlex 7090\n",
+        "proc/cpuinfo": "processor\t: 0\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 165\nmodel name\t: Intel(R) Core(TM) i5-10500T CPU @ 2.30GHz\nflags\t\t: fpu vme de pse tsc msr sse sse2\n\nprocessor\t: 1\nvendor_id\t: GenuineIntel\nmodel name\t: Intel(R) Core(TM) i5-10500T CPU @ 2.30GHz\n",
+        "proc/version": "Linux version 6.8.0-45-generic (buildd@lcy02-amd64-115) x86_64\n",
+        "sys/devices/pci0000:00/0000:00:1c.0/0000:01:00.0/removable": "fixed\n",
+        "sys/devices/pci0000:00/0000:00:1c.1/0000:02:00.0/removable": "unknown\n",
+        "sys/devices/pci0000:00/0000:00:1c.2/0000:03:00.0/.present": "",
+        "sys/devices/pci0000:00/0000:00:14.0/usb2/2-1/2-1:1.0/.present": "",
+        "sys/devices/pci0000:00/0000:00:14.0/usb2/2-1/removable": "removable\n",
+        "sys/devices/pci0000:00/0000:00:14.0/usb2/2-1/port/connect_type": "hotplug\n"
+      },
+      "links": {
+        "sys/class/net/enp1s0/device": "../../../devices/pci0000:00/0000:00:1c.0/0000:01:00.0",
+        "sys/class/net/enp2s0/device": "../../../devices/pci0000:00/0000:00:1c.1/0000:02:00.0",
+        "sys/class/net/enp3s0/device": "../../../devices/pci0000:00/0000:00:1c.2/0000:03:00.0",
+        "sys/class/net/enx00249b112233/device": "../../../devices/pci0000:00/0000:00:14.0/usb2/2-1/2-1:1.0"
+      },
+      "elements": [
+        [
+          "uuid",
+          "4c4c4544-0042-3510-8051-b2c04f4e3132"
+        ],
+        [
+          "board",
+          "cnws2000900abc"
+        ],
+        [
+          "mac",
+          "00:e0:4c:68:00:01"
+        ],
+        [
+          "mac",
+          "00:e0:4c:68:00:02"
+        ],
+        [
+          "cpu",
+          "genuineintel|intel(r) core(tm) i5-10500t cpu @ 2.30ghz"
+        ]
+      ],
+      "id": "hw2:5337b315679912a71e5f004a718544e1282e004f13acb0ac17c4c8142587a14c"
+    },
+    {
+      "name": "vm",
+      "files": {
+        "sys/class/net/ens3/address": "00:16:3e:11:22:33\n",
+        "sys/class/net/ens3/addr_assign_type": "0\n",
+        "sys/class/dmi/id/product_uuid": "8f6c2a1e-5b3d-4c7a-9e21-0d4f6b8a1c33\n",
+        "sys/class/dmi/id/board_serial": "\n",
+        "sys/class/dmi/id/sys_vendor": "QEMU\n",
+        "sys/class/dmi/id/product_name": "Standard PC (Q35 + ICH9, 2009)\n",
+        "proc/cpuinfo": "processor\t: 0\nvendor_id\t: AuthenticAMD\nmodel name\t: AMD EPYC 7763 64-Core Processor\nflags\t\t: fpu vme sse sse2 hypervisor\n",
+        "sys/devices/pci0000:00/0000:00:03.0/virtio0/.present": ""
+      },
+      "links": {
+        "sys/class/net/ens3/device": "../../../devices/pci0000:00/0000:00:03.0/virtio0"
+      },
+      "elements": [
+        [
+          "uuid",
+          "8f6c2a1e-5b3d-4c7a-9e21-0d4f6b8a1c33"
+        ],
+        [
+          "cpu",
+          "authenticamd|amd epyc 7763 64-core processor"
+        ]
+      ],
+      "id": "hw2:5e26377d20855444f09a7b40f13d8c4e00550166e98efbc6d1d01c05b51a5eb1"
+    },
+    {
+      "name": "placeholders-only",
+      "files": {
+        "sys/class/dmi/id/product_uuid": "00000000-0000-0000-0000-000000000000\n",
+        "sys/class/dmi/id/board_serial": "To be filled by O.E.M.\n",
+        "proc/cpuinfo": "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: Intel(R) Celeron(R) J4125 CPU @ 2.00GHz\n"
+      },
+      "links": {},
+      "elements": [
+        [
+          "cpu",
+          "genuineintel|intel(r) celeron(r) j4125 cpu @ 2.00ghz"
+        ]
+      ],
+      "id": null
+    },
+    {
+      "name": "wsl2",
+      "files": {
+        "proc/sys/kernel/osrelease": "5.15.153.1-microsoft-standard-WSL2\n",
+        "sys/class/dmi/id/product_uuid": "1d4e3c2b-aa11-4c5d-9f0e-123456789abc\n",
+        "proc/cpuinfo": "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: Intel(R) Core(TM) i7-1185G7 @ 3.00GHz\nflags\t\t: fpu hypervisor\n"
+      },
+      "links": {},
+      "elements": [],
+      "id": null
+    }
+  ]
+}
