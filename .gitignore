@@ -27,6 +27,7 @@ __pycache__/
 # Negated so the SBOM scanner can read them: osv-scanner honours .gitignore.
 !CMakeLists.txt
 !requirements.txt
+!requirements-dev.txt
 *.log
 *.env
 *.pem
