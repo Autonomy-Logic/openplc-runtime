@@ -144,11 +144,11 @@ cd "$OPENPLC_DIR"
 # Docker installs no toolchain and compiles nothing. --native stays a
 # supported path for MSYS2 and container-less targets.
 INSTALL_MODE="docker"
-declare -a DOCKER_INSTALL_ARGS=()
+declare -a INSTALL_ARGS=()
 for arg in "$@"; do
     case "$arg" in
         --native) INSTALL_MODE="native" ;;
-        *)        DOCKER_INSTALL_ARGS+=("$arg") ;;
+        *)        INSTALL_ARGS+=("$arg") ;;
     esac
 done
 
@@ -160,8 +160,36 @@ if is_msys2 && [ "$INSTALL_MODE" = "docker" ]; then
 fi
 
 if [ "$INSTALL_MODE" = "docker" ]; then
-    exec bash "$SCRIPTS_DIR/install-docker.sh" --repo-root "$OPENPLC_DIR" "${DOCKER_INSTALL_ARGS[@]}"
+    exec bash "$SCRIPTS_DIR/install-docker.sh" --repo-root "$OPENPLC_DIR" "${INSTALL_ARGS[@]}"
 fi
+
+NATIVE_STEP_NAMES="deps venvs compile"
+declare -a NATIVE_STEPS=("${INSTALL_ARGS[@]}")
+for step in "${NATIVE_STEPS[@]}"; do
+    case " $NATIVE_STEP_NAMES " in
+        *" $step "*) ;;
+        *)
+            echo "ERROR: unknown install step: $step" >&2
+            echo "Usage: ./install.sh --native [deps] [venvs] [compile]  (no step runs them all)" >&2
+            exit 2
+            ;;
+    esac
+done
+
+# Succeeds when no step was named, that is, for the full install.
+full_install() {
+    [ "${#NATIVE_STEPS[@]}" -eq 0 ]
+}
+
+# Succeeds when the given step was named, or when no step was named.
+step_selected() {
+    local step
+    full_install && return 0
+    for step in "${NATIVE_STEPS[@]}"; do
+        [ "$step" = "$1" ] && return 0
+    done
+    return 1
+}
 
 echo "OpenPLC Runtime Installation (source build)"
 echo "Project directory: $OPENPLC_DIR"
@@ -205,16 +233,36 @@ install_dependencies()
 
 CMAKE_MIN_VERSION="3.28"
 
+# Succeeds when version $1 is a dotted number at least version $2.
+version_at_least() {
+    [[ "$1" =~ ^[0-9]+(\.[0-9]+)*$ ]] &&
+        printf '%s\n%s\n' "$2" "$1" | sort -V | head -1 | grep -qx "$2"
+}
+
+# Prints the upstream version of the cmake package apt would install, or nothing.
+apt_cmake_candidate() {
+    command -v apt-cache >/dev/null 2>&1 || return 0
+    apt-cache policy cmake 2>/dev/null | awk '/Candidate:/ { print $2 }' | sed 's/^[0-9]*://; s/[-+~].*$//'
+}
+
 install_cmake() {
     # Check if system cmake already meets the minimum version
     if command -v cmake >/dev/null 2>&1; then
         local current_version
         current_version=$(cmake --version | head -1 | grep -oP '[0-9]+\.[0-9]+(\.[0-9]+)?')
-        if printf '%s\n%s\n' "$CMAKE_MIN_VERSION" "$current_version" | sort -V | head -1 | grep -qx "$CMAKE_MIN_VERSION"; then
+        if version_at_least "$current_version" "$CMAKE_MIN_VERSION"; then
             echo "CMake $current_version already meets minimum requirement ($CMAKE_MIN_VERSION)"
             return 0
         fi
         echo "CMake $current_version is too old (need $CMAKE_MIN_VERSION+), installing newer version..."
+    fi
+
+    local apt_version
+    apt_version=$(apt_cmake_candidate)
+    if version_at_least "$apt_version" "$CMAKE_MIN_VERSION"; then
+        echo "Installing CMake $apt_version from apt..."
+        apt-get install -y --no-install-recommends cmake
+        return $?
     fi
 
     local arch
@@ -649,19 +697,27 @@ chmod +x "$OPENPLC_DIR/install.sh" 2>/dev/null || true
 chmod +x "$OPENPLC_DIR/scripts/"* 2>/dev/null || true
 chmod +x "$OPENPLC_DIR/start_openplc.sh" 2>/dev/null || true
 
-install_dependencies
-python3 -m venv "$VENV_DIR"
-"$VENV_DIR/bin/python3" -m pip install --upgrade pip setuptools wheel
-"$VENV_DIR/bin/python3" -m pip install -r "$OPENPLC_DIR/requirements.txt"
-"$VENV_DIR/bin/python3" -m pip install -e .
+# Creates the runtime venv and one venv per Python plugin with requirements.
+setup_venvs() {
+    python3 -m venv "$VENV_DIR"
+    "$VENV_DIR/bin/python3" -m pip install --upgrade pip setuptools wheel
+    "$VENV_DIR/bin/python3" -m pip install -r "$OPENPLC_DIR/requirements.txt"
+    "$VENV_DIR/bin/python3" -m pip install -e .
 
-echo "Dependencies installed..."
-echo "Virtual environment created at $VENV_DIR"
+    echo "Dependencies installed..."
+    echo "Virtual environment created at $VENV_DIR"
 
-setup_plugin_venvs
+    setup_plugin_venvs
+}
 
-echo "Compiling OpenPLC..."
-if compile_plc; then
+# Compiles the runtime core, the native plugins and EtherDOG, then writes the installation marker.
+compile_runtime() {
+    echo "Compiling OpenPLC..."
+    if ! compile_plc; then
+        echo "ERROR: Build process failed!" >&2
+        echo "Please check the error messages above for details." >&2
+        exit 1
+    fi
     echo "Build process completed successfully!"
 
     # Build native plugins after main compilation
@@ -674,41 +730,51 @@ if compile_plc; then
     # Create installation marker (must be done before starting the service)
     touch "$OPENPLC_DIR/.installed"
     echo "Installation completed at $(date)" > "$OPENPLC_DIR/.installed"
+}
 
-    # Check if systemd is available and install the service
-    SYSTEMD_SERVICE_INSTALLED=0
-    if has_systemd_support; then
-        log_info "Systemd detected. Installing OpenPLC Runtime service..."
-        if install_systemd_service; then
-            SYSTEMD_SERVICE_INSTALLED=1
-        else
-            log_warning "Failed to install systemd service. You can start the runtime manually."
-        fi
+if step_selected deps; then
+    install_dependencies
+fi
+if step_selected venvs; then
+    setup_venvs
+fi
+if step_selected compile; then
+    compile_runtime
+fi
+
+if ! full_install; then
+    echo "Install steps completed: ${NATIVE_STEPS[*]}"
+    exit 0
+fi
+
+# Check if systemd is available and install the service
+SYSTEMD_SERVICE_INSTALLED=0
+if has_systemd_support; then
+    log_info "Systemd detected. Installing OpenPLC Runtime service..."
+    if install_systemd_service; then
+        SYSTEMD_SERVICE_INSTALLED=1
     else
-        log_info "Systemd not available. Skipping service installation."
+        log_warning "Failed to install systemd service. You can start the runtime manually."
     fi
-
-    echo ""
-    echo "OpenPLC Runtime v4 is ready to use."
-    echo ""
-
-    if [ "$SYSTEMD_SERVICE_INSTALLED" -eq 1 ]; then
-        echo "The OpenPLC Runtime service has been installed and started."
-        echo "The runtime will automatically start on system boot."
-        echo ""
-        echo "Useful commands:"
-        echo "  sudo systemctl status openplc-runtime   - Check service status"
-        echo "  sudo systemctl stop openplc-runtime     - Stop the service"
-        echo "  sudo systemctl start openplc-runtime    - Start the service"
-        echo "  sudo systemctl restart openplc-runtime  - Restart the service"
-        echo "  sudo journalctl -u openplc-runtime -f   - View service logs"
-    else
-        echo "To start the OpenPLC Runtime v4, run:"
-        echo "sudo ./start_openplc.sh"
-    fi
-
 else
-    echo "ERROR: Build process failed!" >&2
-    echo "Please check the error messages above for details." >&2
-    exit 1
+    log_info "Systemd not available. Skipping service installation."
+fi
+
+echo ""
+echo "OpenPLC Runtime v4 is ready to use."
+echo ""
+
+if [ "$SYSTEMD_SERVICE_INSTALLED" -eq 1 ]; then
+    echo "The OpenPLC Runtime service has been installed and started."
+    echo "The runtime will automatically start on system boot."
+    echo ""
+    echo "Useful commands:"
+    echo "  sudo systemctl status openplc-runtime   - Check service status"
+    echo "  sudo systemctl stop openplc-runtime     - Stop the service"
+    echo "  sudo systemctl start openplc-runtime    - Start the service"
+    echo "  sudo systemctl restart openplc-runtime  - Restart the service"
+    echo "  sudo journalctl -u openplc-runtime -f   - View service logs"
+else
+    echo "To start the OpenPLC Runtime v4, run:"
+    echo "sudo ./start_openplc.sh"
 fi

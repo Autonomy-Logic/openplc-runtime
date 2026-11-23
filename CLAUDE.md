@@ -53,6 +53,13 @@ sudo ./install.sh
 # Source install (deps, venvs, compiles the runtime); start_openplc.sh needs the .installed it writes
 sudo ./install.sh --native
 
+# Only some install steps, run in this order: deps (packages, CMake), venvs, compile (core, native
+# plugins, EtherDOG, .installed); the image build uses these. No step runs all three plus systemd.
+sudo ./install.sh --native deps venvs
+
+# Runtime image: stages venvs, builder and final, all FROM the pinned base (docs/DOCKER.md, "Base image")
+docker build -t openplc-runtime .
+
 # Manual build (C/C++ runtime core)
 mkdir -p build && cd build && cmake .. && make -j$(nproc)
 
@@ -81,6 +88,11 @@ ceedling gcov:all
 # needs python3 and the Python 3 dev headers (Python.h, via plugin_driver.h)
 ./tests/host/run.sh
 
+# Image: static checks of the Dockerfile and the install.sh default (no Docker); --build also builds the
+# image for the host and checks its layers (needs a docker-container buildx builder, IMAGE_TEST_BUILDER)
+bash tests/image/run.sh
+IMAGE_TEST_BUILDER=<builder> bash tests/image/run.sh --build
+
 # Bootloader (Go), same checks as CI (gofmt -l always exits 0, so test -z fails on any listed file)
 cd bootloader && test -z "$(gofmt -l .)" && go vet ./... && go test -race -count=1 ./...
 ```
@@ -89,7 +101,8 @@ cd bootloader && test -z "$(gofmt -l .)" && go vet ./... && go test -race -count
   go vet and `go test -race` for `bootloader/`; pytest over `tests/pytest` excluding the `plugins`,
   `modbus_master` and `modbus_slave` suites (red on the base branch), plus the named plugin suites known
   green; shellcheck on `install.sh`, `scripts/install-docker.sh`, `windows/provision-msys2.sh` and
-  `tests/integration/harness.sh`; a check that Windows and Docker callers run `install.sh --native`.
+  `tests/integration/harness.sh` and `tests/image/`; `tests/image/run.sh` (static image checks); a check that
+  Windows and Docker callers run `install.sh --native`.
   On a PR to `development` whose head commit carries the commit status `misterflow/local-ci` = `success` (set by
   MisterFlow on the exact SHA it pushes after running the checks locally), the run skips the Bootloader (Go) and
   Webserver (pytest) jobs (reported as passed); a push without that status runs them, and the installer scripts job

@@ -15,6 +15,30 @@ OpenPLC Runtime v4 provides official Docker images for easy deployment across mu
 - `linux/arm64` - ARM 64-bit (Raspberry Pi 4, etc.)
 - `linux/arm/v7` - ARM 32-bit (Raspberry Pi 3, etc.)
 
+## Base image
+
+The runtime image is built on the OpenPLC runtime base image, published from
+[autonomy-docker](https://github.com/Autonomy-Logic/autonomy-docker#readme):
+
+| | |
+|---|---|
+| Name | `ghcr.io/autonomy-logic/openplc-runtime-base` |
+| Tag | `trixie-1` (Debian trixie, GCC 14, Python 3.13) |
+| Digest (multi-arch index: amd64, arm64, arm/v7) | `sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b` |
+
+The `Dockerfile` writes this reference in full, tag and digest, in the `FROM` of
+each of its three stages (`venvs`, `builder` and the final stage), with no
+build argument, and sets the labels `org.opencontainers.image.base.name` and
+`org.opencontainers.image.base.digest` of the image to the same reference.
+Changing the base means changing all of them together; `tests/image/run.sh`
+fails when they disagree.
+
+The base provides Python, the compiler toolchain uploaded programs are built
+with, `curl`, `ethtool`, `openssl`, the `/var/run/runtime` directory and the
+dpkg path-excludes, so the final stage installs nothing. When autonomy-docker
+publishes a security bump of the base, the pin here follows it within 7 days
+for a Critical vulnerability and within 30 days for a High one.
+
 ## The managed install (recommended)
 
 Everything below describes running the runtime container by hand, which is
@@ -324,6 +348,33 @@ git checkout development
 docker build -t my-openplc-runtime .
 ```
 
+The build has three stages, all on the pinned base:
+
+- `venvs` copies in only `requirements.txt`, `pyproject.toml`, the plugin
+  `requirements.txt` files, `install.sh` and `scripts/manage_plugin_venvs.sh`,
+  and runs `./install.sh --native deps venvs`. A new Python plugin with a
+  `requirements.txt` needs its own `COPY` line in this stage.
+- `builder` copies the source and runs `./install.sh --native deps compile`
+  (CMake comes from apt).
+- The final stage stacks, in this order: the venvs (`/workdir/venvs`), the
+  compiled output (`/workdir/build`), the application files, then the metadata.
+
+A change to application code rebuilds only the layers above the venvs; a
+change to a requirements file rebuilds the venvs layer and the layers above it.
+For a reproducible venvs layer, build with `SOURCE_DATE_EPOCH` and rewritten
+timestamps on a `docker-container` buildx builder:
+
+```bash
+SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) docker buildx build \
+  --output type=oci,dest=openplc-runtime.oci.tar,rewrite-timestamp=true .
+```
+
+`install.sh --native` takes optional step names, run in this order whatever
+order they are given in: `deps` (system packages and CMake), `venvs` (the
+runtime venv and one venv per Python plugin) and `compile` (the runtime core,
+the native plugins and EtherDOG, then the `.installed` marker). With no step
+named it runs all three and then installs the systemd service, as before.
+
 ### Using Build Script
 
 ```bash
@@ -632,8 +683,13 @@ semver tag for the metadata step.
 **Tests** -- `.github/workflows/tests.yml`
 
 Runs on every pull request: `gofmt`, `go vet` and `go test -race` for the
-bootloader, `pytest tests/pytest`, `shellcheck` on the installer scripts, and a
-check that every caller of `install.sh` asks for the build it needs.
+bootloader, `pytest tests/pytest`, `shellcheck` on the installer scripts,
+`tests/image/run.sh` (the static checks of the `Dockerfile`), and a check that
+every caller of `install.sh` asks for the build it needs.
+
+`bash tests/image/run.sh --build` also builds the image for the host
+architecture and checks the built layers; it runs by hand, on a buildx builder
+with the `docker-container` driver named by `IMAGE_TEST_BUILDER`.
 
 Not in CI: `tests/integration/harness.sh` (it needs a privileged
 Docker-in-Docker host) and anything hardware-dependent. Both are run by hand.
