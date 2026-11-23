@@ -658,7 +658,7 @@ def update_user(user_id):
               description: Required when changing your own password
             role:
               type: string
-              enum: [admin, user]
+              enum: [admin, engineer, operator, viewer]
     responses:
       200:
         description: User updated
