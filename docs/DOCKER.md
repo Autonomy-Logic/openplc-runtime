@@ -39,6 +39,51 @@ dpkg path-excludes, so the final stage installs nothing. When autonomy-docker
 publishes a security bump of the base, the pin here follows it within 7 days
 for a Critical vulnerability and within 30 days for a High one.
 
+### Base image check
+
+`scripts/verify-base-image.sh [--no-attestation] [Dockerfile]` (default:
+`Dockerfile` in the working directory) prints one `error:` line per broken rule
+and exits non-zero when any rule is broken. Without the network
+(`--no-attestation`) it checks the `Dockerfile` rules shared with
+`tests/image/static.sh` (every `FROM` pinned by digest with no variable, one
+pin for all stages, no `# syntax` line, `COPY --from` and `RUN --mount` only
+from stages of the file) and that the pinned package is exactly
+`ghcr.io/autonomy-logic/openplc-runtime-base`, written as `<name>:<tag>@<digest>`.
+With the network it also checks, with the `docker` and `gh` on `PATH`, that:
+
+- the tag resolves to the pinned digest in the registry
+  (`docker buildx imagetools inspect`);
+- `gh attestation verify oci://<name>@<digest> --repo Autonomy-Logic/autonomy-docker
+  --signer-workflow Autonomy-Logic/autonomy-docker/.github/workflows/build.yml
+  --source-ref refs/heads/main --deny-self-hosted-runners` succeeds, and one
+  verified attestation names `ghcr.io/autonomy-logic/openplc-runtime-base`
+  with the pinned digest as its subject.
+
+It runs in CI in two places, with `GH_TOKEN` set to the workflow token and no
+registry login:
+
+- `.github/workflows/base-image-check.yml`, job "Verify Base Image
+  Attestation", on every pull request and on pushes to `development` and
+  `main`, with read-only permissions;
+- the `build` job of `.github/workflows/docker.yml`, as the first step after
+  checkout, so a release build stops before QEMU, the registry login and the
+  build.
+
+Locally, `bash scripts/verify-base-image.sh` needs `docker` with buildx and an
+authenticated `gh`.
+
+### Bumping the pin
+
+1. Take a tag of `ghcr.io/autonomy-logic/openplc-runtime-base` published by
+   the autonomy-docker build workflow on `main`, and read its digest:
+   `docker buildx imagetools inspect ghcr.io/autonomy-logic/openplc-runtime-base:<tag> --format '{{.Manifest.Digest}}'`.
+2. Write `<name>:<tag>@<digest>` in the three `FROM` lines of the
+   `Dockerfile`, the two base labels, `BASE_PIN` in `tests/image/helpers.sh`
+   and the table above.
+3. Run `bash scripts/verify-base-image.sh` and `bash tests/image/run.sh`; both
+   must pass.
+4. Open the pull request; its "Verify Base Image Attestation" check must pass.
+
 ## The managed install (recommended)
 
 Everything below describes running the runtime container by hand, which is

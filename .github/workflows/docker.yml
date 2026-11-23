@@ -39,6 +39,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify the pinned base image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/verify-base-image.sh
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 

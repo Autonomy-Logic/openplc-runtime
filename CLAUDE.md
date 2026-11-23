@@ -101,8 +101,13 @@ cd bootloader && test -z "$(gofmt -l .)" && go vet ./... && go test -race -count
   go vet and `go test -race` for `bootloader/`; pytest over `tests/pytest` excluding the `plugins`,
   `modbus_master` and `modbus_slave` suites (red on the base branch), plus the named plugin suites known
   green; shellcheck on `install.sh`, `scripts/install-docker.sh`, `windows/provision-msys2.sh` and
-  `tests/integration/harness.sh` and `tests/image/`; `tests/image/run.sh` (static image checks); a check that
-  Windows and Docker callers run `install.sh --native`.
+  `tests/integration/harness.sh`, `scripts/verify-base-image.sh` and `tests/image/`; `tests/image/run.sh`
+  (static image checks and the base check script against fake `gh` and `docker`); a check that Windows and
+  Docker callers run `install.sh --native`.
+- Base image check (`.github/workflows/base-image-check.yml`, job "Verify Base Image Attestation", on every
+  PR and pushes to `development`/`main`; also the first step of the `docker.yml` build job):
+  `scripts/verify-base-image.sh` checks the `Dockerfile` pin and its attestation (docs/DOCKER.md, "Base image
+  check"); `--no-attestation` runs only the offline rules.
   On a PR to `development` whose head commit carries the commit status `misterflow/local-ci` = `success` (set by
   MisterFlow on the exact SHA it pushes after running the checks locally), the run skips the Bootloader (Go) and
   Webserver (pytest) jobs (reported as passed); a push without that status runs them, and the installer scripts job
