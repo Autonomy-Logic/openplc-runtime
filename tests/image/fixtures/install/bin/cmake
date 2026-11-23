@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Autonomy®
+
+printf 'cmake %s %s\n' "$PWD" "$*" >>"$FAKE_LOG"
+case "${1:-}" in
+    --version) echo "cmake version 3.31.6" ;;
+    --build) mkdir -p "$2" && : >"$2/etherdog" ;;
+esac

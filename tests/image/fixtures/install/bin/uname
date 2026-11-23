@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Autonomy®
+
+case "${1:-}" in
+    -m) echo x86_64 ;;
+    *) echo MSYS_NT-10.0-26100 ;;
+esac
