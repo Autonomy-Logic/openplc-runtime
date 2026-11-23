@@ -156,3 +156,27 @@ class TestEncoding:
     def test_lreal_writes_eight_bytes_of_float64(self, plc):
         debug_write_value(plc, 0, 0, "LREAL", convert_value_for_plc("LREAL", 42.0))
         assert plc.cells[(0, 0)] == bytes(ctypes.c_double(42.0))
+
+
+class TestStringReads:
+    """Regression tests for PLC STRING -> OPC-UA read conversion."""
+
+    def test_string_read_decodes_debug_wire_format(self, plc):
+        """STRING uses one length byte followed by a 126-byte payload."""
+        value = "PACKAGING_01"
+        payload = value.encode("utf-8")
+        raw = bytes([len(payload)]) + payload + bytes(126 - len(payload))
+
+        plc.cells[(0, 17)] = raw
+
+        assert debug_read_value(plc, 0, 17, "STRING") == value
+
+    def test_string_read_handles_utf8(self, plc):
+        """STRING payload is decoded as UTF-8."""
+        value = "Línea de producción"
+        payload = value.encode("utf-8")
+        raw = bytes([len(payload)]) + payload + bytes(126 - len(payload))
+
+        plc.cells[(0, 17)] = raw
+
+        assert debug_read_value(plc, 0, 17, "STRING") == value
