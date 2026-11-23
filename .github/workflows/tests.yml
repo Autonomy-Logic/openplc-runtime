@@ -184,7 +184,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck -S warning install.sh scripts/install-docker.sh \
             windows/provision-msys2.sh tests/integration/harness.sh
-          shellcheck -S warning -x scripts/verify-base-image.sh tests/image/*.sh tests/image/fixtures/install/bin/* \
+          shellcheck -S warning -x scripts/verify-base-image.sh scripts/publish-plan.sh tests/image/*.sh tests/image/fixtures/install/bin/* \
             tests/image/fixtures/install/venv-tool
 
       - name: Image checks

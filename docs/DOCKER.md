@@ -715,11 +715,44 @@ docker run -d \
 **Images** -- `.github/workflows/docker.yml`
 
 Triggers: a `v*` release tag, a push to `development` or `main`, or a manual
-dispatch. There is no pull-request trigger here: a branch push produces no
-semver tag for the metadata step.
+dispatch. There is no pull-request trigger here. A branch push publishes only
+the bootloader.
 
-- The runtime image builds for release tags and manual runs only, multi-arch,
-  tagged `vX.Y.Z` and (for a stable release) `latest`.
+The runtime image (`build` job) builds for a `v*` tag push and for a manual run
+only, for the platforms of the `platforms` input (default `linux/amd64`,
+`linux/arm64`, `linux/arm/v7`). `scripts/publish-plan.sh` decides the package,
+the tags and the version baked into the image (`RUNTIME_VERSION`, reported by
+`/api/version`), so there are three kinds of run:
+
+| Run | Package | Tags | Version |
+|---|---|---|---|
+| Release: push of a `vX.Y.Z` tag | `ghcr.io/autonomy-logic/openplc-runtime` | the tag, plus `latest` when the tag has no `-` suffix (`v4.4.0-rc.1` gets no `latest`) | the tag |
+| Manual release: "Run workflow" with `release_tag` | `ghcr.io/autonomy-logic/openplc-runtime` | `release_tag` only, never `latest` | `release_tag` |
+| Measurement build: "Run workflow" with `test_tag` | `ghcr.io/autonomy-logic/openplc-runtime-test` | `test_tag` only | `test_tag` |
+
+A manual run sets exactly one of `release_tag` and `test_tag`, and the tag must
+be a valid image tag other than `latest`. Every run checks, after the registry
+login, that its tag does not exist yet in its package
+(`docker buildx imagetools inspect`) and stops before the build when it does: a
+published tag is never overwritten, a manual run never moves `latest`, and
+rebuilding an older version means publishing it under a new tag. The run also
+stops when the registry answer is not a clear "not found" (an authentication,
+permission, rate-limit or network error), since it cannot tell then whether
+the tag exists. A manual release of a version that is pushed as a git tag later
+makes that tag push stop, so `latest` moves only through a tag push of a version
+not yet published.
+
+Every runtime image is built with `SOURCE_DATE_EPOCH` set to the time of the
+built commit and `rewrite-timestamp=true` on the registry output, so the file
+timestamps of a layer come from the commit and not from the build time, and
+carries a buildx
+provenance attestation (`mode=max`) and an SBOM attestation. Two measurement
+builds of commits that change only application code can therefore be published
+and compared layer by layer without touching the release package.
+
+The `build` job runs `scripts/verify-base-image.sh` first (see "Base image
+check"), which needs `attestations: read` and `GH_TOKEN`.
+
 - The bootloader is versioned separately, from `bootloader/VERSION`. A version
   already in the registry is not rebuilt, so a run of runtime releases does not
   republish an unchanged bootloader; `latest` moves only for a stable version
