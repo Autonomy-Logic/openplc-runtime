@@ -19,14 +19,18 @@ export TESTS_DIR REPO_ROOT
 . "$TESTS_DIR/base-check.sh"
 # shellcheck source=tests/image/publish-plan.sh
 . "$TESTS_DIR/publish-plan.sh"
+# shellcheck source=tests/image/security.sh
+. "$TESTS_DIR/security.sh"
 
 usage() {
     cat <<EOF
 usage: run.sh [--build]
 
 Runs the static checks on the repository Dockerfile and its fixtures, the base image check script
-against fake gh and docker, and the publish plan script against a fake registry.
---build also builds the image and runs the built-image checks; see built.sh for what they need.
+against fake gh and docker, the publish plan script against a fake registry, and the Python version
+of the webserver CI job.
+--build also builds the image once and runs the built-image checks and, against a running container
+of it, the TLS, upload, plugin and OPC-UA checks; see built.sh for what they need.
 EOF
 }
 
@@ -42,5 +46,10 @@ done
 run_static_checks
 run_base_checks
 run_publish_checks
-[ "$build" = 0 ] || run_built_checks
+run_security_static_checks
+if [ "$build" = 1 ]; then
+    run_built_checks
+    run_security_checks "${BUILT_IMAGE:-}"
+    built_cleanup
+fi
 finish

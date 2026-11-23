@@ -174,25 +174,34 @@ check_built_no_secrets() {
     [ -z "$found" ] || { echo "$found"; return 1; }
 }
 
-check_built_healthy() {
-    local cid status rc=1 deadline
-    cid="$(docker run -d --cap-add SYS_NICE --cap-add SYS_RESOURCE "$BUILT_IMAGE" 2>&1)" ||
+# Starts a container of an image with the runtime's run options and waits until it is healthy:
+# built_start_healthy <image>; prints the container id, or the reason and the last log lines (container removed).
+built_start_healthy() {
+    local cid status reason deadline
+    cid="$(docker run -d --cap-add SYS_NICE --cap-add SYS_RESOURCE "$1" 2>&1)" ||
         { echo "$cid"; return 1; }
     deadline=$((SECONDS + 300))
     while :; do
         status="$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid")"
         case "$status" in
-            "running healthy") rc=0; break ;;
+            "running healthy") printf '%s\n' "$cid"; return 0 ;;
             "running starting") ;;
-            "running ") echo "the image has no HEALTHCHECK"; break ;;
-            *) echo "container is $status"; break ;;
+            "running ") reason="the image has no HEALTHCHECK"; break ;;
+            *) reason="container is $status"; break ;;
         esac
-        [ "$SECONDS" -lt "$deadline" ] || { echo "not healthy after 300s"; break; }
+        [ "$SECONDS" -lt "$deadline" ] || { reason="not healthy after 300s"; break; }
         sleep 5
     done
-    [ "$rc" = 0 ] || docker logs --tail 5 "$cid" 2>&1
+    echo "$reason"
+    docker logs --tail 5 "$cid" 2>&1
     docker rm -f "$cid" >/dev/null 2>&1
-    return "$rc"
+    return 1
+}
+
+check_built_healthy() {
+    local cid
+    cid="$(built_start_healthy "$BUILT_IMAGE")" || { echo "$cid"; return 1; }
+    docker rm -f "$cid" >/dev/null 2>&1
 }
 
 check_built_builder_gcc() {
@@ -260,6 +269,7 @@ built_variant() {
 }
 
 built_cleanup() {
+    [ -n "${BUILT_DIR:-}" ] || return 0
     docker image rm -f "$BUILT_IMAGE" "$IMAGE_TEST_REPO:builder" >/dev/null 2>&1
     if [ "${IMAGE_TEST_KEEP:-0}" = 1 ]; then
         printf '# work directory kept: %s\n' "$BUILT_DIR"
@@ -268,7 +278,7 @@ built_cleanup() {
     fi
 }
 
-# Builds the image and runs every built-image check, one line per check.
+# Builds the image and runs every built-image check, one line per check; built_cleanup removes the image.
 run_built_checks() {
     local reason name
     reason="$(built_prerequisites)" || { built_usage >&2; built_fail_from image-builds-for-host "$reason"; return; }
@@ -286,7 +296,6 @@ run_built_checks() {
 
     if ! build_image a "$BUILT_DIR/ctx-a" --no-cache; then
         built_fail_from image-builds-for-host "build failed: $(build_log_tail a)"
-        built_cleanup
         return
     fi
     report built/image-builds-for-host 0
@@ -322,5 +331,4 @@ run_built_checks() {
         report built/app-change-keeps-base-and-venv-layers 1 "no second build to compare against"
         report built/requirements-change-rebuilds-venv-layer 1 "no second build to compare against"
     fi
-    built_cleanup
 }
