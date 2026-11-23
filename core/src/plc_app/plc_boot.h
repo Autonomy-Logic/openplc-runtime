@@ -22,7 +22,8 @@ typedef enum
     PLC_BOOT_START_SKIPPED_SAFE_MODE = 0,
     PLC_BOOT_START_HELD_BY_SWITCH,
     PLC_BOOT_START_BEGUN,
-    PLC_BOOT_START_FAILED
+    PLC_BOOT_START_FAILED,
+    PLC_BOOT_START_HELD_SWITCH_UNKNOWN
 } plc_boot_start_t;
 
 /**
@@ -42,12 +43,15 @@ typedef enum
 int plc_boot_init_plugins(plugin_driver_t *driver, bool load_program_plugins);
 
 /**
- * @brief Boot auto-start: begin a start unless in safe mode or the switch reads STOP.
+ * @brief Boot auto-start: begin a start unless in safe mode or the switch gate is not RUN.
  *
  * Must run after plc_boot_init_plugins(), so the switch gate holds the position
- * the plugins reported rather than its RUN default. Releases the plugin request
- * hold on every path. When the switch read STOP, the gate is checked again after
- * the release: a flip to RUN while requests were held then starts the PLC here,
+ * the plugins reported rather than its RUN default. While a switch owner has not
+ * reported since its init, waits up to PLC_SWITCH_REPORT_WAIT_MS inside the
+ * request hold; still UNKNOWN then, it logs "no switch owner has reported a
+ * position" and leaves the PLC stopped. Releases the plugin request hold on
+ * every path. When the start was held, the gate is checked again after the
+ * release: a flip to RUN while requests were held then starts the PLC here,
  * since its own request was dropped. A flip to STOP after a begun start is
  * corrected by the switch-movement reconciliation once the start lands.
  */

@@ -122,15 +122,49 @@ Authorization: Bearer <token>
 **Response:**
 ```json
 {
-  "status": "PLC started successfully"
+  "status": "START:OK"
 }
 ```
 
+`status` is the runtime's reply to the `START` socket command, forwarded verbatim. The webserver
+waits up to 15 s for it.
+
 **Possible Status Values:**
-- `"PLC started successfully"` - PLC transitioned to RUNNING state
-- `"PLC is already running"` - PLC was already in RUNNING state
-- `"No PLC program loaded"` - No compiled program available
-- `"No response from runtime"` - Runtime process not responding
+- `"START:OK"` - The start was accepted. While the runtime process has a switch owner registered,
+  the reply comes once the switch gate let the start through, after the plugin re-initialisation
+  and the wait of up to 2 s, and before the PLC cycle thread is created; a failure after that point
+  lands ERROR, which `/api/status` reports. A switch owner is registered once the process has
+  initialised a switch owner plugin from its plugin configuration, at boot or during an earlier
+  start, and that plugin declared ownership (`owns_mode_switch`) or reported a position; it stays
+  registered until a start loads a plugin configuration without it. With no switch owner
+  registered, the reply comes as soon as the start begins.
+
+  The exception is the first START after an upload whose plugin configuration adds a switch owner
+  plugin, on a process with no switch owner registered yet (for example a freshly installed
+  runtime, or one that was running a project without such a plugin). That START replies
+  `START:OK` at once, and the switch gate can then refuse it before the first scan: no scan runs,
+  the PLC lands STOPPED, and `/api/status` reports `"STOPPED"`. The reason is the log line, which
+  a client reads from `GET /api/runtime-logs`: `Start refused: the mode switch is in STOP` or
+  `Start refused: no switch owner has reported a position within 2000 ms`, whatever the switch
+  owner. `switchPosition` alone does not tell the reason. It reads `"stop"` (switch in STOP) only
+  when every switch owner stays attached across the rollback, that is, its `detach_image`
+  accepts. An owner without `detach_image`, or whose `detach_image` refuses, is cleaned up on the
+  rollback, its report stops counting, and `switchPosition` then reads `"unknown"` whatever the
+  switch position. So after this refusal `"unknown"` means either no report within 2 s or a
+  cleaned-up owner. Later STARTs in the same process reply with the gate's decision. A client
+  that needs to know whether the PLC is running after `START:OK` polls `/api/status`.
+- `"START:ERROR_ALREADY_RUNNING"` - PLC was already in RUNNING state
+- `"START:ERROR_SWITCH_STOP"` - The run/stop mode switch was in STOP before the start began, or
+  the switch owner reported STOP after the start re-initialised the plugins; no scan ran and the
+  PLC ends STOPPED. After a refusal at the re-initialisation, the reply comes before the rollback
+  ends, so `/api/status` can report the transition briefly until the PLC lands STOPPED
+- `"START:ERROR_SWITCH_UNKNOWN"` - A switch owner plugin did not report a position within 2 s
+  of the start re-initialising the plugins; no scan ran and the PLC ends STOPPED. The reply
+  comes before the rollback ends, so `/api/status` can report the transition briefly until the
+  PLC lands STOPPED
+- `"START:ERROR"` - The start could not begin or failed (another state change in flight, no
+  program, a failed load, or the start did not land within 12 s)
+- `null` - Runtime process not responding
 
 ---
 
@@ -171,9 +205,16 @@ Authorization: Bearer <token>
 **Response:**
 ```json
 {
-  "status": "RUNNING"
+  "status": "RUNNING",
+  "switchPosition": "run"
 }
 ```
+
+`switchPosition` is the run/stop mode-switch position:
+- `"run"` - The switch is in RUN, or no plugin owns a switch
+- `"stop"` - The switch is in STOP; every start is refused
+- `"unknown"` - A switch owner plugin has not reported a position since its last init; every
+  start is refused until it does
 
 **Possible Status Values:**
 - `"EMPTY"` - No PLC program loaded
