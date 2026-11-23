@@ -761,13 +761,17 @@ check"), which needs `attestations: read` and `GH_TOKEN`.
 **Tests** -- `.github/workflows/tests.yml`
 
 Runs on every pull request: `gofmt`, `go vet` and `go test -race` for the
-bootloader, `pytest tests/pytest`, `shellcheck` on the installer scripts,
+bootloader, `pytest tests/pytest` on Python 3.13, `shellcheck` on the installer scripts,
 `tests/image/run.sh` (the static checks of the `Dockerfile`), and a check that
 every caller of `install.sh` asks for the build it needs.
 
 `bash tests/image/run.sh --build` also builds the image for the host
-architecture and checks the built layers; it runs by hand, on a buildx builder
-with the `docker-container` driver named by `IMAGE_TEST_BUILDER`.
+architecture and checks the built layers, then checks a running container of
+it: TLS 1.0 and 1.1 refused and 1.2 and 1.3 accepted on port 8443, uploads
+refused without a valid token and for unsafe archives, the webserver and the
+Python plugins on Python 3.13, and OPC-UA offering only the configured security
+profile. It runs by hand, on a buildx builder with the `docker-container` driver
+named by `IMAGE_TEST_BUILDER`.
 
 Not in CI: `tests/integration/harness.sh` (it needs a privileged
 Docker-in-Docker host) and anything hardware-dependent. Both are run by hand.

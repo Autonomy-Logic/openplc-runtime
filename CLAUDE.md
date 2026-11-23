@@ -76,8 +76,8 @@ sudo ./build/plc_main --print-logs
 ## Testing
 
 ```bash
-# Python: creates venvs/test-env, runs all of tests/pytest and core/src/drivers/plugins/python/
-# (including the suites CI skips; pytest.ini sets --maxfail=3)
+# Python 3.13 (the image's and CI's version; the script uses python3): creates venvs/test-env, runs all of
+# tests/pytest and core/src/drivers/plugins/python/ (including the suites CI skips; pytest.ini sets --maxfail=3)
 bash scripts/run-pytest.sh
 
 # C unit tests (Ceedling, project.yml, tests/test_*.c; needs Python 3.12 headers); coverage with gcov:all
@@ -89,7 +89,8 @@ ceedling gcov:all
 ./tests/host/run.sh
 
 # Image: static checks of the Dockerfile and the install.sh default (no Docker); --build also builds the
-# image for the host and checks its layers (needs a docker-container buildx builder, IMAGE_TEST_BUILDER)
+# image for the host, checks its layers, then TLS, upload refusals, plugin start and OPC-UA profiles on a
+# running container (needs a docker-container buildx builder, IMAGE_TEST_BUILDER)
 bash tests/image/run.sh
 IMAGE_TEST_BUILDER=<builder> bash tests/image/run.sh --build
 
@@ -98,12 +99,13 @@ cd bootloader && test -z "$(gofmt -l .)" && go vet ./... && go test -race -count
 ```
 
 - CI (`.github/workflows/tests.yml`, on PRs, pushes to `development`/`main` and manual dispatch): gofmt,
-  go vet and `go test -race` for `bootloader/`; pytest over `tests/pytest` excluding the `plugins`,
+  go vet and `go test -race` for `bootloader/`; pytest on Python 3.13 over `tests/pytest` excluding the `plugins`,
   `modbus_master` and `modbus_slave` suites (red on the base branch), plus the named plugin suites known
   green; shellcheck on `install.sh`, `scripts/install-docker.sh`, `windows/provision-msys2.sh` and
   `tests/integration/harness.sh`, `scripts/verify-base-image.sh`, `scripts/publish-plan.sh` and `tests/image/`;
-  `tests/image/run.sh` (static image checks, and the base check and publish plan scripts against fake `gh` and
-  `docker`); a check that Windows and Docker callers run `install.sh --native`.
+  `tests/image/run.sh` (static image checks, the base check and publish plan scripts against fake `gh` and
+  `docker`, and the Python version of the Webserver job); a check that Windows and Docker callers run
+  `install.sh --native`.
 - Image publishing (`.github/workflows/docker.yml`, `build` job): `scripts/publish-plan.sh` decides package, tags
   and version for a `v*` tag push (release, `latest` only for a tag without `-`), a manual run with `release_tag`
   (release package, never `latest`) or with `test_tag` (`ghcr.io/autonomy-logic/openplc-runtime-test`), and
