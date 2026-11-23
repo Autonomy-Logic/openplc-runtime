@@ -17,13 +17,15 @@ export TESTS_DIR REPO_ROOT
 . "$TESTS_DIR/built.sh"
 # shellcheck source=tests/image/base-check.sh
 . "$TESTS_DIR/base-check.sh"
+# shellcheck source=tests/image/publish-plan.sh
+. "$TESTS_DIR/publish-plan.sh"
 
 usage() {
     cat <<EOF
 usage: run.sh [--build]
 
-Runs the static checks on the repository Dockerfile and its fixtures, and the base image check
-script against fake gh and docker.
+Runs the static checks on the repository Dockerfile and its fixtures, the base image check script
+against fake gh and docker, and the publish plan script against a fake registry.
 --build also builds the image and runs the built-image checks; see built.sh for what they need.
 EOF
 }
@@ -39,5 +41,6 @@ done
 
 run_static_checks
 run_base_checks
+run_publish_checks
 [ "$build" = 0 ] || run_built_checks
 finish
