@@ -52,6 +52,37 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
+repo="${ref#*/}"
+repo="${repo%%[@:]*}"
+case "${FAKE_DOCKER_ERROR:-}" in
+    "") ;;
+    unauthorized)
+        printf 'ERROR: failed to authorize: failed to fetch oauth token: unexpected status from GET request to https://ghcr.io/token?scope=repository%%3A%s%%3Apull&service=ghcr.io: 401 Unauthorized\n' "$repo" >&2
+        exit 1
+        ;;
+    token-not-found)
+        printf 'ERROR: failed to authorize: failed to fetch anonymous token: unexpected status from GET request to https://ghcr.io/token?scope=repository%%3A%s%%3Apull&service=ghcr.io: 404 Not Found\n' "$repo" >&2
+        exit 1
+        ;;
+    rate-limited)
+        printf 'ERROR: unexpected status from HEAD request to https://ghcr.io/v2/%s/manifests/%s: 429 Too Many Requests\n' "$repo" "${ref##*:}" >&2
+        exit 1
+        ;;
+    network)
+        printf 'ERROR: failed to do request: Head "https://ghcr.io/v2/%s/manifests/%s": dial tcp: lookup ghcr.io: no such host\n' "$repo" "${ref##*:}" >&2
+        exit 1
+        ;;
+    other-ref-not-found)
+        printf 'ERROR: %s-other: not found\n' "$ref" >&2
+        exit 1
+        ;;
+    empty) exit 1 ;;
+    *)
+        printf 'fake docker: unsupported FAKE_DOCKER_ERROR: %s\n' "$FAKE_DOCKER_ERROR" >&2
+        exit 1
+        ;;
+esac
+
 if [ "${FAKE_DOCKER_EXIT:-0}" != 0 ]; then
     printf 'ERROR: %s: not found\n' "$ref" >&2
     exit "$FAKE_DOCKER_EXIT"

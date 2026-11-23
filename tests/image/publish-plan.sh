@@ -11,20 +11,37 @@ REGISTRY="$RELEASE_IMAGE:latest $RELEASE_IMAGE:v4.3.0 $RELEASE_IMAGE:v4.3.1 $REL
 BOOTLOADER_TAGS='${{ steps.plan.outputs.releasable == '"'true'"' && format('"'{0}:{1},{0}:latest'"', steps.plan.outputs.image, steps.plan.outputs.version) || format('"'{0}:{1}'"', steps.plan.outputs.image, steps.plan.outputs.version) }}'
 PLAN_WORK=""
 
+PLAN_DOCKER_ERROR=""
+
+# Links the tools the script may call, docker excluded, into a directory that becomes the whole PATH.
+plan_tools_without_docker() {
+    local tool path
+    for tool in awk grep sed tr cat head tail cut sort env dirname basename; do
+        path="$(command -v "$tool")" && ln -s "$path" "$1/$tool"
+    done
+}
+
 # Runs the script in a clean environment with the fake docker first on PATH:
 # plan_run <case> <event> <ref> <release_tag> <test_tag>; sets PLAN_RC, PLAN_STDOUT, PLAN_STDERR.
+# PLAN_DOCKER_ERROR becomes the fake's FAKE_DOCKER_ERROR; "missing" runs with no docker on PATH at all.
 plan_run() {
-    local ref_type=branch
+    local ref_type=branch path
     CASE_DIR="$PLAN_WORK/$1"
     mkdir -p "$CASE_DIR/bin"
-    cp "$TESTS_DIR/fake-docker.sh" "$CASE_DIR/bin/docker"
-    chmod +x "$CASE_DIR/bin/docker"
     : >"$CASE_DIR/docker.log"
+    if [ "$PLAN_DOCKER_ERROR" = missing ]; then
+        plan_tools_without_docker "$CASE_DIR/bin"
+        path="$CASE_DIR/bin"
+    else
+        cp "$TESTS_DIR/fake-docker.sh" "$CASE_DIR/bin/docker"
+        chmod +x "$CASE_DIR/bin/docker"
+        path="$CASE_DIR/bin:$PATH"
+    fi
     case "$3" in
         refs/tags/*) ref_type=tag ;;
     esac
     PLAN_RC=0
-    (cd "$REPO_ROOT" && env -i PATH="$CASE_DIR/bin:$PATH" HOME="$HOME" \
+    (cd "$REPO_ROOT" && env -i PATH="$path" HOME="$HOME" FAKE_DOCKER_ERROR="$PLAN_DOCKER_ERROR" \
         GITHUB_EVENT_NAME="$2" GITHUB_REF="$3" GITHUB_REF_NAME="${3#refs/*/}" GITHUB_REF_TYPE="$ref_type" \
         RELEASE_TAG="$4" INPUT_RELEASE_TAG="$4" TEST_TAG="$5" INPUT_TEST_TAG="$5" \
         FAKE_DOCKER_LOG="$CASE_DIR/docker.log" FAKE_DOCKER_EXISTING="$REGISTRY" FAKE_DOCKER_DIGEST="$PLAN_DIGEST" \
@@ -154,6 +171,47 @@ check_plan_existing_release_tag_fails() {
     expect_plan_error || rc=1
     expect_existence_checked "$RELEASE_IMAGE:v4.3.1" || rc=1
     return "$rc"
+}
+
+# Checks that an answer other than a clear "not found" for the reference refuses: exit 2, an error: line on
+# stderr, no image= or tags= line on stdout: registry_error_refused <fake error>.
+registry_error_refused() {
+    local rc=0
+    PLAN_DOCKER_ERROR="$1"
+    plan_run "registry-$1" workflow_dispatch refs/heads/development v4.4.1 ""
+    PLAN_DOCKER_ERROR=""
+    expect_plan_error || return 1
+    [ "$PLAN_RC" = 2 ] || { echo "expected exit 2, got $(plan_result)"; rc=1; }
+    printf '%s\n' "$PLAN_STDERR" | grep -q '^error: ' || { echo "no error: line on stderr: $(plan_result)"; rc=1; }
+    return "$rc"
+}
+
+check_plan_registry_unauthorized_refused() {
+    registry_error_refused unauthorized
+}
+
+check_plan_registry_token_not_found_refused() {
+    registry_error_refused token-not-found
+}
+
+check_plan_registry_rate_limited_refused() {
+    registry_error_refused rate-limited
+}
+
+check_plan_registry_network_error_refused() {
+    registry_error_refused network
+}
+
+check_plan_registry_not_found_for_other_reference_refused() {
+    registry_error_refused other-ref-not-found
+}
+
+check_plan_registry_empty_error_refused() {
+    registry_error_refused empty
+}
+
+check_plan_docker_missing_refused() {
+    registry_error_refused missing
 }
 
 check_plan_test_tag_only_in_release_package_passes() {
@@ -351,6 +409,13 @@ run_publish_checks() {
     run_check "plan/release-tag-only-in-test-package-passes" check_plan_release_tag_only_in_test_package_passes
     run_check "plan/latest-only-for-stable-tag-push" check_plan_latest_only_for_stable_tag_push
     run_check "plan/stdout-holds-only-output-lines" check_plan_stdout_holds_only_output_lines
+    run_check "plan/registry-unauthorized-refused" check_plan_registry_unauthorized_refused
+    run_check "plan/registry-token-not-found-refused" check_plan_registry_token_not_found_refused
+    run_check "plan/registry-rate-limited-refused" check_plan_registry_rate_limited_refused
+    run_check "plan/registry-network-error-refused" check_plan_registry_network_error_refused
+    run_check "plan/registry-not-found-for-other-reference-refused" check_plan_registry_not_found_for_other_reference_refused
+    run_check "plan/registry-empty-error-refused" check_plan_registry_empty_error_refused
+    run_check "plan/docker-missing-refused" check_plan_docker_missing_refused
     run_check "workflow/docker-dispatch-inputs" check_workflow_docker_dispatch_inputs
     run_check "workflow/docker-build-tags-from-plan" check_workflow_docker_build_tags_from_plan
     run_check "workflow/docker-build-plan-gets-dispatch-inputs" check_workflow_docker_build_plan_gets_dispatch_inputs
