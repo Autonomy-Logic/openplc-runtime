@@ -1,0 +1,53 @@
+{
+  "targets": [
+    {
+      "name": "venvs",
+      "base": "debian:trixie",
+      "platform": "linux/arm64 ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1@sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b ",
+      "location": {
+        "ranges": [
+          {
+            "start": {
+              "line": 1
+            },
+            "end": {
+              "line": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "builder",
+      "base": "ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1@sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b",
+      "location": {
+        "ranges": [
+          {
+            "start": {
+              "line": 2
+            },
+            "end": {
+              "line": 2
+            }
+          }
+        ]
+      }
+    },
+    {
+      "default": true,
+      "base": "ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1@sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b",
+      "location": {
+        "ranges": [
+          {
+            "start": {
+              "line": 3
+            },
+            "end": {
+              "line": 3
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

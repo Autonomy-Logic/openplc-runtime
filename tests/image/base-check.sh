@@ -25,7 +25,23 @@ split-heredoc-marker no-heredoc
 mount-from-upper-key copy-from-stages-only
 mount-from-quoted-pair copy-from-stages-only
 "
+HIDDEN_IMAGE_INPUTS="
+copy-from-flag-backslash plain-flags
+copy-from-flag-double-quoted plain-flags
+copy-from-flag-single-quoted plain-flags
+mount-flag-name-quoted plain-flags
+mount-from-key-single-quoted plain-flags
+mount-from-key-backslash plain-flags
+mount-value-quoted-space plain-flags
+chown-quote-hides-from plain-flags
+from-platform-quoted-space plain-flags
+onbuild-copy-from-image no-onbuild
+onbuild-mount-from-image no-onbuild
+repository-escaped-from plain-flags
+"
 TARGETS_CALL="buildx build --call=targets,format=json -"
+CHECK_CALL="buildx build --check --progress=plain -"
+ESCAPED_FROM_LINE='COPY --fr\om=debian:trixie /etc/os-release /etc/os-release'
 LABEL_LINE="LABEL org.opencontainers.image.base.name=\"$BASE_REF\" org.opencontainers.image.base.digest=\"$BASE_DIGEST\""
 
 # Makes a case directory with the fake gh and docker and resets their answers: base_setup <case>.
@@ -42,8 +58,10 @@ base_setup() {
     FAKE_DOCKER_DIGEST="$BASE_DIGEST"
     FAKE_DOCKER_TARGETS="$TESTS_DIR/fixtures/targets/valid.json"
     FAKE_DOCKER_STDIN="$CASE_DIR/targets-input"
-    export FAKE_GH_LOG FAKE_DOCKER_LOG FAKE_DOCKER_DIGEST FAKE_DOCKER_TARGETS FAKE_DOCKER_STDIN
-    unset FAKE_GH_EXIT FAKE_GH_SUBJECTS FAKE_DOCKER_EXIT FAKE_DOCKER_TARGETS_EXIT
+    FAKE_DOCKER_CHECK="$TESTS_DIR/fixtures/check/valid"
+    FAKE_DOCKER_CHECK_STDIN="$CASE_DIR/check-input"
+    export FAKE_GH_LOG FAKE_DOCKER_LOG FAKE_DOCKER_DIGEST FAKE_DOCKER_TARGETS FAKE_DOCKER_STDIN FAKE_DOCKER_CHECK FAKE_DOCKER_CHECK_STDIN
+    unset FAKE_GH_EXIT FAKE_GH_SUBJECTS FAKE_DOCKER_EXIT FAKE_DOCKER_TARGETS_EXIT FAKE_DOCKER_REAL
 }
 
 # Runs the script from a directory with the fakes first on PATH, setting BASE_RC and BASE_OUT.
@@ -376,6 +394,13 @@ check_base_plain_text_failure_reports_only_that_rule() {
     fi
 }
 
+check_base_usage_names_buildkit_check() {
+    local out
+    out="$("$BASH" "$BASE_SCRIPT" --help 2>&1)"
+    printf '%s\n' "$out" | grep -q -- '--check' ||
+        { echo "the usage does not name the BuildKit --check run: $(clip "$(printf '%s' "$out" | tr '\n' ' ')")"; return 1; }
+}
+
 check_base_usage_says_no_attestation_skips_buildkit() {
     local out
     out="$("$BASH" "$BASE_SCRIPT" --help 2>&1)"
@@ -477,25 +502,176 @@ check_base_buildkit_stage_on_earlier_stage_passes() {
     return "$rc"
 }
 
-# Makes a case directory whose PATH holds the fake gh and the real docker.
-real_docker_setup() {
-    base_setup "$1"
-    rm -f "$CASE_DIR/bin/docker"
-    command -v docker >/dev/null 2>&1 || { echo "docker not found"; return 1; }
+check_base_buildkit_two_documents_rejected() {
+    local answer="$BASE_WORK/targets-two-documents.json"
+    cat "$TESTS_DIR/fixtures/targets/valid.json" "$TESTS_DIR/fixtures/targets/valid.json" >"$answer"
+    buildkit_rejected two-documents "$answer"
 }
 
-check_base_buildkit_real_repository_passes() {
-    real_docker_setup real-repository || return 1
+# Writes the repository Dockerfile with one line added after the last build output copy into the case directory.
+repository_with_line() {
+    LINE="$1" awk '{ print } /^COPY --from=builder \/workdir\/\.installed / { print ENVIRON["LINE"] }' \
+        "$REPO_ROOT/Dockerfile" >"$CASE_DIR/Dockerfile"
+    ! cmp -s "$REPO_ROOT/Dockerfile" "$CASE_DIR/Dockerfile" || { echo "no line was added to the Dockerfile"; return 1; }
+}
+
+# Copies scripts/ into the case directory with the given rules always passing and points the caller's BASE_SCRIPT at the copy.
+scripts_with_rules_off() {
+    local id
+    cp -R "$REPO_ROOT/scripts" "$CASE_DIR/scripts"
+    for id in "$@"; do
+        printf '\ncheck_%s() {\n    return 0\n}\n' "${id//-/_}" >>"$CASE_DIR/scripts/lib/dockerfile.sh"
+    done
+    BASE_SCRIPT="$CASE_DIR/scripts/verify-base-image.sh"
+}
+
+# Writes one input that hides an image in a flag or an ONBUILD into the case directory: hidden_image_input <case>.
+hidden_image_input() {
+    case "$1" in
+        repository-escaped-from) repository_with_line "$ESCAPED_FROM_LINE" ;;
+        *) cp "$TESTS_DIR/fixtures/$1.Dockerfile" "$CASE_DIR/Dockerfile" ;;
+    esac
+}
+
+# Expects the check to reject a hidden-image input with the named rule: check_base_hidden_image_rejected <offline|full> <case> <rule>.
+check_base_hidden_image_rejected() {
+    local rc=0
+    base_setup "hidden-$1-$2"
+    hidden_image_input "$2" || return 1
+    if [ "$1" = offline ]; then
+        base_run "$REPO_ROOT" --no-attestation "$CASE_DIR/Dockerfile"
+    else
+        case "$2" in
+            onbuild-*) export FAKE_DOCKER_TARGETS="$TESTS_DIR/fixtures/targets/stage-on-stage.json" ;;
+            from-platform-*) export FAKE_DOCKER_TARGETS="$TESTS_DIR/fixtures/targets/platform-hides-base.json" ;;
+        esac
+        export FAKE_DOCKER_CHECK="$TESTS_DIR/fixtures/check/second-image"
+        base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
+    fi
+    expect_rejected || rc=1
+    expect_rule_error "$3" || rc=1
+    return "$rc"
+}
+
+expect_check_asked() {
+    grep -Fxq -- "$CHECK_CALL" "$FAKE_DOCKER_LOG" ||
+        { echo "docker was not asked '$CHECK_CALL'; docker calls: $(tr '\n' ';' <"$FAKE_DOCKER_LOG")"; return 1; }
+}
+
+# Runs the full check on the repository Dockerfile with BuildKit giving a recorded check answer: images_run <case> <answer>.
+images_run() {
+    base_setup "images-$1"
+    cp "$REPO_ROOT/Dockerfile" "$CASE_DIR/Dockerfile"
+    export FAKE_DOCKER_CHECK="$TESTS_DIR/fixtures/check/$2"
+    base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
+}
+
+# Expects the buildkit-images rule to reject the repository Dockerfile for a recorded check answer: images_rejected <case> <answer>.
+images_rejected() {
+    local rc=0
+    images_run "$@"
+    expect_rejected || rc=1
+    expect_rule_error buildkit-images || rc=1
+    expect_check_asked || rc=1
+    return "$rc"
+}
+
+check_base_images_asked_about_checked_file() {
+    local rc=0
+    base_setup images-asked
+    { cat "$REPO_ROOT/Dockerfile"; printf '# checked copy\n'; } >"$CASE_DIR/Dockerfile"
+    base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
+    expect_pass || rc=1
+    expect_check_asked || rc=1
+    cmp -s "$CASE_DIR/Dockerfile" "$FAKE_DOCKER_CHECK_STDIN" || { echo "BuildKit --check did not get the checked Dockerfile on stdin"; rc=1; }
+    return "$rc"
+}
+
+check_base_images_after_buildkit_stages() {
+    local targets check
+    base_setup images-order
     base_run "$REPO_ROOT" "$REPO_ROOT/Dockerfile"
-    expect_pass
+    targets="$(grep -nFx -- "$TARGETS_CALL" "$FAKE_DOCKER_LOG" | head -1 | cut -d: -f1)"
+    check="$(grep -nFx -- "$CHECK_CALL" "$FAKE_DOCKER_LOG" | head -1 | cut -d: -f1)"
+    [ -n "$targets" ] && [ -n "$check" ] && [ "$targets" -lt "$check" ] ||
+        { echo "expected '$TARGETS_CALL' before '$CHECK_CALL'; docker calls: $(tr '\n' ';' <"$FAKE_DOCKER_LOG")"; return 1; }
+}
+
+check_base_images_uncached_answer_passes() {
+    local rc=0
+    images_run uncached uncached
+    expect_pass || rc=1
+    expect_check_asked || rc=1
+    return "$rc"
+}
+
+check_base_images_second_image_rejected() {
+    images_rejected second-image second-image
+}
+
+check_base_images_second_image_rejected_without_offline_rules() {
+    local rc=0 BASE_SCRIPT
+    base_setup images-rules-off
+    scripts_with_rules_off plain-flags no-onbuild
+    repository_with_line "$ESCAPED_FROM_LINE" || return 1
+    export FAKE_DOCKER_CHECK="$TESTS_DIR/fixtures/check/second-image"
+    base_run "$CASE_DIR" "$CASE_DIR/Dockerfile"
+    expect_rejected || rc=1
+    expect_rule_error buildkit-images || rc=1
+    expect_check_asked || rc=1
+    return "$rc"
+}
+
+check_base_images_tag_without_digest_rejected() {
+    images_rejected tag-only pin-and-tag-only
+}
+
+check_base_images_no_image_rejected() {
+    images_rejected no-image no-image
+}
+
+check_base_images_docker_failure_rejected() {
+    images_rejected docker-fails lint-warnings
+}
+
+check_base_images_unreadable_answer_rejected() {
+    images_rejected unreadable unreadable
+}
+
+# Makes a case directory whose PATH holds the fake gh and a docker that logs each call and runs the real docker.
+real_docker_setup() {
+    base_setup "$1"
+    FAKE_DOCKER_REAL="$(command -v docker)" || { echo "docker not found"; return 1; }
+    export FAKE_DOCKER_REAL
+}
+
+check_base_buildkit_real_repository_passes_twice() {
+    local run calls rc=0
+    real_docker_setup real-repository || return 1
+    for run in 1 2; do
+        base_run "$REPO_ROOT" "$REPO_ROOT/Dockerfile"
+        expect_pass || { echo "on run $run"; rc=1; }
+    done
+    calls="$(grep -cFx -- "$CHECK_CALL" "$FAKE_DOCKER_LOG")"
+    [ "$calls" = 2 ] || { echo "docker was asked '$CHECK_CALL' $calls times in 2 runs"; rc=1; }
+    return "$rc"
+}
+
+check_base_buildkit_real_escaped_flag_rejected() {
+    local rc=0 BASE_SCRIPT
+    real_docker_setup real-escaped-flag || return 1
+    scripts_with_rules_off plain-flags no-onbuild
+    repository_with_line "$ESCAPED_FROM_LINE" || return 1
+    base_run "$CASE_DIR" "$CASE_DIR/Dockerfile"
+    expect_rejected || rc=1
+    expect_rule_error buildkit-images || rc=1
+    return "$rc"
 }
 
 check_base_buildkit_real_form_feed_rejected() {
     local rc=0 BASE_SCRIPT
     real_docker_setup real-form-feed || return 1
-    cp -R "$REPO_ROOT/scripts" "$CASE_DIR/scripts"
-    printf '\ncheck_plain_text_only() {\n    return 0\n}\n' >>"$CASE_DIR/scripts/lib/dockerfile.sh"
-    BASE_SCRIPT="$CASE_DIR/scripts/verify-base-image.sh"
+    scripts_with_rules_off plain-text-only
     review_input form-feed-appended "$CASE_DIR/Dockerfile" || return 1
     base_run "$CASE_DIR" "$CASE_DIR/Dockerfile"
     expect_rejected || rc=1
@@ -636,7 +812,7 @@ check_workflow_base_check_no_login() {
 
 # Runs the base check script against fake gh and docker and checks the workflows that run it.
 run_base_checks() {
-    local fixture review rule
+    local fixture review rule hidden
     BASE_WORK="$(mktemp -d)"
     BASE_WORK="$(cd "$BASE_WORK" && pwd -P)"
     run_check "base/offline-repository-dockerfile-passes" check_base_offline_repository_passes
@@ -673,6 +849,7 @@ run_base_checks() {
     run_check "base/tag-on-another-digest-rejected" check_base_tag_on_another_digest_rejected
     run_check "base/tag-missing-from-registry-rejected" check_base_tag_missing_from_registry_rejected
     run_check "base/usage-says-no-attestation-skips-buildkit" check_base_usage_says_no_attestation_skips_buildkit
+    run_check "base/usage-names-buildkit-check" check_base_usage_names_buildkit_check
     run_check "base/buildkit-asked-about-checked-file" check_base_buildkit_asked_about_checked_file
     run_check "base/buildkit-extra-stage-rejected" check_base_buildkit_extra_stage_rejected
     run_check "base/buildkit-missing-stage-rejected" check_base_buildkit_missing_stage_rejected
@@ -685,6 +862,21 @@ run_base_checks() {
     run_check "base/buildkit-empty-answer-rejected" check_base_buildkit_empty_answer_rejected
     run_check "base/buildkit-targets-without-base-compared-by-name" check_base_buildkit_targets_without_base_compared_by_name
     run_check "base/buildkit-stage-on-earlier-stage-passes" check_base_buildkit_stage_on_earlier_stage_passes
+    run_check "base/buildkit-two-documents-rejected" check_base_buildkit_two_documents_rejected
+    while read -r hidden rule; do
+        [ -n "$hidden" ] || continue
+        run_check "base/offline-rejects-hidden-image-$hidden" check_base_hidden_image_rejected offline "$hidden" "$rule"
+        run_check "base/full-rejects-hidden-image-$hidden" check_base_hidden_image_rejected full "$hidden" "$rule"
+    done <<<"$HIDDEN_IMAGE_INPUTS"
+    run_check "base/buildkit-images-asked-about-checked-file" check_base_images_asked_about_checked_file
+    run_check "base/buildkit-images-after-buildkit-stages" check_base_images_after_buildkit_stages
+    run_check "base/buildkit-images-uncached-answer-passes" check_base_images_uncached_answer_passes
+    run_check "base/buildkit-images-second-image-rejected" check_base_images_second_image_rejected
+    run_check "base/buildkit-images-second-image-rejected-without-offline-rules" check_base_images_second_image_rejected_without_offline_rules
+    run_check "base/buildkit-images-tag-without-digest-rejected" check_base_images_tag_without_digest_rejected
+    run_check "base/buildkit-images-no-image-rejected" check_base_images_no_image_rejected
+    run_check "base/buildkit-images-docker-failure-rejected" check_base_images_docker_failure_rejected
+    run_check "base/buildkit-images-unreadable-answer-rejected" check_base_images_unreadable_answer_rejected
     run_check "workflow/docker-build-checks-base-after-checkout" check_workflow_docker_build_checks_base_after_checkout
     run_check "workflow/docker-build-checks-base-before-qemu-login-build" check_workflow_docker_build_checks_base_before_qemu_login_build
     run_check "workflow/docker-build-checks-attestation" check_workflow_docker_build_checks_attestation
@@ -695,11 +887,12 @@ run_base_checks() {
     rm -rf "$BASE_WORK"
 }
 
-# Runs the base check against the real docker and a fake gh: the repository Dockerfile and the form-feed stage.
+# Runs the base check against the real docker and a fake gh: the repository Dockerfile, the form-feed stage and the escaped flag.
 run_base_buildkit_checks() {
     BASE_WORK="$(mktemp -d)"
     BASE_WORK="$(cd "$BASE_WORK" && pwd -P)"
-    run_check "base/buildkit-real-repository-dockerfile-passes" check_base_buildkit_real_repository_passes
+    run_check "base/buildkit-real-repository-dockerfile-passes-twice" check_base_buildkit_real_repository_passes_twice
     run_check "base/buildkit-real-rejects-form-feed-stage-without-plain-text-rule" check_base_buildkit_real_form_feed_rejected
+    run_check "base/buildkit-real-rejects-escaped-flag-without-offline-rules" check_base_buildkit_real_escaped_flag_rejected
     rm -rf "$BASE_WORK"
 }

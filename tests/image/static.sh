@@ -7,6 +7,8 @@ plain-text-only
 no-blank-in-continuation
 no-parser-directive
 no-heredoc
+plain-flags
+no-onbuild
 from-pinned-by-digest
 from-without-variable
 from-single-pin
@@ -52,6 +54,19 @@ mount-from-image.Dockerfile copy-from-stages-only
 mount-from-image-upper-key.Dockerfile copy-from-stages-only
 mount-from-image-quoted-pair.Dockerfile copy-from-stages-only
 mount-from-image-quoted-value.Dockerfile copy-from-stages-only
+copy-from-flag-backslash.Dockerfile plain-flags
+copy-from-flag-double-quoted.Dockerfile plain-flags
+copy-from-flag-single-quoted.Dockerfile plain-flags
+mount-flag-name-quoted.Dockerfile plain-flags
+mount-from-key-single-quoted.Dockerfile plain-flags
+mount-from-key-backslash.Dockerfile plain-flags
+mount-value-quoted-space.Dockerfile plain-flags
+chown-quote-hides-from.Dockerfile plain-flags
+from-platform-quoted-space.Dockerfile plain-flags
+keyword-quoted.Dockerfile plain-flags
+onbuild-copy-from-image.Dockerfile no-onbuild
+onbuild-mount-from-image.Dockerfile no-onbuild
+onbuild-lower-case.Dockerfile no-onbuild
 final-apt-get.Dockerfile final-no-apt
 final-apt-get-heredoc.Dockerfile no-heredoc
 final-pip-install.Dockerfile final-no-pip-install
@@ -83,6 +98,8 @@ heredoc-in-comment.Dockerfile no-heredoc
 base-labels-split.Dockerfile base-labels
 base-labels-follow-pin.Dockerfile base-labels
 mount-from-stage-upper-and-quoted.Dockerfile copy-from-stages-only
+flags-then-quoted-words.Dockerfile plain-flags
+onbuild-word-in-command.Dockerfile no-onbuild
 "
 
 GENERATED_CASES="

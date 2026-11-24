@@ -1,0 +1,20 @@
+Check complete, 2 warnings have been found!
+
+WARNING: FromAsCasing - https://docs.docker.com/go/dockerfile/rule/from-as-casing/
+'as' and 'FROM' keywords' casing do not match
+/var/folders/jp/chljn0lj6pggtcrfcj4jx9480000gn/T/empty-dir3640906864/Dockerfile:1
+--------------------
+   1 | >>> FROM ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1@sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b as venvs
+   2 |     FROM ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1@sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b AS builder
+   3 |     FROM ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1@sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b
+--------------------
+
+WARNING: JSONArgsRecommended - https://docs.docker.com/go/dockerfile/rule/json-args-recommended/
+JSON arguments recommended for CMD to prevent unintended behavior related to OS signals
+/var/folders/jp/chljn0lj6pggtcrfcj4jx9480000gn/T/empty-dir3640906864/Dockerfile:4
+--------------------
+   2 |     FROM ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1@sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b AS builder
+   3 |     FROM ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1@sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b
+   4 | >>> CMD bash ./start_openplc.sh
+   5 |     
+--------------------

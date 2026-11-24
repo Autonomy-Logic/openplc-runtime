@@ -7,6 +7,10 @@ set -o pipefail
 
 printf '%s\n' "$*" >>"$FAKE_DOCKER_LOG"
 
+if [ -n "${FAKE_DOCKER_REAL:-}" ]; then
+    exec "$FAKE_DOCKER_REAL" "$@"
+fi
+
 # Succeeds when the tag reference is one of the space-separated FAKE_DOCKER_EXISTING references.
 tag_exists() {
     case " $FAKE_DOCKER_EXISTING " in
@@ -14,6 +18,14 @@ tag_exists() {
     esac
     return 1
 }
+
+if [ "$*" = "buildx build --check --progress=plain -" ]; then
+    answer="${FAKE_DOCKER_CHECK:?fake docker: FAKE_DOCKER_CHECK names no check answer}"
+    cat >"${FAKE_DOCKER_CHECK_STDIN:-/dev/null}"
+    cat "$answer/stderr" >&2
+    cat "$answer/stdout"
+    exit "$(cat "$answer/exit")"
+fi
 
 if [ "${1:-} ${2:-}" = "buildx build" ]; then
     if [ "$*" != "buildx build --call=targets,format=json -" ]; then
