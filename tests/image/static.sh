@@ -209,7 +209,7 @@ check_final_no_network() {
     final_must_not_match "$1" \
         '(^|[;&|(`]|\$\()[[:space:]]*(sudo[[:space:]]+)?(curl|wget|git[[:space:]]+(clone|fetch|pull|ls-remote|submodule))([[:space:]]|$)' \
         "runs a network command" RUN || rc=1
-    final_must_not_match "$1" '(^|[[:space:]])([[:alpha:]][[:alnum:]+.-]*://|git@|[^-[:space:]/@][^[:space:]/@]*@[^[:space:]/:]+:)' \
+    final_must_not_match "$1" '(^|[[:space:]",[])([[:alpha:]][[:alnum:]+.-]*://|[A-Za-z0-9_-]+@[A-Za-z0-9.-]+:)' \
         "fetches a remote source" ADD || rc=1
     return "$rc"
 }

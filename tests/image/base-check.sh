@@ -690,6 +690,8 @@ check_base_images_unreadable_line_rejected() {
     [ "$1" != on-stdout ] || quoted="$SECOND_IMAGE"
     [[ "$(rule_error_line buildkit-images)" == *"$quoted"* ]] ||
         { echo "no error: buildkit-images: line quoting '$quoted'; $(base_result)"; rc=1; }
+    ! rule_error_line buildkit-images | LC_ALL=C grep -q '[^[:print:]]' ||
+        { echo "the buildkit-images error line holds a control byte"; rc=1; }
     expect_check_asked || rc=1
     return "$rc"
 }
