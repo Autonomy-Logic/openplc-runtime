@@ -30,7 +30,8 @@ Runs the static checks on the repository Dockerfile and its fixtures, the base i
 against fake gh and docker, the publish plan script against a fake registry, and the Python version
 of the webserver CI job.
 --build also builds the image once and runs the built-image checks and, against a running container
-of it, the TLS, upload, plugin and OPC-UA checks; see built.sh for what they need.
+of it, the TLS, upload, plugin and OPC-UA checks; see built.sh for what they need. It also runs the
+base image check against the real docker BuildKit with a fake gh.
 EOF
 }
 
@@ -48,6 +49,7 @@ run_base_checks
 run_publish_checks
 run_security_static_checks
 if [ "$build" = 1 ]; then
+    run_base_buildkit_checks
     run_built_checks
     run_security_checks "${BUILT_IMAGE:-}"
     built_cleanup

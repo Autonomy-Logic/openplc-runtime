@@ -3,6 +3,8 @@
 # Copyright (c) 2026 Autonomy®
 
 STATIC_CHECKS="
+plain-text-only
+no-blank-in-continuation
 no-parser-directive
 no-heredoc
 from-pinned-by-digest
@@ -40,11 +42,16 @@ check-directive.Dockerfile no-parser-directive
 unknown-directive.Dockerfile no-parser-directive
 directive-after-comment.Dockerfile no-parser-directive
 heredoc-hidden-stage.Dockerfile no-heredoc
+heredoc-split-marker.Dockerfile no-heredoc
+blank-line-in-continuation.Dockerfile no-blank-in-continuation
 extra-stage.Dockerfile stage-layout
 named-final.Dockerfile stage-layout
 final-from-builder.Dockerfile builder-and-final-on-base
 copy-from-image.Dockerfile copy-from-stages-only
 mount-from-image.Dockerfile copy-from-stages-only
+mount-from-image-upper-key.Dockerfile copy-from-stages-only
+mount-from-image-quoted-pair.Dockerfile copy-from-stages-only
+mount-from-image-quoted-value.Dockerfile copy-from-stages-only
 final-apt-get.Dockerfile final-no-apt
 final-apt-get-heredoc.Dockerfile no-heredoc
 final-pip-install.Dockerfile final-no-pip-install
@@ -75,6 +82,31 @@ comment-after-from.Dockerfile no-parser-directive
 heredoc-in-comment.Dockerfile no-heredoc
 base-labels-split.Dockerfile base-labels
 base-labels-follow-pin.Dockerfile base-labels
+mount-from-stage-upper-and-quoted.Dockerfile copy-from-stages-only
+"
+
+GENERATED_CASES="
+form-feed-before-from.Dockerfile plain-text-only
+vertical-tab-before-from.Dockerfile plain-text-only
+no-break-space-before-from.Dockerfile plain-text-only
+carriage-return-before-from.Dockerfile plain-text-only
+form-feed-between-from-and-image.Dockerfile plain-text-only
+form-feed-comment-continuation.Dockerfile plain-text-only
+form-feed-before-escape-directive.Dockerfile plain-text-only
+byte-order-mark.Dockerfile plain-text-only
+non-ascii-comment.Dockerfile plain-text-only
+delete-byte.Dockerfile plain-text-only
+unit-separator-byte.Dockerfile plain-text-only
+whitespace-line-in-continuation.Dockerfile no-blank-in-continuation
+blank-line-after-escape-and-spaces.Dockerfile no-blank-in-continuation
+crlf-blank-line-in-continuation.Dockerfile no-blank-in-continuation
+"
+
+GENERATED_PASSES="
+crlf-line-ends.Dockerfile plain-text-only
+tab-indented.Dockerfile plain-text-only
+printable-ascii-comment.Dockerfile plain-text-only
+crlf-line-ends.Dockerfile no-blank-in-continuation
 "
 
 APT_CMAKE_FROM_APT="3.31.6-2 1:3.30.0-1 3.28.3-1build7"
@@ -351,15 +383,42 @@ static_failures_on() {
     printf '%s\n' "${failed# }"
 }
 
-# Records that the valid fixture passes every static check and that each rule fixture is rejected by its check.
-fixture_checks() {
-    local dir="$TESTS_DIR/fixtures" fixture id failed
-    failed="$(static_failures_on "$dir/valid.Dockerfile")"
-    if [ -z "$failed" ]; then
-        report "fixture/valid.Dockerfile passes every static check" 0
-    else
-        report "fixture/valid.Dockerfile passes every static check" 1 "rejected by: $failed"
-    fi
+# Prints a file with every line ending turned into CR LF.
+crlf() {
+    awk '{ printf "%s\r\n", $0 }' "$1"
+}
+
+# Writes a fixture whose bytes are generated at run time, from valid.Dockerfile unless stated: generated_fixture <name> <path>.
+generated_fixture() {
+    local valid="$TESTS_DIR/fixtures/valid.Dockerfile"
+    case "$1" in
+        form-feed-before-from.Dockerfile) { cat "$valid"; printf '\fFROM debian:trixie\nCMD ["bash", "./start_openplc.sh"]\n'; } ;;
+        vertical-tab-before-from.Dockerfile) { cat "$valid"; printf '\vFROM debian:trixie\n'; } ;;
+        no-break-space-before-from.Dockerfile) { cat "$valid"; printf '\302\240FROM debian:trixie\n'; } ;;
+        carriage-return-before-from.Dockerfile) { cat "$valid"; printf '\rFROM debian:trixie\n'; } ;;
+        form-feed-between-from-and-image.Dockerfile) { cat "$valid"; printf 'FROM\fdebian:trixie AS sneaky\n'; } ;;
+        form-feed-comment-continuation.Dockerfile) { cat "$valid"; printf '\f# x \\\nFROM debian:trixie AS sneaky\n'; } ;;
+        form-feed-before-escape-directive.Dockerfile) { printf '\f# escape=`\n'; cat "$TESTS_DIR/fixtures/escape-directive.Dockerfile"; } ;;
+        byte-order-mark.Dockerfile) { printf '\357\273\277'; cat "$valid"; } ;;
+        non-ascii-comment.Dockerfile) { cat "$valid"; printf '# caf\303\251\n'; } ;;
+        delete-byte.Dockerfile) { cat "$valid"; printf '# \177\n'; } ;;
+        unit-separator-byte.Dockerfile) { cat "$valid"; printf '# \037\n'; } ;;
+        whitespace-line-in-continuation.Dockerfile) { cat "$valid"; printf 'RUN true \\\n \t \nFROM debian:trixie AS sneaky\n'; } ;;
+        blank-line-after-escape-and-spaces.Dockerfile) { cat "$valid"; printf 'RUN true \\ \t\n\nFROM debian:trixie AS sneaky\n'; } ;;
+        crlf-blank-line-in-continuation.Dockerfile) { crlf "$valid"; printf 'RUN true \\\r\n\r\nFROM debian:trixie AS sneaky\r\n'; } ;;
+        crlf-line-ends.Dockerfile) crlf "$valid" ;;
+        tab-indented.Dockerfile) sed "s/^    /$(printf '\t')/" "$valid" ;;
+        printable-ascii-comment.Dockerfile)
+            cat "$valid"
+            awk 'BEGIN { s = "#"; for (i = 32; i < 127; i++) s = s sprintf("%c", i); print s }'
+            ;;
+        *) echo "no generator for $1" >&2; return 1 ;;
+    esac >"$2"
+}
+
+# Records, for the fixtures of a directory, that each case is rejected by its check and each pass passes it.
+fixture_list_checks() {
+    local dir="$1" cases="$2" passes="$3" fixture id
     while read -r fixture id; do
         [ -n "$fixture" ] || continue
         if [ ! -f "$dir/$fixture" ]; then
@@ -371,7 +430,7 @@ fixture_checks() {
         else
             report "fixture/$fixture is rejected by $id" 0
         fi
-    done <<<"$FIXTURE_CASES"
+    done <<<"$cases"
     while read -r fixture id; do
         [ -n "$fixture" ] || continue
         if [ ! -f "$dir/$fixture" ]; then
@@ -381,7 +440,27 @@ fixture_checks() {
         else
             run_check "fixture/$fixture passes $id" "check_${id//-/_}" "$dir/$fixture"
         fi
-    done <<<"$FIXTURE_PASSES"
+    done <<<"$passes"
+}
+
+# Records that the valid fixture passes every static check and that each rule fixture, committed or generated, is rejected by its check.
+fixture_checks() {
+    local dir="$TESTS_DIR/fixtures" generated fixture id failed
+    failed="$(static_failures_on "$dir/valid.Dockerfile")"
+    if [ -z "$failed" ]; then
+        report "fixture/valid.Dockerfile passes every static check" 0
+    else
+        report "fixture/valid.Dockerfile passes every static check" 1 "rejected by: $failed"
+    fi
+    fixture_list_checks "$dir" "$FIXTURE_CASES" "$FIXTURE_PASSES"
+    generated="$(mktemp -d)"
+    while read -r fixture id; do
+        [ -n "$fixture" ] || continue
+        [ -f "$generated/$fixture" ] || generated_fixture "$fixture" "$generated/$fixture" || rm -f "$generated/$fixture"
+    done <<<"$GENERATED_CASES
+$GENERATED_PASSES"
+    fixture_list_checks "$generated" "$GENERATED_CASES" "$GENERATED_PASSES"
+    rm -rf "$generated"
 }
 
 # Fails with a reason when an installer sandbox path is missing.

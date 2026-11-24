@@ -13,6 +13,20 @@ ATTEST_SOURCE_REF="refs/heads/main"
 BASE_WORKFLOW="$REPO_ROOT/.github/workflows/base-image-check.yml"
 DOCKER_WORKFLOW="$REPO_ROOT/.github/workflows/docker.yml"
 BASE_WORK=""
+REVIEW_INPUTS="
+form-feed-appended plain-text-only
+vertical-tab plain-text-only
+no-break-space plain-text-only
+form-feed-in-from plain-text-only
+form-feed-comment-continuation plain-text-only
+form-feed-escape-directive plain-text-only
+blank-line-in-continuation no-blank-in-continuation
+split-heredoc-marker no-heredoc
+mount-from-upper-key copy-from-stages-only
+mount-from-quoted-pair copy-from-stages-only
+"
+TARGETS_CALL="buildx build --call=targets,format=json -"
+LABEL_LINE="LABEL org.opencontainers.image.base.name=\"$BASE_REF\" org.opencontainers.image.base.digest=\"$BASE_DIGEST\""
 
 # Makes a case directory with the fake gh and docker and resets their answers: base_setup <case>.
 base_setup() {
@@ -26,8 +40,10 @@ base_setup() {
     : >"$FAKE_GH_LOG"
     : >"$FAKE_DOCKER_LOG"
     FAKE_DOCKER_DIGEST="$BASE_DIGEST"
-    export FAKE_GH_LOG FAKE_DOCKER_LOG FAKE_DOCKER_DIGEST
-    unset FAKE_GH_EXIT FAKE_GH_SUBJECTS FAKE_DOCKER_EXIT
+    FAKE_DOCKER_TARGETS="$TESTS_DIR/fixtures/targets/valid.json"
+    FAKE_DOCKER_STDIN="$CASE_DIR/targets-input"
+    export FAKE_GH_LOG FAKE_DOCKER_LOG FAKE_DOCKER_DIGEST FAKE_DOCKER_TARGETS FAKE_DOCKER_STDIN
+    unset FAKE_GH_EXIT FAKE_GH_SUBJECTS FAKE_DOCKER_EXIT FAKE_DOCKER_TARGETS_EXIT
 }
 
 # Runs the script from a directory with the fakes first on PATH, setting BASE_RC and BASE_OUT.
@@ -303,6 +319,190 @@ check_base_tag_missing_from_registry_rejected() {
     return "$rc"
 }
 
+# Writes one review input that BuildKit reads differently from the script's parser: review_input <case> <path>.
+review_input() {
+    local p="$BASE_PIN" l="$LABEL_LINE"
+    case "$1" in
+        form-feed-appended) { cat "$REPO_ROOT/Dockerfile"; printf '\fFROM debian:trixie\nCMD ["bash", "./start_openplc.sh"]\n'; } ;;
+        vertical-tab) printf 'FROM %s AS venvs\nFROM %s AS builder\nFROM %s\n%s\n\vFROM debian:trixie\n' "$p" "$p" "$p" "$l" ;;
+        no-break-space) printf 'FROM %s AS venvs\nFROM %s AS builder\nFROM %s\n%s\n\302\240FROM debian:trixie\n' "$p" "$p" "$p" "$l" ;;
+        form-feed-in-from) printf 'FROM %s AS venvs\nFROM\fdebian:trixie AS sneaky\nFROM %s AS builder\nFROM %s\n%s\n' "$p" "$p" "$p" "$l" ;;
+        form-feed-comment-continuation)
+            printf 'FROM %s AS venvs\n\f# x \\\nFROM debian:trixie AS sneaky\nFROM %s AS builder\nFROM %s\n\f# y \\\nCOPY --from=sneaky /etc/os-release /tmp/os-release\n%s\n' \
+                "$p" "$p" "$p" "$l"
+            ;;
+        form-feed-escape-directive)
+            printf '\f# escape=`\nFROM %s AS builder\n\nRUN true \\\nFROM debian:trixie AS sneaky\n\nFROM %s\n\nRUN true \\\nCOPY --from=sneaky /etc/os-release /etc/os-release\n%s\n' \
+                "$p" "$p" "$l"
+            ;;
+        blank-line-in-continuation) cat "$TESTS_DIR/fixtures/blank-line-in-continuation.Dockerfile" ;;
+        split-heredoc-marker) cat "$TESTS_DIR/fixtures/heredoc-split-marker.Dockerfile" ;;
+        mount-from-upper-key) cat "$TESTS_DIR/fixtures/mount-from-image-upper-key.Dockerfile" ;;
+        mount-from-quoted-pair) cat "$TESTS_DIR/fixtures/mount-from-image-quoted-pair.Dockerfile" ;;
+        *) echo "no review input $1" >&2; return 1 ;;
+    esac >"$2"
+}
+
+# Runs the offline check on a review input and expects a rejection naming the rule: check_base_review_input <case> <rule>.
+check_base_review_input() {
+    local rc=0
+    base_setup "review-$1"
+    review_input "$1" "$CASE_DIR/Dockerfile" || return 1
+    base_run "$REPO_ROOT" --no-attestation "$CASE_DIR/Dockerfile"
+    expect_rejected || rc=1
+    expect_rule_error "$2" || rc=1
+    return "$rc"
+}
+
+check_base_form_feed_rejected_before_network() {
+    local rc=0
+    base_setup review-form-feed-attested
+    review_input form-feed-appended "$CASE_DIR/Dockerfile" || return 1
+    base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
+    expect_rejected || rc=1
+    expect_rule_error plain-text-only || rc=1
+    expect_not_called gh "$FAKE_GH_LOG" || rc=1
+    expect_not_called docker "$FAKE_DOCKER_LOG" || rc=1
+    return "$rc"
+}
+
+check_base_plain_text_failure_reports_only_that_rule() {
+    base_setup plain-text-first
+    printf '# syntax=docker/dockerfile:1\nFROM debian:trixie\n\fFROM debian:trixie AS sneaky\n' >"$CASE_DIR/Dockerfile"
+    base_run "$REPO_ROOT" --no-attestation "$CASE_DIR/Dockerfile"
+    if [ "$BASE_RC" = 0 ] || [ "$(base_error_lines)" != 1 ] || ! expect_rule_error plain-text-only >/dev/null; then
+        echo "expected a non-zero exit with only an error: plain-text-only: line, got $(base_result)"
+        return 1
+    fi
+}
+
+check_base_usage_says_no_attestation_skips_buildkit() {
+    local out
+    out="$("$BASH" "$BASE_SCRIPT" --help 2>&1)"
+    printf '%s\n' "$out" | grep -qi buildkit ||
+        { echo "the usage does not mention the BuildKit cross-check: $(clip "$(printf '%s' "$out" | tr '\n' ' ')")"; return 1; }
+}
+
+expect_targets_asked() {
+    grep -Fxq -- "$TARGETS_CALL" "$FAKE_DOCKER_LOG" ||
+        { echo "docker was not asked '$TARGETS_CALL'; docker calls: $(tr '\n' ';' <"$FAKE_DOCKER_LOG")"; return 1; }
+}
+
+# Runs the full check on the repository Dockerfile with BuildKit answering a targets file: buildkit_run <case> <answer> [docker exit].
+buildkit_run() {
+    base_setup "buildkit-$1"
+    cp "$REPO_ROOT/Dockerfile" "$CASE_DIR/Dockerfile"
+    export FAKE_DOCKER_TARGETS="$2"
+    [ -z "${3:-}" ] || export FAKE_DOCKER_TARGETS_EXIT="$3"
+    base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
+}
+
+# Expects the buildkit-stages rule to reject the repository Dockerfile for a BuildKit answer: buildkit_rejected <case> <answer> [docker exit].
+buildkit_rejected() {
+    local rc=0
+    buildkit_run "$@"
+    expect_rejected || rc=1
+    expect_rule_error buildkit-stages || rc=1
+    expect_targets_asked || rc=1
+    return "$rc"
+}
+
+check_base_buildkit_asked_about_checked_file() {
+    local rc=0
+    base_setup buildkit-asked
+    { cat "$REPO_ROOT/Dockerfile"; printf '# checked copy\n'; } >"$CASE_DIR/Dockerfile"
+    base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
+    expect_pass || rc=1
+    expect_targets_asked || rc=1
+    cmp -s "$CASE_DIR/Dockerfile" "$FAKE_DOCKER_STDIN" || { echo "BuildKit did not get the checked Dockerfile on stdin"; rc=1; }
+    return "$rc"
+}
+
+check_base_buildkit_extra_stage_rejected() {
+    buildkit_rejected extra-stage "$TESTS_DIR/fixtures/targets/extra-stage.json"
+}
+
+check_base_buildkit_missing_stage_rejected() {
+    buildkit_rejected missing-stage "$TESTS_DIR/fixtures/targets/missing-stage.json"
+}
+
+check_base_buildkit_renamed_stage_rejected() {
+    buildkit_rejected renamed-stage "$TESTS_DIR/fixtures/targets/renamed-stage.json"
+}
+
+check_base_buildkit_named_final_stage_rejected() {
+    buildkit_rejected named-final "$TESTS_DIR/fixtures/targets/named-final.json"
+}
+
+check_base_buildkit_reordered_stages_rejected() {
+    buildkit_rejected reordered "$TESTS_DIR/fixtures/targets/reordered.json"
+}
+
+check_base_buildkit_other_base_rejected() {
+    buildkit_rejected other-base "$TESTS_DIR/fixtures/targets/other-base.json"
+}
+
+check_base_buildkit_failure_rejected() {
+    buildkit_rejected docker-fails "$TESTS_DIR/fixtures/targets/valid.json" 1
+}
+
+check_base_buildkit_text_answer_rejected() {
+    local answer="$BASE_WORK/targets-text.txt"
+    printf 'TARGET    DESCRIPTION\nvenvs     \nbuilder   \n(default)\n' >"$answer"
+    buildkit_rejected text-answer "$answer"
+}
+
+check_base_buildkit_empty_answer_rejected() {
+    local answer="$BASE_WORK/targets-empty.json"
+    : >"$answer"
+    buildkit_rejected empty-answer "$answer"
+}
+
+check_base_buildkit_targets_without_base_compared_by_name() {
+    local rc=0
+    buildkit_run no-base "$TESTS_DIR/fixtures/targets/no-base.json"
+    expect_pass || rc=1
+    expect_targets_asked || rc=1
+    return "$rc"
+}
+
+check_base_buildkit_stage_on_earlier_stage_passes() {
+    local rc=0
+    base_setup buildkit-stage-on-stage
+    edited_dockerfile 's|^FROM [^ ]* AS builder$|FROM venvs AS builder|' || return 1
+    export FAKE_DOCKER_TARGETS="$TESTS_DIR/fixtures/targets/stage-on-stage.json"
+    base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
+    expect_pass || rc=1
+    expect_targets_asked || rc=1
+    return "$rc"
+}
+
+# Makes a case directory whose PATH holds the fake gh and the real docker.
+real_docker_setup() {
+    base_setup "$1"
+    rm -f "$CASE_DIR/bin/docker"
+    command -v docker >/dev/null 2>&1 || { echo "docker not found"; return 1; }
+}
+
+check_base_buildkit_real_repository_passes() {
+    real_docker_setup real-repository || return 1
+    base_run "$REPO_ROOT" "$REPO_ROOT/Dockerfile"
+    expect_pass
+}
+
+check_base_buildkit_real_form_feed_rejected() {
+    local rc=0 BASE_SCRIPT
+    real_docker_setup real-form-feed || return 1
+    cp -R "$REPO_ROOT/scripts" "$CASE_DIR/scripts"
+    printf '\ncheck_plain_text_only() {\n    return 0\n}\n' >>"$CASE_DIR/scripts/lib/dockerfile.sh"
+    BASE_SCRIPT="$CASE_DIR/scripts/verify-base-image.sh"
+    review_input form-feed-appended "$CASE_DIR/Dockerfile" || return 1
+    base_run "$CASE_DIR" "$CASE_DIR/Dockerfile"
+    expect_rejected || rc=1
+    expect_rule_error buildkit-stages || rc=1
+    return "$rc"
+}
+
 # Prints the body of a key of the YAML block on stdin, at that block's top indentation; an inline value is printed as its body.
 yaml_child() {
     awk -v key="$1" '
@@ -436,7 +636,7 @@ check_workflow_base_check_no_login() {
 
 # Runs the base check script against fake gh and docker and checks the workflows that run it.
 run_base_checks() {
-    local fixture
+    local fixture review rule
     BASE_WORK="$(mktemp -d)"
     BASE_WORK="$(cd "$BASE_WORK" && pwd -P)"
     run_check "base/offline-repository-dockerfile-passes" check_base_offline_repository_passes
@@ -448,6 +648,12 @@ run_base_checks() {
     done
     run_check "base/offline-rejects-escape-directive-bypass" check_base_offline_rule escape-directive.Dockerfile no-parser-directive
     run_check "base/offline-rejects-heredoc-bypass" check_base_offline_rule heredoc-hidden-stage.Dockerfile no-heredoc
+    while read -r review rule; do
+        [ -n "$review" ] || continue
+        run_check "base/offline-rejects-review-input-$review" check_base_review_input "$review" "$rule"
+    done <<<"$REVIEW_INPUTS"
+    run_check "base/form-feed-rejected-before-gh-and-docker" check_base_form_feed_rejected_before_network
+    run_check "base/plain-text-failure-reports-only-that-rule" check_base_plain_text_failure_reports_only_that_rule
     run_check "base/offline-rejects-changed-base-digest-label" check_base_offline_changed_base_digest_label_rejected
     run_check "base/offline-rejects-missing-base-labels" check_base_offline_missing_base_labels_rejected
     run_check "base/rejects-changed-base-name-label" check_base_changed_base_name_label_rejected
@@ -466,6 +672,19 @@ run_base_checks() {
     run_check "base/matching-attestation-among-others-passes" check_base_matching_attestation_among_others_passes
     run_check "base/tag-on-another-digest-rejected" check_base_tag_on_another_digest_rejected
     run_check "base/tag-missing-from-registry-rejected" check_base_tag_missing_from_registry_rejected
+    run_check "base/usage-says-no-attestation-skips-buildkit" check_base_usage_says_no_attestation_skips_buildkit
+    run_check "base/buildkit-asked-about-checked-file" check_base_buildkit_asked_about_checked_file
+    run_check "base/buildkit-extra-stage-rejected" check_base_buildkit_extra_stage_rejected
+    run_check "base/buildkit-missing-stage-rejected" check_base_buildkit_missing_stage_rejected
+    run_check "base/buildkit-renamed-stage-rejected" check_base_buildkit_renamed_stage_rejected
+    run_check "base/buildkit-named-final-stage-rejected" check_base_buildkit_named_final_stage_rejected
+    run_check "base/buildkit-reordered-stages-rejected" check_base_buildkit_reordered_stages_rejected
+    run_check "base/buildkit-other-base-rejected" check_base_buildkit_other_base_rejected
+    run_check "base/buildkit-docker-failure-rejected" check_base_buildkit_failure_rejected
+    run_check "base/buildkit-text-answer-rejected" check_base_buildkit_text_answer_rejected
+    run_check "base/buildkit-empty-answer-rejected" check_base_buildkit_empty_answer_rejected
+    run_check "base/buildkit-targets-without-base-compared-by-name" check_base_buildkit_targets_without_base_compared_by_name
+    run_check "base/buildkit-stage-on-earlier-stage-passes" check_base_buildkit_stage_on_earlier_stage_passes
     run_check "workflow/docker-build-checks-base-after-checkout" check_workflow_docker_build_checks_base_after_checkout
     run_check "workflow/docker-build-checks-base-before-qemu-login-build" check_workflow_docker_build_checks_base_before_qemu_login_build
     run_check "workflow/docker-build-checks-attestation" check_workflow_docker_build_checks_attestation
@@ -473,5 +692,14 @@ run_base_checks() {
     run_check "workflow/base-check-job" check_workflow_base_check_job
     run_check "workflow/base-check-read-only" check_workflow_base_check_read_only
     run_check "workflow/base-check-no-login" check_workflow_base_check_no_login
+    rm -rf "$BASE_WORK"
+}
+
+# Runs the base check against the real docker and a fake gh: the repository Dockerfile and the form-feed stage.
+run_base_buildkit_checks() {
+    BASE_WORK="$(mktemp -d)"
+    BASE_WORK="$(cd "$BASE_WORK" && pwd -P)"
+    run_check "base/buildkit-real-repository-dockerfile-passes" check_base_buildkit_real_repository_passes
+    run_check "base/buildkit-real-rejects-form-feed-stage-without-plain-text-rule" check_base_buildkit_real_form_feed_rejected
     rm -rf "$BASE_WORK"
 }

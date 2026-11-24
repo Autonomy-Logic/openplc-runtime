@@ -15,6 +15,22 @@ tag_exists() {
     return 1
 }
 
+if [ "${1:-} ${2:-}" = "buildx build" ]; then
+    if [ "$*" != "buildx build --call=targets,format=json -" ]; then
+        printf 'fake docker: unsupported command: %s\n' "$*" >&2
+        exit 1
+    fi
+    cat >"${FAKE_DOCKER_STDIN:-/dev/null}"
+    printf '#0 building with "desktop-linux" instance using docker driver\n\n' >&2
+    printf '#1 [internal] load build definition from Dockerfile\n#1 DONE 0.0s\n' >&2
+    if [ "${FAKE_DOCKER_TARGETS_EXIT:-0}" != 0 ]; then
+        printf 'ERROR: failed to build: failed to solve: dockerfile parse error on line 1: unknown instruction: FROMM (did you mean FROM?)\n' >&2
+        exit "$FAKE_DOCKER_TARGETS_EXIT"
+    fi
+    cat "${FAKE_DOCKER_TARGETS:?fake docker: FAKE_DOCKER_TARGETS names no targets answer}"
+    exit 0
+fi
+
 if [ "${1:-} ${2:-}" = "manifest inspect" ] && [ -n "${FAKE_DOCKER_EXISTING+set}" ]; then
     if [ "$#" -ne 3 ] || [ "${3#-}" != "$3" ]; then
         printf 'fake docker: unsupported command: %s\n' "$*" >&2
