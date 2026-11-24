@@ -190,6 +190,33 @@ check_no_heredoc() {
     [ -z "$found" ] || { echo "heredoc: $found"; return 1; }
 }
 
+check_plain_flags() {
+    local stage kw args tok rc=0
+    local -a toks
+    while IFS=$'\t' read -r stage kw args; do
+        case "$kw" in
+            *\"* | *\'* | *\\*) echo "instruction keyword $kw holds a quote or backslash"; rc=1 ;;
+        esac
+        read -r -a toks <<<"$args"
+        for tok in ${toks[@]+"${toks[@]}"}; do
+            case "$tok" in
+                --*) ;;
+                *) break ;;
+            esac
+            case "$tok" in
+                *\"* | *\'* | *\\*) echo "$kw flag $tok holds a quote or backslash"; rc=1 ;;
+            esac
+        done
+    done < <(df_instructions "$1")
+    return "$rc"
+}
+
+check_no_onbuild() {
+    local found
+    found="$(df_instructions "$1" | awk -F '\t' '$2 == "ONBUILD" { print $2 " " $3 }')"
+    [ -z "$found" ] || { echo "ONBUILD instruction: $found"; return 1; }
+}
+
 check_from_pinned_by_digest() {
     local index name image rc=0
     while IFS=$'\t' read -r index name image; do

@@ -15,7 +15,7 @@ BASE_PACKAGE="ghcr.io/autonomy-logic/openplc-runtime-base"
 SIGNER_REPO="Autonomy-Logic/autonomy-docker"
 SIGNER_WORKFLOW="$SIGNER_REPO/.github/workflows/build.yml"
 SOURCE_REF="refs/heads/main"
-PIN_RULES="no-blank-in-continuation no-parser-directive no-heredoc from-pinned-by-digest from-without-variable from-single-pin copy-from-stages-only base-labels"
+PIN_RULES="no-blank-in-continuation no-parser-directive no-heredoc plain-flags no-onbuild from-pinned-by-digest from-without-variable from-single-pin copy-from-stages-only base-labels"
 TARGETS_JQ='if length == 1 and (.[0].targets | type) == "array" and (.[0].targets | length) > 0
     then .[0].targets[] | [(.name // "-"), (if has("base") then "=" + .base else "" end)] | @tsv
     else error("not a BuildKit targets answer") end'
@@ -29,9 +29,11 @@ usage: verify-base-image.sh [--no-attestation] [Dockerfile]
 Checks that the Dockerfile (default: Dockerfile in the working directory) builds every stage on one
 $BASE_PACKAGE image pinned by tag and digest. Unless --no-attestation is given, also checks
 that the tag resolves to that digest in the registry, that the digest is attested by
-$SIGNER_WORKFLOW on $SOURCE_REF, built on a GitHub-hosted runner, and that BuildKit
-(docker buildx build --call=targets, which builds and pulls nothing) reads the same stages, names
-and bases as this check; --no-attestation skips these three and runs offline.
+$SIGNER_WORKFLOW on $SOURCE_REF, built on a GitHub-hosted runner, that BuildKit
+(docker buildx build --call=targets) reads the same stages, names and bases as this check, and
+that every image BuildKit resolves (docker buildx build --check) is the pin, a BuildKit lint
+warning failing this last step; both BuildKit steps only read the Dockerfile and build and push
+nothing. --no-attestation skips these four and runs offline.
 Prints one error: line per broken rule and exits non-zero when any rule is broken.
 EOF
 }
@@ -100,13 +102,21 @@ check_attestation() {
         fail attestation "no verified attestation names $1@$2 as its subject"
 }
 
+# Prints the first ERROR or lint summary line of BuildKit output files, else the last line of the first one.
+buildkit_error() {
+    local line
+    line="$(grep -h -m 1 -e '^ERROR' -e '^Check complete' "$@" 2>/dev/null)"
+    line="${line%%$'\n'*}"
+    [ -n "$line" ] || line="$(tail -n 1 "$1")"
+    printf '%s\n' "${line:-no message}"
+}
+
 # Fails unless BuildKit lists the stages of the Dockerfile in the same order, with the same names and bases.
 check_buildkit_stages() {
-    local file="$1" err diff
+    local file="$1" diff
     command -v jq >/dev/null 2>&1 || { fail buildkit-stages "jq is needed to read the BuildKit answer and is not on PATH"; return; }
     if ! docker buildx build --call=targets,format=json - <"$file" >"$WORK_DIR/targets.json" 2>"$WORK_DIR/buildkit.err"; then
-        err="$(grep -m 1 '^ERROR' "$WORK_DIR/buildkit.err" || tail -n 1 "$WORK_DIR/buildkit.err")"
-        fail buildkit-stages "docker buildx build --call=targets failed: ${err:-no message}"
+        fail buildkit-stages "docker buildx build --call=targets failed: $(buildkit_error "$WORK_DIR/buildkit.err")"
         return
     fi
     if ! jq -rs "$TARGETS_JQ" "$WORK_DIR/targets.json" >"$WORK_DIR/buildkit.tsv" 2>"$WORK_DIR/jq.err" ||
@@ -125,6 +135,25 @@ check_buildkit_stages() {
         }
         END { if (m < n) printf "BuildKit has %d stages, this check %d\n", m, n }' "$WORK_DIR/script.tsv" "$WORK_DIR/buildkit.tsv")"
     [ -z "$diff" ] || fail buildkit-stages "BuildKit reads the stages differently: $diff"
+}
+
+# Fails unless BuildKit's plain progress output names at least one resolved image and only the pin: check_buildkit_images <Dockerfile> <pin>.
+check_buildkit_images() {
+    local file="$1" pin="$2" image bad=""
+    if ! docker buildx build --check --progress=plain - <"$file" >"$WORK_DIR/check.out" 2>"$WORK_DIR/check.err"; then
+        fail buildkit-images "docker buildx build --check failed: $(buildkit_error "$WORK_DIR/check.err" "$WORK_DIR/check.out")"
+        return
+    fi
+    sed -n 's/^#[0-9][0-9]* \[internal\] load metadata for \([^[:space:]][^[:space:]]*\)$/\1/p' "$WORK_DIR/check.err" |
+        sort -u >"$WORK_DIR/images.txt"
+    if [ ! -s "$WORK_DIR/images.txt" ]; then
+        fail buildkit-images "docker buildx build --check reported no resolved image in its plain progress output"
+        return
+    fi
+    while IFS= read -r image; do
+        [ "$image" = "$pin" ] || bad="$bad $image"
+    done <"$WORK_DIR/images.txt"
+    [ -z "$bad" ] || fail buildkit-images "BuildKit resolves images other than the pin $pin:$bad"
 }
 
 attest=1
@@ -157,6 +186,7 @@ digest="${pin#*@}"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 check_buildkit_stages "$dockerfile"
+check_buildkit_images "$dockerfile" "$pin"
 check_tag "${ref%:*}" "${ref##*:}" "$digest"
 check_attestation "${ref%:*}" "$digest"
 [ "$FAILURES" = 0 ] || exit 1

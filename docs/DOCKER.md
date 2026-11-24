@@ -51,7 +51,9 @@ line feed; when this rule fails it is the only error reported and nothing else
 runs), no empty or whitespace-only line after a line ending in `\`, every
 `FROM` pinned by digest with no variable, one pin for all stages, no parser
 directive (`# <name>=<value>` before the first instruction), no heredoc (`<<`
-outside a comment line, also once continuation lines are joined),
+outside a comment line, also once continuation lines are joined), plain flags
+(no instruction keyword and no leading `--` flag of any instruction, `FROM`
+included, holding a double quote, a single quote or a backslash), no `ONBUILD` instruction in any letter case,
 `COPY --from` and `RUN --mount` (`from` key in any letter case, quoted or not)
 only from stages of the file, and the final stage's
 `org.opencontainers.image.base.name` and `org.opencontainers.image.base.digest`
@@ -73,9 +75,19 @@ With the network it also checks, with the `docker` and `gh` on `PATH`, that:
   same names and, where BuildKit reports one, the same base reference. A
   failing `docker`, or an answer `jq` cannot read, fails the rule. This step
   only reads the `Dockerfile`: it builds, pulls and pushes nothing.
+- every image BuildKit resolves is the pin (rule `buildkit-images`):
+  `docker buildx build --check --progress=plain -`, with the `Dockerfile` on
+  standard input, prints one `#<n> [internal] load metadata for <image>` line on
+  standard error per image a stage builds on, copies from or mounts, however
+  the `Dockerfile` writes it. The rule fails unless at least one such line is
+  printed and every image it names is exactly
+  `<name>:<tag>@sha256:<digest>` of the pin. A non-zero `docker` exit fails the
+  rule, so a BuildKit lint warning in the `Dockerfile` fails the base check; so
+  does output with no such line. This step reads only image metadata from the
+  registry: it builds and pushes nothing.
 
-`--no-attestation` skips the tag, attestation and BuildKit checks and uses no
-network and no `docker`.
+`--no-attestation` skips the tag, attestation and both BuildKit checks and uses
+no network and no `docker`.
 
 It runs in CI in two places, with `GH_TOKEN` set to the workflow token and no
 registry login:
