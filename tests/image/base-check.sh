@@ -107,6 +107,93 @@ check_base_offline_fixture() {
     expect_rejected
 }
 
+expect_rule_error() {
+    printf '%s\n' "$BASE_OUT" | grep -q "^error: $1: " || { echo "no error: $1: line; $(base_result)"; return 1; }
+}
+
+# Runs the offline check on a fixture and expects a rejection naming the rule: check_base_offline_rule <fixture> <rule>.
+check_base_offline_rule() {
+    local rc=0
+    base_setup "rule-$1"
+    base_run "$REPO_ROOT" --no-attestation "$TESTS_DIR/fixtures/$1"
+    expect_rejected || rc=1
+    expect_rule_error "$2" || rc=1
+    return "$rc"
+}
+
+# Writes the repository Dockerfile with a sed edit into the case directory and fails when the edit changed nothing.
+edited_dockerfile() {
+    sed "$1" "$REPO_ROOT/Dockerfile" >"$CASE_DIR/Dockerfile"
+    ! cmp -s "$REPO_ROOT/Dockerfile" "$CASE_DIR/Dockerfile" || { echo "the edit '$1' left the Dockerfile unchanged"; return 1; }
+}
+
+# Expects the check, offline or not, to reject the repository Dockerfile edited by sed with a base-labels error.
+base_labels_rejected() {
+    local mode="$1" edit="$2" rc=0
+    base_setup "labels-$3"
+    edited_dockerfile "$edit" || return 1
+    if [ "$mode" = offline ]; then
+        base_run "$REPO_ROOT" --no-attestation "$CASE_DIR/Dockerfile"
+    else
+        base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
+    fi
+    expect_rejected || rc=1
+    expect_rule_error base-labels || rc=1
+    return "$rc"
+}
+
+check_base_offline_changed_base_digest_label_rejected() {
+    base_labels_rejected offline "s|base.digest=\"$BASE_DIGEST\"|base.digest=\"$OTHER_DIGEST\"|" digest
+}
+
+check_base_offline_missing_base_labels_rejected() {
+    base_labels_rejected offline '/^LABEL /,/[^\\]$/d' missing
+}
+
+check_base_changed_base_name_label_rejected() {
+    base_labels_rejected attested "s|base.name=\"$BASE_REF\"|base.name=\"$BASE_NAME:trixie-2\"|" name
+}
+
+check_base_invalid_tag_in_pin_rejected() {
+    local rc=0
+    base_setup invalid-tag
+    edited_dockerfile "s|$BASE_REF@|$BASE_NAME:.trixie-1@|" || return 1
+    base_run "$REPO_ROOT" --no-attestation "$CASE_DIR/Dockerfile"
+    expect_rejected || rc=1
+    expect_rule_error package || rc=1
+    return "$rc"
+}
+
+check_base_runs_from_scripts_alone() {
+    base_setup scripts-alone
+    cp -R "$REPO_ROOT/scripts" "$CASE_DIR/scripts"
+    BASE_RC=0
+    BASE_OUT="$(cd "$CASE_DIR" && PATH="$CASE_DIR/bin:$PATH" "$BASH" "$CASE_DIR/scripts/verify-base-image.sh" \
+        --no-attestation "$REPO_ROOT/Dockerfile" 2>&1 </dev/null)" || BASE_RC=$?
+    expect_pass
+}
+
+check_base_scripts_do_not_reference_tests() {
+    local hits
+    hits="$(cd "$REPO_ROOT" && grep -rn 'tests/' scripts/verify-base-image.sh scripts/publish-plan.sh scripts/lib 2>&1)"
+    [ -z "$hits" ] || { echo "$hits"; return 1; }
+}
+
+# Prints the file of each line under scripts/ that matches, on one line: scripts_matching <-E or -F> <pattern>.
+scripts_matching() {
+    (cd "$REPO_ROOT" && grep -rc "$1" -- "$2" scripts) |
+        awk -F : '{ for (i = 0; i < $NF; i++) printf "%s ", $1 }'
+}
+
+check_base_one_line_and_tag_pattern_defined_once() {
+    local where rc=0
+    where="$(scripts_matching -E '^[[:space:]]*(function[[:space:]]+)?one_line[[:space:]]*\(\)')"
+    [ "$where" = "scripts/lib/common.sh " ] || { echo "one_line is defined in: ${where:-nothing}"; rc=1; }
+    where="$(scripts_matching -F '[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}')"
+    [ "$where" = "scripts/lib/common.sh " ] || { echo "the tag pattern is written in: ${where:-nothing}"; rc=1; }
+    return "$rc"
+}
+
 check_base_error_line_per_broken_rule() {
     local count
     base_setup two-rules
@@ -359,6 +446,15 @@ run_base_checks() {
     for fixture in unpinned-from.Dockerfile two-pins.Dockerfile syntax-line.Dockerfile copy-from-image.Dockerfile; do
         run_check "base/offline-rejects-$fixture" check_base_offline_fixture "$fixture"
     done
+    run_check "base/offline-rejects-escape-directive-bypass" check_base_offline_rule escape-directive.Dockerfile no-parser-directive
+    run_check "base/offline-rejects-heredoc-bypass" check_base_offline_rule heredoc-hidden-stage.Dockerfile no-heredoc
+    run_check "base/offline-rejects-changed-base-digest-label" check_base_offline_changed_base_digest_label_rejected
+    run_check "base/offline-rejects-missing-base-labels" check_base_offline_missing_base_labels_rejected
+    run_check "base/rejects-changed-base-name-label" check_base_changed_base_name_label_rejected
+    run_check "base/invalid-tag-in-pin-rejected" check_base_invalid_tag_in_pin_rejected
+    run_check "base/runs-from-scripts-alone" check_base_runs_from_scripts_alone
+    run_check "base/scripts-do-not-reference-tests" check_base_scripts_do_not_reference_tests
+    run_check "base/one-line-and-tag-pattern-defined-once" check_base_one_line_and_tag_pattern_defined_once
     run_check "base/error-line-per-broken-rule" check_base_error_line_per_broken_rule
     run_check "base/other-package-name-rejected" check_base_other_package_rejected
     run_check "base/attested-pin-passes" check_base_attested_pin_passes

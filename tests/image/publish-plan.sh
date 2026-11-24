@@ -385,10 +385,20 @@ check_workflow_docker_bootloader_keeps_own_plan() {
     return "$rc"
 }
 
-check_workflow_tests_shellcheck_publish_plan() {
+# Prints the shellcheck commands of tests.yml, each joined onto one line.
+tests_shellcheck_commands() {
     awk '{ if (sub(/\\[[:space:]]*$/, "")) { buf = buf $0; next } print buf $0; buf = "" }' "$TESTS_WORKFLOW" |
-        grep -E '(^|[[:space:]])shellcheck[[:space:]]' | grep -Eq '(^|[[:space:]])scripts/(publish-plan\.sh|\*\.sh)([[:space:]]|$)' ||
+        grep -E '(^|[[:space:]])shellcheck[[:space:]]'
+}
+
+check_workflow_tests_shellcheck_publish_plan() {
+    tests_shellcheck_commands | grep -Eq '(^|[[:space:]])scripts/(publish-plan\.sh|\*\.sh)([[:space:]]|$)' ||
         { echo "tests.yml does not shellcheck scripts/publish-plan.sh"; return 1; }
+}
+
+check_workflow_tests_shellcheck_scripts_lib() {
+    tests_shellcheck_commands | grep -Eq '(^|[[:space:]])scripts/lib/\*\.sh([[:space:]]|$)' ||
+        { echo "tests.yml does not shellcheck scripts/lib/*.sh"; return 1; }
 }
 
 # Runs the publish plan script against a fake registry and checks the docker.yml build job that uses it.
@@ -428,5 +438,6 @@ run_publish_checks() {
     run_check "workflow/docker-build-reads-attestations" check_workflow_docker_build_reads_attestations
     run_check "workflow/docker-bootloader-keeps-own-plan" check_workflow_docker_bootloader_keeps_own_plan
     run_check "workflow/tests-shellcheck-publish-plan" check_workflow_tests_shellcheck_publish_plan
+    run_check "workflow/tests-shellcheck-scripts-lib" check_workflow_tests_shellcheck_scripts_lib
     rm -rf "$PLAN_WORK"
 }
