@@ -27,14 +27,13 @@ from typing import Callable, Final, Optional
 import flask
 import flask_login
 
-from webserver import project_snapshot
+from webserver import hardware_id, project_snapshot
 from webserver.credentials import CertGen
 from webserver.debug_websocket import init_debug_websocket
 from webserver.discovery.discovery_routes import discovery_bp
+from webserver.discovery.network_discovery import responder as network_discovery_responder
 from webserver.etherdog_manager import EtherDogManager, legacy_ethercat_config_in_use
-from webserver.discovery.network_discovery import (
-    responder as network_discovery_responder,
-)
+from webserver.hmi_proxy import hmi_bp, init_hmi_proxy
 from webserver.logger import get_logger
 from webserver.plcapp_management import (
     MAX_FILE_SIZE,
@@ -413,6 +412,20 @@ def _handle_upload_file(data: dict) -> dict:
 
         extract_dir = "core/generated"
 
+        # The hmi/ folder (docs/HMI.md): refused before anything on the device changes.
+        from webserver import hmi_upload
+        from webserver.plcapp_management import extracted_names
+
+        try:
+            hmi_plan = hmi_upload.plan_from_zip(zip_file, extracted_names(valid_files))
+        except hmi_upload.HmiUploadError as e:
+            build_state.status = BuildStatus.FAILED
+            build_state.log(f"[ERROR] HMI: {e}\n")
+            return {
+                "UploadFileFail": f"HMI: {e}",
+                "CompilationStatus": build_state.status.name,
+            }
+
         # Programs built before the EtherCAT configuration split carry one ethercat.json that
         # the runtime no longer reads. Refuse them before anything on the device changes.
         if _upload_has_legacy_ethercat(zip_file, valid_files):
@@ -445,10 +458,13 @@ def _handle_upload_file(data: dict) -> dict:
         # erases the stored one.
         project_snapshot.clear()
 
-        if os.path.exists(extract_dir):
-            shutil.rmtree(extract_dir)
+        # An upload without hmi/ keeps the installed HMI across the wipe of core/generated.
+        with hmi_upload.keep_previous(extract_dir, hmi_plan):
+            if os.path.exists(extract_dir):
+                shutil.rmtree(extract_dir)
 
-        safe_extract(zip_file, extract_dir, valid_files)
+            safe_extract(zip_file, extract_dir, valid_files)
+        hmi_upload.apply(extract_dir, hmi_plan, build_state.log)
 
         # Apply VPP plugin conf from upload (copy if present, delete if not)
         apply_vpp_plugin_conf(extract_dir)
@@ -569,10 +585,14 @@ def run_https():
     # rest api register
     app_restapi.register_blueprint(restapi_bp, url_prefix="/api")
     app_restapi.register_blueprint(discovery_bp)
+    app_restapi.register_blueprint(hmi_bp)
     register_callback_get(restapi_callback_get)
     register_callback_post(restapi_callback_post)
 
     socketio = init_debug_websocket(app_restapi, runtime_manager.runtime_socket)
+    init_hmi_proxy(app_restapi, socketio)
+
+    hardware_id.ensure_stored()
 
     with app_restapi.app_context():
         try:

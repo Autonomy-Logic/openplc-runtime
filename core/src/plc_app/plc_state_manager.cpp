@@ -141,6 +141,7 @@ static void retire_image(PluginManager *pm, bool journal_initialised)
 
     if (pm == plc_program) plc_program = NULL;
     plugin_manager_destroy(pm);
+    if (plugin_driver) plugin_driver_set_program_md5(NULL);
 }
 
 static pthread_mutex_t     start_outcome_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -1419,6 +1420,9 @@ extern "C" int load_plc_program(PluginManager *pm)
          * lines above its own boot allocation. */
         if (plugin_driver)
         {
+            /* Plugins initialised for this load receive the program's MD5. */
+            plugin_driver_set_program_md5(
+                (const char *)plugin_manager_try_get_symbol(pm, "strucpp_program_md5"));
             if (plugin_driver_update_config(plugin_driver, "./plugins.conf") != 0)
             {
                 log_error("[PLUGIN]: Failed to load plugin configuration");
@@ -1444,6 +1448,8 @@ extern "C" int load_plc_program(PluginManager *pm)
                 plugin_manager_destroy(pm);
                 return -1;
             }
+            /* The HMI plugin is registered by the runtime itself when build/hmi/ has one. */
+            plugin_driver_append_hmi(plugin_driver);
         }
 
         /* PLUGIN CONFIG IS LOADED BEFORE THE IMAGE IS SIZED, and the order is

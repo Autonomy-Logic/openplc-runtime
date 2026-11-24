@@ -67,6 +67,13 @@ type Claims struct {
 	Expires   int64  `json:"exp"`
 	JTI       string `json:"jti"`
 	Audience  string `json:"aud,omitempty"`
+	// IssuedAtMs is the issue time in ms since the epoch, compared with the account cut-off.
+	IssuedAtMs int64 `json:"iat_ms,omitempty"`
+}
+
+// IssuedBefore reports whether the token was issued at or before the account cut-off cutoffMs; a token without iat_ms was, once one is set.
+func (c *Claims) IssuedBefore(cutoffMs int64) bool {
+	return cutoffMs > 0 && c.IssuedAtMs <= cutoffMs
 }
 
 type jwtHeader struct {
@@ -90,13 +97,14 @@ func IssueToken(secret, userID string, ttl time.Duration) (string, error) {
 
 	now := time.Now().UTC()
 	claims := Claims{
-		Subject:   userID,
-		Type:      TokenType,
-		IssuedAt:  now.Unix(),
-		NotBefore: now.Unix(),
-		Expires:   now.Add(ttl).Unix(),
-		JTI:       jti,
-		Audience:  Audience,
+		Subject:    userID,
+		Type:       TokenType,
+		IssuedAt:   now.Unix(),
+		NotBefore:  now.Unix(),
+		Expires:    now.Add(ttl).Unix(),
+		JTI:        jti,
+		Audience:   Audience,
+		IssuedAtMs: now.UnixMilli(),
 	}
 
 	header, err := json.Marshal(jwtHeader{Alg: "HS256", Typ: "JWT"})

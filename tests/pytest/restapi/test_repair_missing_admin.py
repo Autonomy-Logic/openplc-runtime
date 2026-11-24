@@ -22,7 +22,15 @@ happens to sort first.
 from conftest import auth, create_user, token_for
 from sqlalchemy import text as sa_text
 
-from webserver.restapi import ADMIN_ROLE, USER_ROLE, User, admin_count, db, repair_missing_admin
+from webserver.access import ADMIN_ROLE
+from webserver.access import ENGINEER_ROLE as USER_ROLE
+from webserver.restapi import (
+    User,
+    admin_count,
+    apply_user_schema_migrations,
+    db,
+    repair_missing_admin,
+)
 
 
 def _add_user(username, role):
@@ -71,6 +79,9 @@ def test_a_null_role_counts_as_no_admin_rather_than_crashing(app):
     )
     db.session.commit()
 
+    # The boot migration runs first: a NULL role becomes engineer, never stays NULL.
+    apply_user_schema_migrations()
+    assert _roles() == {"op": USER_ROLE}
     assert admin_count() == 0
     assert repair_missing_admin() is True
     assert _roles() == {"op": ADMIN_ROLE}

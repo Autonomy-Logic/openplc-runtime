@@ -264,7 +264,7 @@ install_deps_apt() {
 install_deps_yum() {
     yum install -y \
         gcc gcc-c++ make cmake ccache git \
-        python3 python3-devel python3-pip python3-venv \
+        python3 python3-devel python3-pip \
     && yum clean all
 }
 
@@ -272,7 +272,7 @@ install_deps_yum() {
 install_deps_dnf() {
     dnf install -y \
         gcc gcc-c++ make cmake ccache git \
-        python3 python3-devel python3-pip python3-venv \
+        python3 python3-devel python3-pip \
     && dnf clean all
 }
 
@@ -641,6 +641,11 @@ else
         mkdir -p /var/lib/openplc-runtime
         chmod 755 /var/lib/openplc-runtime
         log_info "Created persistent data directory at /var/lib/openplc-runtime"
+        if bash "$OPENPLC_DIR/scripts/hardware-id.sh" --store /var/lib/openplc-runtime/hardware-id; then
+            log_info "Hardware ID: $(head -n 1 /var/lib/openplc-runtime/hardware-id)"
+        else
+            log_warning "No hardware ID can be derived on this device; runtime licences cannot be bound to it."
+        fi
     fi
 fi
 

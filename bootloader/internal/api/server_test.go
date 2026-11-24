@@ -60,10 +60,12 @@ type fakeUsers struct {
 	countErr error
 	user     *runtimeauth.User
 	authErr  error
-	// role answers RoleByID. Defaults to admin so the existing cases, which
+	// role answers AccountByID. Defaults to admin so the existing cases, which
 	// are about routing and auth rather than authorization, keep passing.
-	role    string
-	roleErr error
+	role string
+	// validAfterMs is the account cut-off AccountByID reports.
+	validAfterMs int64
+	accountErr   error
 }
 
 func (f *fakeUsers) CountUsers(context.Context) (int, error) { return f.count, f.countErr }
@@ -78,14 +80,15 @@ func (f *fakeUsers) Secrets() *runtimeauth.Secrets {
 	return &runtimeauth.Secrets{JWTSecret: testSecret, Pepper: testPepper}
 }
 
-func (f *fakeUsers) RoleByID(context.Context, string) (string, error) {
-	if f.roleErr != nil {
-		return "", f.roleErr
+func (f *fakeUsers) AccountByID(context.Context, string) (*runtimeauth.Account, error) {
+	if f.accountErr != nil {
+		return nil, f.accountErr
 	}
-	if f.role == "" {
-		return RoleAdmin, nil
+	role := f.role
+	if role == "" {
+		role = runtimeauth.RoleAdmin
 	}
-	return f.role, nil
+	return &runtimeauth.Account{Role: role, SessionsValidAfterMs: f.validAfterMs}, nil
 }
 
 // newTestServer builds a server with an httptest mux, bypassing TLS: the
