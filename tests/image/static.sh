@@ -425,7 +425,7 @@ crlf() {
     awk '{ printf "%s\r\n", $0 }' "$1"
 }
 
-# Writes a fixture whose bytes are generated at run time, from valid.Dockerfile unless stated: generated_fixture <name> <path>.
+# Writes a fixture generated at run time, from valid.Dockerfile unless stated: generated_fixture <name> <path>.
 generated_fixture() {
     local valid="$TESTS_DIR/fixtures/valid.Dockerfile"
     case "$1" in
@@ -480,7 +480,7 @@ fixture_list_checks() {
     done <<<"$passes"
 }
 
-# Records that the valid fixture passes every static check and that each rule fixture, committed or generated, is rejected by its check.
+# Records that the valid fixture passes every static check and each rule fixture is rejected by its check.
 fixture_checks() {
     local dir="$TESTS_DIR/fixtures" generated fixture id failed
     failed="$(static_failures_on "$dir/valid.Dockerfile")"
@@ -584,7 +584,7 @@ check_install_native_default() {
     return "$rc"
 }
 
-# Runs install.sh --native deps on an apt host without cmake whose apt-cache offers the given candidate; sets APT_T, APT_LOG, APT_RC.
+# Runs install.sh --native deps on an apt host without cmake offering the given candidate; sets APT_T, APT_LOG, APT_RC.
 install_apt_run() {
     local tool host
     APT_T="$(install_setup)"

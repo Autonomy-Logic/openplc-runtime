@@ -30,7 +30,6 @@ on:
 
 jobs:
   build:
-    # Branch pushes publish only the bootloader.
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:

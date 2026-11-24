@@ -33,8 +33,7 @@ plugin_dependency() {
     esac
 }
 
-# Runs the probe in a new container of the image: security_probe <network> <python> <probe> [args].
-# Prints the probe's verdict line; its exit code is the probe's.
+# Runs a probe in a new container of the image and prints its verdict: security_probe <network> <python> <probe> [args].
 security_probe() {
     local network="$1" python="$2" out rc=0
     shift 2

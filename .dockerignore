@@ -25,7 +25,7 @@ core/src/drivers/plugins/python/modbus_master/modbus_master.json
 core/src/drivers/plugins/python/opcua/opcua.json
 core/src/drivers/plugins/native/s7comm/s7comm_config.json
 
-# EtherDOG build trees; the image build fetches its pinned EtherDOG unless /etherdog holds a source
+# EtherDOG build trees and fetched sources
 /etherdog/build*/
 /third_party/
 

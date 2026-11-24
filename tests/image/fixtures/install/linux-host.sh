@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Autonomy®
 
-# Reports Linux to the package manager detection of install.sh and MSYS elsewhere, so it needs no root and writes no system directory.
+# Reports Linux to the package manager detection of install.sh and MSYS to every other caller.
 uname() {
     case "${1:-}" in
         -m) echo x86_64 ;;

@@ -165,7 +165,7 @@ check_built_base_labels() {
     [ "$got" = "$BASE_PIN" ] || { echo "base labels are $got"; return 1; }
 }
 
-# Fails naming each .pem, .env, .db, .git or third_party under /workdir; CA bundles inside installed packages are allowed.
+# Fails naming each .pem, .env, .db, .git or third_party under /workdir, except .pem files in installed packages.
 check_built_no_secrets() {
     local found
     found="$(docker run --rm --network none "$BUILT_IMAGE" find /workdir \
@@ -174,8 +174,7 @@ check_built_no_secrets() {
     [ -z "$found" ] || { echo "$found"; return 1; }
 }
 
-# Starts a container of an image with the runtime's run options and waits until it is healthy:
-# built_start_healthy <image>; prints the container id, or the reason and the last log lines (container removed).
+# Starts a healthy container of an image: built_start_healthy <image>; prints its id, or the reason and the last logs.
 built_start_healthy() {
     local cid status reason deadline
     cid="$(docker run -d --cap-add SYS_NICE --cap-add SYS_RESOURCE "$1" 2>&1)" ||

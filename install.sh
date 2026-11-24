@@ -747,7 +747,6 @@ if ! full_install; then
     exit 0
 fi
 
-# Check if systemd is available and install the service
 SYSTEMD_SERVICE_INSTALLED=0
 if has_systemd_support; then
     log_info "Systemd detected. Installing OpenPLC Runtime service..."

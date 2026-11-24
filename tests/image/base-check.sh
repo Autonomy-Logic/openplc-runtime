@@ -146,7 +146,7 @@ check_base_default_file_is_read_from_working_directory() {
     expect_rejected
 }
 
-# Runs the offline check on one phase-01 fixture and expects a rejection: check_base_offline_fixture <fixture>.
+# Runs the offline check on one fixture and expects a rejection: check_base_offline_fixture <fixture>.
 check_base_offline_fixture() {
     base_setup "fixture-$1"
     base_run "$REPO_ROOT" --no-attestation "$TESTS_DIR/fixtures/$1"
@@ -349,7 +349,7 @@ check_base_tag_missing_from_registry_rejected() {
     return "$rc"
 }
 
-# Writes one review input that BuildKit reads differently from the script's parser: review_input <case> <path>.
+# Writes one input that BuildKit reads differently from the script's parser: review_input <case> <path>.
 review_input() {
     local p="$BASE_PIN" l="$LABEL_LINE"
     case "$1" in
@@ -373,7 +373,7 @@ review_input() {
     esac >"$2"
 }
 
-# Runs the offline check on a review input and expects a rejection naming the rule: check_base_review_input <case> <rule>.
+# Expects the offline check to reject a review_input case naming the rule: check_base_review_input <case> <rule>.
 check_base_review_input() {
     local rc=0
     base_setup "review-$1"
@@ -425,7 +425,7 @@ expect_targets_asked() {
         { echo "docker was not asked '$TARGETS_CALL'; docker calls: $(tr '\n' ';' <"$FAKE_DOCKER_LOG")"; return 1; }
 }
 
-# Runs the full check on the repository Dockerfile with BuildKit answering a targets file: buildkit_run <case> <answer> [docker exit].
+# Runs the full check with BuildKit answering a targets file: buildkit_run <case> <answer> [docker exit].
 buildkit_run() {
     base_setup "buildkit-$1"
     cp "$REPO_ROOT/Dockerfile" "$CASE_DIR/Dockerfile"
@@ -434,7 +434,7 @@ buildkit_run() {
     base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
 }
 
-# Expects the buildkit-stages rule to reject the repository Dockerfile for a BuildKit answer: buildkit_rejected <case> <answer> [docker exit].
+# Expects buildkit-stages to reject a BuildKit answer: buildkit_rejected <case> <answer> [docker exit].
 buildkit_rejected() {
     local rc=0
     buildkit_run "$@"
@@ -527,7 +527,7 @@ repository_with_line() {
     ! cmp -s "$REPO_ROOT/Dockerfile" "$CASE_DIR/Dockerfile" || { echo "no line was added to the Dockerfile"; return 1; }
 }
 
-# Copies scripts/ into the case directory with the given rules always passing and points the caller's BASE_SCRIPT at the copy.
+# Copies scripts/ into the case directory with the given rules always passing; sets BASE_SCRIPT to the copy.
 scripts_with_rules_off() {
     local id
     cp -R "$REPO_ROOT/scripts" "$CASE_DIR/scripts"
@@ -545,7 +545,7 @@ hidden_image_input() {
     esac
 }
 
-# Expects the check to reject a hidden-image input with the named rule: check_base_hidden_image_rejected <offline|full> <case> <rule>.
+# Expects a hidden-image input rejected by the named rule: check_base_hidden_image_rejected <offline|full> <case> <rule>.
 check_base_hidden_image_rejected() {
     local rc=0
     base_setup "hidden-$1-$2"
@@ -570,7 +570,7 @@ expect_check_asked() {
         { echo "docker was not asked '$CHECK_CALL'; docker calls: $(tr '\n' ';' <"$FAKE_DOCKER_LOG")"; return 1; }
 }
 
-# Runs the full check on the repository Dockerfile with BuildKit giving a check answer, recorded or a path: images_run <case> <answer>.
+# Runs the full check with BuildKit giving a check answer, recorded or a path: images_run <case> <answer>.
 images_run() {
     base_setup "images-$1"
     cp "$REPO_ROOT/Dockerfile" "$CASE_DIR/Dockerfile"
@@ -581,7 +581,7 @@ images_run() {
     base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
 }
 
-# Expects the buildkit-images rule to reject the repository Dockerfile for a recorded check answer: images_rejected <case> <answer>.
+# Expects buildkit-images to reject a recorded check answer: images_rejected <case> <answer>.
 images_rejected() {
     local rc=0
     images_run "$@"
@@ -658,7 +658,7 @@ rule_error_line() {
     printf '%s\n' "$BASE_OUT" | grep -m 1 "^error: $1: "
 }
 
-# Writes the recorded valid check answer with one more image line, after the pin line or on stdout: check_answer_with_line <case> <dir>.
+# Copies the valid check answer into a directory with one more image line: check_answer_with_line <case> <dir>.
 check_answer_with_line() {
     local line="#4 [internal] load metadata for $SECOND_IMAGE" stream=stderr
     case "$1" in
@@ -681,7 +681,7 @@ check_answer_with_line() {
     ! cmp -s "$TESTS_DIR/fixtures/check/valid/$stream" "$2/$stream" || { echo "no line was added to the $stream answer"; return 1; }
 }
 
-# Expects buildkit-images to reject an answer holding the pin line and a second image line BuildKit printed in another form.
+# Expects buildkit-images to reject the pin line plus a second image line BuildKit printed in another form.
 check_base_images_unreadable_line_rejected() {
     local rc=0 answer="$BASE_WORK/check-$1" quoted="load metadata for $SECOND_IMAGE"
     check_answer_with_line "$1" "$answer" || return 1
@@ -750,7 +750,7 @@ check_base_buildkit_real_form_feed_rejected() {
     return "$rc"
 }
 
-# Prints the body of a key of the YAML block on stdin, at that block's top indentation; an inline value is printed as its body.
+# Prints the body of a key of the YAML block on stdin, at its top indentation; an inline value is the body.
 yaml_child() {
     awk -v key="$1" '
         function indent(s) { match(s, /^ */); return RLENGTH }
@@ -1012,7 +1012,7 @@ run_base_checks() {
     rm -rf "$BASE_WORK"
 }
 
-# Runs the base check against the real docker and a fake gh: the repository Dockerfile, the form-feed stage and the escaped flag.
+# Runs the base check against the real docker: the repository Dockerfile, the form-feed stage and the escaped flag.
 run_base_buildkit_checks() {
     BASE_WORK="$(mktemp -d)"
     BASE_WORK="$(cd "$BASE_WORK" && pwd -P)"

@@ -84,7 +84,7 @@ check_tag() {
     [ "$got" = "$3" ] || fail tag "$1:$2 resolves to ${got:-nothing}, not to the pinned $3"
 }
 
-# Fails unless a verified attestation from the signer workflow names the pinned digest: check_attestation <name> <digest>.
+# Fails unless a verified signer-workflow attestation names the pinned digest: check_attestation <name> <digest>.
 check_attestation() {
     local subjects
     if ! subjects="$(gh attestation verify "oci://$1@$2" --repo "$SIGNER_REPO" --signer-workflow "$SIGNER_WORKFLOW" \
@@ -134,7 +134,7 @@ check_buildkit_stages() {
     [ -z "$diff" ] || fail buildkit-stages "BuildKit reads the stages differently: $diff"
 }
 
-# Fails unless every BuildKit image line is in the exact form and names the pin: check_buildkit_images <Dockerfile> <pin>.
+# Fails unless each BuildKit image line has the exact form and the pin: check_buildkit_images <Dockerfile> <pin>.
 check_buildkit_images() {
     local file="$1" pin="$2" image bad="" unreadable
     if ! docker buildx build --check --progress=plain - <"$file" >"$WORK_DIR/check.out" 2>"$WORK_DIR/check.err"; then

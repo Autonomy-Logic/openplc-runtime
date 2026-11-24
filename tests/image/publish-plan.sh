@@ -21,9 +21,7 @@ plan_tools_without_docker() {
     done
 }
 
-# Runs the script in a clean environment with the fake docker first on PATH:
-# plan_run <case> <event> <ref> <release_tag> <test_tag>; sets PLAN_RC, PLAN_STDOUT, PLAN_STDERR.
-# PLAN_DOCKER_ERROR becomes the fake's FAKE_DOCKER_ERROR; "missing" runs with no docker on PATH at all.
+# Runs the script with the fake docker; sets PLAN_RC, PLAN_STDOUT, PLAN_STDERR: plan_run <case> <event> <ref> <release> <test>.
 plan_run() {
     local ref_type=branch path
     CASE_DIR="$PLAN_WORK/$1"
@@ -173,8 +171,7 @@ check_plan_existing_release_tag_fails() {
     return "$rc"
 }
 
-# Checks that an answer other than a clear "not found" for the reference refuses: exit 2, an error: line on
-# stderr, no image= or tags= line on stdout: registry_error_refused <fake error>.
+# Checks that a registry answer other than "not found" refuses with exit 2 and no plan: registry_error_refused <fake error>.
 registry_error_refused() {
     local rc=0
     PLAN_DOCKER_ERROR="$1"
