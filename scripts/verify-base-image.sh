@@ -19,6 +19,7 @@ PIN_RULES="no-blank-in-continuation no-parser-directive no-heredoc plain-flags n
 TARGETS_JQ='if length == 1 and (.[0].targets | type) == "array" and (.[0].targets | length) > 0
     then .[0].targets[] | [(.name // "-"), (if has("base") then "=" + .base else "" end)] | @tsv
     else error("not a BuildKit targets answer") end'
+IMAGE_LINE_RE='#[0-9]+ \[internal\] load metadata for [[:graph:]]+'
 FAILURES=0
 WORK_DIR=""
 
@@ -58,11 +59,6 @@ check_pin_rules() {
     done
 }
 
-# Prints each base image reference of a Dockerfile once.
-base_references() {
-    df_external_stages "$1" | cut -f 3 | sort -u
-}
-
 # Fails unless every base image is the runtime base package pinned as <name>:<tag>@sha256:<digest>.
 check_package() {
     local image name rest bad="" pin_re="^$TAG_RE@sha256:[0-9a-f]{64}\$"
@@ -74,7 +70,7 @@ check_package() {
             bad="$bad
 FROM $image is not $BASE_PACKAGE:<tag>@sha256:<digest>"
         fi
-    done < <(base_references "$1")
+    done < <(df_base_references "$1")
     [ -z "$bad" ] || fail package "$bad"
 }
 
@@ -102,13 +98,14 @@ check_attestation() {
         fail attestation "no verified attestation names $1@$2 as its subject"
 }
 
-# Prints the first ERROR or lint summary line of BuildKit output files, else the last line of the first one.
+# Prints the first ERROR or lint summary line of BuildKit output files, then each lint warning's rule and message.
 buildkit_error() {
-    local line
+    local line warnings
     line="$(grep -h -m 1 -e '^ERROR' -e '^Check complete' "$@" 2>/dev/null)"
     line="${line%%$'\n'*}"
     [ -n "$line" ] || line="$(tail -n 1 "$1")"
-    printf '%s\n' "${line:-no message}"
+    warnings="$(awk '/^WARNING: / { rule = $2; if ((getline msg) > 0) printf "; %s: %s", rule, msg }' "$@" 2>/dev/null)"
+    printf '%s%s\n' "${line:-no message}" "$warnings"
 }
 
 # Fails unless BuildKit lists the stages of the Dockerfile in the same order, with the same names and bases.
@@ -137,15 +134,21 @@ check_buildkit_stages() {
     [ -z "$diff" ] || fail buildkit-stages "BuildKit reads the stages differently: $diff"
 }
 
-# Fails unless BuildKit's plain progress output names at least one resolved image and only the pin: check_buildkit_images <Dockerfile> <pin>.
+# Fails unless every BuildKit image line is in the exact form and names the pin: check_buildkit_images <Dockerfile> <pin>.
 check_buildkit_images() {
-    local file="$1" pin="$2" image bad=""
+    local file="$1" pin="$2" image bad="" unreadable
     if ! docker buildx build --check --progress=plain - <"$file" >"$WORK_DIR/check.out" 2>"$WORK_DIR/check.err"; then
         fail buildkit-images "docker buildx build --check failed: $(buildkit_error "$WORK_DIR/check.err" "$WORK_DIR/check.out")"
         return
     fi
-    sed -n 's/^#[0-9][0-9]* \[internal\] load metadata for \([^[:space:]][^[:space:]]*\)$/\1/p' "$WORK_DIR/check.err" |
-        sort -u >"$WORK_DIR/images.txt"
+    LC_ALL=C grep -a -h -F 'load metadata for' "$WORK_DIR/check.err" "$WORK_DIR/check.out" >"$WORK_DIR/image-lines.txt"
+    unreadable="$(LC_ALL=C grep -a -v -x -E "$IMAGE_LINE_RE" "$WORK_DIR/image-lines.txt" |
+        LC_ALL=C awk '!seen[$0]++ { gsub(/[^[:print:]]/, "?"); print "'\''" $0 "'\''" }')"
+    if [ -n "$unreadable" ]; then
+        fail buildkit-images "BuildKit printed image lines this check cannot read: $unreadable"
+        return
+    fi
+    LC_ALL=C sed 's/^.* load metadata for //' "$WORK_DIR/image-lines.txt" | sort -u >"$WORK_DIR/images.txt"
     if [ ! -s "$WORK_DIR/images.txt" ]; then
         fail buildkit-images "docker buildx build --check reported no resolved image in its plain progress output"
         return
@@ -175,7 +178,7 @@ check_pin_rules "$dockerfile"
 check_package "$dockerfile"
 [ "$FAILURES" = 0 ] || exit 1
 
-pin="$(base_references "$dockerfile")"
+pin="$(df_base_references "$dockerfile")"
 if [ "$attest" = 0 ]; then
     printf 'ok: %s pins %s (attestation not checked)\n' "$dockerfile" "$pin"
     exit 0

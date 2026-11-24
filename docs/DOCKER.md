@@ -80,11 +80,14 @@ With the network it also checks, with the `docker` and `gh` on `PATH`, that:
   standard input, prints one `#<n> [internal] load metadata for <image>` line on
   standard error per image a stage builds on, copies from or mounts, however
   the `Dockerfile` writes it. The rule fails unless at least one such line is
-  printed and every image it names is exactly
+  printed, every line of standard output or standard error holding
+  `load metadata for` has exactly that form, with nothing before or after it
+  (the error quotes each line that does not), and every image it names is exactly
   `<name>:<tag>@sha256:<digest>` of the pin. A non-zero `docker` exit fails the
-  rule, so a BuildKit lint warning in the `Dockerfile` fails the base check; so
-  does output with no such line. This step reads only image metadata from the
-  registry: it builds and pushes nothing.
+  rule, so a BuildKit lint warning in the `Dockerfile` fails the base check,
+  the error naming each warning's rule and message; so does output with no
+  such line. This step reads only image metadata from the registry: it builds
+  and pushes nothing.
 
 `--no-attestation` skips the tag, attestation and both BuildKit checks and uses
 no network and no `docker`.

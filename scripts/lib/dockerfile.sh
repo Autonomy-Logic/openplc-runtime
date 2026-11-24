@@ -78,6 +78,11 @@ df_external_stages() {
     done < <(df_stages "$1")
 }
 
+# Prints each base image reference of a Dockerfile once, sorted.
+df_base_references() {
+    df_external_stages "$1" | cut -f 3 | sort -u
+}
+
 # Prints the index of the last stage of a Dockerfile.
 df_final_stage() {
     df_stages "$1" | awk -F '\t' 'END { if (NR) print $1 }'
@@ -113,6 +118,19 @@ flag_value() {
     for tok in ${toks[@]+"${toks[@]}"}; do
         case "$tok" in
             "--$2="*) tok="${tok#--"$2"=}"; tok="${tok%\"}"; printf '%s\n' "${tok#\"}"; return 0 ;;
+        esac
+    done
+}
+
+# Prints the leading -- flags of an instruction's arguments, one per line, up to the first other token.
+leading_flags() {
+    local tok
+    local -a toks
+    read -r -a toks <<<"$1"
+    for tok in ${toks[@]+"${toks[@]}"}; do
+        case "$tok" in
+            --*) printf '%s\n' "$tok" ;;
+            *) return 0 ;;
         esac
     done
 }
@@ -192,21 +210,15 @@ check_no_heredoc() {
 
 check_plain_flags() {
     local stage kw args tok rc=0
-    local -a toks
     while IFS=$'\t' read -r stage kw args; do
         case "$kw" in
             *\"* | *\'* | *\\*) echo "instruction keyword $kw holds a quote or backslash"; rc=1 ;;
         esac
-        read -r -a toks <<<"$args"
-        for tok in ${toks[@]+"${toks[@]}"}; do
-            case "$tok" in
-                --*) ;;
-                *) break ;;
-            esac
+        while IFS= read -r tok; do
             case "$tok" in
                 *\"* | *\'* | *\\*) echo "$kw flag $tok holds a quote or backslash"; rc=1 ;;
             esac
-        done
+        done < <(leading_flags "$args")
     done < <(df_instructions "$1")
     return "$rc"
 }
@@ -242,7 +254,7 @@ check_from_without_variable() {
 
 check_from_single_pin() {
     local images count
-    images="$(df_external_stages "$1" | cut -f 3 | sort -u)"
+    images="$(df_base_references "$1")"
     count="$(printf '%s' "$images" | grep -c .)"
     [ "$count" = 1 ] || { echo "expected one base reference, found $count: $(echo "$images" | tr '\n' ' ')"; return 1; }
 }
@@ -265,8 +277,7 @@ mount_from() {
 }
 
 check_copy_from_stages_only() {
-    local stage kw args ref mount tok rc=0
-    local -a toks
+    local stage kw args ref tok rc=0
     while IFS=$'\t' read -r stage kw args; do
         case "$kw" in
             COPY | ADD)
@@ -277,20 +288,18 @@ check_copy_from_stages_only() {
                 fi
                 ;;
             RUN)
-                read -r -a toks <<<"$args"
-                for tok in ${toks[@]+"${toks[@]}"}; do
+                while IFS= read -r tok; do
                     case "$tok" in
-                        --mount=*) mount="${tok#--mount=}" ;;
-                        --*) continue ;;
-                        *) break ;;
+                        --mount=*) ;;
+                        *) continue ;;
                     esac
                     while IFS= read -r ref; do
                         if ! names_earlier_stage "$1" "$stage" "$ref"; then
                             echo "RUN --mount from=$ref is not a stage of this file"
                             rc=1
                         fi
-                    done < <(mount_from "$mount")
-                done
+                    done < <(mount_from "${tok#--mount=}")
+                done < <(leading_flags "$args")
                 ;;
         esac
     done < <(df_instructions "$1")

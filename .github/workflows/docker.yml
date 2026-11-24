@@ -43,6 +43,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Verify the pinned base image
+        timeout-minutes: 10
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/verify-base-image.sh

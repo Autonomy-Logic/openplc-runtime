@@ -115,7 +115,8 @@ cd bootloader && test -z "$(gofmt -l .)" && go vet ./... && go test -race -count
   PR and pushes to `development`/`main`; also the first step of the `docker.yml` build job):
   `scripts/verify-base-image.sh` checks the `Dockerfile` pin, its attestation, that BuildKit
   (`docker buildx build --call=targets`, read with `jq`) sees the same stages and that every image BuildKit
-  resolves (`docker buildx build --check --progress=plain`, which also fails on a lint warning) is the pin
+  resolves (`docker buildx build --check --progress=plain`, which also fails on a lint warning or on an image
+  line it cannot read) is the pin
   (docs/DOCKER.md, "Base image check"); `--no-attestation` runs only the offline rules, skipping the tag,
   attestation and both BuildKit checks. The
   plain-text rule runs first and stops the script alone when it fails. The Dockerfile parser and pin rules live in
