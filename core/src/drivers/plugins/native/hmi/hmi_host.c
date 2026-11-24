@@ -998,7 +998,8 @@ static bool conn_read(conn_t *c, const char **why)
     }
 }
 
-/** Moves the next message to send into c->out: control first, then VALUES in turn. */
+/** Moves the next message to send into c->out: control first, then VALUES round robin (the
+ * viewer just served moves to the end of the list). */
 static bool next_output(conn_t *c)
 {
     bool got = false;
@@ -1024,7 +1025,6 @@ static bool next_output(conn_t *c)
         }
         if (taken)
         {
-            /* Round robin: the viewer just served goes last. */
             viewer_unlink(taken);
             viewer_append(taken);
             got = true;

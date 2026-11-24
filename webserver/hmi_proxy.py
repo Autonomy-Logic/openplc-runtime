@@ -566,7 +566,8 @@ DisconnectFn = Callable[[str], None]
 class HmiProxy:
     """The viewers, the host connection and the values emitter of /api/hmi.
 
-    ``_build`` is the HMI build ID read from the seal when the host connected: the build the
+    ``_epoch`` counts host connections and changes with ``_host`` under both ``_send_lock`` and
+    ``_lock``. ``_build`` is the HMI build ID read from the seal when the host connected: the build the
     running host serves, sent with ``live``; shows and writes tagged with another build are
     dropped.
     """
@@ -582,7 +583,6 @@ class HmiProxy:
         self._by_id: dict[int, Viewer] = {}
         self._next_id = 1
         self._host: socket.socket | None = None
-        # Counts host connections; changed with ``_host`` under both ``_send_lock`` and ``_lock``.
         self._epoch = 0
         self._build: str | None = None
         self._host_state: str | None = None
