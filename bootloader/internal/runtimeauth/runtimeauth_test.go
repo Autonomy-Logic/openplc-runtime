@@ -454,9 +454,8 @@ func TestADatabaseWithNoSchemaCountsAsNoUsers(t *testing.T) {
 	}
 }
 
-func TestAMissingRoleColumnValueDefaultsToAdmin(t *testing.T) {
-	// Databases predating RBAC are migrated in place; until then the column
-	// can be NULL, and the pre-RBAC runtime treated every account as admin.
+func TestANullRoleIsReadAsEngineer(t *testing.T) {
+	// The runtime migrates a NULL role to engineer at boot; until then the bootloader reads it the same way.
 	path := filepath.Join(t.TempDir(), "restapi.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -483,8 +482,8 @@ func TestAMissingRoleColumnValueDefaultsToAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("finding user: %v", err)
 	}
-	if user.Role != "admin" {
-		t.Fatalf("a NULL role must resolve to admin, got %q", user.Role)
+	if user.Role != RoleEngineer {
+		t.Fatalf("a NULL role must resolve to engineer, got %q", user.Role)
 	}
 }
 

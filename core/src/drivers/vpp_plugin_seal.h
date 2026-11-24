@@ -14,7 +14,7 @@
  * verifies the installed VPP's Ed25519 signature before building the bundle.)
  *
  * Scope, deliberately narrow: only objects that resolve inside build/vpp/ are
- * sealed. Built-in plugins listed in plugins.conf are produced by the
+ * sealed, and the HMI plugin inside build/hmi/ against build/hmi/hmi.seal. Built-in plugins listed in plugins.conf are produced by the
  * runtime's own CMake build, are not user-supplied, and are left alone.
  *
  * Not a defence against someone with root and a text editor -- the seal is
@@ -25,6 +25,10 @@
 
 #ifndef VPP_PLUGIN_SEAL_H
 #define VPP_PLUGIN_SEAL_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * @brief Whether @p path must carry a seal (i.e. resolves inside build/vpp/).
@@ -53,5 +57,40 @@ int vpp_plugin_seal_verify(const char *path);
  * @return 0 on success, non-zero when the file cannot be read.
  */
 int vpp_plugin_seal_sha256_file(const char *path, char *out_hex);
+
+/**
+ * @brief Whether @p path must carry an HMI seal (i.e. resolves inside build/hmi/).
+ */
+int hmi_plugin_seal_required(const char *path);
+
+/**
+ * @brief Verify @p path, which must be build/hmi/libhmi_plugin.so, against its line in
+ *        build/hmi/hmi.seal. Any other file, sealed client files included, is refused. Fails closed
+ *        like vpp_plugin_seal_verify.
+ */
+int hmi_plugin_seal_verify(const char *path);
+
+/**
+ * @brief Verify @p path against the line named @p sealed_name in @p seal_file.
+ *
+ * Seal lines are "<64 hex>  <name>". Fails closed: a missing seal file, a missing entry, an
+ * unreadable object or a hash mismatch all return non-zero and log why.
+ *
+ * @param what Label used in the log lines (e.g. "VPP plugin").
+ */
+int plugin_seal_verify_entry(const char *seal_file, const char *path, const char *sealed_name,
+                             const char *what);
+
+/**
+ * @brief The seal check the loader runs before dlopen: VPP objects against build/vpp's seal,
+ *        HMI objects against build/hmi's, anything else needs none.
+ *
+ * @return 0 when @p path may be loaded, non-zero otherwise.
+ */
+int plugin_seal_check(const char *path);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* VPP_PLUGIN_SEAL_H */

@@ -123,15 +123,18 @@ def _expired_token(app, token):
     and independent of the configured lifetime.
     """
     with app.app_context():
-        identity = decode_token(token)["sub"]
-        user = restapi.User.query.filter_by(id=identity).one()
-        return create_access_token(identity=user, expires_delta=timedelta(seconds=-30))
+        claims = decode_token(token, allow_expired=True)
+        user = restapi.User.query.filter_by(id=claims["sub"]).one()
+        session = {key: claims[key] for key in ("sid", "iat_ms")}
+        return create_access_token(
+            identity=user, expires_delta=timedelta(seconds=-30), additional_claims=session
+        )
 
 
 def _user_token(client_http, admin_token, username="tech", password="tech-pass"):
-    resp = create_user(client_http, username, password, token=admin_token, role="user")
+    resp = create_user(client_http, username, password, token=admin_token, role="engineer")
     assert resp.status_code == 201, resp.get_json()
-    assert resp.get_json()["role"] == "user"
+    assert resp.get_json()["role"] == "engineer"
     return token_for(client_http, username, password)
 
 
@@ -153,6 +156,32 @@ def test_connect_with_a_garbage_token_is_refused(socketio, app, admin_token):
 def test_connect_with_a_valid_admin_token_is_accepted(socketio, app, admin_token):
     ws = _connect(socketio, app, token=admin_token)
     assert ws.is_connected(_NAMESPACE)
+
+
+@pytest.mark.parametrize("role", ["operator", "viewer"])
+def test_hmi_roles_may_not_connect_or_reauth(socketio, app, client, admin_token, role):
+    assert create_user(client, role, "pw", token=admin_token, role=role).status_code == 201
+    hmi_token = token_for(client, role, "pw")
+    assert not _connect(socketio, app, token=hmi_token).is_connected(_NAMESPACE)
+
+    ws = _connect(socketio, app, token=admin_token)
+    ws.get_received(_NAMESPACE)
+    ws.emit("reauth", {"token": hmi_token}, namespace=_NAMESPACE)
+    assert ws.get_received(_NAMESPACE)[-1]["args"][0] == {"success": False, "error": "Forbidden"}
+
+
+def test_a_demoted_account_stops_working_on_an_already_open_socket(
+    socketio, app, client, admin_token, anchor
+):
+    tech = _user_token(client, admin_token)
+    ws = _connect(socketio, app, token=tech)
+    assert _command(ws, "48")["success"] is True
+    tech_id = restapi.User.query.filter_by(username="tech").one().id
+    resp = client.put(
+        f"/api/update-user/{tech_id}", json={"role": "operator"}, headers=auth(admin_token)
+    )
+    assert resp.status_code == 200
+    assert _command(ws, "48")["success"] is False
 
 
 # ---------------------------------------------------------------------------

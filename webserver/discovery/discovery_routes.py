@@ -20,8 +20,8 @@ import json
 import math
 
 from flask import Blueprint, current_app, jsonify, request
-from flask_jwt_extended import jwt_required
 
+from webserver.access import allow
 from webserver.discovery.ethercat_discovery import (
     DiscoveryStatus,
     _validate_interface_name,
@@ -103,7 +103,7 @@ def _slave_error(bus_name: str, slave_pos: int, message: str, code: int, **extra
 
 
 @discovery_bp.route("/ethercat/status", methods=["GET"])
-@jwt_required()
+@allow("discovery")
 def ethercat_status():
     """
     Check if the EtherCAT discovery service is available.
@@ -134,7 +134,7 @@ def ethercat_status():
 
 
 @discovery_bp.route("/ethercat/capabilities", methods=["GET"])
-@jwt_required()
+@allow("discovery")
 def ethercat_capabilities():
     """
     Return the features and version from the running EtherDOG's hello.
@@ -193,7 +193,7 @@ def ethercat_capabilities():
 
 
 @discovery_bp.route("/interfaces", methods=["GET"])
-@jwt_required()
+@allow("discovery")
 def network_interfaces():
     """
     List available network interfaces.
@@ -256,7 +256,7 @@ def network_interfaces():
 
 
 @discovery_bp.route("/ethercat/scan", methods=["POST"])
-@jwt_required()
+@allow("discovery")
 def ethercat_scan():
     """
     Scan the EtherCAT network for slave devices.
@@ -407,7 +407,7 @@ def ethercat_scan():
 
 
 @discovery_bp.route("/ethercat/scan-modules", methods=["POST"])
-@jwt_required()
+@allow("discovery")
 def ethercat_scan_modules():
     """
     Scan a modular coupler's 0xF050 module ident list.
@@ -519,7 +519,7 @@ def ethercat_scan_modules():
 
 
 @discovery_bp.route("/ethercat/runtime-status", methods=["GET"])
-@jwt_required()
+@allow("discovery")
 def ethercat_runtime_status():
     """
     Get the current EtherCAT bus status from EtherDOG.
@@ -596,7 +596,7 @@ def ethercat_runtime_status():
 
 
 @discovery_bp.route("/ethercat/diagnostics", methods=["GET"])
-@jwt_required()
+@allow("discovery")
 def ethercat_diagnostics():
     """
     Get detailed EtherCAT diagnostic information from EtherDOG.
@@ -638,7 +638,7 @@ def ethercat_diagnostics():
 
 
 @discovery_bp.route("/ethercat/diagnostics", methods=["POST"])
-@jwt_required()
+@allow("discovery")
 def ethercat_slave_diagnostics():
     """
     Per-slave diagnostics for a modular coupler.
@@ -734,7 +734,7 @@ def ethercat_slave_diagnostics():
 
 
 @discovery_bp.route("/ethercat/validate", methods=["POST"])
-@jwt_required()
+@allow("discovery")
 def ethercat_validate():
     """
     Validate an EtherCAT configuration before deployment.
@@ -809,7 +809,7 @@ def ethercat_validate():
 
 
 @discovery_bp.route("/ethercat/test", methods=["POST"])
-@jwt_required()
+@allow("discovery")
 def ethercat_test():
     """
     Test connection to a specific EtherCAT slave device.
