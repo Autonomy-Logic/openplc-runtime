@@ -12,9 +12,11 @@ or deletion) is a cut-off time on the account that both this process and the
 Go bootloader read. Everything lives in the runtime database, so it survives
 restarts.
 
-Failed sign-ins are throttled per username and per client address: after a
-failure the next attempt waits ``THROTTLE_FIRST_DELAY_S``, doubling with each
-further failure up to ``THROTTLE_MAX_DELAY_S``.
+Failed sign-ins are throttled per username from one client address, and per
+client address: after a failure the next attempt waits
+``THROTTLE_FIRST_DELAY_S``, doubling with each further failure up to
+``THROTTLE_MAX_DELAY_S``. Failures from one address never delay a sign-in from
+another.
 """
 
 import math
@@ -241,9 +243,16 @@ def throttle_lock(keys: list[str]) -> Iterator[None]:
             _THROTTLE_LOCKS[stripe].release()
 
 
+def username_key(username: str, address: str | None) -> str:
+    """The counter of ``username`` (trimmed, lower case) signing in from ``address``; one counter
+    for every address when the address is unknown."""
+    name = username.strip().lower()
+    return f"user:{address}/{name}" if address else f"user:{name}"
+
+
 def throttle_keys(username: str, address: str | None) -> list[str]:
     """The counters a sign-in attempt by ``username`` from ``address`` is held to."""
-    keys = [f"user:{username.strip().lower()}"]
+    keys = [username_key(username, address)]
     if address:
         keys.append(f"addr:{address}")
     return keys
@@ -283,7 +292,8 @@ def throttle_delay(failures: int) -> float:
     return min(THROTTLE_FIRST_DELAY_S * 2 ** min(failures - 1, 16), THROTTLE_MAX_DELAY_S)
 
 
-def record_success(username: str) -> None:
-    """Clears the username counter after a successful sign-in."""
-    db.session.query(LoginThrottle).filter_by(key=throttle_keys(username, None)[0]).delete()
+def record_success(username: str, address: str | None) -> None:
+    """Clears the counter of ``username`` from ``address`` after a successful sign-in; the
+    address counter stays."""
+    db.session.query(LoginThrottle).filter_by(key=username_key(username, address)).delete()
     db.session.commit()

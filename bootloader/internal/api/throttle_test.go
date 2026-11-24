@@ -4,8 +4,12 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -87,9 +91,28 @@ func TestEachFailureSetsTheNextAllowedAttempt(t *testing.T) {
 
 func TestTheUsernameKeyIgnoresCaseAndSurroundingSpace(t *testing.T) {
 	throttle := throttleAt(newClock())
-	throttle.recordFailure(throttleKeys(" Admin ", "10.0.0.1"))
-	if wait := throttle.wait(throttleKeys("admin", "10.0.0.2")); wait != 5 {
-		t.Fatalf("the same username from another address waits %d s, want 5", wait)
+	throttle.recordFailure([]string{usernameKey(" Admin ", "10.0.0.1")})
+	if wait := throttle.wait(throttleKeys("admin", "10.0.0.1")); wait != 5 {
+		t.Fatalf("the same username from the same address waits %d s, want 5", wait)
+	}
+}
+
+func TestFailuresFromOneAddressNeverDelayAnother(t *testing.T) {
+	throttle := throttleAt(newClock())
+	throttle.recordFailure(throttleKeys("admin", "10.0.0.1"))
+	if wait := throttle.wait(throttleKeys("admin", "10.0.0.2")); wait != 0 {
+		t.Fatalf("the same username from another address waits %d s, want 0", wait)
+	}
+}
+
+func TestWithoutAnAddressOneUsernameCounterServesEveryCaller(t *testing.T) {
+	throttle := throttleAt(newClock())
+	if keys := throttleKeys("Admin", ""); len(keys) != 1 || keys[0] != "user:admin" {
+		t.Fatalf("keys without an address: %v", keys)
+	}
+	throttle.recordFailure(throttleKeys("admin", ""))
+	if wait := throttle.wait(throttleKeys(" ADMIN ", "")); wait != 5 {
+		t.Fatalf("an unknown address waits %d s, want 5", wait)
 	}
 }
 
@@ -109,9 +132,9 @@ func TestASuccessClearsTheUsernameCounterButNotTheAddress(t *testing.T) {
 	throttle := throttleAt(clock)
 	throttle.recordFailure(throttleKeys("admin", "10.0.0.1"))
 	throttle.recordFailure(throttleKeys("admin", "10.0.0.1"))
-	throttle.recordSuccess(" ADMIN ")
+	throttle.recordSuccess(" ADMIN ", "10.0.0.1")
 
-	if wait := throttle.wait(throttleKeys("admin", "10.0.0.2")); wait != 0 {
+	if wait := throttle.wait([]string{usernameKey("admin", "10.0.0.1")}); wait != 0 {
 		t.Fatalf("the username is still held for %d s after a success", wait)
 	}
 	if wait := throttle.wait(throttleKeys("other", "10.0.0.1")); wait != 10 {
@@ -223,7 +246,7 @@ func TestASuccessfulSignInAfterTheDelayClearsTheUsername(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("sign-in after the delay got HTTP %d, want 200", resp.StatusCode)
 	}
-	if wait := throttle.wait([]string{usernameKey("admin")}); wait != 0 {
+	if wait := throttle.wait([]string{usernameKey("admin", "127.0.0.1")}); wait != 0 {
 		t.Fatalf("the username is still held for %d s", wait)
 	}
 }
@@ -240,5 +263,68 @@ func TestAnAccountDatabaseErrorIsNotCountedAsAFailedSignIn(t *testing.T) {
 	resp, _ = signIn(t, rig, "admin", "pw")
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("the retry got HTTP %d, want 503 and no throttle", resp.StatusCode)
+	}
+}
+
+// passwordUsers accepts one password for admin and refuses every other sign-in.
+type passwordUsers struct {
+	fakeUsers
+}
+
+func (p *passwordUsers) Authenticate(_ context.Context, username, password, _ string) (*runtimeauth.User, error) {
+	if username == "admin" && password == "right" {
+		return &runtimeauth.User{ID: "1", Username: "admin", Role: runtimeauth.RoleAdmin}, nil
+	}
+	return nil, runtimeauth.ErrNoSuchUser
+}
+
+func TestAnAttackerFailingOncePerExpiryNeverDelaysAnotherAddress(t *testing.T) {
+	clock := newClock()
+	server := &Server{cfg: Config{
+		Version:        "bootloader-v1.0.0-test",
+		RuntimeVersion: func() string { return "v4.2.1" },
+		Users:          &passwordUsers{fakeUsers{count: 1}},
+		Supervisor:     healthySupervisor(),
+		Logs:           &fakeLogs{out: "log"},
+		Updater:        &fakeUpdater{},
+		SelfUpdater:    &fakeSelfUpdater{},
+		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}}
+	server.throttleOnce.Do(func() { server.throttleImpl = throttleAt(clock) })
+	mux := http.NewServeMux()
+	server.routes(mux)
+	signInFrom := func(address, password string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/bootloader/login",
+			strings.NewReader(`{"username":"admin","password":"`+password+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = address + ":40000"
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	end := clock.Now().Add(2 * time.Hour)
+	failures, wait := 0, 0
+	for clock.Now().Before(end) {
+		if rec := signInFrom("10.6.6.6", "wrong"); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attacker failure %d got HTTP %d, want 401", failures+1, rec.Code)
+		}
+		failures++
+		early := signInFrom("10.6.6.6", "right")
+		if early.Code != http.StatusTooManyRequests {
+			t.Fatalf("attacker retry got HTTP %d, want 429", early.Code)
+		}
+		if rec := signInFrom("10.0.0.5", "right"); rec.Code != http.StatusOK {
+			t.Fatalf("after %d attacker failures the operator got HTTP %d, want 200", failures, rec.Code)
+		}
+		var err error
+		if wait, err = strconv.Atoi(early.Header().Get("Retry-After")); err != nil || wait <= 0 {
+			t.Fatalf("Retry-After %q", early.Header().Get("Retry-After"))
+		}
+		clock.Advance(time.Duration(wait) * time.Second)
+	}
+	if failures < 20 || wait != int(throttleMaxDelay.Seconds()) {
+		t.Fatalf("%d attacker failures, last wait %d s; want at least 20 and %d s", failures, wait,
+			int(throttleMaxDelay.Seconds()))
 	}
 }

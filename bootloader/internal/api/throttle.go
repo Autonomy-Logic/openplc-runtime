@@ -31,7 +31,8 @@ type failureCounter struct {
 	nextAllowed time.Time
 }
 
-// loginThrottle caps concurrent verifications and delays sign-ins per username and per client address.
+// loginThrottle caps concurrent verifications and delays sign-ins per username from one client address
+// and per client address, so failures from one address never delay another.
 type loginThrottle struct {
 	slots chan struct{}
 
@@ -57,14 +58,19 @@ func throttleDelay(failures int) time.Duration {
 	return min(delay, throttleMaxDelay)
 }
 
-// usernameKey is the counter key of a username, trimmed and lower-cased.
-func usernameKey(username string) string {
-	return "user:" + strings.ToLower(strings.TrimSpace(username))
+// usernameKey is the counter key of a username, trimmed and lower-cased, signing in from address;
+// one key for every address when the address is unknown.
+func usernameKey(username, address string) string {
+	name := strings.ToLower(strings.TrimSpace(username))
+	if address == "" {
+		return "user:" + name
+	}
+	return "user:" + address + "/" + name
 }
 
 // throttleKeys are the counters a sign-in by username from address is held to.
 func throttleKeys(username, address string) []string {
-	keys := []string{usernameKey(username)}
+	keys := []string{usernameKey(username, address)}
 	if address != "" {
 		keys = append(keys, "addr:"+address)
 	}
@@ -123,11 +129,11 @@ func (t *loginThrottle) recordFailure(keys []string) {
 	}
 }
 
-// recordSuccess clears the username counter; the address counter is kept.
-func (t *loginThrottle) recordSuccess(username string) {
+// recordSuccess clears the counter of username from address; the address counter is kept.
+func (t *loginThrottle) recordSuccess(username, address string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.counters, usernameKey(username))
+	delete(t.counters, usernameKey(username, address))
 }
 
 // forgetIdle drops counters whose last failure is older than throttleForget. Called with t.mu held.

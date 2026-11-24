@@ -204,21 +204,58 @@ def test_throttle_delay_doubles_from_five_seconds_up_to_five_minutes():
     assert [sessions.throttle_delay(n) for n in range(1, 9)] == [5, 10, 20, 40, 80, 160, 300, 300]
 
 
-def test_throttle_is_per_username_and_per_address_and_a_success_clears_the_username(app):
+def test_throttle_is_per_username_and_address_and_per_address(app):
     keys = sessions.throttle_keys("Admin", "10.0.0.1")
     sessions.record_failure(keys, now=1000.0)
     assert sessions.throttle_wait(keys, now=1001.0) == 4
     assert sessions.throttle_wait(sessions.throttle_keys("other", "10.0.0.1"), now=1001.0) == 4
-    assert sessions.throttle_wait(sessions.throttle_keys("admin", "10.0.0.2"), now=1001.0) == 4
+    assert sessions.throttle_wait(sessions.throttle_keys("admin", "10.0.0.2"), now=1001.0) == 0
     sessions.record_failure(keys, now=1006.0)
     assert sessions.throttle_wait(keys, now=1006.0) == 10
-    sessions.record_success("ADMIN")
-    assert sessions.throttle_wait(sessions.throttle_keys("admin", "10.0.0.2"), now=1006.0) == 0
+    sessions.record_success("ADMIN", "10.0.0.1")
+    assert sessions.throttle_wait(sessions.throttle_keys(" admin ", None), now=1006.0) == 0
+    assert sessions.throttle_wait(keys, now=1006.0) == 10
+    assert sessions.throttle_wait([sessions.username_key("admin", "10.0.0.1")], now=1006.0) == 0
     sessions.record_failure(keys, now=1006.0 + sessions.THROTTLE_FORGET_S + 1)
     assert (
         sessions.throttle_wait(keys, now=1006.0 + sessions.THROTTLE_FORGET_S + 1)
         == sessions.THROTTLE_FIRST_DELAY_S
     )
+
+
+def test_without_an_address_one_username_counter_serves_every_caller(app):
+    sessions.record_failure(sessions.throttle_keys("admin", None), now=1000.0)
+    assert sessions.throttle_keys("admin", None) == ["user:admin"]
+    assert sessions.throttle_wait(sessions.throttle_keys("Admin", ""), now=1001.0) == 4
+
+
+def test_failures_from_one_address_never_delay_a_sign_in_from_another(
+    client, admin_token, monkeypatch
+):
+    clock = [1_000_000.0]
+    monkeypatch.setattr(sessions.time, "time", lambda: clock[0])
+    attacker = {"REMOTE_ADDR": "10.6.6.6"}
+    operator = {"REMOTE_ADDR": "10.0.0.5"}
+
+    def sign_in(password, environ):
+        return client.post(
+            "/api/login",
+            json={"username": "admin", "password": password},
+            environ_base=environ,
+        )
+
+    end = clock[0] + 2 * 3600
+    failures = 0
+    while clock[0] < end:
+        response = sign_in("wrong", attacker)
+        assert response.status_code == 401
+        failures += 1
+        early = sign_in("admin-pass", attacker)
+        assert early.status_code == 429
+        assert sign_in("admin-pass", operator).status_code == 200
+        clock[0] += int(early.headers["Retry-After"])
+    assert failures >= 20
+    assert int(early.headers["Retry-After"]) == sessions.THROTTLE_MAX_DELAY_S
 
 
 def test_role_changes_session_ends_and_throttled_sign_ins_are_logged(client, tokens, caplog):

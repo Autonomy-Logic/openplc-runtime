@@ -731,7 +731,7 @@ def update_user(user_id):
                     sessions.record_failure(keys)
                     logger.warning("Wrong current password for %s", target.username)
                     return jsonify({"msg": "Current password is incorrect"}), 403
-                sessions.record_success(target.username)
+                sessions.record_success(target.username, request.remote_addr)
         target.set_password(new_password)
         password_changed = True
 
@@ -1098,7 +1098,7 @@ def login():
             sessions.record_failure(keys)
             logger.warning("Failed sign-in for %s from %s", username, request.remote_addr)
             return jsonify("Wrong username or password"), 401
-        sessions.record_success(username)
+        sessions.record_success(username, request.remote_addr)
 
     sessions.purge()
     claims = sessions.start_session(user.id, issued_ms)

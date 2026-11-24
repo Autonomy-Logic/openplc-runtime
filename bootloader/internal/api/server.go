@@ -433,7 +433,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "wrong username or password")
 		return
 	}
-	s.loginLimiter().recordSuccess(body.Username)
+	s.loginLimiter().recordSuccess(body.Username, source)
 
 	token, err := runtimeauth.IssueToken(s.cfg.Users.Secrets().JWTSecret, user.ID, runtimeauth.DefaultTokenTTL)
 	if err != nil {
