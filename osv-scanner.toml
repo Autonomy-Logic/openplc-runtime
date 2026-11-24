@@ -1,0 +1,14 @@
+# osv-scanner suppression baseline for openplc-runtime: the VEX "not affected"
+# and mitigated decisions of the vulnerability report.
+#
+# Empty: no advisory has been triaged yet. Add an entry only for an advisory a
+# reviewer has determined is not exploitable, with a CISA VEX justification:
+#
+#   [[IgnoredVulns]]
+#   id = "GHSA-xxxx-xxxx-xxxx"
+#   ignoreUntil = "2027-01-01T00:00:00Z"
+#   reason = "VEX not_affected [vulnerable_code_not_in_execute_path]: <basis>"
+#
+# scripts/gen-osv-ignores.mjs builds these entries from a triaged register.
+# Suppressions written by the automated monthly triage carry
+# "AI-TRIAGED [unreviewed]" in their reason until a reviewer clears the marker.
