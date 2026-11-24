@@ -102,7 +102,8 @@ cd bootloader && test -z "$(gofmt -l .)" && go vet ./... && go test -race -count
   go vet and `go test -race` for `bootloader/`; pytest on Python 3.13 over `tests/pytest` excluding the `plugins`,
   `modbus_master` and `modbus_slave` suites (red on the base branch), plus the named plugin suites known
   green; shellcheck on `install.sh`, `scripts/install-docker.sh`, `windows/provision-msys2.sh` and
-  `tests/integration/harness.sh`, `scripts/verify-base-image.sh`, `scripts/publish-plan.sh` and `tests/image/`;
+  `tests/integration/harness.sh`, `scripts/verify-base-image.sh`, `scripts/publish-plan.sh`, `scripts/lib/` and
+  `tests/image/`;
   `tests/image/run.sh` (static image checks, the base check and publish plan scripts against fake `gh` and
   `docker`, and the Python version of the Webserver job); a check that Windows and Docker callers run
   `install.sh --native`.
@@ -113,7 +114,9 @@ cd bootloader && test -z "$(gofmt -l .)" && go vet ./... && go test -race -count
 - Base image check (`.github/workflows/base-image-check.yml`, job "Verify Base Image Attestation", on every
   PR and pushes to `development`/`main`; also the first step of the `docker.yml` build job):
   `scripts/verify-base-image.sh` checks the `Dockerfile` pin and its attestation (docs/DOCKER.md, "Base image
-  check"); `--no-attestation` runs only the offline rules.
+  check"); `--no-attestation` runs only the offline rules. The Dockerfile parser and pin rules live in
+  `scripts/lib/dockerfile.sh` (shared with `tests/image/static.sh`), `one_line` and the image tag pattern in
+  `scripts/lib/common.sh`.
   On a PR to `development` whose head commit carries the commit status `misterflow/local-ci` = `success` (set by
   MisterFlow on the exact SHA it pushes after running the checks locally), the run skips the Bootloader (Go) and
   Webserver (pytest) jobs (reported as passed); a push without that status runs them, and the installer scripts job

@@ -83,42 +83,6 @@ APT_CMAKE_DOWNLOAD="3.25.1-1 (none)"
 EXPECTED_HEALTHCHECK='--interval=30s --timeout=10s --start-period=90s --retries=3 CMD curl -kfsS https://127.0.0.1:8443/api/version >/dev/null || exit 1'
 EXPECTED_CMD='["bash","./start_openplc.sh"]'
 
-check_no_syntax_directive() {
-    local line
-    line="$(grep -Ei '^[[:space:]]*#[[:space:]]*syntax[[:space:]]*=' "$1" | head -1)"
-    [ -z "$line" ] || { echo "parser directive present: $line"; return 1; }
-}
-
-check_from_pinned_by_digest() {
-    local index name image rc=0
-    while IFS=$'\t' read -r index name image; do
-        [[ "$image" =~ @sha256:[0-9a-f]{64}$ ]] || { echo "FROM $image is not pinned by digest"; rc=1; }
-    done < <(df_external_stages "$1")
-    return "$rc"
-}
-
-check_from_without_variable() {
-    local stage kw args rc=0
-    while IFS=$'\t' read -r stage kw args; do
-        if [ "$kw" = FROM ] && [[ "$args" == *'$'* ]]; then
-            echo "FROM uses a variable: $args"
-            rc=1
-        fi
-        if [ "$kw" = ARG ] && [ "$stage" = -1 ]; then
-            echo "ARG before the first FROM: $args"
-            rc=1
-        fi
-    done < <(df_instructions "$1")
-    return "$rc"
-}
-
-check_from_single_pin() {
-    local images count
-    images="$(df_external_stages "$1" | cut -f 3 | sort -u)"
-    count="$(printf '%s' "$images" | grep -c .)"
-    [ "$count" = 1 ] || { echo "expected one base reference, found $count: $(echo "$images" | tr '\n' ' ')"; return 1; }
-}
-
 check_from_base_pin() {
     local index name image rc=0
     while IFS=$'\t' read -r index name image; do
@@ -146,50 +110,6 @@ check_builder_and_final_on_base() {
         fi
     done < <(df_stages "$1")
     [ -n "$(df_stage_index "$1" builder)" ] || { echo "no builder stage"; rc=1; }
-    return "$rc"
-}
-
-# Succeeds when a --from or mount from= value names a stage declared before the given stage.
-names_earlier_stage() {
-    local file="$1" stage="$2" ref index
-    ref="$(lower "$3")"
-    if [[ "$ref" =~ ^[0-9]+$ ]]; then
-        [ "$ref" -lt "$stage" ]
-        return
-    fi
-    index="$(df_stage_index "$file" "$ref")"
-    [ -n "$index" ] && [ "$index" -lt "$stage" ]
-}
-
-check_copy_from_stages_only() {
-    local stage kw args ref mount tok rc=0
-    local -a toks
-    while IFS=$'\t' read -r stage kw args; do
-        case "$kw" in
-            COPY | ADD)
-                ref="$(flag_value "$args" from)"
-                if [ -n "$ref" ] && ! names_earlier_stage "$1" "$stage" "$ref"; then
-                    echo "$kw --from=$ref is not a stage of this file"
-                    rc=1
-                fi
-                ;;
-            RUN)
-                read -r -a toks <<<"$args"
-                for tok in ${toks[@]+"${toks[@]}"}; do
-                    case "$tok" in
-                        --mount=*) mount="${tok#--mount=}" ;;
-                        --*) continue ;;
-                        *) break ;;
-                    esac
-                    ref="$(printf '%s' ",$mount," | sed -n 's/.*,from=\([^,]*\),.*/\1/p')"
-                    if [ -n "$ref" ] && ! names_earlier_stage "$1" "$stage" "$ref"; then
-                        echo "RUN --mount from=$ref is not a stage of this file"
-                        rc=1
-                    fi
-                done
-                ;;
-        esac
-    done < <(df_instructions "$1")
     return "$rc"
 }
 

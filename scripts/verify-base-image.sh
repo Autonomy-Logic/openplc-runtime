@@ -5,17 +5,17 @@
 set -u
 set -o pipefail
 
-RULES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../tests/image" && pwd)"
-# shellcheck source=tests/image/helpers.sh
-. "$RULES_DIR/helpers.sh"
-# shellcheck source=tests/image/static.sh
-. "$RULES_DIR/static.sh"
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)"
+# shellcheck source=scripts/lib/common.sh
+. "$LIB_DIR/common.sh"
+# shellcheck source=scripts/lib/dockerfile.sh
+. "$LIB_DIR/dockerfile.sh"
 
 BASE_PACKAGE="ghcr.io/autonomy-logic/openplc-runtime-base"
 SIGNER_REPO="Autonomy-Logic/autonomy-docker"
 SIGNER_WORKFLOW="$SIGNER_REPO/.github/workflows/build.yml"
 SOURCE_REF="refs/heads/main"
-PIN_RULES="no-syntax-directive from-pinned-by-digest from-without-variable from-single-pin copy-from-stages-only"
+PIN_RULES="no-parser-directive no-heredoc from-pinned-by-digest from-without-variable from-single-pin copy-from-stages-only base-labels"
 FAILURES=0
 WORK_DIR=""
 
@@ -31,18 +31,13 @@ Prints one error: line per broken rule and exits non-zero when any rule is broke
 EOF
 }
 
-# Prints a text on one line, its non-empty lines joined by "; ".
-one_line() {
-    printf '%s\n' "$1" | awk 'NF { printf "%s%s", sep, $0; sep = "; " } END { print "" }'
-}
-
 # Prints the error line of a broken rule and counts it: fail <rule> <message>.
 fail() {
     printf 'error: %s: %s\n' "$1" "$(one_line "$2")" >&2
     FAILURES=$((FAILURES + 1))
 }
 
-# Applies the Dockerfile pin rules shared with tests/image/static.sh.
+# Applies the Dockerfile pin rules of scripts/lib/dockerfile.sh.
 check_pin_rules() {
     local id out
     for id in $PIN_RULES; do
@@ -57,12 +52,12 @@ base_references() {
 
 # Fails unless every base image is the runtime base package pinned as <name>:<tag>@sha256:<digest>.
 check_package() {
-    local image name rest bad=""
+    local image name rest bad="" pin_re="^$TAG_RE@sha256:[0-9a-f]{64}\$"
     while IFS= read -r image; do
         [ -n "$image" ] || continue
         name="${image%%:*}"
         rest="${image#*:}"
-        if [ "$name" != "$BASE_PACKAGE" ] || ! [[ "$rest" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}@sha256:[0-9a-f]{64}$ ]]; then
+        if [ "$name" != "$BASE_PACKAGE" ] || ! [[ "$rest" =~ $pin_re ]]; then
             bad="$bad
 FROM $image is not $BASE_PACKAGE:<tag>@sha256:<digest>"
         fi

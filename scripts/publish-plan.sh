@@ -7,7 +7,9 @@ set -o pipefail
 
 RELEASE_IMAGE="ghcr.io/autonomy-logic/openplc-runtime"
 TEST_IMAGE="ghcr.io/autonomy-logic/openplc-runtime-test"
-TAG_PATTERN='^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'
+
+# shellcheck source=scripts/lib/common.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)/common.sh"
 
 usage() {
     cat <<EOF
@@ -25,11 +27,6 @@ Refuses, with exit 1, any other event, a dispatch with neither or both tags, a t
 image tag or is latest, and a tag that already exists in its package. Exits 2 when the registry answer
 (docker buildx imagetools inspect) does not say clearly that the tag is absent.
 EOF
-}
-
-# Prints the text on one line, its non-empty lines joined by "; ".
-one_line() {
-    printf '%s\n' "$1" | awk 'NF { printf "%s%s", sep, $0; sep = "; " } END { print "" }'
 }
 
 # Prints an error on stderr and exits: refuse <exit code> <message>.

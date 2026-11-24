@@ -31,7 +31,7 @@ each of its three stages (`venvs`, `builder` and the final stage), with no
 build argument, and sets the labels `org.opencontainers.image.base.name` and
 `org.opencontainers.image.base.digest` of the image to the same reference.
 Changing the base means changing all of them together; `tests/image/run.sh`
-fails when they disagree.
+and `scripts/verify-base-image.sh` fail when they disagree.
 
 The base provides Python, the compiler toolchain uploaded programs are built
 with, `curl`, `ethtool`, `openssl`, the `/var/run/runtime` directory and the
@@ -44,10 +44,14 @@ for a Critical vulnerability and within 30 days for a High one.
 `scripts/verify-base-image.sh [--no-attestation] [Dockerfile]` (default:
 `Dockerfile` in the working directory) prints one `error:` line per broken rule
 and exits non-zero when any rule is broken. Without the network
-(`--no-attestation`) it checks the `Dockerfile` rules shared with
-`tests/image/static.sh` (every `FROM` pinned by digest with no variable, one
-pin for all stages, no `# syntax` line, `COPY --from` and `RUN --mount` only
-from stages of the file) and that the pinned package is exactly
+(`--no-attestation`) it checks the `Dockerfile` pin rules of
+`scripts/lib/dockerfile.sh`, which `tests/image/static.sh` also runs: every
+`FROM` pinned by digest with no variable, one pin for all stages, no parser
+directive (`# <name>=<value>` before the first instruction), no heredoc (`<<`
+outside a comment line), `COPY --from` and `RUN --mount` only from stages of
+the file, and the final stage's `org.opencontainers.image.base.name` and
+`org.opencontainers.image.base.digest` labels equal to its pin. It also checks
+that the pinned package is exactly
 `ghcr.io/autonomy-logic/openplc-runtime-base`, written as `<name>:<tag>@<digest>`.
 With the network it also checks, with the `docker` and `gh` on `PATH`, that:
 
