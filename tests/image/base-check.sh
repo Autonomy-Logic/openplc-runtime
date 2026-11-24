@@ -38,10 +38,22 @@ from-platform-quoted-space plain-flags
 onbuild-copy-from-image no-onbuild
 onbuild-mount-from-image no-onbuild
 repository-escaped-from plain-flags
+flag-after-clean-flag plain-flags
+"
+UNREADABLE_IMAGE_LINES="
+trailing-space
+trailing-tab
+suffix
+carriage-return
+leading-space
+colour-codes
+platform-prefix
+on-stdout
 "
 TARGETS_CALL="buildx build --call=targets,format=json -"
 CHECK_CALL="buildx build --check --progress=plain -"
 ESCAPED_FROM_LINE='COPY --fr\om=debian:trixie /etc/os-release /etc/os-release'
+SECOND_IMAGE="docker.io/library/debian:trixie"
 LABEL_LINE="LABEL org.opencontainers.image.base.name=\"$BASE_REF\" org.opencontainers.image.base.digest=\"$BASE_DIGEST\""
 
 # Makes a case directory with the fake gh and docker and resets their answers: base_setup <case>.
@@ -558,11 +570,14 @@ expect_check_asked() {
         { echo "docker was not asked '$CHECK_CALL'; docker calls: $(tr '\n' ';' <"$FAKE_DOCKER_LOG")"; return 1; }
 }
 
-# Runs the full check on the repository Dockerfile with BuildKit giving a recorded check answer: images_run <case> <answer>.
+# Runs the full check on the repository Dockerfile with BuildKit giving a check answer, recorded or a path: images_run <case> <answer>.
 images_run() {
     base_setup "images-$1"
     cp "$REPO_ROOT/Dockerfile" "$CASE_DIR/Dockerfile"
-    export FAKE_DOCKER_CHECK="$TESTS_DIR/fixtures/check/$2"
+    case "$2" in
+        /*) export FAKE_DOCKER_CHECK="$2" ;;
+        *) export FAKE_DOCKER_CHECK="$TESTS_DIR/fixtures/check/$2" ;;
+    esac
     base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
 }
 
@@ -636,6 +651,62 @@ check_base_images_docker_failure_rejected() {
 
 check_base_images_unreadable_answer_rejected() {
     images_rejected unreadable unreadable
+}
+
+# Prints the first error: line of a rule in the last run's output.
+rule_error_line() {
+    printf '%s\n' "$BASE_OUT" | grep -m 1 "^error: $1: "
+}
+
+# Writes the recorded valid check answer with one more image line, after the pin line or on stdout: check_answer_with_line <case> <dir>.
+check_answer_with_line() {
+    local line="#4 [internal] load metadata for $SECOND_IMAGE" stream=stderr
+    case "$1" in
+        trailing-space) line="$line " ;;
+        trailing-tab) line="$line$(printf '\t')" ;;
+        suffix) line="$line (linux/amd64)" ;;
+        carriage-return) line="$line$(printf '\r')" ;;
+        leading-space) line=" $line" ;;
+        colour-codes) line="$(printf '\033[36m')$line$(printf '\033[0m')" ;;
+        platform-prefix) line="#4 [linux/amd64 internal] load metadata for $SECOND_IMAGE" ;;
+        on-stdout) stream=stdout ;;
+        *) echo "no check answer $1"; return 1 ;;
+    esac
+    mkdir -p "$2"
+    cp "$TESTS_DIR/fixtures/check/valid/stdout" "$TESTS_DIR/fixtures/check/valid/stderr" "$TESTS_DIR/fixtures/check/valid/exit" "$2/"
+    LINE="$line" PIN_LINE="#2 [internal] load metadata for $BASE_PIN" awk '
+        FILENAME ~ /stderr$/ && $0 == ENVIRON["PIN_LINE"] { print; print ENVIRON["LINE"]; next }
+        { print }
+        END { if (FILENAME ~ /stdout$/) print ENVIRON["LINE"] }' "$TESTS_DIR/fixtures/check/valid/$stream" >"$2/$stream"
+    ! cmp -s "$TESTS_DIR/fixtures/check/valid/$stream" "$2/$stream" || { echo "no line was added to the $stream answer"; return 1; }
+}
+
+# Expects buildkit-images to reject an answer holding the pin line and a second image line BuildKit printed in another form.
+check_base_images_unreadable_line_rejected() {
+    local rc=0 answer="$BASE_WORK/check-$1" quoted="load metadata for $SECOND_IMAGE"
+    check_answer_with_line "$1" "$answer" || return 1
+    images_run "unreadable-line-$1" "$answer"
+    expect_rejected || rc=1
+    [ "$1" != on-stdout ] || quoted="$SECOND_IMAGE"
+    [[ "$(rule_error_line buildkit-images)" == *"$quoted"* ]] ||
+        { echo "no error: buildkit-images: line quoting '$quoted'; $(base_result)"; rc=1; }
+    expect_check_asked || rc=1
+    return "$rc"
+}
+
+check_base_images_lint_failure_names_warnings() {
+    local rc=0 line rule message missing="" count=0
+    images_run lint-message lint-warnings
+    expect_rejected || rc=1
+    line="$(rule_error_line buildkit-images)"
+    while IFS=$'\t' read -r rule message; do
+        count=$((count + 1))
+        [[ "$line" == *"$rule"* ]] || missing="$missing [$rule]"
+        [[ "$line" == *"$message"* ]] || missing="$missing [$message]"
+    done < <(awk '/^WARNING: / { rule = $2; if ((getline msg) > 0) print rule "\t" msg }' "$TESTS_DIR/fixtures/check/lint-warnings/stdout")
+    [ "$count" -gt 0 ] || { echo "the recorded lint-warnings answer holds no WARNING line"; return 1; }
+    [ -z "$missing" ] || { echo "the error: buildkit-images: line lacks$missing; got: ${line:-no such line}"; rc=1; }
+    return "$rc"
 }
 
 # Makes a case directory whose PATH holds the fake gh and a docker that logs each call and runs the real docker.
@@ -728,6 +799,31 @@ yaml_items() {
         END { if (item != "") print item }' top=-1
 }
 
+# Prints the lines of the n-th item of the YAML list on stdin, its "- " marker turned into two spaces.
+yaml_item() {
+    awk -v n="$1" '
+        function indent(s) { match(s, /^ */); return RLENGTH }
+        /^[ \t]*#/ || /^[ \t]*$/ { next }
+        {
+            ind = indent($0)
+            if (top < 0) top = ind
+            if (ind == top && substr($0, ind + 1, 2) == "- ") {
+                i++
+                if (i == n) print substr($0, 1, ind) "  " substr($0, ind + 3)
+                next
+            }
+            if (i == n) print
+        }' top=-1
+}
+
+# Fails unless a timeout-minutes value is a whole number from 1 to 10: expect_short_timeout <where> <value>.
+expect_short_timeout() {
+    local value
+    value="$(printf '%s' "$2" | tr -d "\"'")"
+    [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -ge 1 ] && [ "$value" -le 10 ] ||
+        { echo "$1 has timeout-minutes '${value:-unset}', expected 1 to 10"; return 1; }
+}
+
 # Prints the 1-based index of the first step of the docker.yml build job matching an extended regex.
 build_step_index() {
     yaml_path "$DOCKER_WORKFLOW" jobs build steps | yaml_items | grep -nE -m 1 -- "$1" | cut -d: -f1
@@ -753,6 +849,14 @@ check_workflow_docker_build_checks_base_before_qemu_login_build() {
     return "$rc"
 }
 
+check_workflow_docker_base_check_step_timeout() {
+    local verify
+    verify="$(build_step_index 'verify-base-image\.sh')"
+    [ -n "$verify" ] || { echo "no step of the build job runs scripts/verify-base-image.sh"; return 1; }
+    expect_short_timeout "the base check step (step $verify)" \
+        "$(yaml_path "$DOCKER_WORKFLOW" jobs build steps | yaml_item "$verify" | yaml_child timeout-minutes)"
+}
+
 check_workflow_docker_build_checks_attestation() {
     local step
     step="$(yaml_path "$DOCKER_WORKFLOW" jobs build steps | yaml_items | grep -m 1 -- 'verify-base-image\.sh')"
@@ -774,22 +878,37 @@ check_workflow_base_check_triggers() {
     return "$rc"
 }
 
-check_workflow_base_check_job() {
-    local job body
-    [ -f "$BASE_WORKFLOW" ] || { echo "missing .github/workflows/base-image-check.yml"; return 1; }
+# Prints the key of the base-image-check.yml job named Verify Base Image Attestation, or fails.
+base_check_job() {
+    local job
     for job in $(yaml_path "$BASE_WORKFLOW" jobs | awk '
             function indent(s) { match(s, /^ */); return RLENGTH }
             /^[ \t]*#/ || /^[ \t]*$/ { next }
             { ind = indent($0); if (top < 0) top = ind; if (ind == top) { k = substr($0, ind + 1); sub(/:.*/, "", k); print k } }' top=-1); do
-        body="$(yaml_path "$BASE_WORKFLOW" jobs "$job")"
-        printf '%s\n' "$body" | yaml_child name | grep -Eqx "[\"']?Verify Base Image Attestation[\"']?" || continue
-        printf '%s\n' "$body" | grep -q 'verify-base-image\.sh' || { echo "job $job does not run scripts/verify-base-image.sh"; return 1; }
-        printf '%s\n' "$body" | grep -q -- '--no-attestation' && { echo "job $job skips the attestation"; return 1; }
-        printf '%s\n' "$body" | grep -Eq '^[[:space:]]*GH_TOKEN:' || { echo "job $job sets no GH_TOKEN"; return 1; }
-        return 0
+        if yaml_path "$BASE_WORKFLOW" jobs "$job" | yaml_child name | grep -Eqx "[\"']?Verify Base Image Attestation[\"']?"; then
+            printf '%s\n' "$job"
+            return 0
+        fi
     done
-    echo "no job named Verify Base Image Attestation"
     return 1
+}
+
+check_workflow_base_check_job() {
+    local job body
+    [ -f "$BASE_WORKFLOW" ] || { echo "missing .github/workflows/base-image-check.yml"; return 1; }
+    job="$(base_check_job)" || { echo "no job named Verify Base Image Attestation"; return 1; }
+    body="$(yaml_path "$BASE_WORKFLOW" jobs "$job")"
+    printf '%s\n' "$body" | grep -q 'verify-base-image\.sh' || { echo "job $job does not run scripts/verify-base-image.sh"; return 1; }
+    printf '%s\n' "$body" | grep -q -- '--no-attestation' && { echo "job $job skips the attestation"; return 1; }
+    printf '%s\n' "$body" | grep -Eq '^[[:space:]]*GH_TOKEN:' || { echo "job $job sets no GH_TOKEN"; return 1; }
+    return 0
+}
+
+check_workflow_base_check_job_timeout() {
+    local job
+    [ -f "$BASE_WORKFLOW" ] || { echo "missing .github/workflows/base-image-check.yml"; return 1; }
+    job="$(base_check_job)" || { echo "no job named Verify Base Image Attestation"; return 1; }
+    expect_short_timeout "job $job" "$(yaml_path "$BASE_WORKFLOW" jobs "$job" | yaml_child timeout-minutes)"
 }
 
 check_workflow_base_check_read_only() {
@@ -812,7 +931,7 @@ check_workflow_base_check_no_login() {
 
 # Runs the base check script against fake gh and docker and checks the workflows that run it.
 run_base_checks() {
-    local fixture review rule hidden
+    local fixture review rule hidden unreadable
     BASE_WORK="$(mktemp -d)"
     BASE_WORK="$(cd "$BASE_WORK" && pwd -P)"
     run_check "base/offline-repository-dockerfile-passes" check_base_offline_repository_passes
@@ -877,11 +996,17 @@ run_base_checks() {
     run_check "base/buildkit-images-no-image-rejected" check_base_images_no_image_rejected
     run_check "base/buildkit-images-docker-failure-rejected" check_base_images_docker_failure_rejected
     run_check "base/buildkit-images-unreadable-answer-rejected" check_base_images_unreadable_answer_rejected
+    for unreadable in $UNREADABLE_IMAGE_LINES; do
+        run_check "base/buildkit-images-second-image-line-$unreadable-rejected" check_base_images_unreadable_line_rejected "$unreadable"
+    done
+    run_check "base/buildkit-images-lint-failure-names-warnings" check_base_images_lint_failure_names_warnings
     run_check "workflow/docker-build-checks-base-after-checkout" check_workflow_docker_build_checks_base_after_checkout
     run_check "workflow/docker-build-checks-base-before-qemu-login-build" check_workflow_docker_build_checks_base_before_qemu_login_build
     run_check "workflow/docker-build-checks-attestation" check_workflow_docker_build_checks_attestation
+    run_check "workflow/docker-base-check-step-timeout" check_workflow_docker_base_check_step_timeout
     run_check "workflow/base-check-triggers" check_workflow_base_check_triggers
     run_check "workflow/base-check-job" check_workflow_base_check_job
+    run_check "workflow/base-check-job-timeout" check_workflow_base_check_job_timeout
     run_check "workflow/base-check-read-only" check_workflow_base_check_read_only
     run_check "workflow/base-check-no-login" check_workflow_base_check_no_login
     rm -rf "$BASE_WORK"

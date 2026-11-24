@@ -64,6 +64,7 @@ mount-value-quoted-space.Dockerfile plain-flags
 chown-quote-hides-from.Dockerfile plain-flags
 from-platform-quoted-space.Dockerfile plain-flags
 keyword-quoted.Dockerfile plain-flags
+flag-after-clean-flag.Dockerfile plain-flags
 onbuild-copy-from-image.Dockerfile no-onbuild
 onbuild-mount-from-image.Dockerfile no-onbuild
 onbuild-lower-case.Dockerfile no-onbuild
@@ -72,6 +73,12 @@ final-apt-get-heredoc.Dockerfile no-heredoc
 final-pip-install.Dockerfile final-no-pip-install
 final-curl.Dockerfile final-no-network
 final-add-url.Dockerfile final-no-network
+final-add-upper-scheme-url.Dockerfile final-no-network
+final-add-git-scheme.Dockerfile final-no-network
+final-add-ssh-scheme.Dockerfile final-no-network
+final-add-git-at-host.Dockerfile final-no-network
+final-add-user-at-host.Dockerfile final-no-network
+final-add-upper-scheme-git.Dockerfile final-no-network
 final-dpkg-excludes.Dockerfile final-no-dpkg-excludes
 final-runtime-dir.Dockerfile final-no-runtime-dir
 venv-copy-after-app.Dockerfile final-layer-order
@@ -100,6 +107,7 @@ base-labels-follow-pin.Dockerfile base-labels
 mount-from-stage-upper-and-quoted.Dockerfile copy-from-stages-only
 flags-then-quoted-words.Dockerfile plain-flags
 onbuild-word-in-command.Dockerfile no-onbuild
+final-add-local-path.Dockerfile final-no-network
 "
 
 GENERATED_CASES="
@@ -383,6 +391,17 @@ check_final_cmd() {
     [ "$got" = "$EXPECTED_CMD" ] || { echo "CMD is '$got'"; return 1; }
 }
 
+# Fails, naming each one, when a pin rule of scripts/verify-base-image.sh is not in STATIC_CHECKS.
+check_pin_rules_are_static_checks() {
+    local rules id missing=""
+    rules="$(sed -n 's/^PIN_RULES="\(.*\)"$/\1/p' "$REPO_ROOT/scripts/verify-base-image.sh")"
+    [ -n "$rules" ] || { echo "no PIN_RULES line in scripts/verify-base-image.sh"; return 1; }
+    for id in $rules; do
+        printf '%s\n' "$STATIC_CHECKS" | grep -Fqx -- "$id" || missing="$missing $id"
+    done
+    [ -z "$missing" ] || { echo "PIN_RULES not in STATIC_CHECKS:$missing"; return 1; }
+}
+
 # Runs every static check against one Dockerfile, recording one line per check.
 static_checks_on() {
     local file="$1" label="$2" id
@@ -627,6 +646,7 @@ check_install_apt_cmake_download() {
 run_static_checks() {
     local candidate
     static_checks_on "$REPO_ROOT/Dockerfile" static
+    run_check "static/pin-rules-are-static-checks" check_pin_rules_are_static_checks
     fixture_checks
     run_check "install/native-without-step-runs-every-step" check_install_native_default
     for candidate in $APT_CMAKE_FROM_APT; do
