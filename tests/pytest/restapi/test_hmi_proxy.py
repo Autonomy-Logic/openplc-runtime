@@ -234,7 +234,7 @@ def sio(app, fast, sock_path, hmi_dir):
 
 @pytest.fixture()
 def host(sock_path, hmi_dir):
-    install(hmi_dir)
+    install(hmi_dir, {"index.html": b"<!doctype html>", "hmi.wasm": WASM})
     fake = FakeHost(sock_path).start()
     yield fake
     if fake.running:
@@ -413,6 +413,7 @@ PUBLIC = {
     "fonts-LICENSE.txt": b"OFL",
 }
 WASM = b"\0asm-screens"
+BUILD = hashlib.sha256(WASM).hexdigest()
 
 
 def test_the_sign_in_page_and_its_static_files_need_no_account(client, hmi_dir):
@@ -441,6 +442,14 @@ def test_the_screens_module_needs_a_token_that_may_open_the_hmi(
         assert resp.headers["Cache-Control"] == "no-store"
     assert client.get("/hmi/other.wasm").status_code == 401
     assert any("HMI client file hmi.wasm refused" in w for w in warnings)
+
+
+def test_the_screens_module_carries_its_build_id(client, hmi_dir, tokens):
+    install(hmi_dir, {**PUBLIC, "hmi.wasm": WASM})
+    resp = client.get("/hmi/hmi.wasm", headers=auth(tokens["operator"]))
+    assert resp.status_code == 200
+    assert resp.headers[hp.BUILD_HEADER] == BUILD == hp.hmi_build_id()
+    assert hp.BUILD_HEADER not in client.get("/hmi/hmi-client.js").headers
 
 
 def test_the_screens_module_is_refused_after_sign_out_and_account_changes(client, hmi_dir, tokens):
@@ -522,6 +531,25 @@ def test_valid_events_are_rebuilt(data, expected):
 )
 def test_invalid_show_and_write_events_become_requests_the_host_refuses(data, expected):
     assert hp.parse_event(data) == expected
+
+
+@pytest.mark.parametrize(
+    "data,expected",
+    [
+        ({"t": "s", "p": 1, "h": "a" * 64}, "a" * 64),
+        ({"t": "w", "g": 1, "v": b"\x01", "h": "0f" * 32}, "0f" * 32),
+        ({"t": "b", "g": 1, "b": 0, "v": 1, "h": "1" * 64}, "1" * 64),
+        ({"t": "w", "g": 1, "h": "2" * 64}, "2" * 64),
+        ({"t": "s", "p": 1}, None),
+        ({"t": "s", "p": 1, "h": "A" * 64}, None),
+        ({"t": "s", "p": 1, "h": "a" * 63}, None),
+        ({"t": "s", "p": 1, "h": 7}, None),
+    ],
+)
+def test_shows_and_writes_keep_the_build_id_they_name(data, expected):
+    event = hp.parse_event(data)
+    assert not isinstance(event, hp.OpenEvent) and event is not None
+    assert event.build == expected
 
 
 @pytest.mark.parametrize(
@@ -716,7 +744,7 @@ def test_every_role_may_view_and_the_host_learns_role_and_account(sio, app, toke
     assert wait_for(
         lambda: live.extend(s for s in received(ws, "hmi_status") if s["state"] == "live") or live
     )
-    assert live[0] == {"state": "live", "role": hp.ROLE_CODES[role]}
+    assert live[0] == {"state": "live", "role": hp.ROLE_CODES[role], "build": BUILD}
 
 
 def _expired(app, token):
@@ -798,7 +826,7 @@ def test_a_write_after_the_account_is_deleted_disconnects(sio, app, client, toke
     ws, _ = open_viewer(sio, app, tokens["operator"], host)
     op_id = restapi.User.query.filter_by(username="operator").one().id
     assert client.delete(f"/api/delete-user/{op_id}", headers=auth(tokens["admin"])).status_code
-    ws.emit("in", {"t": "w", "g": 0, "v": b"\x01", "n": 1}, namespace=NS)
+    ws.emit("in", {"t": "w", "h": BUILD, "g": 0, "v": b"\x01", "n": 1}, namespace=NS)
     assert not ws.is_connected(NS)
     assert host.of_type(hp.MSG_WRITE) == []
 
@@ -841,11 +869,11 @@ def test_a_token_that_does_not_verify_disconnects(sio, app, tokens, host):
 def test_events_reach_the_host_rebuilt_and_in_order(sio, app, tokens, host, warnings):
     ws, opened = open_viewer(sio, app, tokens["engineer"], host)
     vid = opened["viewer"]
-    ws.emit("in", {"t": "w", "g": 1, "v": b"\x07\x00", "n": 3}, namespace=NS)
-    ws.emit("in", {"t": "s", "p": 0, "n": 1, "evil": 1}, namespace=NS)
-    ws.emit("in", {"t": "w", "g": 2, "v": "not bytes", "n": 2}, namespace=NS)
-    ws.emit("in", {"t": "s", "p": -5, "n": 4}, namespace=NS)
-    ws.emit("in", {"t": "w", "g": 3, "v": b"\x01"}, namespace=NS)
+    ws.emit("in", {"t": "w", "h": BUILD, "g": 1, "v": b"\x07\x00", "n": 3}, namespace=NS)
+    ws.emit("in", {"t": "s", "h": BUILD, "p": 0, "n": 1, "evil": 1}, namespace=NS)
+    ws.emit("in", {"t": "w", "h": BUILD, "g": 2, "v": "not bytes", "n": 2}, namespace=NS)
+    ws.emit("in", {"t": "s", "h": BUILD, "p": -5, "n": 4}, namespace=NS)
+    ws.emit("in", {"t": "w", "h": BUILD, "g": 3, "v": b"\x01"}, namespace=NS)
     ws.emit("in", "nonsense", namespace=NS)
     assert wait_for(lambda: len(host.messages) >= 5)
     time.sleep(0.05)
@@ -861,7 +889,7 @@ def test_events_reach_the_host_rebuilt_and_in_order(sio, app, tokens, host, warn
 
 def test_a_thousand_writes_arrive_in_order(sio, app, tokens, host):
     ws, opened = open_viewer(sio, app, tokens["operator"], host)
-    events = [{"t": "w", "g": i % 3, "v": bytes([i % 2])} for i in range(1000)]
+    events = [{"t": "w", "h": BUILD, "g": i % 3, "v": bytes([i % 2])} for i in range(1000)]
     numbered = [dict(e, n=i + 1) for i, e in enumerate(events)]
     rng = random.Random(15)
     for start in range(0, len(numbered), 16):
@@ -879,8 +907,8 @@ def test_a_thousand_writes_arrive_in_order(sio, app, tokens, host):
 def test_requests_before_the_viewer_opens_are_not_forwarded(sio, app, tokens, host):
     ws = viewer_client(sio, app, tokens["admin"])
     assert wait_for(lambda: host.connections == 1)
-    ws.emit("in", {"t": "s", "p": 0, "n": 0}, namespace=NS)
-    ws.emit("in", {"t": "w", "g": 0, "v": b"\x01", "n": 1}, namespace=NS)
+    ws.emit("in", {"t": "s", "h": BUILD, "p": 0, "n": 0}, namespace=NS)
+    ws.emit("in", {"t": "w", "h": BUILD, "g": 0, "v": b"\x01", "n": 1}, namespace=NS)
     time.sleep(0.1)
     assert host.messages == []
 
@@ -940,7 +968,7 @@ def test_tc11_stop_and_start_keeps_viewers_and_reopens_them(sio, app, tokens, ho
     host.stop()
     seen = wait_status(ws, "stopped", seen)
     assert ws.is_connected(NS)
-    ws.emit("in", {"t": "w", "g": 0, "v": b"\x01", "n": 1}, namespace=NS)
+    ws.emit("in", {"t": "w", "h": BUILD, "g": 0, "v": b"\x01", "n": 1}, namespace=NS)
 
     restarted = FakeHost(sock_path).start()
     try:
@@ -949,6 +977,63 @@ def test_tc11_stop_and_start_keeps_viewers_and_reopens_them(sio, app, tokens, ho
         assert restarted.of_type(hp.MSG_WRITE) == []
         seen.clear()
         wait_status(ws, "live", seen)
+    finally:
+        restarted.stop()
+
+
+def test_a_new_seal_changes_the_build_id_sent_with_live(sio, app, tokens, host, sock_path, hmi_dir):
+    ws, _ = open_viewer(sio, app, tokens["operator"], host)
+    live = []
+    assert wait_for(
+        lambda: live.extend(s for s in received(ws, "hmi_status") if s["state"] == "live") or live
+    )
+    assert live[0]["build"] == BUILD
+
+    host.stop()
+    wait_status(ws, "stopped")
+    newer = b"\0asm-new-screens"
+    install(hmi_dir, {"index.html": b"<!doctype html>", "hmi.wasm": newer})
+    restarted = FakeHost(sock_path).start()
+    try:
+        live.clear()
+        assert wait_for(
+            lambda: live.extend(s for s in received(ws, "hmi_status") if s["state"] == "live")
+            or live
+        )
+        assert live[0]["build"] == hashlib.sha256(newer).hexdigest() != BUILD
+    finally:
+        restarted.stop()
+
+
+def test_writes_of_another_build_never_reach_the_host(
+    sio, app, tokens, host, sock_path, hmi_dir, warnings
+):
+    ws, _ = open_viewer(sio, app, tokens["operator"], host)
+    wait_status(ws, "live")
+    host.stop()
+    wait_status(ws, "stopped")
+    newer = b"\0asm-new-screens"
+    new_build = hashlib.sha256(newer).hexdigest()
+    install(hmi_dir, {"index.html": b"<!doctype html>", "hmi.wasm": newer})
+    restarted = FakeHost(sock_path).start()
+    try:
+        assert wait_for(lambda: len(restarted.of_type(hp.MSG_OPEN)) == 1)
+        vid = decode_open(restarted.of_type(hp.MSG_OPEN)[0])["viewer"]
+        wait_status(ws, "live")
+        ws.emit("in", {"t": "w", "h": BUILD, "g": 0, "v": b"\x01", "n": 1}, namespace=NS)
+        ws.emit("in", {"t": "b", "h": BUILD, "g": 0, "b": 1, "v": 1, "n": 2}, namespace=NS)
+        ws.emit("in", {"t": "s", "h": BUILD, "p": 1, "n": 3}, namespace=NS)
+        ws.emit("in", {"t": "w", "g": 0, "v": b"\x01", "n": 4}, namespace=NS)
+        ws.emit("in", {"t": "s", "h": new_build, "p": 0, "n": 5}, namespace=NS)
+        ws.emit("in", {"t": "w", "h": new_build, "g": 2, "v": b"\x05", "n": 6}, namespace=NS)
+        assert wait_for(lambda: len(restarted.of_type(hp.MSG_WRITE)) == 1)
+        time.sleep(0.05)
+        after_open = [m for m in restarted.messages if m[0] != hp.MSG_OPEN]
+        assert after_open == [
+            (hp.MSG_SHOW, struct.pack("<IH", vid, 0)),
+            (hp.MSG_WRITE, struct.pack("<IHH", vid, 2, 1) + b"\x05"),
+        ]
+        assert sum("of HMI build" in w for w in warnings) == 4
     finally:
         restarted.stop()
 
@@ -991,7 +1076,7 @@ def test_a_busy_host_reports_busy_and_the_next_open_retries(sio, app, tokens, ho
     host.reply = "busy"
     ws, _ = open_viewer(sio, app, tokens["operator"], host)
     wait_status(ws, "busy")
-    ws.emit("in", {"t": "w", "g": 0, "v": b"\x01", "n": 1}, namespace=NS)
+    ws.emit("in", {"t": "w", "h": BUILD, "g": 0, "v": b"\x01", "n": 1}, namespace=NS)
     time.sleep(0.1)
     assert host.of_type(hp.MSG_WRITE) == []
     host.reply = "opened"
@@ -1075,7 +1160,7 @@ def test_a_send_failure_drops_the_host_connection(sio, app, tokens, host):
             real.close()
 
     proxy._host = Broken()
-    ws.emit("in", {"t": "s", "p": 0, "n": 1}, namespace=NS)
+    ws.emit("in", {"t": "s", "h": BUILD, "p": 0, "n": 1}, namespace=NS)
     assert wait_for(lambda: host.connections == 2)
     assert wait_for(lambda: len(host.of_type(hp.MSG_OPEN)) == 2)
 

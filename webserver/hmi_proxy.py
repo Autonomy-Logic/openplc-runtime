@@ -51,6 +51,11 @@ HMI_DIR = Path(os.environ.get("OPENPLC_HMI_DIR", str(_REPO_ROOT / "build" / "hmi
 PLUGIN_NAME = "libhmi_plugin.so"
 SEAL_NAME = "hmi.seal"
 CLIENT_DIR = "client"
+# The screens module; its sealed sha256 is the HMI build ID.
+CLIENT_MODULE = "hmi.wasm"
+# Response header carrying the build ID of the served screens module.
+BUILD_HEADER = "X-HMI-Build"
+BUILD_ID = re.compile(r"^[0-9a-f]{64}$")
 
 # Wire protocol, web server to host.
 MSG_OPEN = 0x01
@@ -169,6 +174,11 @@ def sealed_digest(relative: str) -> str | None:
     return None
 
 
+def hmi_build_id() -> str | None:
+    """The HMI build ID: the sha256 the seal records for the screens module, or None."""
+    return sealed_digest(f"{CLIENT_DIR}/{CLIENT_MODULE}")
+
+
 def read_sealed_client_file(name: str) -> bytes | None:
     """The bytes of client file ``name`` when they match the seal; None (and a log line) if not."""
     client_dir = (HMI_DIR / CLIENT_DIR).resolve()
@@ -253,7 +263,10 @@ def hmi_asset(name: str) -> Response:
     data = read_sealed_client_file(name)
     if data is None:
         return _not_found()
-    return _with_headers(Response(data, status=200, content_type=MIME_TYPES[suffix]))
+    response = Response(data, status=200, content_type=MIME_TYPES[suffix])
+    if name == CLIENT_MODULE:
+        response.headers[BUILD_HEADER] = hashlib.sha256(data).hexdigest()
+    return _with_headers(response)
 
 
 # ---- client events ----------------------------------------------------------------------
@@ -283,9 +296,11 @@ class OpenEvent:
 
 @dataclass(frozen=True)
 class ShowEvent:
-    """The viewer shows screen ``page``; NO_ID when the event was invalid."""
+    """The viewer shows screen ``page``; NO_ID when the event was invalid. ``build``: the HMI
+    build ID the client runs (``h``), None when missing or malformed."""
 
     page: int
+    build: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -294,6 +309,7 @@ class WriteEvent:
 
     tag: int
     value: bytes
+    build: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -303,25 +319,34 @@ class BitEvent:
     tag: int
     bit: int
     value: int
+    build: str | None = field(default=None, compare=False)
 
 
 ClientEvent = OpenEvent | ShowEvent | WriteEvent | BitEvent
+
+
+def build_of(data: dict[object, object]) -> str | None:
+    """The HMI build ID an event names in ``h``, or None when it is missing or malformed."""
+    build = data.get("h")
+    return build if isinstance(build, str) and BUILD_ID.fullmatch(build) else None
 
 
 def parse_event(data: object) -> ClientEvent | None:
     """Rebuilds a client event from its whitelisted, range-checked fields.
 
     A show, write or bit write that does not check out is kept as one naming NO_ID, so the host refuses it
-    in its place; None only for an event that is none of the three.
+    in its place; None only for an event that is none of the three. Shows and writes keep the
+    build ID they name.
     """
     if not isinstance(data, dict):
         return None
     kind = data.get("t")
     if kind == "o":
         return OpenEvent()
+    build = build_of(data)
     if kind == "s":
         page = _integer(data, "p")
-        return ShowEvent(page if page is not None and 0 <= page <= MAX_ID else NO_ID)
+        return ShowEvent(page if page is not None and 0 <= page <= MAX_ID else NO_ID, build)
     if kind == "w":
         tag = _integer(data, "g")
         value = data.get("v")
@@ -331,8 +356,8 @@ def parse_event(data: object) -> ClientEvent | None:
             or not isinstance(value, (bytes, bytearray))
             or len(value) > MAX_VALUE_BYTES
         ):
-            return WriteEvent(NO_ID, b"")
-        return WriteEvent(tag, bytes(value))
+            return WriteEvent(NO_ID, b"", build)
+        return WriteEvent(tag, bytes(value), build)
     if kind == "b":
         tag, bit, on = _integer(data, "g"), _integer(data, "b"), _integer(data, "v")
         if (
@@ -342,8 +367,8 @@ def parse_event(data: object) -> ClientEvent | None:
             or not 0 <= bit <= MAX_BIT
             or on not in (0, 1)
         ):
-            return WriteEvent(NO_ID, b"")
-        return BitEvent(tag, bit, on)
+            return WriteEvent(NO_ID, b"", build)
+        return BitEvent(tag, bit, on, build)
     return None
 
 
@@ -539,7 +564,12 @@ DisconnectFn = Callable[[str], None]
 
 
 class HmiProxy:
-    """The viewers, the host connection and the values emitter of /api/hmi."""
+    """The viewers, the host connection and the values emitter of /api/hmi.
+
+    ``_build`` is the HMI build ID read from the seal when the host connected: the build the
+    running host serves, sent with ``live``; shows and writes tagged with another build are
+    dropped.
+    """
 
     def __init__(self, app: Flask, emit: EmitFn, disconnect: DisconnectFn) -> None:
         self._app = app
@@ -554,6 +584,7 @@ class HmiProxy:
         self._host: socket.socket | None = None
         # Counts host connections; changed with ``_host`` under both ``_send_lock`` and ``_lock``.
         self._epoch = 0
+        self._build: str | None = None
         self._host_state: str | None = None
         self._running = False
         self._stop = threading.Event()
@@ -710,7 +741,11 @@ class HmiProxy:
         return viewer.open_epoch is not None and viewer.open_epoch == self._epoch
 
     def _forward(self, viewer: Viewer, event: ClientEvent) -> None:
-        """Sends one ordered event to the host; call with ``viewer.lock`` held."""
+        """Sends one ordered event to the host; call with ``viewer.lock`` held.
+
+        A show or write goes only on the connection the viewer was opened on and only when it
+        names the build that connection serves; otherwise it is dropped.
+        """
         if viewer.closed:
             return
         if isinstance(event, OpenEvent):
@@ -721,8 +756,20 @@ class HmiProxy:
                 viewer.opened = False
             self._open(viewer)
             return
-        if self._open_on_host(viewer):
-            self._send_host(encode_event(viewer.viewer_id, event))
+        with self._lock:
+            epoch, build = self._epoch, self._build
+        if viewer.open_epoch is None or viewer.open_epoch != epoch:
+            return
+        if build is None or event.build != build:
+            logger.warning(
+                "HMI viewer %s: %s of HMI build %s dropped, the host serves %s",
+                viewer.username,
+                "show" if isinstance(event, ShowEvent) else "write",
+                (event.build or "none")[:12],
+                (build or "none")[:12],
+            )
+            return
+        self._send_host_on(encode_event(viewer.viewer_id, event), epoch)
 
     def _open(self, viewer: Viewer) -> None:
         """Sends OPEN; call with ``viewer.lock`` held."""
@@ -743,9 +790,11 @@ class HmiProxy:
             if viewer.status == state and not force:
                 return
             viewer.status = state
+            build = self._build
         payload: dict[str, object] = {"state": state}
         if state == STATE_LIVE:
             payload["role"] = ROLE_CODES[viewer.role]
+            payload["build"] = build
         self._emit("hmi_status", payload, viewer.sid, None)
 
     def _emit_loop(self) -> None:
@@ -780,11 +829,14 @@ class HmiProxy:
         """Sends one message to the host; False when it is not connected or the send failed."""
         return self._send_host_on(message) is not None
 
-    def _send_host_on(self, message: bytes) -> int | None:
-        """Sends one message to the host; the epoch of the connection it went out on, or None."""
+    def _send_host_on(self, message: bytes, only_epoch: int | None = None) -> int | None:
+        """Sends one message to the host; the epoch of the connection it went out on, or None.
+
+        With ``only_epoch``, sends only while that connection is the current one.
+        """
         with self._send_lock:
             host, epoch = self._host, self._epoch
-            if host is None:
+            if host is None or (only_epoch is not None and only_epoch != epoch):
                 return None
             try:
                 host.sendall(message)
@@ -852,9 +904,11 @@ class HmiProxy:
             self._stop.wait(RETRY_INTERVAL_S)
 
     def _host_up(self, sock: socket.socket) -> None:
+        build = hmi_build_id()
         with self._send_lock, self._lock:
             self._host = sock
             self._epoch += 1
+            self._build = build
             self._host_state = None
             viewers = list(self._viewers.values())
         for viewer in viewers:

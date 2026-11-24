@@ -295,6 +295,7 @@ class Viewer:
     disconnects: int = 0
     n: int = 0
     writes: int = 0
+    build: str | None = None
 
     def __post_init__(self) -> None:
         self.sio = socketio.Client(ssl_verify=False, reconnection=False)
@@ -310,6 +311,8 @@ class Viewer:
 
         @self.sio.on("hmi_status", namespace=ns)
         def _status(data: dict[str, object]) -> None:
+            if data.get("state") == "live" and isinstance(data.get("build"), str):
+                self.build = str(data["build"])
             self.statuses.append((time.monotonic(), dict(data)))
 
         @self.sio.on("hmi_refused", namespace=ns)
@@ -326,6 +329,9 @@ class Viewer:
         self.sio.connect(base(), namespaces=["/api/hmi"], auth={"token": self.token}, transports=["websocket"])
 
     def send(self, event: dict[str, object]) -> None:
+        """Numbers the event; a show or write names the HMI build of the last live status."""
+        if event.get("t") != "o" and "h" not in event:
+            event["h"] = self.build
         event["n"] = self.n
         self.n += 1
         self.sio.emit("in", event, namespace="/api/hmi")
@@ -486,7 +492,9 @@ def open_live(viewer: Viewer, role: int, label: str) -> None:
     t = time.monotonic()
     viewer.open()
     status = viewer.wait_status("live", t)
-    check(f"{label}: hmi_status live with its role after open", status == {"state": "live", "role": role}, viewer.statuses)
+    build = status.get("build") if status else None
+    valid = isinstance(build, str) and re.fullmatch(r"[0-9a-f]{64}", build) is not None
+    check(f"{label}: hmi_status live with its role and HMI build after open", status is not None and status.get("role") == role and valid, viewer.statuses)
 
 
 def main() -> None:
