@@ -15,7 +15,10 @@ BASE_PACKAGE="ghcr.io/autonomy-logic/openplc-runtime-base"
 SIGNER_REPO="Autonomy-Logic/autonomy-docker"
 SIGNER_WORKFLOW="$SIGNER_REPO/.github/workflows/build.yml"
 SOURCE_REF="refs/heads/main"
-PIN_RULES="no-parser-directive no-heredoc from-pinned-by-digest from-without-variable from-single-pin copy-from-stages-only base-labels"
+PIN_RULES="no-blank-in-continuation no-parser-directive no-heredoc from-pinned-by-digest from-without-variable from-single-pin copy-from-stages-only base-labels"
+TARGETS_JQ='if length == 1 and (.[0].targets | type) == "array" and (.[0].targets | length) > 0
+    then .[0].targets[] | [(.name // "-"), (if has("base") then "=" + .base else "" end)] | @tsv
+    else error("not a BuildKit targets answer") end'
 FAILURES=0
 WORK_DIR=""
 
@@ -25,8 +28,10 @@ usage: verify-base-image.sh [--no-attestation] [Dockerfile]
 
 Checks that the Dockerfile (default: Dockerfile in the working directory) builds every stage on one
 $BASE_PACKAGE image pinned by tag and digest. Unless --no-attestation is given, also checks
-that the tag resolves to that digest in the registry and that the digest is attested by
-$SIGNER_WORKFLOW on $SOURCE_REF, built on a GitHub-hosted runner.
+that the tag resolves to that digest in the registry, that the digest is attested by
+$SIGNER_WORKFLOW on $SOURCE_REF, built on a GitHub-hosted runner, and that BuildKit
+(docker buildx build --call=targets, which builds and pulls nothing) reads the same stages, names
+and bases as this check; --no-attestation skips these three and runs offline.
 Prints one error: line per broken rule and exits non-zero when any rule is broken.
 EOF
 }
@@ -37,11 +42,17 @@ fail() {
     FAILURES=$((FAILURES + 1))
 }
 
+# Applies one rule of scripts/lib/dockerfile.sh and fails it when broken: check_rule <rule> <Dockerfile>.
+check_rule() {
+    local out
+    out="$("check_${1//-/_}" "$2" 2>&1)" || { fail "$1" "${out:-rule broken}"; return 1; }
+}
+
 # Applies the Dockerfile pin rules of scripts/lib/dockerfile.sh.
 check_pin_rules() {
-    local id out
+    local id
     for id in $PIN_RULES; do
-        out="$("check_${id//-/_}" "$1" 2>&1)" || fail "$id" "${out:-rule broken}"
+        check_rule "$id" "$1"
     done
 }
 
@@ -89,6 +100,33 @@ check_attestation() {
         fail attestation "no verified attestation names $1@$2 as its subject"
 }
 
+# Fails unless BuildKit lists the stages of the Dockerfile in the same order, with the same names and bases.
+check_buildkit_stages() {
+    local file="$1" err diff
+    command -v jq >/dev/null 2>&1 || { fail buildkit-stages "jq is needed to read the BuildKit answer and is not on PATH"; return; }
+    if ! docker buildx build --call=targets,format=json - <"$file" >"$WORK_DIR/targets.json" 2>"$WORK_DIR/buildkit.err"; then
+        err="$(grep -m 1 '^ERROR' "$WORK_DIR/buildkit.err" || tail -n 1 "$WORK_DIR/buildkit.err")"
+        fail buildkit-stages "docker buildx build --call=targets failed: ${err:-no message}"
+        return
+    fi
+    if ! jq -rs "$TARGETS_JQ" "$WORK_DIR/targets.json" >"$WORK_DIR/buildkit.tsv" 2>"$WORK_DIR/jq.err" ||
+        [ ! -s "$WORK_DIR/buildkit.tsv" ]; then
+        fail buildkit-stages "the BuildKit targets answer cannot be read: $(one_line "$(<"$WORK_DIR/jq.err")")"
+        return
+    fi
+    df_stages "$file" | cut -f 2,3 >"$WORK_DIR/script.tsv"
+    diff="$(awk -F '\t' '
+        NR == FNR { n++; name[n] = $1; image[n] = $2; next }
+        {
+            m++
+            if (m > n) { printf "BuildKit has stage %d (%s) that this check does not\n", m, $1; next }
+            if ($1 != name[m]) printf "stage %d is %s for BuildKit, %s for this check\n", m, $1, name[m]
+            if ($2 != "" && substr($2, 2) != image[m]) printf "stage %d builds on %s for BuildKit, %s for this check\n", m, substr($2, 2), image[m]
+        }
+        END { if (m < n) printf "BuildKit has %d stages, this check %d\n", m, n }' "$WORK_DIR/script.tsv" "$WORK_DIR/buildkit.tsv")"
+    [ -z "$diff" ] || fail buildkit-stages "BuildKit reads the stages differently: $diff"
+}
+
 attest=1
 case "${1:-}" in
     --no-attestation) attest=0; shift ;;
@@ -103,6 +141,7 @@ if [ ! -f "$dockerfile" ]; then
     exit 1
 fi
 
+check_rule plain-text-only "$dockerfile" || exit 1
 check_pin_rules "$dockerfile"
 check_package "$dockerfile"
 [ "$FAILURES" = 0 ] || exit 1
@@ -117,6 +156,7 @@ ref="${pin%@*}"
 digest="${pin#*@}"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
+check_buildkit_stages "$dockerfile"
 check_tag "${ref%:*}" "${ref##*:}" "$digest"
 check_attestation "${ref%:*}" "$digest"
 [ "$FAILURES" = 0 ] || exit 1

@@ -26,8 +26,8 @@ BEGIN { stage = -1; buf = "" }
     if (NR == 1 && index(line, bom) == 1) line = substr(line, length(bom) + 1)
     if (line ~ /^[ \t]*#/) next
     if (buf == "" && line ~ /^[ \t]*$/) next
-    if (line ~ /\\[ \t]*$/) { sub(/\\[ \t]*$/, "", line); buf = buf " " line; next }
-    buf = buf " " line
+    if (line ~ /\\[ \t]*$/) { sub(/\\[ \t]*$/, "", line); buf = buf line; next }
+    buf = buf line
     emit()
 }
 END { emit() }
@@ -145,6 +145,34 @@ lower() {
     printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+check_plain_text_only() {
+    local found
+    found="$(LC_ALL=C od -An -v -tu1 "$1" | awk '
+        function bad(b) { if (found == "") found = sprintf("line %d: byte 0x%02X is not printable ASCII, tab or line feed", line, b) }
+        BEGIN { line = 1; cr = 0 }
+        {
+            for (i = 1; i <= NF; i++) {
+                b = $i + 0
+                if (cr && b != 10) bad(13)
+                cr = (b == 13)
+                if (b == 10) line++
+                else if (b != 9 && b != 13 && (b < 32 || b > 126)) bad(b)
+            }
+        }
+        END { if (cr) bad(13); print found }')"
+    [ -z "$found" ] || { echo "$found"; return 1; }
+}
+
+check_no_blank_in_continuation() {
+    local found
+    found="$(awk '
+        { sub(/\r$/, "") }
+        cont && /^[ \t]*$/ { print "line " NR ": blank line after a line ending in \\"; exit }
+        cont && /^[ \t]*#/ { next }
+        { cont = ($0 ~ /\\[ \t]*$/) }' "$1")"
+    [ -z "$found" ] || { echo "$found"; return 1; }
+}
+
 check_no_parser_directive() {
     local found
     found="$(awk -v bom="$UTF8_BOM" '
@@ -158,7 +186,7 @@ check_no_parser_directive() {
 
 check_no_heredoc() {
     local found
-    found="$(awk '{ sub(/\r$/, "") } /^[ \t]*#/ { next } /<</ { print "line " NR ": " $0 }' "$1")"
+    found="$(df_instructions "$1" | awk -F '\t' 'index($3, "<<") { print $2 " " $3 }')"
     [ -z "$found" ] || { echo "heredoc: $found"; return 1; }
 }
 
@@ -204,6 +232,11 @@ names_earlier_stage() {
     [ -n "$index" ] && [ "$index" -lt "$stage" ]
 }
 
+# Prints each non-empty from value of a RUN --mount option list, the key in any case and double quotes removed.
+mount_from() {
+    printf '%s\n' "${1//\"/}" | tr ',' '\n' | awk '{ n = index($0, "=") } n && tolower(substr($0, 1, n - 1)) == "from" && n < length($0) { print substr($0, n + 1) }'
+}
+
 check_copy_from_stages_only() {
     local stage kw args ref mount tok rc=0
     local -a toks
@@ -224,11 +257,12 @@ check_copy_from_stages_only() {
                         --*) continue ;;
                         *) break ;;
                     esac
-                    ref="$(printf '%s' ",$mount," | sed -n 's/.*,from=\([^,]*\),.*/\1/p')"
-                    if [ -n "$ref" ] && ! names_earlier_stage "$1" "$stage" "$ref"; then
-                        echo "RUN --mount from=$ref is not a stage of this file"
-                        rc=1
-                    fi
+                    while IFS= read -r ref; do
+                        if ! names_earlier_stage "$1" "$stage" "$ref"; then
+                            echo "RUN --mount from=$ref is not a stage of this file"
+                            rc=1
+                        fi
+                    done < <(mount_from "$mount")
                 done
                 ;;
         esac

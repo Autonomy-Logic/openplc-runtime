@@ -113,8 +113,10 @@ cd bootloader && test -z "$(gofmt -l .)" && go vet ./... && go test -race -count
   refuses a tag that already exists; docs/DOCKER.md, "GitHub Actions".
 - Base image check (`.github/workflows/base-image-check.yml`, job "Verify Base Image Attestation", on every
   PR and pushes to `development`/`main`; also the first step of the `docker.yml` build job):
-  `scripts/verify-base-image.sh` checks the `Dockerfile` pin and its attestation (docs/DOCKER.md, "Base image
-  check"); `--no-attestation` runs only the offline rules. The Dockerfile parser and pin rules live in
+  `scripts/verify-base-image.sh` checks the `Dockerfile` pin, its attestation and that BuildKit
+  (`docker buildx build --call=targets`, read with `jq`) sees the same stages (docs/DOCKER.md, "Base image
+  check"); `--no-attestation` runs only the offline rules, skipping the tag, attestation and BuildKit checks. The
+  plain-text rule runs first and stops the script alone when it fails. The Dockerfile parser and pin rules live in
   `scripts/lib/dockerfile.sh` (shared with `tests/image/static.sh`), `one_line` and the image tag pattern in
   `scripts/lib/common.sh`.
   On a PR to `development` whose head commit carries the commit status `misterflow/local-ci` = `success` (set by

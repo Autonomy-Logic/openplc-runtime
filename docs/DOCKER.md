@@ -45,12 +45,17 @@ for a Critical vulnerability and within 30 days for a High one.
 `Dockerfile` in the working directory) prints one `error:` line per broken rule
 and exits non-zero when any rule is broken. Without the network
 (`--no-attestation`) it checks the `Dockerfile` pin rules of
-`scripts/lib/dockerfile.sh`, which `tests/image/static.sh` also runs: every
+`scripts/lib/dockerfile.sh`, which `tests/image/static.sh` also runs: plain
+text only (printable ASCII, tab, line feed, and a carriage return only before a
+line feed; when this rule fails it is the only error reported and nothing else
+runs), no empty or whitespace-only line after a line ending in `\`, every
 `FROM` pinned by digest with no variable, one pin for all stages, no parser
 directive (`# <name>=<value>` before the first instruction), no heredoc (`<<`
-outside a comment line), `COPY --from` and `RUN --mount` only from stages of
-the file, and the final stage's `org.opencontainers.image.base.name` and
-`org.opencontainers.image.base.digest` labels equal to its pin. It also checks
+outside a comment line, also once continuation lines are joined),
+`COPY --from` and `RUN --mount` (`from` key in any letter case, quoted or not)
+only from stages of the file, and the final stage's
+`org.opencontainers.image.base.name` and `org.opencontainers.image.base.digest`
+labels equal to its pin. It also checks
 that the pinned package is exactly
 `ghcr.io/autonomy-logic/openplc-runtime-base`, written as `<name>:<tag>@<digest>`.
 With the network it also checks, with the `docker` and `gh` on `PATH`, that:
@@ -61,7 +66,16 @@ With the network it also checks, with the `docker` and `gh` on `PATH`, that:
   --signer-workflow Autonomy-Logic/autonomy-docker/.github/workflows/build.yml
   --source-ref refs/heads/main --deny-self-hosted-runners` succeeds, and one
   verified attestation names `ghcr.io/autonomy-logic/openplc-runtime-base`
-  with the pinned digest as its subject.
+  with the pinned digest as its subject;
+- BuildKit reads the same stages as the script:
+  `docker buildx build --call=targets,format=json -`, with the `Dockerfile` on
+  standard input, lists the same number of stages in the same order, with the
+  same names and, where BuildKit reports one, the same base reference. A
+  failing `docker`, or an answer `jq` cannot read, fails the rule. This step
+  only reads the `Dockerfile`: it builds, pulls and pushes nothing.
+
+`--no-attestation` skips the tag, attestation and BuildKit checks and uses no
+network and no `docker`.
 
 It runs in CI in two places, with `GH_TOKEN` set to the workflow token and no
 registry login:
@@ -73,8 +87,8 @@ registry login:
   checkout, so a release build stops before QEMU, the registry login and the
   build.
 
-Locally, `bash scripts/verify-base-image.sh` needs `docker` with buildx and an
-authenticated `gh`.
+Locally, `bash scripts/verify-base-image.sh` needs `docker` with buildx, `jq`
+and an authenticated `gh`.
 
 ### Bumping the pin
 
