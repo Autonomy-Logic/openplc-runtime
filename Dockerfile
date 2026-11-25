@@ -1,4 +1,4 @@
-FROM ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1@sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b AS venvs
+FROM ghcr.io/autonomy-logic/autonomy-base:trixie-1@sha256:4c17e6b77908df9925fa328bd70540cb3eea65a0a43b57bf1342a3ae9c900933 AS venvs
 
 ARG SOURCE_DATE_EPOCH
 
@@ -14,7 +14,7 @@ COPY core/src/drivers/plugins/python/opcua/requirements.txt core/src/drivers/plu
 RUN mkdir webserver && touch webserver/__init__.py && \
     ./install.sh --native deps venvs
 
-FROM ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1@sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b AS builder
+FROM ghcr.io/autonomy-logic/autonomy-base:trixie-1@sha256:4c17e6b77908df9925fa328bd70540cb3eea65a0a43b57bf1342a3ae9c900933 AS builder
 
 WORKDIR /workdir
 
@@ -23,7 +23,7 @@ COPY . .
 RUN ./install.sh --native deps compile && \
     rm -rf build/CMakeFiles build/CMakeCache.txt build/Makefile build/cmake_install.cmake build/core
 
-FROM ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1@sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b
+FROM ghcr.io/autonomy-logic/autonomy-base:trixie-1@sha256:4c17e6b77908df9925fa328bd70540cb3eea65a0a43b57bf1342a3ae9c900933
 
 WORKDIR /workdir
 
@@ -32,8 +32,8 @@ COPY --from=builder /workdir/build /workdir/build
 COPY --from=builder /workdir/.installed /workdir/.installed
 COPY . .
 
-LABEL org.opencontainers.image.base.name="ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1" \
-      org.opencontainers.image.base.digest="sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b"
+LABEL org.opencontainers.image.base.name="ghcr.io/autonomy-logic/autonomy-base:trixie-1" \
+      org.opencontainers.image.base.digest="sha256:4c17e6b77908df9925fa328bd70540cb3eea65a0a43b57bf1342a3ae9c900933"
 
 ARG RUNTIME_VERSION=dev
 ENV RUNTIME_VERSION=${RUNTIME_VERSION}
