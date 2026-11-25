@@ -1,0 +1,5428 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:7944d843-c0c7-4cea-81a9-93c604980a57",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-11-25T15:41:30.184Z",
+    "tools": {
+      "components": [
+        {
+          "group": "@cyclonedx",
+          "name": "cdxgen",
+          "version": "11.11.0",
+          "purl": "pkg:npm/%40cyclonedx/cdxgen@11.11.0",
+          "type": "application",
+          "bom-ref": "pkg:npm/@cyclonedx/cdxgen@11.11.0",
+          "publisher": "OWASP Foundation",
+          "authors": [
+            {
+              "name": "OWASP Foundation"
+            }
+          ]
+        }
+      ]
+    },
+    "lifecycles": [
+      {
+        "phase": "build"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "name": "openplc-runtime",
+      "version": "4.4.0",
+      "bom-ref": "pkg:github/autonomy-logic/openplc-runtime@4.4.0",
+      "purl": "pkg:github/autonomy-logic/openplc-runtime@4.4.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-only"
+          }
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "authors": [
+        {
+          "name": "Joshua Bronson <Joshua Bronson <jabronson@gmail.com>>"
+        }
+      ],
+      "group": "",
+      "name": "bidict",
+      "version": "0.24.1",
+      "description": "The bidirectional mapping library for Python.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MPL-2.0",
+            "url": "https://opensource.org/licenses/MPL-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/bidict@0.24.1",
+      "type": "library",
+      "bom-ref": "pkg:pypi/bidict@0.24.1",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Jason Kirtland"
+        }
+      ],
+      "group": "",
+      "name": "blinker",
+      "version": "1.9.0",
+      "description": "Fast, simple object-to-object and broadcast signaling",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/blinker@1.9.0",
+      "type": "library",
+      "bom-ref": "pkg:pypi/blinker@1.9.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Anthony Sottile <asottile@umich.edu>"
+        }
+      ],
+      "group": "",
+      "name": "cfgv",
+      "version": "3.5.0",
+      "description": "Validate configuration and produce human readable error messages.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/cfgv@3.5.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/asottile/cfgv"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/cfgv@3.5.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "click",
+      "version": "8.5.1",
+      "description": "Composable command line interface toolkit",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://opensource.org/licenses/BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/click@8.5.1",
+      "type": "library",
+      "bom-ref": "pkg:pypi/click@8.5.1",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Vinay Sajip <vinay_sajip@red-dove.com>"
+        }
+      ],
+      "group": "",
+      "name": "distlib",
+      "version": "0.4.4",
+      "description": "Distribution utilities",
+      "licenses": [
+        {
+          "license": {
+            "id": "PSF-2.0",
+            "url": "https://opensource.org/licenses/PSF-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/distlib@0.4.4",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/pypa/distlib"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/distlib@0.4.4",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "filelock",
+      "version": "4.3.1",
+      "description": "A platform independent file lock.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/filelock@4.3.1",
+      "type": "library",
+      "bom-ref": "pkg:pypi/filelock@4.3.1",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Lily Acadia Gilbert <lily.gilbert@hey.com>"
+        }
+      ],
+      "group": "",
+      "name": "Flask-JWT-Extended",
+      "version": "4.7.4",
+      "description": "Extended JWT integration with Flask",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/flask-jwt-extended@4.7.4",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/vimalloc/flask-jwt-extended"
+        }
+      ],
+      "type": "framework",
+      "bom-ref": "pkg:pypi/flask-jwt-extended@4.7.4",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "framework",
+        "jwt"
+      ]
+    },
+    {
+      "authors": [
+        {
+          "name": "Matthew Frazier <leafstormrush@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "Flask-Login",
+      "version": "0.6.3",
+      "description": "User authentication and session management for Flask.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/flask-login@0.6.3",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/maxcountryman/flask-login"
+        }
+      ],
+      "type": "framework",
+      "bom-ref": "pkg:pypi/flask-login@0.6.3",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "framework"
+      ]
+    },
+    {
+      "authors": [
+        {
+          "name": "Miguel Grinberg <miguel.grinberg@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "Flask-SocketIO",
+      "version": "5.7.2",
+      "description": "Socket.IO integration for Flask applications",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/flask-socketio@5.7.2",
+      "type": "framework",
+      "bom-ref": "pkg:pypi/flask-socketio@5.7.2",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "framework"
+      ]
+    },
+    {
+      "group": "",
+      "name": "Flask-SQLAlchemy",
+      "version": "3.1.1",
+      "description": "Add SQLAlchemy support to your Flask application.",
+      "licenses": [
+        {
+          "license": {
+            "id": "0BSD",
+            "url": "https://opensource.org/licenses/0BSD"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/flask-sqlalchemy@3.1.1",
+      "type": "framework",
+      "bom-ref": "pkg:pypi/flask-sqlalchemy@3.1.1",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "framework"
+      ]
+    },
+    {
+      "group": "",
+      "name": "Flask",
+      "version": "3.1.3",
+      "description": "A simple framework for building complex web applications.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://opensource.org/licenses/BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/flask@3.1.3",
+      "type": "framework",
+      "bom-ref": "pkg:pypi/flask@3.1.3",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "framework",
+        "web"
+      ]
+    },
+    {
+      "authors": [
+        {
+          "name": "Nathaniel J. Smith <njs@pobox.com>"
+        }
+      ],
+      "group": "",
+      "name": "h11",
+      "version": "0.16.0",
+      "description": "A pure-Python, bring-your-own-I/O implementation of HTTP/1.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/h11@0.16.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/python-hyper/h11"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/h11@0.16.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Chris Kuehl <ckuehl@ocf.berkeley.edu>"
+        }
+      ],
+      "group": "",
+      "name": "identify",
+      "version": "2.6.20",
+      "description": "File identification library for Python",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/identify@2.6.20",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/pre-commit/identify"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/identify@2.6.20",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Ronny Pfannschmidt <opensource@ronnypfannschmidt.de>"
+        },
+        {
+          "name": " Holger Krekel <holger.krekel@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "iniconfig",
+      "version": "2.3.1",
+      "description": "brain-dead simple config-ini parsing",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/iniconfig@2.3.1",
+      "type": "library",
+      "bom-ref": "pkg:pypi/iniconfig@2.3.1",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "itsdangerous",
+      "version": "2.2.0",
+      "description": "Safely pass data to untrusted environments and back.",
+      "licenses": [
+        {
+          "license": {
+            "id": "0BSD",
+            "url": "https://opensource.org/licenses/0BSD"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/itsdangerous@2.2.0",
+      "type": "library",
+      "bom-ref": "pkg:pypi/itsdangerous@2.2.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "Jinja2",
+      "version": "3.1.6",
+      "description": "A very fast and expressive template engine.",
+      "licenses": [
+        {
+          "license": {
+            "id": "0BSD",
+            "url": "https://opensource.org/licenses/0BSD"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/jinja2@3.1.6",
+      "type": "library",
+      "bom-ref": "pkg:pypi/jinja2@3.1.6",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "template"
+      ]
+    },
+    {
+      "group": "",
+      "name": "MarkupSafe",
+      "version": "3.0.4",
+      "description": "Safely add untrusted strings to HTML/XML markup.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://opensource.org/licenses/BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/markupsafe@3.0.4",
+      "type": "library",
+      "bom-ref": "pkg:pypi/markupsafe@3.0.4",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Eugene Kalinin <e.v.kalinin@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "nodeenv",
+      "version": "1.12.0",
+      "description": "Node.js virtual environment builder",
+      "licenses": [
+        {
+          "license": {
+            "id": "0BSD",
+            "url": "https://opensource.org/licenses/0BSD"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/nodeenv@1.12.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ekalinin/nodeenv"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/nodeenv@1.12.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Donald Stufft <donald@stufft.io>"
+        }
+      ],
+      "group": "",
+      "name": "packaging",
+      "version": "26.4",
+      "description": "Core utilities for Python packages",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR BSD-2-Clause"
+        }
+      ],
+      "purl": "pkg:pypi/packaging@26.4",
+      "type": "library",
+      "bom-ref": "pkg:pypi/packaging@26.4",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "platformdirs",
+      "version": "4.14.8",
+      "description": "A small Python package for determining appropriate platform-specific dirs, e.g. a `user data dir`.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/platformdirs@4.14.8",
+      "type": "library",
+      "bom-ref": "pkg:pypi/platformdirs@4.14.8",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Holger Krekel"
+        }
+      ],
+      "group": "",
+      "name": "pluggy",
+      "version": "1.7.0",
+      "description": "plugin and hook calling mechanisms for python",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pluggy@1.7.0",
+      "type": "library",
+      "bom-ref": "pkg:pypi/pluggy@1.7.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Anthony Sottile <asottile@umich.edu>"
+        }
+      ],
+      "group": "",
+      "name": "pre_commit",
+      "version": "4.7.0",
+      "description": "A framework for managing and maintaining multi-language pre-commit hooks.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pre-commit@4.7.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/pre-commit/pre-commit"
+        }
+      ],
+      "type": "framework",
+      "bom-ref": "pkg:pypi/pre-commit@4.7.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "framework"
+      ]
+    },
+    {
+      "authors": [
+        {
+          "name": "Giampaolo Rodola <g.rodola@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "psutil",
+      "version": "7.2.2",
+      "description": "Cross-platform lib for process and system monitoring.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://opensource.org/licenses/BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/psutil@7.2.2",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/giampaolo/psutil"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/psutil@7.2.2",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Georg Brandl <georg@python.org>"
+        }
+      ],
+      "group": "",
+      "name": "Pygments",
+      "version": "2.21.0",
+      "description": "Pygments is a syntax highlighting package written in Python.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause",
+            "url": "https://opensource.org/licenses/BSD-2-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pygments@2.21.0",
+      "type": "library",
+      "bom-ref": "pkg:pypi/pygments@2.21.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Jose Padilla <hello@jpadilla.com>"
+        }
+      ],
+      "group": "",
+      "name": "PyJWT",
+      "version": "2.15.1",
+      "description": "JSON Web Token implementation in Python",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pyjwt@2.15.1",
+      "type": "library",
+      "bom-ref": "pkg:pypi/pyjwt@2.15.1",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "token",
+        "web"
+      ]
+    },
+    {
+      "authors": [
+        {
+          "name": "Chris Liechti <cliechti@gmx.net>"
+        }
+      ],
+      "group": "",
+      "name": "pyserial",
+      "version": "3.5",
+      "description": "Python Serial Port Extension",
+      "licenses": [
+        {
+          "license": {
+            "id": "0BSD",
+            "url": "https://opensource.org/licenses/0BSD"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pyserial@3.5",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/pyserial/pyserial"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/pyserial@3.5",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Vital Kudzelka <vital.kudzelka@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "pytest-flask",
+      "version": "1.3.0",
+      "description": "A set of py.test fixtures to test Flask applications.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pytest-flask@1.3.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/pytest-dev/pytest-flask"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/pytest-flask@1.3.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "test"
+      ]
+    },
+    {
+      "authors": [
+        {
+          "name": "Brianna Laugher"
+        },
+        {
+          "name": " Bruno Oliveira"
+        },
+        {
+          "name": " Floris Bruynooghe"
+        },
+        {
+          "name": " Freya Bruhin"
+        },
+        {
+          "name": " Holger Krekel"
+        },
+        {
+          "name": " Others (See AUTHORS)"
+        },
+        {
+          "name": " Ronny Pfannschmidt"
+        }
+      ],
+      "group": "",
+      "name": "pytest",
+      "version": "9.2.0",
+      "description": "pytest: simple powerful testing with Python",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pytest@9.2.0",
+      "type": "library",
+      "bom-ref": "pkg:pypi/pytest@9.2.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "python-discovery",
+      "version": "1.9.7",
+      "description": "Python interpreter discovery",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/python-discovery@1.9.7",
+      "type": "library",
+      "bom-ref": "pkg:pypi/python-discovery@1.9.7",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Saurabh Kumar <me+github@saurabh-kumar.com>"
+        }
+      ],
+      "group": "",
+      "name": "python-dotenv",
+      "version": "1.2.4",
+      "description": "Read key-value pairs from a .env file and set them as environment variables",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://opensource.org/licenses/BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/python-dotenv@1.2.4",
+      "type": "library",
+      "bom-ref": "pkg:pypi/python-dotenv@1.2.4",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Miguel Grinberg <miguel.grinberg@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "python-engineio",
+      "version": "4.15.1",
+      "description": "Engine.IO server and client for Python",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/python-engineio@4.15.1",
+      "type": "library",
+      "bom-ref": "pkg:pypi/python-engineio@4.15.1",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Miguel Grinberg <miguel.grinberg@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "python-socketio",
+      "version": "5.18.1",
+      "description": "Socket.IO server and client for Python",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/python-socketio@5.18.1",
+      "type": "library",
+      "bom-ref": "pkg:pypi/python-socketio@5.18.1",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Kirill Simonov <xi@resolvent.net>"
+        }
+      ],
+      "group": "",
+      "name": "PyYAML",
+      "version": "6.0.4",
+      "description": "YAML parser and emitter for Python",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pyyaml@6.0.4",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pyyaml.org/"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/pyyaml@6.0.4",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Miguel Grinberg <miguel.grinberg@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "simple-websocket",
+      "version": "1.1.0",
+      "description": "Simple WebSocket server and client for Python",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/simple-websocket@1.1.0",
+      "type": "library",
+      "bom-ref": "pkg:pypi/simple-websocket@1.1.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Mike Bayer <mike_mp@zzzcomputing.com>"
+        }
+      ],
+      "group": "",
+      "name": "SQLAlchemy",
+      "version": "2.1.9",
+      "description": "Database Abstraction Library",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/sqlalchemy@2.1.9",
+      "type": "framework",
+      "bom-ref": "pkg:pypi/sqlalchemy@2.1.9",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "framework"
+      ]
+    },
+    {
+      "authors": [
+        {
+          "name": "\"Guido van Rossum"
+        },
+        {
+          "name": " Jukka Lehtosalo"
+        },
+        {
+          "name": " Łukasz Langa"
+        },
+        {
+          "name": " Michael Lee\" <levkivskyi@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "description": "Backported and Experimental Type Hints for Python 3.9+",
+      "licenses": [
+        {
+          "license": {
+            "id": "PSF-2.0",
+            "url": "https://opensource.org/licenses/PSF-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/typing-extensions@4.16.0",
+      "type": "library",
+      "bom-ref": "pkg:pypi/typing-extensions@4.16.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "virtualenv",
+      "version": "21.15.13",
+      "description": "Virtual Python Environment builder",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/virtualenv@21.15.13",
+      "type": "library",
+      "bom-ref": "pkg:pypi/virtualenv@21.15.13",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "devel"
+      ]
+    },
+    {
+      "group": "",
+      "name": "Werkzeug",
+      "version": "3.1.9",
+      "description": "The comprehensive WSGI web application library.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://opensource.org/licenses/BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/werkzeug@3.1.9",
+      "type": "library",
+      "bom-ref": "pkg:pypi/werkzeug@3.1.9",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "web"
+      ]
+    },
+    {
+      "authors": [
+        {
+          "name": "Benno Rice <benno@jeamland.net>"
+        }
+      ],
+      "group": "",
+      "name": "wsproto",
+      "version": "1.3.2",
+      "description": "Pure-Python WebSocket protocol implementation",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/wsproto@1.3.2",
+      "type": "library",
+      "bom-ref": "pkg:pypi/wsproto@1.3.2",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Tin Tvrtkovic <tinchester@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "aiofiles",
+      "version": "25.1.0",
+      "description": "File support for asyncio.",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "url": "https://opensource.org/licenses/Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/aiofiles@25.1.0",
+      "type": "library",
+      "bom-ref": "pkg:pypi/aiofiles@25.1.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Amethyst Reese <amethyst@n7.gg>"
+        }
+      ],
+      "group": "",
+      "name": "aiosqlite",
+      "version": "0.22.1",
+      "description": "asyncio bridge to the standard sqlite3 module",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/aiosqlite@0.22.1",
+      "type": "library",
+      "bom-ref": "pkg:pypi/aiosqlite@0.22.1",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Olivier Roulet-Dubonnet <olivier.roulet@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "asyncua",
+      "version": "1.1.8",
+      "description": "Pure Python OPC-UA client and server library",
+      "licenses": [
+        {
+          "expression": "GNU Lesser General Public License v3 or later"
+        }
+      ],
+      "purl": "pkg:pypi/asyncua@1.1.8",
+      "type": "library",
+      "bom-ref": "pkg:pypi/asyncua@1.1.8",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "The Python Cryptographic Authority developers <cryptography-dev@python.org>"
+        }
+      ],
+      "group": "",
+      "name": "bcrypt",
+      "version": "5.0.0",
+      "description": "Modern password hashing for your software and your servers",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "url": "https://opensource.org/licenses/Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/bcrypt@5.0.0",
+      "type": "library",
+      "bom-ref": "pkg:pypi/bcrypt@5.0.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Armin Rigo"
+        },
+        {
+          "name": " Maciej Fijalkowski"
+        }
+      ],
+      "group": "",
+      "name": "cffi",
+      "version": "2.1.1",
+      "description": "Foreign Function Interface for Python calling C code.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT-0",
+            "url": "https://opensource.org/licenses/MIT-0"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/cffi@2.1.1",
+      "type": "library",
+      "bom-ref": "pkg:pypi/cffi@2.1.1",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "native"
+      ]
+    },
+    {
+      "authors": [
+        {
+          "name": "The Python Cryptographic Authority and individual contributors <cryptography-dev@python.org>"
+        }
+      ],
+      "group": "",
+      "name": "cryptography",
+      "version": "50.0.2",
+      "description": "cryptography is a package which provides cryptographic recipes and primitives to Python developers.",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR BSD-3-Clause"
+        }
+      ],
+      "purl": "pkg:pypi/cryptography@50.0.2",
+      "type": "library",
+      "bom-ref": "pkg:pypi/cryptography@50.0.2",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Giampaolo Rodola <g.rodola@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "psutil",
+      "version": "7.2.1",
+      "description": "Cross-platform lib for process and system monitoring.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://opensource.org/licenses/BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/psutil@7.2.1",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/giampaolo/psutil"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/psutil@7.2.1",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Eli Bendersky <eliben@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "pycparser",
+      "version": "3.12",
+      "description": "C parser in Python",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://opensource.org/licenses/BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pycparser@3.12",
+      "type": "library",
+      "bom-ref": "pkg:pypi/pycparser@3.12",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "parse"
+      ]
+    },
+    {
+      "authors": [
+        {
+          "name": "The pyOpenSSL developers <cryptography-dev@python.org>"
+        }
+      ],
+      "group": "",
+      "name": "pyOpenSSL",
+      "version": "26.4.0",
+      "description": "Python wrapper module around the OpenSSL library",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "url": "https://opensource.org/licenses/Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pyopenssl@26.4.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pyopenssl.org/"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/pyopenssl@26.4.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "security"
+      ]
+    },
+    {
+      "authors": [
+        {
+          "name": "Tin Tvrtković <tinchester@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "pytest-asyncio",
+      "version": "1.5.0",
+      "description": "Pytest support for asyncio",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "url": "https://opensource.org/licenses/Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pytest-asyncio@1.5.0",
+      "type": "library",
+      "bom-ref": "pkg:pypi/pytest-asyncio@1.5.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Bruno Oliveira <nicoddemus@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "pytest-mock",
+      "version": "3.17.0",
+      "description": "Thin-wrapper around the mock package for easier use with pytest",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pytest-mock@3.17.0",
+      "type": "library",
+      "bom-ref": "pkg:pypi/pytest-mock@3.17.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "mock"
+      ]
+    },
+    {
+      "authors": [
+        {
+          "name": "Gustavo Niemeyer <gustavo@niemeyer.net>"
+        }
+      ],
+      "group": "",
+      "name": "python-dateutil",
+      "version": "4.0.0",
+      "description": "Extensions to the standard Python datetime module",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://opensource.org/licenses/BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/python-dateutil@4.0.0",
+      "type": "library",
+      "bom-ref": "pkg:pypi/python-dateutil@4.0.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Stuart Bishop <stuart@stuartbishop.net>"
+        }
+      ],
+      "group": "",
+      "name": "pytz",
+      "version": "2026.6",
+      "description": "World timezone definitions, modern and historical",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pytz@2026.6",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "http://pythonhosted.org/pytz"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/pytz@2026.6",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Grant Jenks <contact@grantjenks.com>"
+        }
+      ],
+      "group": "",
+      "name": "sortedcontainers",
+      "version": "2.4.0",
+      "description": "Sorted Containers -- Sorted List, Sorted Dict, Sorted Set",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "url": "https://opensource.org/licenses/Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/sortedcontainers@2.4.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "http://www.grantjenks.com/docs/sortedcontainers/"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/sortedcontainers@2.4.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Python Software Foundation <datetime-sig@python.org>"
+        }
+      ],
+      "group": "",
+      "name": "tzdata",
+      "version": "2026.6",
+      "description": "Provider of IANA time zone data",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "url": "https://opensource.org/licenses/Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/tzdata@2026.6",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/python/tzdata"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/tzdata@2026.6",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Nándor Mátravölgyi <nandor.matra@gmail.com>"
+        }
+      ],
+      "group": "",
+      "name": "wait_for2",
+      "version": "0.3.2",
+      "description": "Asyncio wait_for that can handle simultaneous cancellation and future completion.",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "url": "https://opensource.org/licenses/Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/wait-for2@0.3.2",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/Traktormaster/wait-for2"
+        }
+      ],
+      "type": "library",
+      "bom-ref": "pkg:pypi/wait-for2@0.3.2",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/opcua/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.8,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Frederik Aalund <fpa@sbtinstruments.com>"
+        }
+      ],
+      "group": "",
+      "name": "asyncio-mqtt",
+      "version": "0.16.2",
+      "description": "Idiomatic asyncio wrapper around paho-mqtt",
+      "licenses": [
+        {
+          "expression": "OSI Approved"
+        }
+      ],
+      "purl": "pkg:pypi/asyncio-mqtt@0.16.2",
+      "type": "library",
+      "bom-ref": "pkg:pypi/asyncio-mqtt@0.16.2",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Roger Light <roger@atchoo.org>"
+        }
+      ],
+      "group": "",
+      "name": "paho-mqtt",
+      "version": "2.2.0",
+      "description": "MQTT version 5.0/3.1.1 client class",
+      "licenses": [
+        {
+          "expression": "EPL-2.0 OR BSD-3-Clause"
+        }
+      ],
+      "purl": "pkg:pypi/paho-mqtt@2.2.0",
+      "type": "library",
+      "bom-ref": "pkg:pypi/paho-mqtt@2.2.0",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "authors": [
+        {
+          "name": "Galen Collins"
+        },
+        {
+          "name": " Jan Iversen"
+        }
+      ],
+      "group": "",
+      "name": "pymodbus",
+      "version": "3.11.2",
+      "description": "A fully featured modbus protocol stack in python",
+      "licenses": [
+        {
+          "license": {
+            "id": "0BSD",
+            "url": "https://opensource.org/licenses/0BSD"
+          }
+        },
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://opensource.org/licenses/BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pymodbus@3.11.2",
+      "type": "library",
+      "bom-ref": "pkg:pypi/pymodbus@3.11.2",
+      "properties": [
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+        },
+        {
+          "name": "SrcFile",
+          "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_slave/requirements.txt"
+              },
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "tmp.D3K81HziYm/python/core/src/drivers/plugins/python/modbus_master/requirements.txt"
+              },
+              {
+                "technique": "instrumentation",
+                "confidence": 1,
+                "value": "cdxgen-venv-9UJdMZ"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "github.com/Autonomy-Logic/openplc-runtime/bootloader",
+      "version": "1.1.0",
+      "purl": "pkg:golang/github.com/Autonomy-Logic/openplc-runtime/bootloader",
+      "bom-ref": "pkg:golang/github.com/Autonomy-Logic/openplc-runtime/bootloader",
+      "scope": "required",
+      "properties": [
+        {
+          "name": "SrcGoMod",
+          "value": "/home/runner/work/openplc-runtime/openplc-runtime/bootloader/go.mod"
+        },
+        {
+          "name": "ModuleGoVersion",
+          "value": "1.25.0"
+        },
+        {
+          "name": "cdx:go:indirect",
+          "value": "false"
+        }
+      ],
+      "type": "application",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-only"
+          }
+        }
+      ]
+    },
+    {
+      "group": "",
+      "name": "github.com/dustin/go-humanize",
+      "version": "v1.0.1",
+      "scope": "optional",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "32ed7322ce97c15b85fe023539ea6f234a83d7cab2710c7e985ca48797c196da"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "url": "https://pkg.go.dev/github.com/dustin/go-humanize?tab=licenses"
+          }
+        }
+      ],
+      "purl": "pkg:golang/github.com/dustin/go-humanize@v1.0.1",
+      "type": "library",
+      "bom-ref": "pkg:golang/github.com/dustin/go-humanize@v1.0.1",
+      "properties": [
+        {
+          "name": "SrcGoMod",
+          "value": "/home/runner/go/pkg/mod/cache/download/github.com/dustin/go-humanize/@v/v1.0.1.mod"
+        },
+        {
+          "name": "ModuleGoVersion",
+          "value": "1.16"
+        },
+        {
+          "name": "cdx:go:indirect",
+          "value": "true"
+        },
+        {
+          "name": "SrcFile",
+          "value": "bootloader/go.mod"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 0.5,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "bootloader/go.mod"
+              }
+            ],
+            "concludedValue": "bootloader/go.mod"
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "github.com/google/uuid",
+      "version": "v1.6.0",
+      "scope": "optional",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4c8c8f65ee0c82abdf7980c115e74ca061a9130fcba8e79a393fa787153ec87a"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://pkg.go.dev/github.com/google/uuid?tab=licenses"
+          }
+        }
+      ],
+      "purl": "pkg:golang/github.com/google/uuid@v1.6.0",
+      "type": "library",
+      "bom-ref": "pkg:golang/github.com/google/uuid@v1.6.0",
+      "properties": [
+        {
+          "name": "SrcGoMod",
+          "value": "/home/runner/go/pkg/mod/cache/download/github.com/google/uuid/@v/v1.6.0.mod"
+        },
+        {
+          "name": "ModuleGoVersion",
+          "value": ""
+        },
+        {
+          "name": "cdx:go:indirect",
+          "value": "true"
+        },
+        {
+          "name": "SrcFile",
+          "value": "bootloader/go.mod"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 0.5,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "bootloader/go.mod"
+              }
+            ],
+            "concludedValue": "bootloader/go.mod"
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "github.com/remyoudompheng/bigfft",
+      "version": "v0.0.0-20230129092748-24d4a6f8daec",
+      "scope": "optional",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "aaa6c7ca1f2feb40e103b0a858ae68442a8bacc1d11a8c580924bd123033e84a"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://pkg.go.dev/github.com/remyoudompheng/bigfft?tab=licenses"
+          }
+        }
+      ],
+      "purl": "pkg:golang/github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec",
+      "type": "library",
+      "bom-ref": "pkg:golang/github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec",
+      "properties": [
+        {
+          "name": "SrcGoMod",
+          "value": "/home/runner/go/pkg/mod/cache/download/github.com/remyoudompheng/bigfft/@v/v0.0.0-20230129092748-24d4a6f8daec.mod"
+        },
+        {
+          "name": "ModuleGoVersion",
+          "value": "1.12"
+        },
+        {
+          "name": "cdx:go:indirect",
+          "value": "true"
+        },
+        {
+          "name": "SrcFile",
+          "value": "bootloader/go.mod"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 0.5,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "bootloader/go.mod"
+              }
+            ],
+            "concludedValue": "bootloader/go.mod"
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "golang.org/x/sys",
+      "version": "v0.47.0",
+      "scope": "optional",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e062f513921487e86d28e50439a89f7e1ac07aacac7d51a2a43633001aa70a6c"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://pkg.go.dev/golang.org/x/sys?tab=licenses"
+          }
+        }
+      ],
+      "purl": "pkg:golang/golang.org/x/sys@v0.47.0",
+      "type": "library",
+      "bom-ref": "pkg:golang/golang.org/x/sys@v0.47.0",
+      "properties": [
+        {
+          "name": "SrcGoMod",
+          "value": "/home/runner/go/pkg/mod/cache/download/golang.org/x/sys/@v/v0.47.0.mod"
+        },
+        {
+          "name": "ModuleGoVersion",
+          "value": "1.25.0"
+        },
+        {
+          "name": "cdx:go:indirect",
+          "value": "true"
+        },
+        {
+          "name": "SrcFile",
+          "value": "bootloader/go.mod"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 0.5,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "bootloader/go.mod"
+              }
+            ],
+            "concludedValue": "bootloader/go.mod"
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "modernc.org/libc",
+      "version": "v1.75.6",
+      "scope": "optional",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6cee68db3b47c416f6ae3cf43e0747374b12330e7b0a0c4614b67741dfd0a554"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://pkg.go.dev/modernc.org/libc?tab=licenses"
+          }
+        }
+      ],
+      "purl": "pkg:golang/modernc.org/libc@v1.75.6",
+      "type": "library",
+      "bom-ref": "pkg:golang/modernc.org/libc@v1.75.6",
+      "properties": [
+        {
+          "name": "SrcGoMod",
+          "value": "/home/runner/go/pkg/mod/cache/download/modernc.org/libc/@v/v1.75.6.mod"
+        },
+        {
+          "name": "ModuleGoVersion",
+          "value": "1.25.0"
+        },
+        {
+          "name": "cdx:go:indirect",
+          "value": "true"
+        },
+        {
+          "name": "SrcFile",
+          "value": "bootloader/go.mod"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 0.5,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "bootloader/go.mod"
+              }
+            ],
+            "concludedValue": "bootloader/go.mod"
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "modernc.org/mathutil",
+      "version": "v1.7.1",
+      "scope": "optional",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e29e48c092137e9a65d06e2c5040ed0abe03b614da4f8eff377693e8c85f8098"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://pkg.go.dev/modernc.org/mathutil?tab=licenses"
+          }
+        }
+      ],
+      "purl": "pkg:golang/modernc.org/mathutil@v1.7.1",
+      "type": "library",
+      "bom-ref": "pkg:golang/modernc.org/mathutil@v1.7.1",
+      "properties": [
+        {
+          "name": "SrcGoMod",
+          "value": "/home/runner/go/pkg/mod/cache/download/modernc.org/mathutil/@v/v1.7.1.mod"
+        },
+        {
+          "name": "ModuleGoVersion",
+          "value": "1.21"
+        },
+        {
+          "name": "cdx:go:indirect",
+          "value": "true"
+        },
+        {
+          "name": "SrcFile",
+          "value": "bootloader/go.mod"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 0.5,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "bootloader/go.mod"
+              }
+            ],
+            "concludedValue": "bootloader/go.mod"
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "modernc.org/memory",
+      "version": "v1.12.1",
+      "scope": "optional",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "fc93f855b542f8ae6c536c198bd6c7a2ad8c0240a7aeddabf7c5067922bb323c"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://pkg.go.dev/modernc.org/memory?tab=licenses"
+          }
+        }
+      ],
+      "purl": "pkg:golang/modernc.org/memory@v1.12.1",
+      "type": "library",
+      "bom-ref": "pkg:golang/modernc.org/memory@v1.12.1",
+      "properties": [
+        {
+          "name": "SrcGoMod",
+          "value": "/home/runner/go/pkg/mod/cache/download/modernc.org/memory/@v/v1.12.1.mod"
+        },
+        {
+          "name": "ModuleGoVersion",
+          "value": "1.23.0"
+        },
+        {
+          "name": "cdx:go:indirect",
+          "value": "true"
+        },
+        {
+          "name": "SrcFile",
+          "value": "bootloader/go.mod"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 0.5,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.5,
+                "value": "bootloader/go.mod"
+              }
+            ],
+            "concludedValue": "bootloader/go.mod"
+          }
+        ]
+      }
+    },
+    {
+      "group": "",
+      "name": "modernc.org/sqlite",
+      "version": "v1.58.0",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "aec0f609c91a7e039b282e0384194605ff91887c64737848346b755f0df6b556"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause",
+            "url": "https://pkg.go.dev/modernc.org/sqlite?tab=licenses"
+          }
+        }
+      ],
+      "purl": "pkg:golang/modernc.org/sqlite@v1.58.0",
+      "type": "library",
+      "bom-ref": "pkg:golang/modernc.org/sqlite@v1.58.0",
+      "properties": [
+        {
+          "name": "SrcGoMod",
+          "value": "/home/runner/go/pkg/mod/cache/download/modernc.org/sqlite/@v/v1.58.0.mod"
+        },
+        {
+          "name": "ModuleGoVersion",
+          "value": "1.25.0"
+        },
+        {
+          "name": "cdx:go:indirect",
+          "value": "false"
+        },
+        {
+          "name": "SrcFile",
+          "value": "bootloader/go.mod"
+        }
+      ],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 0.7,
+            "methods": [
+              {
+                "technique": "manifest-analysis",
+                "confidence": 0.7,
+                "value": "bootloader/go.mod"
+              }
+            ],
+            "concludedValue": "bootloader/go.mod"
+          }
+        ]
+      },
+      "tags": [
+        "sql"
+      ]
+    },
+    {
+      "type": "library",
+      "name": "cJSON",
+      "version": "1.7.18",
+      "purl": "pkg:github/DaveGamble/cJSON@v1.7.18",
+      "supplier": {
+        "name": "Dave Gamble and cJSON contributors"
+      },
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/DaveGamble/cJSON"
+        }
+      ],
+      "properties": [
+        {
+          "name": "openplc:origin",
+          "value": "vendored"
+        },
+        {
+          "name": "openplc:location",
+          "value": "core/src/drivers/plugins/native/cjson"
+        },
+        {
+          "name": "openplc:licenseSource",
+          "value": "core/src/drivers/plugins/native/cjson/cJSON.h header"
+        }
+      ],
+      "bom-ref": "pkg:github/DaveGamble/cJSON@v1.7.18"
+    },
+    {
+      "type": "library",
+      "name": "snap7",
+      "version": "1.4.3",
+      "purl": "pkg:generic/snap7@1.4.3?download_url=https://sourceforge.net/projects/snap7/",
+      "supplier": {
+        "name": "Davide Nardella"
+      },
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://snap7.sourceforge.net/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "openplc:origin",
+          "value": "vendored"
+        },
+        {
+          "name": "openplc:location",
+          "value": "core/src/drivers/plugins/native/s7comm/snap7"
+        },
+        {
+          "name": "openplc:licenseSource",
+          "value": "core/src/drivers/plugins/native/s7comm/snap7/core/s7_server.h header"
+        }
+      ],
+      "bom-ref": "pkg:generic/snap7@1.4.3?download_url=https://sourceforge.net/projects/snap7/"
+    },
+    {
+      "type": "application",
+      "name": "EtherDOG",
+      "version": "1.0.0",
+      "purl": "pkg:github/Autonomy-Logic/EtherDOG@v1.0.0",
+      "supplier": {
+        "name": "Autonomy Logic"
+      },
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-or-later"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/Autonomy-Logic/EtherDOG"
+        }
+      ],
+      "properties": [
+        {
+          "name": "openplc:origin",
+          "value": "fetched by install.sh (ETHERDOG_REF) and built into build/etherdog"
+        },
+        {
+          "name": "openplc:licenseSource",
+          "value": "SPDX-License-Identifier headers in EtherDOG v1.0.0 src/"
+        }
+      ],
+      "bom-ref": "pkg:github/Autonomy-Logic/EtherDOG@v1.0.0"
+    },
+    {
+      "type": "library",
+      "name": "SOEM",
+      "version": "a7c74cea13786426929ae71e94195fa91c4b9faf",
+      "purl": "pkg:github/OpenEtherCATsociety/SOEM@a7c74cea13786426929ae71e94195fa91c4b9faf",
+      "supplier": {
+        "name": "rt-labs AB"
+      },
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-only"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/OpenEtherCATsociety/SOEM"
+        }
+      ],
+      "properties": [
+        {
+          "name": "openplc:origin",
+          "value": "git submodule libs/soem of EtherDOG v1.0.0, linked into build/etherdog"
+        },
+        {
+          "name": "openplc:licenseSource",
+          "value": "LICENSE.md at the pinned commit: GPLv3, also offered under a commercial licence by rt-labs"
+        }
+      ],
+      "bom-ref": "pkg:github/OpenEtherCATsociety/SOEM@a7c74cea13786426929ae71e94195fa91c4b9faf"
+    },
+    {
+      "type": "application",
+      "name": "cmake",
+      "version": "3.31.6",
+      "purl": "pkg:github/Kitware/CMake@v3.31.6",
+      "supplier": {
+        "name": "Kitware"
+      },
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://github.com/Kitware/CMake/releases/tag/v3.31.6"
+        }
+      ],
+      "properties": [
+        {
+          "name": "openplc:origin",
+          "value": "prebuilt release installed to /usr/local by install.sh (build tool, present in the runtime image)"
+        }
+      ],
+      "bom-ref": "pkg:github/Kitware/CMake@v3.31.6"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:github/autonomy-logic/openplc-runtime@4.4.0",
+      "dependsOn": [
+        "pkg:generic/snap7@1.4.3?download_url=https://sourceforge.net/projects/snap7/",
+        "pkg:github/Autonomy-Logic/EtherDOG@v1.0.0",
+        "pkg:github/DaveGamble/cJSON@v1.7.18",
+        "pkg:github/Kitware/CMake@v3.31.6",
+        "pkg:github/OpenEtherCATsociety/SOEM@a7c74cea13786426929ae71e94195fa91c4b9faf",
+        "pkg:golang/github.com/Autonomy-Logic/openplc-runtime/bootloader",
+        "pkg:pypi/aiofiles@25.1.0",
+        "pkg:pypi/aiosqlite@0.22.1",
+        "pkg:pypi/asyncio-mqtt@0.16.2",
+        "pkg:pypi/asyncua@1.1.8",
+        "pkg:pypi/bcrypt@5.0.0",
+        "pkg:pypi/bidict@0.24.1",
+        "pkg:pypi/blinker@1.9.0",
+        "pkg:pypi/cffi@2.1.1",
+        "pkg:pypi/cfgv@3.5.0",
+        "pkg:pypi/click@8.5.1",
+        "pkg:pypi/cryptography@50.0.2",
+        "pkg:pypi/distlib@0.4.4",
+        "pkg:pypi/filelock@4.3.1",
+        "pkg:pypi/flask-jwt-extended@4.7.4",
+        "pkg:pypi/flask-login@0.6.3",
+        "pkg:pypi/flask-socketio@5.7.2",
+        "pkg:pypi/flask-sqlalchemy@3.1.1",
+        "pkg:pypi/flask@3.1.3",
+        "pkg:pypi/h11@0.16.0",
+        "pkg:pypi/identify@2.6.20",
+        "pkg:pypi/iniconfig@2.3.1",
+        "pkg:pypi/itsdangerous@2.2.0",
+        "pkg:pypi/jinja2@3.1.6",
+        "pkg:pypi/markupsafe@3.0.4",
+        "pkg:pypi/nodeenv@1.12.0",
+        "pkg:pypi/packaging@26.4",
+        "pkg:pypi/paho-mqtt@2.2.0",
+        "pkg:pypi/platformdirs@4.14.8",
+        "pkg:pypi/pluggy@1.7.0",
+        "pkg:pypi/pre-commit@4.7.0",
+        "pkg:pypi/psutil@7.2.1",
+        "pkg:pypi/psutil@7.2.2",
+        "pkg:pypi/pycparser@3.12",
+        "pkg:pypi/pygments@2.21.0",
+        "pkg:pypi/pyjwt@2.15.1",
+        "pkg:pypi/pymodbus@3.11.2",
+        "pkg:pypi/pyopenssl@26.4.0",
+        "pkg:pypi/pyserial@3.5",
+        "pkg:pypi/pytest-asyncio@1.5.0",
+        "pkg:pypi/pytest-flask@1.3.0",
+        "pkg:pypi/pytest-mock@3.17.0",
+        "pkg:pypi/pytest@9.2.0",
+        "pkg:pypi/python-dateutil@4.0.0",
+        "pkg:pypi/python-discovery@1.9.7",
+        "pkg:pypi/python-dotenv@1.2.4",
+        "pkg:pypi/python-engineio@4.15.1",
+        "pkg:pypi/python-socketio@5.18.1",
+        "pkg:pypi/pytz@2026.6",
+        "pkg:pypi/pyyaml@6.0.4",
+        "pkg:pypi/simple-websocket@1.1.0",
+        "pkg:pypi/sortedcontainers@2.4.0",
+        "pkg:pypi/sqlalchemy@2.1.9",
+        "pkg:pypi/typing-extensions@4.16.0",
+        "pkg:pypi/tzdata@2026.6",
+        "pkg:pypi/virtualenv@21.15.13",
+        "pkg:pypi/wait-for2@0.3.2",
+        "pkg:pypi/werkzeug@3.1.9",
+        "pkg:pypi/wsproto@1.3.2"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/flask@3.1.3",
+      "dependsOn": [
+        "pkg:pypi/blinker@1.9.0",
+        "pkg:pypi/click@8.5.1",
+        "pkg:pypi/itsdangerous@2.2.0",
+        "pkg:pypi/jinja2@3.1.6",
+        "pkg:pypi/markupsafe@3.0.4",
+        "pkg:pypi/werkzeug@3.1.9"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/blinker@1.9.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/click@8.5.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/itsdangerous@2.2.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/jinja2@3.1.6",
+      "dependsOn": [
+        "pkg:pypi/markupsafe@3.0.4"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/markupsafe@3.0.4",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/werkzeug@3.1.9",
+      "dependsOn": [
+        "pkg:pypi/markupsafe@3.0.4"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/flask-login@0.6.3",
+      "dependsOn": [
+        "pkg:pypi/flask@3.1.3",
+        "pkg:pypi/werkzeug@3.1.9"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/typing-extensions@4.16.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/bidict@0.24.1",
+      "dependsOn": [
+        "pkg:pypi/typing-extensions@4.16.0"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/cfgv@3.5.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/distlib@0.4.4",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/filelock@4.3.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/pyjwt@2.15.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/flask-jwt-extended@4.7.4",
+      "dependsOn": [
+        "pkg:pypi/flask@3.1.3",
+        "pkg:pypi/pyjwt@2.15.1",
+        "pkg:pypi/werkzeug@3.1.9"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/python-socketio@5.18.1",
+      "dependsOn": [
+        "pkg:pypi/bidict@0.24.1",
+        "pkg:pypi/python-engineio@4.15.1"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/python-engineio@4.15.1",
+      "dependsOn": [
+        "pkg:pypi/simple-websocket@1.1.0"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/simple-websocket@1.1.0",
+      "dependsOn": [
+        "pkg:pypi/wsproto@1.3.2"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/wsproto@1.3.2",
+      "dependsOn": [
+        "pkg:pypi/h11@0.16.0"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/h11@0.16.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/flask-socketio@5.7.2",
+      "dependsOn": [
+        "pkg:pypi/blinker@1.9.0",
+        "pkg:pypi/click@8.5.1",
+        "pkg:pypi/flask@3.1.3",
+        "pkg:pypi/jinja2@3.1.6",
+        "pkg:pypi/python-socketio@5.18.1",
+        "pkg:pypi/werkzeug@3.1.9"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/sqlalchemy@2.1.9",
+      "dependsOn": [
+        "pkg:pypi/typing-extensions@4.16.0"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/flask-sqlalchemy@3.1.1",
+      "dependsOn": [
+        "pkg:pypi/flask@3.1.3",
+        "pkg:pypi/sqlalchemy@2.1.9"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/identify@2.6.20",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/iniconfig@2.3.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/nodeenv@1.12.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/packaging@26.4",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/platformdirs@4.14.8",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/pluggy@1.7.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/pyyaml@6.0.4",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/virtualenv@21.15.13",
+      "dependsOn": [
+        "pkg:pypi/distlib@0.4.4",
+        "pkg:pypi/filelock@4.3.1",
+        "pkg:pypi/packaging@26.4",
+        "pkg:pypi/platformdirs@4.14.8",
+        "pkg:pypi/python-discovery@1.9.7"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/python-discovery@1.9.7",
+      "dependsOn": [
+        "pkg:pypi/filelock@4.3.1"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/pre-commit@4.7.0",
+      "dependsOn": [
+        "pkg:pypi/cfgv@3.5.0",
+        "pkg:pypi/identify@2.6.20",
+        "pkg:pypi/nodeenv@1.12.0",
+        "pkg:pypi/pyyaml@6.0.4",
+        "pkg:pypi/virtualenv@21.15.13"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/psutil@7.2.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/pygments@2.21.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/pyserial@3.5",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/pytest@9.2.0",
+      "dependsOn": [
+        "pkg:pypi/iniconfig@2.3.1",
+        "pkg:pypi/packaging@26.4",
+        "pkg:pypi/pluggy@1.7.0",
+        "pkg:pypi/pygments@2.21.0"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/pytest-flask@1.3.0",
+      "dependsOn": [
+        "pkg:pypi/flask@3.1.3",
+        "pkg:pypi/pytest@9.2.0",
+        "pkg:pypi/werkzeug@3.1.9"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/python-dotenv@1.2.4",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/aiofiles@25.1.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/aiosqlite@0.22.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/cryptography@50.0.2",
+      "dependsOn": [
+        "pkg:pypi/cffi@2.1.1"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/cffi@2.1.1",
+      "dependsOn": [
+        "pkg:pypi/pycparser@3.12"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/pycparser@3.12",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/pyopenssl@26.4.0",
+      "dependsOn": [
+        "pkg:pypi/cryptography@50.0.2",
+        "pkg:pypi/typing-extensions@4.16.0"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/python-dateutil@4.0.0",
+      "dependsOn": [
+        "pkg:pypi/tzdata@2026.6"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/tzdata@2026.6",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/pytz@2026.6",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/sortedcontainers@2.4.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/wait-for2@0.3.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/asyncua@1.1.8",
+      "dependsOn": [
+        "pkg:pypi/aiofiles@25.1.0",
+        "pkg:pypi/aiosqlite@0.22.1",
+        "pkg:pypi/cryptography@50.0.2",
+        "pkg:pypi/pyopenssl@26.4.0",
+        "pkg:pypi/python-dateutil@4.0.0",
+        "pkg:pypi/pytz@2026.6",
+        "pkg:pypi/sortedcontainers@2.4.0",
+        "pkg:pypi/typing-extensions@4.16.0",
+        "pkg:pypi/wait-for2@0.3.2"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/bcrypt@5.0.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/psutil@7.2.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/pytest-asyncio@1.5.0",
+      "dependsOn": [
+        "pkg:pypi/pytest@9.2.0",
+        "pkg:pypi/typing-extensions@4.16.0"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/pytest-mock@3.17.0",
+      "dependsOn": [
+        "pkg:pypi/pytest@9.2.0"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/paho-mqtt@2.2.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:pypi/asyncio-mqtt@0.16.2",
+      "dependsOn": [
+        "pkg:pypi/paho-mqtt@2.2.0"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/pymodbus@3.11.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:golang/github.com/Autonomy-Logic/openplc-runtime/bootloader",
+      "dependsOn": [
+        "pkg:golang/modernc.org/sqlite@v1.58.0"
+      ]
+    },
+    {
+      "ref": "pkg:golang/github.com/dustin/go-humanize@v1.0.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:golang/github.com/google/uuid@v1.6.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:golang/github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:golang/golang.org/x/sys@v0.47.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:golang/modernc.org/libc@v1.75.6",
+      "dependsOn": [
+        "pkg:golang/github.com/dustin/go-humanize@v1.0.1",
+        "pkg:golang/github.com/google/uuid@v1.6.0",
+        "pkg:golang/github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec",
+        "pkg:golang/golang.org/x/sys@v0.47.0",
+        "pkg:golang/modernc.org/mathutil@v1.7.1",
+        "pkg:golang/modernc.org/memory@v1.12.1"
+      ]
+    },
+    {
+      "ref": "pkg:golang/modernc.org/mathutil@v1.7.1",
+      "dependsOn": [
+        "pkg:golang/github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec"
+      ]
+    },
+    {
+      "ref": "pkg:golang/modernc.org/memory@v1.12.1",
+      "dependsOn": [
+        "pkg:golang/github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec",
+        "pkg:golang/modernc.org/mathutil@v1.7.1"
+      ]
+    },
+    {
+      "ref": "pkg:golang/modernc.org/sqlite@v1.58.0",
+      "dependsOn": [
+        "pkg:golang/github.com/dustin/go-humanize@v1.0.1",
+        "pkg:golang/github.com/google/uuid@v1.6.0",
+        "pkg:golang/github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec",
+        "pkg:golang/golang.org/x/sys@v0.47.0",
+        "pkg:golang/modernc.org/libc@v1.75.6",
+        "pkg:golang/modernc.org/mathutil@v1.7.1",
+        "pkg:golang/modernc.org/memory@v1.12.1"
+      ]
+    }
+  ]
+}

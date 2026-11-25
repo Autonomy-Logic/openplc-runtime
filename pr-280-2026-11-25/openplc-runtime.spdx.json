@@ -1,0 +1,2063 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "openplc-runtime-SBOM",
+  "documentNamespace": "https://autonomylogic.com/spdx/openplc-runtime/7944d843-c0c7-4cea-81a9-93c604980a57",
+  "creationInfo": {
+    "created": "2026-11-25T15:41:30Z",
+    "creators": [
+      "Organization: Autonomy Logic",
+      "Tool: cdxgen-11.11.0",
+      "Tool: cdx-to-spdx"
+    ]
+  },
+  "packages": [
+    {
+      "name": "openplc-runtime",
+      "SPDXID": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "versionInfo": "4.4.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "GPL-3.0-only",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/autonomy-logic/openplc-runtime@4.4.0"
+        }
+      ]
+    },
+    {
+      "name": "bidict",
+      "SPDXID": "SPDXRef-Pkg-2-pkg-pypi-bidict-0.24.1",
+      "versionInfo": "0.24.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MPL-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Joshua Bronson (jabronson@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/bidict@0.24.1"
+        }
+      ]
+    },
+    {
+      "name": "blinker",
+      "SPDXID": "SPDXRef-Pkg-3-pkg-pypi-blinker-1.9.0",
+      "versionInfo": "1.9.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Jason Kirtland",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/blinker@1.9.0"
+        }
+      ]
+    },
+    {
+      "name": "cfgv",
+      "SPDXID": "SPDXRef-Pkg-4-pkg-pypi-cfgv-3.5.0",
+      "versionInfo": "3.5.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Anthony Sottile (asottile@umich.edu)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/cfgv@3.5.0"
+        }
+      ]
+    },
+    {
+      "name": "click",
+      "SPDXID": "SPDXRef-Pkg-5-pkg-pypi-click-8.5.1",
+      "versionInfo": "8.5.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/click@8.5.1"
+        }
+      ]
+    },
+    {
+      "name": "distlib",
+      "SPDXID": "SPDXRef-Pkg-6-pkg-pypi-distlib-0.4.4",
+      "versionInfo": "0.4.4",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "PSF-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Vinay Sajip (vinay_sajip@red-dove.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/distlib@0.4.4"
+        }
+      ]
+    },
+    {
+      "name": "filelock",
+      "SPDXID": "SPDXRef-Pkg-7-pkg-pypi-filelock-4.3.1",
+      "versionInfo": "4.3.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/filelock@4.3.1"
+        }
+      ]
+    },
+    {
+      "name": "Flask-JWT-Extended",
+      "SPDXID": "SPDXRef-Pkg-8-pkg-pypi-flask-jwt-extended-4.7.4",
+      "versionInfo": "4.7.4",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Lily Acadia Gilbert (lily.gilbert@hey.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/flask-jwt-extended@4.7.4"
+        }
+      ]
+    },
+    {
+      "name": "Flask-Login",
+      "SPDXID": "SPDXRef-Pkg-9-pkg-pypi-flask-login-0.6.3",
+      "versionInfo": "0.6.3",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Matthew Frazier (leafstormrush@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/flask-login@0.6.3"
+        }
+      ]
+    },
+    {
+      "name": "Flask-SocketIO",
+      "SPDXID": "SPDXRef-Pkg-10-pkg-pypi-flask-socketio-5.7.2",
+      "versionInfo": "5.7.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Miguel Grinberg (miguel.grinberg@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/flask-socketio@5.7.2"
+        }
+      ]
+    },
+    {
+      "name": "Flask-SQLAlchemy",
+      "SPDXID": "SPDXRef-Pkg-11-pkg-pypi-flask-sqlalchemy-3.1.1",
+      "versionInfo": "3.1.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "0BSD",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/flask-sqlalchemy@3.1.1"
+        }
+      ]
+    },
+    {
+      "name": "Flask",
+      "SPDXID": "SPDXRef-Pkg-12-pkg-pypi-flask-3.1.3",
+      "versionInfo": "3.1.3",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/flask@3.1.3"
+        }
+      ]
+    },
+    {
+      "name": "h11",
+      "SPDXID": "SPDXRef-Pkg-13-pkg-pypi-h11-0.16.0",
+      "versionInfo": "0.16.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Nathaniel J. Smith (njs@pobox.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/h11@0.16.0"
+        }
+      ]
+    },
+    {
+      "name": "identify",
+      "SPDXID": "SPDXRef-Pkg-14-pkg-pypi-identify-2.6.20",
+      "versionInfo": "2.6.20",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Chris Kuehl (ckuehl@ocf.berkeley.edu)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/identify@2.6.20"
+        }
+      ]
+    },
+    {
+      "name": "iniconfig",
+      "SPDXID": "SPDXRef-Pkg-15-pkg-pypi-iniconfig-2.3.1",
+      "versionInfo": "2.3.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Ronny Pfannschmidt (opensource@ronnypfannschmidt.de)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/iniconfig@2.3.1"
+        }
+      ]
+    },
+    {
+      "name": "itsdangerous",
+      "SPDXID": "SPDXRef-Pkg-16-pkg-pypi-itsdangerous-2.2.0",
+      "versionInfo": "2.2.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "0BSD",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/itsdangerous@2.2.0"
+        }
+      ]
+    },
+    {
+      "name": "Jinja2",
+      "SPDXID": "SPDXRef-Pkg-17-pkg-pypi-jinja2-3.1.6",
+      "versionInfo": "3.1.6",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "0BSD",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/jinja2@3.1.6"
+        }
+      ]
+    },
+    {
+      "name": "MarkupSafe",
+      "SPDXID": "SPDXRef-Pkg-18-pkg-pypi-markupsafe-3.0.4",
+      "versionInfo": "3.0.4",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/markupsafe@3.0.4"
+        }
+      ]
+    },
+    {
+      "name": "nodeenv",
+      "SPDXID": "SPDXRef-Pkg-19-pkg-pypi-nodeenv-1.12.0",
+      "versionInfo": "1.12.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "0BSD",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Eugene Kalinin (e.v.kalinin@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/nodeenv@1.12.0"
+        }
+      ]
+    },
+    {
+      "name": "packaging",
+      "SPDXID": "SPDXRef-Pkg-20-pkg-pypi-packaging-26.4",
+      "versionInfo": "26.4",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0 OR BSD-2-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Donald Stufft (donald@stufft.io)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/packaging@26.4"
+        }
+      ]
+    },
+    {
+      "name": "platformdirs",
+      "SPDXID": "SPDXRef-Pkg-21-pkg-pypi-platformdirs-4.14.8",
+      "versionInfo": "4.14.8",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/platformdirs@4.14.8"
+        }
+      ]
+    },
+    {
+      "name": "pluggy",
+      "SPDXID": "SPDXRef-Pkg-22-pkg-pypi-pluggy-1.7.0",
+      "versionInfo": "1.7.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Holger Krekel",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pluggy@1.7.0"
+        }
+      ]
+    },
+    {
+      "name": "pre_commit",
+      "SPDXID": "SPDXRef-Pkg-23-pkg-pypi-pre-commit-4.7.0",
+      "versionInfo": "4.7.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Anthony Sottile (asottile@umich.edu)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pre-commit@4.7.0"
+        }
+      ]
+    },
+    {
+      "name": "psutil",
+      "SPDXID": "SPDXRef-Pkg-24-pkg-pypi-psutil-7.2.2",
+      "versionInfo": "7.2.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Giampaolo Rodola (g.rodola@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/psutil@7.2.2"
+        }
+      ]
+    },
+    {
+      "name": "Pygments",
+      "SPDXID": "SPDXRef-Pkg-25-pkg-pypi-pygments-2.21.0",
+      "versionInfo": "2.21.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-2-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Georg Brandl (georg@python.org)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pygments@2.21.0"
+        }
+      ]
+    },
+    {
+      "name": "PyJWT",
+      "SPDXID": "SPDXRef-Pkg-26-pkg-pypi-pyjwt-2.15.1",
+      "versionInfo": "2.15.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Jose Padilla (hello@jpadilla.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pyjwt@2.15.1"
+        }
+      ]
+    },
+    {
+      "name": "pyserial",
+      "SPDXID": "SPDXRef-Pkg-27-pkg-pypi-pyserial-3.5",
+      "versionInfo": "3.5",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "0BSD",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Chris Liechti (cliechti@gmx.net)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pyserial@3.5"
+        }
+      ]
+    },
+    {
+      "name": "pytest-flask",
+      "SPDXID": "SPDXRef-Pkg-28-pkg-pypi-pytest-flask-1.3.0",
+      "versionInfo": "1.3.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Vital Kudzelka (vital.kudzelka@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pytest-flask@1.3.0"
+        }
+      ]
+    },
+    {
+      "name": "pytest",
+      "SPDXID": "SPDXRef-Pkg-29-pkg-pypi-pytest-9.2.0",
+      "versionInfo": "9.2.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Brianna Laugher",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pytest@9.2.0"
+        }
+      ]
+    },
+    {
+      "name": "python-discovery",
+      "SPDXID": "SPDXRef-Pkg-30-pkg-pypi-python-discovery-1.9.7",
+      "versionInfo": "1.9.7",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/python-discovery@1.9.7"
+        }
+      ]
+    },
+    {
+      "name": "python-dotenv",
+      "SPDXID": "SPDXRef-Pkg-31-pkg-pypi-python-dotenv-1.2.4",
+      "versionInfo": "1.2.4",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Saurabh Kumar (me+github@saurabh-kumar.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/python-dotenv@1.2.4"
+        }
+      ]
+    },
+    {
+      "name": "python-engineio",
+      "SPDXID": "SPDXRef-Pkg-32-pkg-pypi-python-engineio-4.15.1",
+      "versionInfo": "4.15.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Miguel Grinberg (miguel.grinberg@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/python-engineio@4.15.1"
+        }
+      ]
+    },
+    {
+      "name": "python-socketio",
+      "SPDXID": "SPDXRef-Pkg-33-pkg-pypi-python-socketio-5.18.1",
+      "versionInfo": "5.18.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Miguel Grinberg (miguel.grinberg@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/python-socketio@5.18.1"
+        }
+      ]
+    },
+    {
+      "name": "PyYAML",
+      "SPDXID": "SPDXRef-Pkg-34-pkg-pypi-pyyaml-6.0.4",
+      "versionInfo": "6.0.4",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Kirill Simonov (xi@resolvent.net)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pyyaml@6.0.4"
+        }
+      ]
+    },
+    {
+      "name": "simple-websocket",
+      "SPDXID": "SPDXRef-Pkg-35-pkg-pypi-simple-websocket-1.1.0",
+      "versionInfo": "1.1.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Miguel Grinberg (miguel.grinberg@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/simple-websocket@1.1.0"
+        }
+      ]
+    },
+    {
+      "name": "SQLAlchemy",
+      "SPDXID": "SPDXRef-Pkg-36-pkg-pypi-sqlalchemy-2.1.9",
+      "versionInfo": "2.1.9",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Mike Bayer (mike_mp@zzzcomputing.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/sqlalchemy@2.1.9"
+        }
+      ]
+    },
+    {
+      "name": "typing_extensions",
+      "SPDXID": "SPDXRef-Pkg-37-pkg-pypi-typing-extensions-4.16.0",
+      "versionInfo": "4.16.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "PSF-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Guido van Rossum",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/typing-extensions@4.16.0"
+        }
+      ]
+    },
+    {
+      "name": "virtualenv",
+      "SPDXID": "SPDXRef-Pkg-38-pkg-pypi-virtualenv-21.15.13",
+      "versionInfo": "21.15.13",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/virtualenv@21.15.13"
+        }
+      ]
+    },
+    {
+      "name": "Werkzeug",
+      "SPDXID": "SPDXRef-Pkg-39-pkg-pypi-werkzeug-3.1.9",
+      "versionInfo": "3.1.9",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/werkzeug@3.1.9"
+        }
+      ]
+    },
+    {
+      "name": "wsproto",
+      "SPDXID": "SPDXRef-Pkg-40-pkg-pypi-wsproto-1.3.2",
+      "versionInfo": "1.3.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Benno Rice (benno@jeamland.net)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/wsproto@1.3.2"
+        }
+      ]
+    },
+    {
+      "name": "aiofiles",
+      "SPDXID": "SPDXRef-Pkg-41-pkg-pypi-aiofiles-25.1.0",
+      "versionInfo": "25.1.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Tin Tvrtkovic (tinchester@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/aiofiles@25.1.0"
+        }
+      ]
+    },
+    {
+      "name": "aiosqlite",
+      "SPDXID": "SPDXRef-Pkg-42-pkg-pypi-aiosqlite-0.22.1",
+      "versionInfo": "0.22.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Amethyst Reese (amethyst@n7.gg)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/aiosqlite@0.22.1"
+        }
+      ]
+    },
+    {
+      "name": "asyncua",
+      "SPDXID": "SPDXRef-Pkg-43-pkg-pypi-asyncua-1.1.8",
+      "versionInfo": "1.1.8",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "GNU Lesser General Public License v3 or later",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Olivier Roulet-Dubonnet (olivier.roulet@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/asyncua@1.1.8"
+        }
+      ]
+    },
+    {
+      "name": "bcrypt",
+      "SPDXID": "SPDXRef-Pkg-44-pkg-pypi-bcrypt-5.0.0",
+      "versionInfo": "5.0.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: The Python Cryptographic Authority developers (cryptography-dev@python.org)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/bcrypt@5.0.0"
+        }
+      ]
+    },
+    {
+      "name": "cffi",
+      "SPDXID": "SPDXRef-Pkg-45-pkg-pypi-cffi-2.1.1",
+      "versionInfo": "2.1.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT-0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Armin Rigo",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/cffi@2.1.1"
+        }
+      ]
+    },
+    {
+      "name": "cryptography",
+      "SPDXID": "SPDXRef-Pkg-46-pkg-pypi-cryptography-50.0.2",
+      "versionInfo": "50.0.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0 OR BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: The Python Cryptographic Authority and individual contributors (cryptography-dev@python.org)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/cryptography@50.0.2"
+        }
+      ]
+    },
+    {
+      "name": "psutil",
+      "SPDXID": "SPDXRef-Pkg-47-pkg-pypi-psutil-7.2.1",
+      "versionInfo": "7.2.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Giampaolo Rodola (g.rodola@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/psutil@7.2.1"
+        }
+      ]
+    },
+    {
+      "name": "pycparser",
+      "SPDXID": "SPDXRef-Pkg-48-pkg-pypi-pycparser-3.12",
+      "versionInfo": "3.12",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Eli Bendersky (eliben@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pycparser@3.12"
+        }
+      ]
+    },
+    {
+      "name": "pyOpenSSL",
+      "SPDXID": "SPDXRef-Pkg-49-pkg-pypi-pyopenssl-26.4.0",
+      "versionInfo": "26.4.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: The pyOpenSSL developers (cryptography-dev@python.org)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pyopenssl@26.4.0"
+        }
+      ]
+    },
+    {
+      "name": "pytest-asyncio",
+      "SPDXID": "SPDXRef-Pkg-50-pkg-pypi-pytest-asyncio-1.5.0",
+      "versionInfo": "1.5.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Tin Tvrtković (tinchester@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pytest-asyncio@1.5.0"
+        }
+      ]
+    },
+    {
+      "name": "pytest-mock",
+      "SPDXID": "SPDXRef-Pkg-51-pkg-pypi-pytest-mock-3.17.0",
+      "versionInfo": "3.17.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Bruno Oliveira (nicoddemus@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pytest-mock@3.17.0"
+        }
+      ]
+    },
+    {
+      "name": "python-dateutil",
+      "SPDXID": "SPDXRef-Pkg-52-pkg-pypi-python-dateutil-4.0.0",
+      "versionInfo": "4.0.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Gustavo Niemeyer (gustavo@niemeyer.net)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/python-dateutil@4.0.0"
+        }
+      ]
+    },
+    {
+      "name": "pytz",
+      "SPDXID": "SPDXRef-Pkg-53-pkg-pypi-pytz-2026.6",
+      "versionInfo": "2026.6",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Stuart Bishop (stuart@stuartbishop.net)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pytz@2026.6"
+        }
+      ]
+    },
+    {
+      "name": "sortedcontainers",
+      "SPDXID": "SPDXRef-Pkg-54-pkg-pypi-sortedcontainers-2.4.0",
+      "versionInfo": "2.4.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Grant Jenks (contact@grantjenks.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/sortedcontainers@2.4.0"
+        }
+      ]
+    },
+    {
+      "name": "tzdata",
+      "SPDXID": "SPDXRef-Pkg-55-pkg-pypi-tzdata-2026.6",
+      "versionInfo": "2026.6",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Python Software Foundation (datetime-sig@python.org)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/tzdata@2026.6"
+        }
+      ]
+    },
+    {
+      "name": "wait_for2",
+      "SPDXID": "SPDXRef-Pkg-56-pkg-pypi-wait-for2-0.3.2",
+      "versionInfo": "0.3.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Nándor Mátravölgyi (nandor.matra@gmail.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/wait-for2@0.3.2"
+        }
+      ]
+    },
+    {
+      "name": "asyncio-mqtt",
+      "SPDXID": "SPDXRef-Pkg-57-pkg-pypi-asyncio-mqtt-0.16.2",
+      "versionInfo": "0.16.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "OSI Approved",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Frederik Aalund (fpa@sbtinstruments.com)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/asyncio-mqtt@0.16.2"
+        }
+      ]
+    },
+    {
+      "name": "paho-mqtt",
+      "SPDXID": "SPDXRef-Pkg-58-pkg-pypi-paho-mqtt-2.2.0",
+      "versionInfo": "2.2.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "EPL-2.0 OR BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Roger Light (roger@atchoo.org)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/paho-mqtt@2.2.0"
+        }
+      ]
+    },
+    {
+      "name": "pymodbus",
+      "SPDXID": "SPDXRef-Pkg-59-pkg-pypi-pymodbus-3.11.2",
+      "versionInfo": "3.11.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "0BSD OR BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Person: Galen Collins",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pymodbus@3.11.2"
+        }
+      ]
+    },
+    {
+      "name": "github.com/Autonomy-Logic/openplc-runtime/bootloader",
+      "SPDXID": "SPDXRef-Pkg-60-pkg-golang-github.com-Autonomy-Logic-openplc-runtime-bootloader",
+      "versionInfo": "1.1.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "GPL-3.0-only",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/Autonomy-Logic/openplc-runtime/bootloader"
+        }
+      ]
+    },
+    {
+      "name": "github.com/dustin/go-humanize",
+      "SPDXID": "SPDXRef-Pkg-61-pkg-golang-github.com-dustin-go-humanize-v1.0.1",
+      "versionInfo": "v1.0.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/dustin/go-humanize@v1.0.1"
+        }
+      ]
+    },
+    {
+      "name": "github.com/google/uuid",
+      "SPDXID": "SPDXRef-Pkg-62-pkg-golang-github.com-google-uuid-v1.6.0",
+      "versionInfo": "v1.6.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/google/uuid@v1.6.0"
+        }
+      ]
+    },
+    {
+      "name": "github.com/remyoudompheng/bigfft",
+      "SPDXID": "SPDXRef-Pkg-63-pkg-golang-github.com-remyoudompheng-bigfft-v0.0.0-20230129092748-24d4a6f8daec",
+      "versionInfo": "v0.0.0-20230129092748-24d4a6f8daec",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec"
+        }
+      ]
+    },
+    {
+      "name": "golang.org/x/sys",
+      "SPDXID": "SPDXRef-Pkg-64-pkg-golang-golang.org-x-sys-v0.47.0",
+      "versionInfo": "v0.47.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/golang.org/x/sys@v0.47.0"
+        }
+      ]
+    },
+    {
+      "name": "modernc.org/libc",
+      "SPDXID": "SPDXRef-Pkg-65-pkg-golang-modernc.org-libc-v1.75.6",
+      "versionInfo": "v1.75.6",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/modernc.org/libc@v1.75.6"
+        }
+      ]
+    },
+    {
+      "name": "modernc.org/mathutil",
+      "SPDXID": "SPDXRef-Pkg-66-pkg-golang-modernc.org-mathutil-v1.7.1",
+      "versionInfo": "v1.7.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/modernc.org/mathutil@v1.7.1"
+        }
+      ]
+    },
+    {
+      "name": "modernc.org/memory",
+      "SPDXID": "SPDXRef-Pkg-67-pkg-golang-modernc.org-memory-v1.12.1",
+      "versionInfo": "v1.12.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/modernc.org/memory@v1.12.1"
+        }
+      ]
+    },
+    {
+      "name": "modernc.org/sqlite",
+      "SPDXID": "SPDXRef-Pkg-68-pkg-golang-modernc.org-sqlite-v1.58.0",
+      "versionInfo": "v1.58.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/modernc.org/sqlite@v1.58.0"
+        }
+      ]
+    },
+    {
+      "name": "cJSON",
+      "SPDXID": "SPDXRef-Pkg-69-pkg-github-DaveGamble-cJSON-v1.7.18",
+      "versionInfo": "1.7.18",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Organization: Dave Gamble and cJSON contributors",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/DaveGamble/cJSON@v1.7.18"
+        }
+      ]
+    },
+    {
+      "name": "snap7",
+      "SPDXID": "SPDXRef-Pkg-70-pkg-generic-snap7-1.4.3-download-url-https-sourceforge.net-projects-snap7-",
+      "versionInfo": "1.4.3",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "LGPL-3.0-or-later",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Organization: Davide Nardella",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:generic/snap7@1.4.3?download_url=https://sourceforge.net/projects/snap7/"
+        }
+      ]
+    },
+    {
+      "name": "EtherDOG",
+      "SPDXID": "SPDXRef-Pkg-71-pkg-github-Autonomy-Logic-EtherDOG-v1.0.0",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "GPL-3.0-or-later",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Organization: Autonomy Logic",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/Autonomy-Logic/EtherDOG@v1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "SOEM",
+      "SPDXID": "SPDXRef-Pkg-72-pkg-github-OpenEtherCATsociety-SOEM-a7c74cea13786426929ae71e94195fa91c4b9faf",
+      "versionInfo": "a7c74cea13786426929ae71e94195fa91c4b9faf",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "GPL-3.0-only",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Organization: rt-labs AB",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/OpenEtherCATsociety/SOEM@a7c74cea13786426929ae71e94195fa91c4b9faf"
+        }
+      ]
+    },
+    {
+      "name": "cmake",
+      "SPDXID": "SPDXRef-Pkg-73-pkg-github-Kitware-CMake-v3.31.6",
+      "versionInfo": "3.31.6",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "Organization: Kitware",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/Kitware/CMake@v3.31.6"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-70-pkg-generic-snap7-1.4.3-download-url-https-sourceforge.net-projects-snap7-"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-71-pkg-github-Autonomy-Logic-EtherDOG-v1.0.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-69-pkg-github-DaveGamble-cJSON-v1.7.18"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-73-pkg-github-Kitware-CMake-v3.31.6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-72-pkg-github-OpenEtherCATsociety-SOEM-a7c74cea13786426929ae71e94195fa91c4b9faf"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-60-pkg-golang-github.com-Autonomy-Logic-openplc-runtime-bootloader"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-41-pkg-pypi-aiofiles-25.1.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-42-pkg-pypi-aiosqlite-0.22.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-57-pkg-pypi-asyncio-mqtt-0.16.2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-43-pkg-pypi-asyncua-1.1.8"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-44-pkg-pypi-bcrypt-5.0.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-2-pkg-pypi-bidict-0.24.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-3-pkg-pypi-blinker-1.9.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-45-pkg-pypi-cffi-2.1.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-4-pkg-pypi-cfgv-3.5.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-5-pkg-pypi-click-8.5.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-46-pkg-pypi-cryptography-50.0.2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-6-pkg-pypi-distlib-0.4.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-7-pkg-pypi-filelock-4.3.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-8-pkg-pypi-flask-jwt-extended-4.7.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-9-pkg-pypi-flask-login-0.6.3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-10-pkg-pypi-flask-socketio-5.7.2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-11-pkg-pypi-flask-sqlalchemy-3.1.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-12-pkg-pypi-flask-3.1.3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-13-pkg-pypi-h11-0.16.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-14-pkg-pypi-identify-2.6.20"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-15-pkg-pypi-iniconfig-2.3.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-16-pkg-pypi-itsdangerous-2.2.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-17-pkg-pypi-jinja2-3.1.6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-18-pkg-pypi-markupsafe-3.0.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-19-pkg-pypi-nodeenv-1.12.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-20-pkg-pypi-packaging-26.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-58-pkg-pypi-paho-mqtt-2.2.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-21-pkg-pypi-platformdirs-4.14.8"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-22-pkg-pypi-pluggy-1.7.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-23-pkg-pypi-pre-commit-4.7.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-47-pkg-pypi-psutil-7.2.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-24-pkg-pypi-psutil-7.2.2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-48-pkg-pypi-pycparser-3.12"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-25-pkg-pypi-pygments-2.21.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-26-pkg-pypi-pyjwt-2.15.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-59-pkg-pypi-pymodbus-3.11.2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-49-pkg-pypi-pyopenssl-26.4.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-27-pkg-pypi-pyserial-3.5"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-50-pkg-pypi-pytest-asyncio-1.5.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-28-pkg-pypi-pytest-flask-1.3.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-51-pkg-pypi-pytest-mock-3.17.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-29-pkg-pypi-pytest-9.2.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-52-pkg-pypi-python-dateutil-4.0.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-30-pkg-pypi-python-discovery-1.9.7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-31-pkg-pypi-python-dotenv-1.2.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-32-pkg-pypi-python-engineio-4.15.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-33-pkg-pypi-python-socketio-5.18.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-53-pkg-pypi-pytz-2026.6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-34-pkg-pypi-pyyaml-6.0.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-35-pkg-pypi-simple-websocket-1.1.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-54-pkg-pypi-sortedcontainers-2.4.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-36-pkg-pypi-sqlalchemy-2.1.9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-37-pkg-pypi-typing-extensions-4.16.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-55-pkg-pypi-tzdata-2026.6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-38-pkg-pypi-virtualenv-21.15.13"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-56-pkg-pypi-wait-for2-0.3.2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-39-pkg-pypi-werkzeug-3.1.9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-1-pkg-github-autonomy-logic-openplc-runtime-4.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-40-pkg-pypi-wsproto-1.3.2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-12-pkg-pypi-flask-3.1.3",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-3-pkg-pypi-blinker-1.9.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-12-pkg-pypi-flask-3.1.3",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-5-pkg-pypi-click-8.5.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-12-pkg-pypi-flask-3.1.3",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-16-pkg-pypi-itsdangerous-2.2.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-12-pkg-pypi-flask-3.1.3",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-17-pkg-pypi-jinja2-3.1.6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-12-pkg-pypi-flask-3.1.3",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-18-pkg-pypi-markupsafe-3.0.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-12-pkg-pypi-flask-3.1.3",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-39-pkg-pypi-werkzeug-3.1.9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-17-pkg-pypi-jinja2-3.1.6",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-18-pkg-pypi-markupsafe-3.0.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-39-pkg-pypi-werkzeug-3.1.9",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-18-pkg-pypi-markupsafe-3.0.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-9-pkg-pypi-flask-login-0.6.3",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-12-pkg-pypi-flask-3.1.3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-9-pkg-pypi-flask-login-0.6.3",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-39-pkg-pypi-werkzeug-3.1.9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-2-pkg-pypi-bidict-0.24.1",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-37-pkg-pypi-typing-extensions-4.16.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-8-pkg-pypi-flask-jwt-extended-4.7.4",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-12-pkg-pypi-flask-3.1.3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-8-pkg-pypi-flask-jwt-extended-4.7.4",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-26-pkg-pypi-pyjwt-2.15.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-8-pkg-pypi-flask-jwt-extended-4.7.4",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-39-pkg-pypi-werkzeug-3.1.9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-33-pkg-pypi-python-socketio-5.18.1",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-2-pkg-pypi-bidict-0.24.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-33-pkg-pypi-python-socketio-5.18.1",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-32-pkg-pypi-python-engineio-4.15.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-32-pkg-pypi-python-engineio-4.15.1",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-35-pkg-pypi-simple-websocket-1.1.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-35-pkg-pypi-simple-websocket-1.1.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-40-pkg-pypi-wsproto-1.3.2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-40-pkg-pypi-wsproto-1.3.2",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-13-pkg-pypi-h11-0.16.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-10-pkg-pypi-flask-socketio-5.7.2",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-3-pkg-pypi-blinker-1.9.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-10-pkg-pypi-flask-socketio-5.7.2",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-5-pkg-pypi-click-8.5.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-10-pkg-pypi-flask-socketio-5.7.2",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-12-pkg-pypi-flask-3.1.3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-10-pkg-pypi-flask-socketio-5.7.2",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-17-pkg-pypi-jinja2-3.1.6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-10-pkg-pypi-flask-socketio-5.7.2",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-33-pkg-pypi-python-socketio-5.18.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-10-pkg-pypi-flask-socketio-5.7.2",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-39-pkg-pypi-werkzeug-3.1.9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-36-pkg-pypi-sqlalchemy-2.1.9",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-37-pkg-pypi-typing-extensions-4.16.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-11-pkg-pypi-flask-sqlalchemy-3.1.1",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-12-pkg-pypi-flask-3.1.3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-11-pkg-pypi-flask-sqlalchemy-3.1.1",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-36-pkg-pypi-sqlalchemy-2.1.9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-38-pkg-pypi-virtualenv-21.15.13",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-6-pkg-pypi-distlib-0.4.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-38-pkg-pypi-virtualenv-21.15.13",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-7-pkg-pypi-filelock-4.3.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-38-pkg-pypi-virtualenv-21.15.13",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-20-pkg-pypi-packaging-26.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-38-pkg-pypi-virtualenv-21.15.13",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-21-pkg-pypi-platformdirs-4.14.8"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-38-pkg-pypi-virtualenv-21.15.13",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-30-pkg-pypi-python-discovery-1.9.7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-30-pkg-pypi-python-discovery-1.9.7",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-7-pkg-pypi-filelock-4.3.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-23-pkg-pypi-pre-commit-4.7.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-4-pkg-pypi-cfgv-3.5.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-23-pkg-pypi-pre-commit-4.7.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-14-pkg-pypi-identify-2.6.20"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-23-pkg-pypi-pre-commit-4.7.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-19-pkg-pypi-nodeenv-1.12.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-23-pkg-pypi-pre-commit-4.7.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-34-pkg-pypi-pyyaml-6.0.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-23-pkg-pypi-pre-commit-4.7.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-38-pkg-pypi-virtualenv-21.15.13"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-29-pkg-pypi-pytest-9.2.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-15-pkg-pypi-iniconfig-2.3.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-29-pkg-pypi-pytest-9.2.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-20-pkg-pypi-packaging-26.4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-29-pkg-pypi-pytest-9.2.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-22-pkg-pypi-pluggy-1.7.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-29-pkg-pypi-pytest-9.2.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-25-pkg-pypi-pygments-2.21.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-28-pkg-pypi-pytest-flask-1.3.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-12-pkg-pypi-flask-3.1.3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-28-pkg-pypi-pytest-flask-1.3.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-29-pkg-pypi-pytest-9.2.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-28-pkg-pypi-pytest-flask-1.3.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-39-pkg-pypi-werkzeug-3.1.9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-46-pkg-pypi-cryptography-50.0.2",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-45-pkg-pypi-cffi-2.1.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-45-pkg-pypi-cffi-2.1.1",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-48-pkg-pypi-pycparser-3.12"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-49-pkg-pypi-pyopenssl-26.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-46-pkg-pypi-cryptography-50.0.2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-49-pkg-pypi-pyopenssl-26.4.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-37-pkg-pypi-typing-extensions-4.16.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-52-pkg-pypi-python-dateutil-4.0.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-55-pkg-pypi-tzdata-2026.6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-43-pkg-pypi-asyncua-1.1.8",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-41-pkg-pypi-aiofiles-25.1.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-43-pkg-pypi-asyncua-1.1.8",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-42-pkg-pypi-aiosqlite-0.22.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-43-pkg-pypi-asyncua-1.1.8",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-46-pkg-pypi-cryptography-50.0.2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-43-pkg-pypi-asyncua-1.1.8",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-49-pkg-pypi-pyopenssl-26.4.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-43-pkg-pypi-asyncua-1.1.8",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-52-pkg-pypi-python-dateutil-4.0.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-43-pkg-pypi-asyncua-1.1.8",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-53-pkg-pypi-pytz-2026.6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-43-pkg-pypi-asyncua-1.1.8",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-54-pkg-pypi-sortedcontainers-2.4.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-43-pkg-pypi-asyncua-1.1.8",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-37-pkg-pypi-typing-extensions-4.16.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-43-pkg-pypi-asyncua-1.1.8",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-56-pkg-pypi-wait-for2-0.3.2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-50-pkg-pypi-pytest-asyncio-1.5.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-29-pkg-pypi-pytest-9.2.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-50-pkg-pypi-pytest-asyncio-1.5.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-37-pkg-pypi-typing-extensions-4.16.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-51-pkg-pypi-pytest-mock-3.17.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-29-pkg-pypi-pytest-9.2.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-57-pkg-pypi-asyncio-mqtt-0.16.2",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-58-pkg-pypi-paho-mqtt-2.2.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-60-pkg-golang-github.com-Autonomy-Logic-openplc-runtime-bootloader",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-68-pkg-golang-modernc.org-sqlite-v1.58.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-65-pkg-golang-modernc.org-libc-v1.75.6",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-61-pkg-golang-github.com-dustin-go-humanize-v1.0.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-65-pkg-golang-modernc.org-libc-v1.75.6",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-62-pkg-golang-github.com-google-uuid-v1.6.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-65-pkg-golang-modernc.org-libc-v1.75.6",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-63-pkg-golang-github.com-remyoudompheng-bigfft-v0.0.0-20230129092748-24d4a6f8daec"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-65-pkg-golang-modernc.org-libc-v1.75.6",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-64-pkg-golang-golang.org-x-sys-v0.47.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-65-pkg-golang-modernc.org-libc-v1.75.6",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-66-pkg-golang-modernc.org-mathutil-v1.7.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-65-pkg-golang-modernc.org-libc-v1.75.6",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-67-pkg-golang-modernc.org-memory-v1.12.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-66-pkg-golang-modernc.org-mathutil-v1.7.1",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-63-pkg-golang-github.com-remyoudompheng-bigfft-v0.0.0-20230129092748-24d4a6f8daec"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-67-pkg-golang-modernc.org-memory-v1.12.1",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-63-pkg-golang-github.com-remyoudompheng-bigfft-v0.0.0-20230129092748-24d4a6f8daec"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-67-pkg-golang-modernc.org-memory-v1.12.1",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-66-pkg-golang-modernc.org-mathutil-v1.7.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-68-pkg-golang-modernc.org-sqlite-v1.58.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-61-pkg-golang-github.com-dustin-go-humanize-v1.0.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-68-pkg-golang-modernc.org-sqlite-v1.58.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-62-pkg-golang-github.com-google-uuid-v1.6.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-68-pkg-golang-modernc.org-sqlite-v1.58.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-63-pkg-golang-github.com-remyoudompheng-bigfft-v0.0.0-20230129092748-24d4a6f8daec"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-68-pkg-golang-modernc.org-sqlite-v1.58.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-64-pkg-golang-golang.org-x-sys-v0.47.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-68-pkg-golang-modernc.org-sqlite-v1.58.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-65-pkg-golang-modernc.org-libc-v1.75.6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-68-pkg-golang-modernc.org-sqlite-v1.58.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-66-pkg-golang-modernc.org-mathutil-v1.7.1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Pkg-68-pkg-golang-modernc.org-sqlite-v1.58.0",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Pkg-67-pkg-golang-modernc.org-memory-v1.12.1"
+    }
+  ]
+}
