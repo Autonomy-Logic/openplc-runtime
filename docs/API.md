@@ -19,6 +19,41 @@ The runtime uses JWT-based authentication:
 1. **First User Creation**: `POST /api/create-user` (no authentication required for the first user)
 2. **Login**: `POST /api/login` returns a JWT access token
 3. **Authenticated Requests**: All other endpoints require `Authorization: Bearer <token>` header
+4. **Renewal**: `POST /api/renew` returns a new token for the same session before the current one
+   expires (15 minutes); the presented token is revoked
+
+### Roles
+
+| Role | Reaches |
+| --- | --- |
+| `admin` | Everything, plus account management (`create-user`, `delete-user`, role changes) and `project-snapshot` |
+| `engineer` | PLC operation: upload, start/stop, logs, compilation status, serial ports, plugin commands, discovery, the debugger (`/api/debug`), the user list, its own account |
+| `operator`, `viewer` | Only `login`, `logout`, `renew`, `whoami`, `GET /api/status` and `/api/ping`, and changing their own password with `update-user` |
+
+Every other request from an `operator` or `viewer` is refused with `403`. The role `user` no
+longer exists: stored `user` accounts become `engineer` when the runtime starts, and a request
+naming `user` is refused with `400`. The table lives in `webserver/access.py` (`POLICY`).
+
+### Sessions
+
+- Each sign-in is a session. Renewing rotates its token: the old token is refused from then on, and
+  presenting it again more than 10 seconds after the renewal ends the whole session.
+- `POST /api/logout` ends that session only. A password change, a role change or deleting the
+  account ends every session of the account.
+- Sessions, revocations and account cut-offs are stored in the runtime database, so they hold
+  across restarts.
+
+### Sign-in throttling
+
+Sign-in failures are counted per client address only, whatever the username: failures for many
+usernames from one address share one counter, and the same username from two addresses has two.
+After a failure, the next attempt from that address is accepted only after 5 seconds; each further
+failure doubles the wait, up to 5 minutes. Failures from one address never delay a sign-in from
+another. Callers whose address is unknown share one counter. An attempt made too early is answered
+`429 Too Many Requests` with a `Retry-After` header (seconds). A successful sign-in does not clear
+the counter; it starts again from 5 seconds once the address has had no failure for an hour. The
+`current_password` check of `PUT /api/update-user` counts against the same counter. The
+bootloader's `/api/bootloader/login` follows the same rule with its own counters.
 
 **Note**: The OpenPLC Editor handles authentication automatically. Advanced integrators must implement the authentication flow manually.
 
@@ -97,11 +132,12 @@ Content-Type: application/json
 **Status Codes:**
 - `200 OK` - Login successful
 - `401 Unauthorized` - Invalid credentials
+- `429 Too Many Requests` - Sign-in throttled; retry after `Retry-After` seconds
 - `500 Internal Server Error` - Database error
 
 **Notes:**
 - The access token should be included in the `Authorization: Bearer <token>` header for all subsequent requests
-- Tokens expire after a configured duration (default: 24 hours)
+- Tokens expire after 15 minutes; renew with `POST /api/renew` before that
 
 ---
 
@@ -122,15 +158,49 @@ Authorization: Bearer <token>
 **Response:**
 ```json
 {
-  "status": "PLC started successfully"
+  "status": "START:OK"
 }
 ```
 
+`status` is the runtime's reply to the `START` socket command, forwarded verbatim. The webserver
+waits up to 15 s for it.
+
 **Possible Status Values:**
-- `"PLC started successfully"` - PLC transitioned to RUNNING state
-- `"PLC is already running"` - PLC was already in RUNNING state
-- `"No PLC program loaded"` - No compiled program available
-- `"No response from runtime"` - Runtime process not responding
+- `"START:OK"` - The start was accepted. While the runtime process has a switch owner registered,
+  the reply comes once the switch gate let the start through, after the plugin re-initialisation
+  and the wait of up to 2 s, and before the PLC cycle thread is created; a failure after that point
+  lands ERROR, which `/api/status` reports. A switch owner is registered once the process has
+  initialised a switch owner plugin from its plugin configuration, at boot or during an earlier
+  start, and that plugin declared ownership (`owns_mode_switch`) or reported a position; it stays
+  registered until a start loads a plugin configuration without it. With no switch owner
+  registered, the reply comes as soon as the start begins.
+
+  The exception is the first START after an upload whose plugin configuration adds a switch owner
+  plugin, on a process with no switch owner registered yet (for example a freshly installed
+  runtime, or one that was running a project without such a plugin). That START replies
+  `START:OK` at once, and the switch gate can then refuse it before the first scan: no scan runs,
+  the PLC lands STOPPED, and `/api/status` reports `"STOPPED"`. The reason is the log line, which
+  a client reads from `GET /api/runtime-logs`: `Start refused: the mode switch is in STOP` or
+  `Start refused: no switch owner has reported a position within 2000 ms`, whatever the switch
+  owner. `switchPosition` alone does not tell the reason. It reads `"stop"` (switch in STOP) only
+  when every switch owner stays attached across the rollback, that is, its `detach_image`
+  accepts. An owner without `detach_image`, or whose `detach_image` refuses, is cleaned up on the
+  rollback, its report stops counting, and `switchPosition` then reads `"unknown"` whatever the
+  switch position. So after this refusal `"unknown"` means either no report within 2 s or a
+  cleaned-up owner. Later STARTs in the same process reply with the gate's decision. A client
+  that needs to know whether the PLC is running after `START:OK` polls `/api/status`.
+- `"START:ERROR_ALREADY_RUNNING"` - PLC was already in RUNNING state
+- `"START:ERROR_SWITCH_STOP"` - The run/stop mode switch was in STOP before the start began, or
+  the switch owner reported STOP after the start re-initialised the plugins; no scan ran and the
+  PLC ends STOPPED. After a refusal at the re-initialisation, the reply comes before the rollback
+  ends, so `/api/status` can report the transition briefly until the PLC lands STOPPED
+- `"START:ERROR_SWITCH_UNKNOWN"` - A switch owner plugin did not report a position within 2 s
+  of the start re-initialising the plugins; no scan ran and the PLC ends STOPPED. The reply
+  comes before the rollback ends, so `/api/status` can report the transition briefly until the
+  PLC lands STOPPED
+- `"START:ERROR"` - The start could not begin or failed (another state change in flight, no
+  program, a failed load, or the start did not land within 12 s)
+- `null` - Runtime process not responding
 
 ---
 
@@ -171,9 +241,19 @@ Authorization: Bearer <token>
 **Response:**
 ```json
 {
-  "status": "RUNNING"
+  "status": "RUNNING",
+  "switchPosition": "run"
 }
 ```
+
+`switchPosition` is the run/stop mode-switch position:
+- `"run"` - The switch is in RUN, or no plugin owns a switch
+- `"stop"` - The switch is in STOP; every start is refused
+- `"unknown"` - A switch owner plugin has not reported a position since its last init; every
+  start is refused until it does
+
+The licence state is not reported here: the editor reads the stored licences from
+[`GET /api/runtime-license`](#read-runtime-licences) and verifies them.
 
 **Possible Status Values:**
 - `"EMPTY"` - No PLC program loaded
@@ -343,6 +423,85 @@ Authorization: Bearer <token>
 - `INFO` - General informational messages
 - `WARNING` - Warning messages
 - `ERROR` - Error messages
+
+---
+
+## Runtime Licence
+
+OpenPLC Runtime is free under the GPLv3. A commercial licence is a JSON file Autonomy Edge signs for
+one hardware ID v2 ([HARDWARE_ID.md](HARDWARE_ID.md)). The runtime stores one licence and reports it
+with its hardware ID; it never checks a signature, never contacts Edge and never limits anything.
+The editor fetches licences from Edge, uploads them, and decides the GPLv3 or commercial status by
+verifying what the runtime reports.
+
+### Read Runtime Licences
+
+```http
+GET /api/runtime-license
+```
+
+Public: no login (runtimes before this change answer 401).
+
+**Response (200):**
+```json
+{
+  "hardwareId": "hw2:...",
+  "licenses": [
+    {"fmt":1,"product":"com.autonomy.openplc-runtime","hardware_id":"hw2:...","seats":2,
+     "order_id":"...","issued_at":"2026-10-28T12:00:00.000Z","key_id":0,"sig":"..."}
+  ]
+}
+```
+
+`hardwareId` is as in `GET /api/hardware-id`
+([HARDWARE_ID.md](HARDWARE_ID.md#record-and-storage)), `null` when no ID can be derived.
+`licenses` holds the one stored licence exactly as stored, unverified, or nothing; it may be for
+another hardware ID. The editor counts a licence only when its `hardware_id` equals `hardwareId` and its
+signature verifies: ECDSA P-256 over SHA-256 of the payload without `sig`, keys sorted, no
+whitespace, UTF-8, with `sig` the raw r and s (64 bytes) in base64 and the public key selected by
+`key_id`.
+
+### Upload Runtime Licence
+
+```http
+POST /api/runtime-license
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"fmt":1,"product":"com.autonomy.openplc-runtime","hardware_id":"hw2:...","seats":2,
+ "order_id":"...","issued_at":"2026-10-28T12:00:00.000Z","key_id":0,"sig":"..."}
+```
+
+Any authenticated user. The body is the licence file exactly as Edge serves it, at most 4 KiB. Only
+its shape is checked (exact field set, `product`, `fmt`, value ranges); it replaces the stored
+licence.
+
+**Response (200):**
+```json
+{"orderId": "..."}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 400 | Not a runtime licence |
+| 401 | Authentication required |
+| 413 | Body larger than 4 KiB |
+| 500 | The licence could not be written |
+
+The licence lives in `runtime.license` in the persistent data directory, on a device and in a vPLC
+alike (`/var/run/runtime/runtime.license` in a container). In a vPLC, orchestrator-agent empties that
+file on `remove_license`; an empty, malformed or oversized file reads as no licence.
+
+### Remove Runtime Licence
+
+```http
+DELETE /api/runtime-license
+Authorization: Bearer <token>
+```
+
+Any authenticated user. **Response (200):** `{"removed": true}` when the slot held a licence, or
+`false` when it was missing, empty or malformed (the file is deleted either way). 500 when the file
+could not be removed.
 
 ---
 
@@ -610,4 +769,5 @@ For real-time debugging and variable inspection, the OpenPLC Editor uses a WebSo
 - [Debug Protocol](DEBUG_PROTOCOL.md) - WebSocket debug interface
 - [Compilation Flow](COMPILATION_FLOW.md) - Build process details
 - [Security](SECURITY.md) - Security features
+- [Hardware ID](HARDWARE_ID.md) - Hardware ID v2 derivation, storage and `GET /api/hardware-id`
 - [Troubleshooting](TROUBLESHOOTING.md) - Common issues

@@ -1,0 +1,81 @@
+{
+  "_note": "Hand-maintained CycloneDX components that no package manager declares: C/C++ code vendored in this repository and components install.sh fetches into the runtime. scripts/merge-sbom.mjs adds them to the SBOM. When versionFrom is set, the version is checked against that file on every SBOM run, so an upgrade that forgets this list fails the release SBOM.",
+  "components": [
+    {
+      "type": "library",
+      "name": "cJSON",
+      "version": "1.7.18",
+      "purl": "pkg:github/DaveGamble/cJSON@v1.7.18",
+      "supplier": { "name": "Dave Gamble and cJSON contributors" },
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "externalReferences": [{ "type": "vcs", "url": "https://github.com/DaveGamble/cJSON" }],
+      "properties": [
+        { "name": "openplc:origin", "value": "vendored" },
+        { "name": "openplc:location", "value": "core/src/drivers/plugins/native/cjson" },
+        { "name": "openplc:licenseSource", "value": "core/src/drivers/plugins/native/cjson/cJSON.h header" }
+      ],
+      "versionFrom": {
+        "file": "core/src/drivers/plugins/native/cjson/cJSON.h",
+        "pattern": "CJSON_VERSION_MAJOR (\\d+)[\\s\\S]*?CJSON_VERSION_MINOR (\\d+)[\\s\\S]*?CJSON_VERSION_PATCH (\\d+)"
+      }
+    },
+    {
+      "type": "library",
+      "name": "snap7",
+      "version": "1.4.3",
+      "purl": "pkg:generic/snap7@1.4.3?download_url=https://sourceforge.net/projects/snap7/",
+      "supplier": { "name": "Davide Nardella" },
+      "licenses": [{ "license": { "id": "LGPL-3.0-or-later" } }],
+      "externalReferences": [{ "type": "website", "url": "https://snap7.sourceforge.net/" }],
+      "properties": [
+        { "name": "openplc:origin", "value": "vendored" },
+        { "name": "openplc:location", "value": "core/src/drivers/plugins/native/s7comm/snap7" },
+        { "name": "openplc:licenseSource", "value": "core/src/drivers/plugins/native/s7comm/snap7/core/s7_server.h header" }
+      ],
+      "versionFrom": {
+        "file": "core/src/drivers/plugins/native/s7comm/snap7/core/s7_server.h",
+        "pattern": "PROJECT SNAP7\\s+(\\d+\\.\\d+\\.\\d+)"
+      }
+    },
+    {
+      "type": "application",
+      "name": "EtherDOG",
+      "version": "1.0.0",
+      "purl": "pkg:github/Autonomy-Logic/EtherDOG@v1.0.0",
+      "supplier": { "name": "Autonomy Logic" },
+      "licenses": [{ "license": { "id": "GPL-3.0-or-later" } }],
+      "externalReferences": [{ "type": "vcs", "url": "https://github.com/Autonomy-Logic/EtherDOG" }],
+      "properties": [
+        { "name": "openplc:origin", "value": "fetched by install.sh (ETHERDOG_REF) and built into build/etherdog" },
+        { "name": "openplc:licenseSource", "value": "SPDX-License-Identifier headers in EtherDOG v1.0.0 src/" }
+      ],
+      "versionFrom": { "file": "install.sh", "pattern": "ETHERDOG_REF:-v(\\d+\\.\\d+\\.\\d+)" }
+    },
+    {
+      "type": "library",
+      "name": "SOEM",
+      "version": "a7c74cea13786426929ae71e94195fa91c4b9faf",
+      "purl": "pkg:github/OpenEtherCATsociety/SOEM@a7c74cea13786426929ae71e94195fa91c4b9faf",
+      "supplier": { "name": "rt-labs AB" },
+      "licenses": [{ "license": { "id": "GPL-3.0-only" } }],
+      "externalReferences": [{ "type": "vcs", "url": "https://github.com/OpenEtherCATsociety/SOEM" }],
+      "properties": [
+        { "name": "openplc:origin", "value": "git submodule libs/soem of EtherDOG v1.0.0, linked into build/etherdog" },
+        { "name": "openplc:licenseSource", "value": "LICENSE.md at the pinned commit: GPLv3, also offered under a commercial licence by rt-labs" }
+      ]
+    },
+    {
+      "type": "application",
+      "name": "cmake",
+      "version": "3.31.6",
+      "purl": "pkg:github/Kitware/CMake@v3.31.6",
+      "supplier": { "name": "Kitware" },
+      "licenses": [{ "license": { "id": "BSD-3-Clause" } }],
+      "externalReferences": [{ "type": "distribution", "url": "https://github.com/Kitware/CMake/releases/tag/v3.31.6" }],
+      "properties": [
+        { "name": "openplc:origin", "value": "prebuilt release installed to /usr/local by install.sh (build tool, present in the runtime image)" }
+      ],
+      "versionFrom": { "file": "install.sh", "pattern": "cmake_version=\"(\\d+\\.\\d+\\.\\d+)\"" }
+    }
+  ]
+}

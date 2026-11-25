@@ -78,7 +78,7 @@ type Authenticator interface {
 	Authenticate(ctx context.Context, username, password, pepper string) (*runtimeauth.User, error)
 	CountUsers(ctx context.Context) (int, error)
 	Secrets() *runtimeauth.Secrets
-	RoleByID(ctx context.Context, userID string) (string, error)
+	AccountByID(ctx context.Context, userID string) (*runtimeauth.Account, error)
 }
 
 // Config wires the server.
@@ -200,9 +200,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 // --- middleware ----------------------------------------------------------
 
-// authenticated wraps a handler with bearer-token verification. With no
-// accounts on the device, every authenticated route is refused:
-// first-user bootstrap belongs to the runtime, never here.
+// authenticated requires a valid token whose account exists, whose cut-off the token does not
+// predate, and whose role is admin or engineer, all read per request. No accounts refuses every route.
 func (s *Server) authenticated(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		count, err := s.cfg.Users.CountUsers(r.Context())
@@ -233,47 +232,65 @@ func (s *Server) authenticated(next func(http.ResponseWriter, *http.Request)) ht
 			writeError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
+
+		account, err := s.cfg.Users.AccountByID(r.Context(), claims.Subject)
+		if err != nil {
+			if errors.Is(err, runtimeauth.ErrNoSuchUser) {
+				s.cfg.Log.Warn("refused a token whose account no longer exists",
+					"subject", claims.Subject, "path", r.URL.Path)
+				writeError(w, http.StatusUnauthorized, "this account's sessions have ended; log in again")
+				return
+			}
+			s.cfg.Log.Error("reading the account of an authenticated request",
+				"subject", claims.Subject, "path", r.URL.Path, "error", err)
+			writeError(w, http.StatusServiceUnavailable,
+				"cannot read the runtime's account database")
+			return
+		}
+		if claims.IssuedBefore(account.SessionsValidAfterMs) {
+			s.cfg.Log.Warn("refused a token issued before the account's sessions were ended",
+				"subject", claims.Subject, "path", r.URL.Path)
+			writeError(w, http.StatusUnauthorized, "this account's sessions have ended; log in again")
+			return
+		}
+		if !runtimeauth.MayUseBootloader(account.Role) {
+			s.cfg.Log.Warn("refused a request from a role without bootloader access",
+				"subject", claims.Subject, "role", account.Role, "path", r.URL.Path)
+			writeError(w, http.StatusForbidden,
+				"this account's role may not use the bootloader")
+			return
+		}
 		s.cfg.Log.Debug("authenticated request",
-			"path", r.URL.Path, "subject", claims.Subject)
-		next(w, r.WithContext(withSubject(r.Context(), claims.Subject)))
+			"path", r.URL.Path, "subject", claims.Subject, "role", account.Role)
+		next(w, r.WithContext(withCaller(r.Context(), caller{subject: claims.Subject, role: account.Role})))
 	}
 }
 
-// subjectKey carries the authenticated user id to the admin check below.
-type subjectKey struct{}
-
-func withSubject(ctx context.Context, subject string) context.Context {
-	return context.WithValue(ctx, subjectKey{}, subject)
+// caller is the authenticated account of a request, as read from the database for that request.
+type caller struct {
+	subject string
+	role    string
 }
 
-func subjectFrom(ctx context.Context) string {
-	subject, _ := ctx.Value(subjectKey{}).(string)
-	return subject
+// callerKey carries the caller from authenticated to the handlers it wraps.
+type callerKey struct{}
+
+func withCaller(ctx context.Context, c caller) context.Context {
+	return context.WithValue(ctx, callerKey{}, c)
 }
 
-// RoleAdmin is the role the runtime gives an account that may change the
-// device. Matched against the runtime's own value (webserver/restapi.py).
-const RoleAdmin = "admin"
+func callerFrom(ctx context.Context) caller {
+	c, _ := ctx.Value(callerKey{}).(caller)
+	return c
+}
 
-// adminOnly restricts a route to administrators. Role is read from the DB
-// per request (not from a token claim) so a demotion takes effect
-// immediately rather than at token expiry.
+// adminOnly restricts a route to administrators, using the role authenticated read for this request.
 func (s *Server) adminOnly(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
 	return s.authenticated(func(w http.ResponseWriter, r *http.Request) {
-		subject := subjectFrom(r.Context())
-		role, err := s.cfg.Users.RoleByID(r.Context(), subject)
-		if err != nil {
-			// Includes the account having been deleted while its token was
-			// still valid. Refuse rather than guess.
-			s.cfg.Log.Warn("could not read the role for an authenticated request",
-				"subject", subject, "path", r.URL.Path, "error", err)
-			writeError(w, http.StatusForbidden,
-				"this account's role could not be confirmed; log in again")
-			return
-		}
-		if role != RoleAdmin {
+		c := callerFrom(r.Context())
+		if c.role != runtimeauth.RoleAdmin {
 			s.cfg.Log.Warn("refused a non-admin request",
-				"subject", subject, "role", role, "path", r.URL.Path)
+				"subject", c.subject, "role", c.role, "path", r.URL.Path)
 			writeError(w, http.StatusForbidden,
 				"this action requires an administrator account")
 			return
@@ -357,12 +374,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	source := requestSource(r)
-	if wait := s.loginLimiter().blockedFor(source); wait > 0 {
-		s.cfg.Log.Warn("refused a login from a backed-off source",
-			"source", source, "retry_after", wait.Round(time.Second))
-		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Round(time.Second).Seconds())))
+	key := throttleKey(source)
+	if wait := s.loginLimiter().wait(key); wait > 0 {
+		s.cfg.Log.Warn("throttled a sign-in",
+			"username", body.Username, "source", source, "retry_after_s", wait)
+		w.Header().Set("Retry-After", strconv.Itoa(wait))
 		writeError(w, http.StatusTooManyRequests,
-			"too many failed attempts from this address; try again shortly")
+			fmt.Sprintf("too many failed sign-ins; try again in %d s", wait))
 		return
 	}
 
@@ -402,14 +420,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 				"this runtime's password hashes are in a format the bootloader cannot verify")
 			return
 		}
+		if !errors.Is(err, runtimeauth.ErrNoSuchUser) {
+			s.cfg.Log.Error("reading the account for a sign-in", "error", err)
+			writeError(w, http.StatusServiceUnavailable,
+				"cannot read the runtime's account database")
+			return
+		}
 		// Unknown user and wrong password answer identically; distinguishing
 		// them enumerates valid accounts.
-		s.loginLimiter().recordFailure(source)
-		s.cfg.Log.Warn("failed login", "username", body.Username, "source", source)
+		s.loginLimiter().recordFailure(key)
+		s.cfg.Log.Warn("failed sign-in", "username", body.Username, "source", source)
 		writeError(w, http.StatusUnauthorized, "wrong username or password")
 		return
 	}
-	s.loginLimiter().recordSuccess(source)
 
 	token, err := runtimeauth.IssueToken(s.cfg.Users.Secrets().JWTSecret, user.ID, runtimeauth.DefaultTokenTTL)
 	if err != nil {

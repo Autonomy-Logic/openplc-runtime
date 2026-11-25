@@ -49,7 +49,7 @@ POST /api/create-user
 {
   "username": "admin",
   "password": "password",
-  "role": "user"
+  "role": "engineer"
 }
 ```
 
@@ -133,9 +133,27 @@ Authorization: Bearer <jwt_token>
 
 Response:
 {
-  "status": "RUNNING"
+  "status": "START:OK"
 }
 ```
+
+`status` forwards the runtime's START reply: `START:OK`, `START:ERROR_ALREADY_RUNNING`,
+`START:ERROR_SWITCH_STOP` (the run/stop switch is in STOP), `START:ERROR_SWITCH_UNKNOWN` (a
+switch owner plugin did not report a position within 2 s) or `START:ERROR`. While the runtime has
+a switch owner registered (see `START:OK` in [API.md](API.md#start-plc)), the reply comes once the
+switch gate decided the start, which can still land ERROR afterwards, so allow up to 15 s for it.
+
+The exception: after a Build & Upload that adds a switch owner plugin to a runtime with no switch
+owner registered, the first START replies `START:OK` at once. The switch gate can still refuse
+that start before the first scan (switch in STOP, or no report within 2 s), and the PLC then stays
+STOPPED with no scan. Later STARTs reply with the gate's decision. So poll `/api/status` after
+`START:OK` to learn whether the PLC runs, and read the reason for a refusal from the runtime log
+(`GET /api/runtime-logs`): `Start refused: the mode switch is in STOP` or
+`Start refused: no switch owner has reported a position within 2000 ms`. `switchPosition` does
+not tell the reason on its own: it reads `"stop"` only when the switch owner stays attached
+through `detach_image`, and an owner without `detach_image`, or whose `detach_image` refuses, is
+cleaned up and reads `"unknown"` whatever the switch position (see
+[API.md](API.md#start-plc)).
 
 **Stop PLC:**
 ```
@@ -155,9 +173,14 @@ Authorization: Bearer <jwt_token>
 
 Response:
 {
-  "status": "RUNNING"
+  "status": "RUNNING",
+  "switchPosition": "run"
 }
 ```
+
+`switchPosition` is `"run"`, `"stop"`, or `"unknown"` while a switch owner plugin has not reported
+a position since its last init; starts are refused on `"stop"` and `"unknown"`. See
+[API.md](API.md).
 
 ### 7. Debugging
 
@@ -209,19 +232,19 @@ The runtime uses self-signed TLS certificates by default. The OpenPLC Editor han
 ### Version and compatibility
 - `GET /api/version` - Runtime version string
 - `GET /api/capabilities` - Runtime version plus `minEditorVersion`, the oldest
-  editor this runtime accepts programs from
+  editor version the runtime advertises
 
 Both are unauthenticated: the Editor calls them before login to decide whether
-it may talk to this device. `minEditorVersion` is **advertised, not enforced** —
-the Editor compares it against its own version and refuses to upload, so a
-runtime release can never lock out an editor already installed in the field.
-Editors that predate `/api/capabilities` get a 404 and fall back to
-`/api/version`, seeing no editor floor (their previous behaviour).
+it may talk to this device. The runtime only advertises `minEditorVersion` and
+never checks it; the Editor compares it against its own version and refuses to
+upload when it is older. Editors that predate `/api/capabilities` get a 404 and
+fall back to `/api/version`; they see no minimum and refuse nothing.
 
 ### Authentication
 - `POST /api/create-user` - Create user account
 - `POST /api/login` - Login and get JWT token
-- `POST /api/logout` - Logout and revoke JWT token
+- `POST /api/logout` - End this session and revoke its token
+- `POST /api/renew` - Rotate the token: a new one for the same session, the presented one revoked
 - `GET /api/get-users-info` - Check if users exist
 - `GET /api/get-user-info/<user_id>` - Get user information
 - `PUT /api/update-user/<user_id>` - Update a user's username, password or role (admin, or your own account)
@@ -272,7 +295,8 @@ For runtime developers, see [DEVELOPMENT.md](DEVELOPMENT.md) for local developme
 
 - All API requests require HTTPS (port 8443)
 - JWT tokens are required for all operations except initial user creation and login
-- Tokens can be revoked via logout
+- Tokens expire after 15 minutes and are renewed with `POST /api/renew`; logout ends the session
+- Roles: `admin`, `engineer`, `operator` and `viewer` (see the role table in [API.md](API.md))
 - File uploads are validated for size, compression ratio, and file extensions
 - Path traversal protection is enforced during ZIP extraction
 

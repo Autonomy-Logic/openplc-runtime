@@ -19,8 +19,55 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Outputs skip=true only on a pull_request to development whose head commit carries the commit status
+  # misterflow/local-ci = success, which MisterFlow sets on the exact SHA it pushes after running the unit suite,
+  # lint and type check on it. A push made without MisterFlow has no such status, so every job runs.
+  local-ci:
+    name: Local CI status
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      statuses: read
+    outputs:
+      skip: ${{ steps.status.outputs.skip }}
+    steps:
+      - name: Read the misterflow/local-ci commit status
+        id: status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+          STATUS_CONTEXT: misterflow/local-ci
+        run: |
+          skip=false
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$EVENT_BASE" = "development" ]; then
+            # MisterFlow sets the status right after it pushes, so it can land a few seconds after this run starts:
+            # read every 3 seconds, up to about 12 seconds.
+            for attempt in 1 2 3 4 5; do
+              if ! contexts="$(gh api "repos/$REPO/commits/$HEAD_SHA/status?per_page=100" \
+                  --jq '.statuses[] | select(.state == "success") | .context')"; then
+                echo "::warning::Could not read the commit statuses of $HEAD_SHA; running every job."
+                break
+              fi
+              if grep -Fqx -- "$STATUS_CONTEXT" <<< "$contexts"; then
+                skip=true
+                break
+              fi
+              if [ "$attempt" -lt 5 ]; then
+                sleep 3
+              fi
+            done
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          echo "skip=$skip"
+
   bootloader:
     name: Bootloader (Go)
+    needs: local-ci
+    # Runs unless the status check output skip=true, including when that check failed.
+    if: ${{ !cancelled() && needs.local-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +99,9 @@ jobs:
 
   webserver:
     name: Webserver (pytest)
+    needs: local-ci
+    # Runs unless the status check output skip=true, including when that check failed.
+    if: ${{ !cancelled() && needs.local-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -118,6 +168,8 @@ jobs:
             tests/pytest/plugins/opcua/test_string_types.py \
             tests/pytest/plugins/opcua/test_read_status.py \
             tests/pytest/plugins/opcua/test_logger_lifetime.py \
+            tests/pytest/plugins/opcua/test_stop_lifecycle.py \
+            tests/pytest/plugins/test_safe_buffer_access_invalidate.py \
             tests/pytest/plugins/test_vpp_license_delivery.py \
             tests/pytest/plugins/test_vpp_sibling_delivery.py \
             tests/pytest/modbus_master/test_reconnect.py
@@ -131,7 +183,7 @@ jobs:
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -S warning install.sh scripts/install-docker.sh \
+          shellcheck -S warning install.sh scripts/install-docker.sh scripts/hardware-id.sh \
             windows/provision-msys2.sh tests/integration/harness.sh
 
       # The Windows installer ships a compiled runtime inside an MSYS2 tree, so

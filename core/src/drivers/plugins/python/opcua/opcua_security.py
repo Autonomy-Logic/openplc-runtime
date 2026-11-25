@@ -21,7 +21,7 @@ import ssl
 import sys
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
+from typing import Callable, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from asyncua import ua
@@ -405,15 +405,24 @@ class OpcuaSecurityManager:
     SERVER_CERT_FILE = "server_cert.pem"
     SERVER_KEY_FILE = "server_key.pem"
 
-    def __init__(self, config, plugin_dir: str = None):
+    def __init__(
+        self,
+        config,
+        plugin_dir: str = None,
+        stop_check: Optional[Callable[[], None]] = None,
+    ):
         """
         Initialize security manager with configuration.
 
         Args:
             config: OpcuaConfig instance with security settings
             plugin_dir: Directory where certificates are stored (defaults to plugin directory)
+            stop_check: Called between the steps of the server certificate setup;
+                raises a cancellation, which no handler of Exception catches, to
+                end the setup once a stop was requested
         """
         self.config = config
+        self._stop_check = stop_check or (lambda: None)
         self.plugin_dir = plugin_dir or os.path.dirname(__file__)
         self.certs_dir = os.path.join(self.plugin_dir, self.CERTS_DIR)
         self.certificate_data = None
@@ -888,6 +897,8 @@ class OpcuaSecurityManager:
     async def setup_server_security(self, server, security_profiles, app_uri: str = None) -> None:
         """Setup security policies and certificates for asyncua Server.
 
+        Calls the stop check between the certificate setup steps.
+
         Args:
             server: asyncua Server instance
             security_profiles: List of security profiles from config
@@ -938,6 +949,10 @@ class OpcuaSecurityManager:
     async def _setup_server_certificates_for_asyncua(self, server, app_uri: str = None) -> None:
         """Setup server certificates for asyncua Server.
 
+        Calls the stop check before and after each step: the certificate
+        validity check, the certificate generation when one is needed, the
+        PEM to DER conversion, load_certificate and load_private_key.
+
         Args:
             server: asyncua Server instance
             app_uri: Application URI for the certificate (from config)
@@ -962,6 +977,7 @@ class OpcuaSecurityManager:
 
             # Check if we need to generate new certificates
             need_generation = False
+            self._stop_check()
             if not cert_file.exists() or not key_file.exists():
                 log_debug("Certificate files not found, will generate new ones")
                 need_generation = True
@@ -969,6 +985,7 @@ class OpcuaSecurityManager:
                 log_debug("Certificate is expired or invalid, will regenerate")
                 self._remove_certificate_files(str(cert_file), str(key_file))
                 need_generation = True
+            self._stop_check()
 
             if need_generation:
                 log_debug(f"Generating new self-signed certificate in {cert_dir}")
@@ -1005,6 +1022,7 @@ class OpcuaSecurityManager:
                     return
 
                 log_debug(f"Certificate files created successfully: {cert_file}, {key_file}")
+                self._stop_check()
             else:
                 log_debug(f"Using existing valid certificate files: {cert_file}, {key_file}")
 
@@ -1038,12 +1056,15 @@ class OpcuaSecurityManager:
                     encryption_algorithm=serialization.NoEncryption(),
                 )
                 log_debug(f"Private key converted to DER: {len(key_der_data)} bytes")
+                self._stop_check()
 
                 # Load certificate and key into server (both in DER format)
                 log_debug(f"Loading certificate into asyncua server: {len(cert_der_data)} bytes DER")
                 await server.load_certificate(cert_der_data)
+                self._stop_check()
                 log_debug(f"Loading private key into asyncua server: {len(key_der_data)} bytes DER")
                 await server.load_private_key(key_der_data)
+                self._stop_check()
 
             except Exception as e:
                 log_error(f"Failed to load certificate/key into asyncua server: {e}")
@@ -1075,15 +1096,21 @@ class OpcuaSecurityManager:
                         encryption_algorithm=serialization.NoEncryption(),
                     )
 
+                    self._stop_check()
                     await server.load_certificate(cert_data)
+                    self._stop_check()
                     await server.load_private_key(der_key_data)
+                    self._stop_check()
                     log_debug("Custom server certificate loaded (PEM cert + DER key)")
                 except Exception as e:
                     log_error(f"Failed to load custom certificate: {e}")
 
         elif self.certificate_data and self.private_key_data:
+            self._stop_check()
             await server.load_certificate(self.certificate_data)
+            self._stop_check()
             await server.load_private_key(self.private_key_data)
+            self._stop_check()
             log_debug("SecurityManager certificates loaded into server")
 
     async def create_trust_store(self, trusted_certificates: List[str]) -> Optional[TrustStore]:

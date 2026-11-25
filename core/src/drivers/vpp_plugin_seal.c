@@ -16,6 +16,9 @@
 
 #define VPP_BUILD_SUBDIR "build/vpp"
 #define VPP_SEAL_FILE VPP_BUILD_SUBDIR "/vpp_plugin.seal"
+#define HMI_BUILD_SUBDIR "build/hmi"
+#define HMI_SEAL_FILE HMI_BUILD_SUBDIR "/hmi.seal"
+#define HMI_PLUGIN_NAME "libhmi_plugin.so"
 #define SHA256_HEX_LEN 64
 #define SHA256_BLOCK_LEN 64
 
@@ -218,62 +221,92 @@ static const char *path_basename(const char *path)
     return slash ? slash + 1 : path;
 }
 
-int vpp_plugin_seal_required(const char *path)
+/**
+ * Whether @p path lies inside @p dir, either as written or once resolved, so neither a symlink
+ * pointing out of @p dir nor a relative vs absolute form escapes the seal. A path that cannot
+ * be resolved (missing file) is judged as written and refused later.
+ *
+ * @param rel_out optional; receives the path relative to @p dir (resolved form first).
+ */
+static int path_inside(const char *path, const char *dir, char *rel_out, size_t rel_cap)
 {
     if (!path || path[0] == '\0')
     {
         return 0;
     }
 
-    /* Compare RESOLVED paths so symlinks and relative vs absolute forms
-     * cannot defeat the match. If realpath fails (file does not exist
-     * yet), fall back to textual so a missing object is still treated
-     * as VPP and refused below rather than waved through. */
     char resolved_path[PATH_MAX];
-    char resolved_vpp[PATH_MAX];
-    if (realpath(path, resolved_path) && realpath(VPP_BUILD_SUBDIR, resolved_vpp))
+    char resolved_dir[PATH_MAX];
+    if (realpath(path, resolved_path) && realpath(dir, resolved_dir))
     {
-        size_t len = strlen(resolved_vpp);
-        if (strncmp(resolved_path, resolved_vpp, len) == 0 &&
-            (resolved_path[len] == '/' || resolved_path[len] == '\0'))
+        size_t len = strlen(resolved_dir);
+        if (strncmp(resolved_path, resolved_dir, len) == 0 && resolved_path[len] == '/')
         {
+            if (rel_out)
+            {
+                snprintf(rel_out, rel_cap, "%s", resolved_path + len + 1);
+            }
             return 1;
         }
-        return 0;
     }
 
-    return strstr(path, VPP_BUILD_SUBDIR "/") != NULL ? 1 : 0;
+    char prefix[PATH_MAX];
+    snprintf(prefix, sizeof(prefix), "%s/", dir);
+    const char *at = strstr(path, prefix);
+    if (!at)
+    {
+        return 0;
+    }
+    if (rel_out)
+    {
+        snprintf(rel_out, rel_cap, "%s", at + strlen(prefix));
+    }
+    return 1;
 }
 
-int vpp_plugin_seal_verify(const char *path)
+int vpp_plugin_seal_required(const char *path)
 {
-    if (!path || path[0] == '\0')
+    return path_inside(path, VPP_BUILD_SUBDIR, NULL, 0);
+}
+
+int hmi_plugin_seal_required(const char *path)
+{
+    return path_inside(path, HMI_BUILD_SUBDIR, NULL, 0);
+}
+
+int plugin_seal_verify_entry(const char *seal_file, const char *path, const char *sealed_name,
+                             const char *what)
+{
+    if (!seal_file || !path || path[0] == '\0' || !sealed_name || sealed_name[0] == '\0')
     {
         return -1;
+    }
+    if (!what)
+    {
+        what = "plugin";
     }
 
     char actual_hex[SHA256_HEX_LEN + 1];
     if (vpp_plugin_seal_sha256_file(path, actual_hex) != 0)
     {
-        log_error("[PLUGIN] cannot hash VPP plugin '%s' for its integrity seal", path);
+        log_error("[PLUGIN] cannot hash %s '%s' for its integrity seal", what, path);
         return -1;
     }
 
-    FILE *seal = fopen(VPP_SEAL_FILE, "r");
+    FILE *seal = fopen(seal_file, "r");
     if (!seal)
     {
-        log_error("[PLUGIN] no VPP plugin seal at %s -- refusing to load '%s'. The plugin was "
+        log_error("[PLUGIN] no %s seal at %s -- refusing to load '%s'. The plugin was "
                   "not produced by this runtime's compile step; re-upload the program from the editor.",
-                  VPP_SEAL_FILE, path);
+                  what, seal_file, path);
         return -1;
     }
 
-    const char *wanted_name = path_basename(path);
     char line[512];
-    int found = 0;
+    int found   = 0;
     int matched = 0;
 
-    /* Seal lines are "<64 hex>  <basename>", written by scripts/compile.sh. */
+    /* Seal lines are "<64 hex>  <name>", written by scripts/compile.sh. */
     while (fgets(line, sizeof(line), seal))
     {
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r')
@@ -282,18 +315,19 @@ int vpp_plugin_seal_verify(const char *path)
         }
 
         char sealed_hex[SHA256_HEX_LEN + 1];
-        char sealed_name[256];
-        if (sscanf(line, "%64s %255s", sealed_hex, sealed_name) != 2)
+        char name[256];
+        if (sscanf(line, "%64s %255s", sealed_hex, name) != 2)
         {
             continue;
         }
-        if (strcmp(sealed_name, wanted_name) != 0)
+        if (strcmp(name, sealed_name) != 0)
         {
             continue;
         }
 
-        found = 1;
-        matched = (strncmp(sealed_hex, actual_hex, SHA256_HEX_LEN) == 0);
+        found   = 1;
+        matched = (strlen(sealed_hex) == SHA256_HEX_LEN &&
+                   strncmp(sealed_hex, actual_hex, SHA256_HEX_LEN) == 0);
         break;
     }
 
@@ -301,19 +335,60 @@ int vpp_plugin_seal_verify(const char *path)
 
     if (!found)
     {
-        log_error("[PLUGIN] VPP plugin '%s' has no entry in %s -- refusing to load it. Only "
+        log_error("[PLUGIN] %s '%s' has no entry in %s -- refusing to load it. Only "
                   "objects built by this runtime's compile step are sealed.",
-                  path, VPP_SEAL_FILE);
+                  what, path, seal_file);
         return -1;
     }
 
     if (!matched)
     {
-        log_error("[PLUGIN] VPP plugin '%s' does not match its sealed hash -- refusing to load "
+        log_error("[PLUGIN] %s '%s' does not match its sealed hash -- refusing to load "
                   "it. The .so changed after it was built.",
-                  path);
+                  what, path);
         return -1;
     }
 
+    return 0;
+}
+
+int vpp_plugin_seal_verify(const char *path)
+{
+    if (!path || path[0] == '\0')
+    {
+        return -1;
+    }
+    return plugin_seal_verify_entry(VPP_SEAL_FILE, path, path_basename(path), "VPP plugin");
+}
+
+int hmi_plugin_seal_verify(const char *path)
+{
+    char rel[PATH_MAX];
+    if (!path_inside(path, HMI_BUILD_SUBDIR, rel, sizeof(rel)))
+    {
+        log_error("[PLUGIN] HMI plugin '%s' is not inside %s -- refusing to load it", path ? path : "",
+                  HMI_BUILD_SUBDIR);
+        return -1;
+    }
+    if (strcmp(rel, HMI_PLUGIN_NAME) != 0)
+    {
+        log_error("[PLUGIN] '%s' is not the HMI plugin " HMI_BUILD_SUBDIR "/" HMI_PLUGIN_NAME
+                  " -- refusing to load it",
+                  path);
+        return -1;
+    }
+    return plugin_seal_verify_entry(HMI_SEAL_FILE, path, rel, "HMI plugin");
+}
+
+int plugin_seal_check(const char *path)
+{
+    if (vpp_plugin_seal_required(path))
+    {
+        return vpp_plugin_seal_verify(path);
+    }
+    if (hmi_plugin_seal_required(path))
+    {
+        return hmi_plugin_seal_verify(path);
+    }
     return 0;
 }

@@ -45,10 +45,9 @@ else (no comments). Match the tag format exactly, e.g. ``v4.1.3``.
 import os
 from pathlib import Path
 
-# Advisory floor advertised at /api/capabilities as minEditorVersion. The
-# editor enforces it; the runtime only advertises. Raise ONLY when an older
-# editor would produce a bundle this runtime mis-compiles.
-MIN_EDITOR_VERSION = "4.3.3"
+# Oldest editor version advertised at /api/capabilities as minEditorVersion; the editor refuses
+# to upload below it, the runtime never checks it.
+MIN_EDITOR_VERSION = "4.3.5"
 
 
 def _resolve_runtime_version() -> str:

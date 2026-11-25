@@ -25,11 +25,17 @@ os.environ.setdefault("FLASK_ENV", "development")
 import pytest  # noqa: E402
 
 from webserver import restapi  # noqa: E402
+from webserver.discovery.discovery_routes import discovery_bp  # noqa: E402
+from webserver.hmi_proxy import hmi_bp
 
 # The Flask app is a module-level singleton, so register the blueprint exactly
 # once (registering twice raises). Subsequent fixtures only reset the DB.
 if "restapi_blueprint" not in restapi.app_restapi.blueprints:
     restapi.app_restapi.register_blueprint(restapi.restapi_bp, url_prefix="/api")
+if "discovery" not in restapi.app_restapi.blueprints:
+    restapi.app_restapi.register_blueprint(discovery_bp)
+if "hmi_blueprint" not in restapi.app_restapi.blueprints:
+    restapi.app_restapi.register_blueprint(hmi_bp)
 restapi.app_restapi.config.update(TESTING=True)
 
 
@@ -41,7 +47,6 @@ def app():
         restapi.db.drop_all()
         restapi.db.create_all()
         restapi.apply_user_schema_migrations()
-        restapi.jwt_blacklist.clear()
         yield app
         restapi.db.session.remove()
         restapi.db.drop_all()

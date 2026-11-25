@@ -44,6 +44,33 @@ static inline int64_t monotonic_ns(void)
 }
 
 /**
+ * @brief CLOCK_MONOTONIC time @p ms milliseconds from now, as an absolute timespec.
+ *
+ * The deadline for pthread_cond_timedwait on a condition variable created by
+ * monotonic_cond_init().
+ */
+static inline struct timespec monotonic_deadline_ms(unsigned ms)
+{
+    const int64_t ns = monotonic_ns() + (int64_t)ms * NS_PER_MS;
+    struct timespec deadline;
+    deadline.tv_sec  = (time_t)(ns / 1000000000LL);
+    deadline.tv_nsec = (long)(ns % 1000000000LL);
+    return deadline;
+}
+
+/**
+ * @brief Initialise @p cond on CLOCK_MONOTONIC, so a wall-clock step cannot stretch a timed wait.
+ */
+static inline void monotonic_cond_init(pthread_cond_t *cond)
+{
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(cond, &attr);
+    pthread_condattr_destroy(&attr);
+}
+
+/**
  * @brief Normalize a timespec structure
  *
  * @param ts The timespec structure to normalize

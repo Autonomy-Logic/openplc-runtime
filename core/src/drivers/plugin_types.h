@@ -40,6 +40,9 @@
  * through the central OpenPLC logging system. Messages logged through these
  * functions will appear in the OpenPLC Editor's log viewer.
  */
+/** Bytes of plugin_runtime_args_t.program_md5: 32 hex characters and the NUL. */
+#define PLUGIN_PROGRAM_MD5_SIZE 33
+
 typedef void (*plugin_log_info_func_t)(const char *fmt, ...);
 typedef void (*plugin_log_debug_func_t)(const char *fmt, ...);
 typedef void (*plugin_log_warn_func_t)(const char *fmt, ...);
@@ -124,12 +127,14 @@ typedef void (*plugin_request_plc_stop_func_t)(const char *reason);
  * transition path the socket START / STOP commands drive, so a plugin-initiated
  * run/stop is byte-for-byte the flow the editor already exercises.
  *
- * Refused while the stored mode-switch position is STOP (see
+ * Refused while the reported mode-switch position is STOP, or unknown because a
+ * switch owner has not reported since its last init (see
  * plugin_set_switch_position_func_t) -- hardware is authoritative regardless of
  * who asks. Non-blocking; `reason` is logged. Safe to call from any plugin
- * thread, including while the PLC is stopped: the runtime keeps every plugin
- * mapped across a stop, so this is how a hardware STOP -> RUN edge starts the
- * PLC again.
+ * thread, including while the PLC is stopped: a plugin that detaches from the
+ * I/O image on the stop (detach_image, see plugin_driver.h) stays initialised
+ * with its threads, so this is how a hardware STOP -> RUN edge starts the PLC
+ * again.
  *
  * Start and stop requests from any plugin thread, including threads started
  * by init(), are not acted on from boot-time plugin init until the boot
@@ -159,12 +164,27 @@ typedef void (*plugin_request_plc_start_func_t)(const char *reason);
  * this header stays free of the plc_app include tree. Idempotent, and safe to
  * call from any plugin thread.
  *
+ * SWITCH OWNERSHIP. Each plugin gets its own entry point here, so every report is
+ * attributed to the plugin that made it. A plugin becomes a switch owner the
+ * first time it reports, or before its init() when it exports the optional
+ * owns_mode_switch (plugin_driver.h), and stays one until it leaves the plugin
+ * configuration. While any owner has not reported since its last init(), the
+ * switch reads unknown and every start path fails closed: a start waits up to
+ * 2 s after the plugin re-init for the report and is refused without one. A
+ * de-initialised owner (cleanup) must report again from its next init(); one
+ * that detaches keeps its report. A plugin that never reports and does not
+ * declare ownership leaves every start ungated.
+ *
  * Sample the switch from a thread started in init() and torn down in cleanup(),
  * NOT in start_loop() / stop_loop(): the runtime calls stop_loop when the PLC
- * stops, which is precisely when the position matters most. Make that start
- * idempotent, because init() is re-entered on each PLC start. Reporting the
- * initial position from init() also gates the boot auto-start, so a device
- * powered up with its switch in STOP never starts and then bounces.
+ * stops, which is precisely when the position matters most. Export detach_image
+ * (plugin_driver.h) so that thread survives the stop: without it, or when it
+ * refuses, the runtime runs cleanup() on every stop and the switch goes unread
+ * until the next start. Make that start idempotent, because init() is
+ * re-entered on each PLC start. Report the initial position from init(): that
+ * gates the boot auto-start, so a device powered up with its switch in STOP
+ * never starts and then bounces, and it lets each start go ahead without the
+ * report wait.
  */
 typedef void (*plugin_set_switch_position_func_t)(int position);
 
@@ -216,6 +236,13 @@ typedef int (*plugin_get_plc_state_func_t)(void);
  *   and calls init() again, including the first start after power-on. Any
  *   thread started in init() must be joined in cleanup(), and init() must
  *   re-acquire whatever cleanup() released.
+ * - Every PLC stop calls stop_loop(), then, while the image is still
+ *   allocated, detach_image() when the plugin exports it. A plugin that detaches
+ *   stays initialised with its threads and holds no image, journal or debug
+ *   entry point until its next init(); every image access stays on threads
+ *   stop_loop() joins, and start_loop() is never called on it. Any other plugin
+ *   gets cleanup() on the stop. See plugin_detach_image_func_t in
+ *   plugin_driver.h.
  * - Start/stop requests from any plugin thread are not acted on from boot-time
  *   init() until the boot auto-start has decided.
  */
@@ -322,6 +349,10 @@ typedef struct
     /* Current PLC state, for driving a status LED — see
      * plugin_get_plc_state_func_t. */
     plugin_get_plc_state_func_t get_plc_state;
+
+    /* MD5 of the running program (the value the debugger verifies), NUL terminated; empty when
+     * no program is loaded. */
+    char program_md5[PLUGIN_PROGRAM_MD5_SIZE];
 } plugin_runtime_args_t;
 
 #endif /* PLUGIN_TYPES_H */

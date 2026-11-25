@@ -1,0 +1,31 @@
+{
+  "meta": {
+    "name": "hmi_e2e",
+    "type": "plc-project"
+  },
+  "data": {
+    "pous": [],
+    "dataTypes": [],
+    "libraries": [],
+    "configuration": {
+      "resource": {
+        "tasks": [
+          {
+            "name": "task0",
+            "triggering": "Cyclic",
+            "interval": "T#20ms",
+            "priority": 1
+          }
+        ],
+        "instances": [
+          {
+            "name": "instance0",
+            "program": "Main",
+            "task": "task0"
+          }
+        ],
+        "globalVariables": []
+      }
+    }
+  }
+}

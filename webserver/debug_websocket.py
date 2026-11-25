@@ -12,9 +12,13 @@ and returns responses through the WebSocket connection.
 from typing import Any
 
 from flask import request
-from flask_jwt_extended import decode_token, verify_jwt_in_request
+from flask_jwt_extended import current_user, decode_token, verify_jwt_in_request
+from flask_jwt_extended.exceptions import JWTExtendedException
 from flask_socketio import SocketIO, emit
+from jwt import PyJWTError
 
+from webserver import sessions
+from webserver.access import may
 from webserver.logger import get_logger
 
 # Share restapi's JWT manager (blacklist + subject lookup) by importing its
@@ -41,8 +45,9 @@ def _reverify_session_token() -> bool:
     The connect handler authenticates once, in full. Two things can still change
     afterwards, and both must land on an already-open socket:
 
-    * **Revocation.** ``/logout`` adds the token's ``jti`` to the blacklist, and
-      that blacklist is only ever consulted during verification. Without a
+    * **Revocation.** Signing out, renewing (which revokes the old token) or an
+      account-wide end refuses the token from then on, but only during
+      verification. Without a
       re-check, logging out left the session still answering the license FCs --
       which read the hardware anchor and write the license blob, so this channel
       is a trust boundary and "authenticated once, ever" is not enough.
@@ -54,8 +59,8 @@ def _reverify_session_token() -> bool:
     Token EXPIRY, which is not a revocation. A debug session is a long-lived
     connection authenticated at the handshake -- the model every WebSocket
     client assumes, and the one this endpoint had before v4.2.0. The
-    access-token lifetime (15 minutes, the flask-jwt-extended default, since no
-    config sets JWT_ACCESS_TOKEN_EXPIRES) bounds how long a bearer token may be
+    access-token lifetime (15 minutes: restapi.py sets JWT_ACCESS_TOKEN_EXPIRES
+    from sessions.TOKEN_LIFETIME) bounds how long a bearer token may be
     presented to obtain NEW access, and the connect handler still enforces it in
     full: an expired token cannot open a socket, and cannot be installed by
     ``reauth`` either.
@@ -92,14 +97,42 @@ def _reverify_session_token() -> bool:
         return False
 
     if check_if_token_revoked({}, payload):
-        logger.info("Debug command rejected: this session's token was revoked by logout")
+        logger.info("Debug command rejected: this session's token was revoked")
         return False
 
-    if user_lookup_callback({}, payload) is None:
+    user = user_lookup_callback({}, payload)
+    if user is None:
         logger.info("Debug command rejected: the account behind this session no longer exists")
+        return False
+    if not may(user.role, "debugger"):
+        logger.warning("Debug command rejected for role %s", user.role)
         return False
 
     return True
+
+
+def _follow_rotation(old_jti: str, new_token: str) -> None:
+    """Re-keys every open socket holding the renewed token to its successor."""
+    for socket_id, token in list(_session_tokens.items()):
+        try:
+            held_jti = decode_token(token, allow_expired=True).get("jti")
+        except (PyJWTError, JWTExtendedException):
+            continue
+        if held_jti == old_jti:
+            _session_tokens[socket_id] = new_token
+            logger.info("Debug session token followed a renewal")
+
+
+sessions.on_rotation(_follow_rotation)
+
+
+def _caller_may_debug() -> bool:
+    """Whether the account of the request just verified may use the debugger."""
+    role = current_user.role if current_user else None
+    if may(role, "debugger"):
+        return True
+    logger.warning("Debugger refused for role %s", role or "none")
+    return False
 
 
 def init_debug_websocket(app, unix_client_instance):
@@ -166,6 +199,8 @@ def init_debug_websocket(app, unix_client_instance):
             # blacklist checks and user identity validation.
             request.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
             verify_jwt_in_request()
+            if not _caller_may_debug():
+                return False
 
             # Kept so every command can re-check revocation and identity against
             # it, instead of the session inheriting this one verdict for good.
@@ -204,6 +239,9 @@ def init_debug_websocket(app, unix_client_instance):
         except Exception as e:
             logger.warning("reauth rejected: %s", e)
             emit("reauth_result", {"success": False, "error": "Unauthorized"})
+            return
+        if not _caller_may_debug():
+            emit("reauth_result", {"success": False, "error": "Forbidden"})
             return
         _session_tokens[request.sid] = token
         logger.info("Debug session token renewed via reauth")

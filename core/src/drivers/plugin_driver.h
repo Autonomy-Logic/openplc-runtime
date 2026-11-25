@@ -72,6 +72,45 @@ typedef int (*plugin_retain_flush_func_t)(void);
  * and ignores the rest. */
 typedef int (*plugin_set_image_sizes_func_t)(const uint32_t *sizes, uint32_t count);
 
+/**
+ * Optional `int detach_image(void)`: the keep-alive contract. Its presence is
+ * the capability declaration, resolved with dlsym after the other symbols.
+ *
+ * Called after stop_loop() on a stop, or with no start_loop() on a load
+ * rollback, always while the I/O image is still allocated and before the
+ * journal is cleaned up, and only on an initialised plugin.
+ *
+ * Return 0 to detach. The plugin then holds no image pointer in any copy of its
+ * args and, until its next init(), makes no image_lock, image_unlock,
+ * journal_write_* or debug_* call and dereferences no image pointer. It stays
+ * initialised and keeps its threads, and may keep calling set_switch_position,
+ * request_plc_start, request_plc_stop, get_plc_state and log_*. Every image
+ * access must stay on threads that stop_loop joins.
+ *
+ * The runtime never calls start_loop on a detached plugin. The next start
+ * reloads the plugin configuration, which runs cleanup(), unloads the .so,
+ * loads it again and calls init() with the new image.
+ *
+ * @return 0 when detached. Any other value, or a missing symbol, means the
+ *         runtime runs cleanup() on the stop instead.
+ */
+typedef int (*plugin_detach_image_func_t)(void);
+
+/**
+ * Optional `int owns_mode_switch(void)`: declares the plugin a switch owner.
+ * Resolved with dlsym after the other symbols; Python plugins define
+ * owns_mode_switch() returning True instead.
+ *
+ * Called once per load, after the symbols load and before init(). A non-zero
+ * return (Python: True) makes the plugin a switch owner from that moment, so no
+ * start runs a scan until it has reported a position through
+ * set_switch_position since its init(). A missing symbol, a zero return or a
+ * Python exception declares nothing: a plugin still becomes an owner the first
+ * time it reports a position, and stays one until it leaves the plugin
+ * configuration.
+ */
+typedef int (*plugin_owns_mode_switch_func_t)(void);
+
 typedef struct
 {
     void *handle; // Handle to the loaded shared library
@@ -90,6 +129,8 @@ typedef struct
     /* Optional; NULL means this plugin does not understand per-table sizes and
      * the image stays square for the run. */
     plugin_set_image_sizes_func_t set_image_sizes;
+    plugin_detach_image_func_t detach_image;
+    plugin_owns_mode_switch_func_t owns_mode_switch;
 } plugin_funct_bundle_t;
 
 // Plugin instance structure
@@ -108,6 +149,8 @@ typedef struct plugin_instance_s
      * runtime dep). Slot kept but its *_plugin pointers are NULL;
      * init/start/cycle skip it. Keeps the runtime out of ERROR. */
     int degraded;
+    int stop_failed;
+    int detached;
     plugin_config_t config;
 } plugin_instance_t;
 
@@ -126,6 +169,18 @@ int plugin_driver_update_config(plugin_driver_t *driver, const char *config_file
  *  loaded plugins. Returns 0 on success, -1 if any enabled plugin
  *  fails to load its .so. */
 int plugin_driver_append_config(plugin_driver_t *driver, const char *config_file);
+
+#define PLUGIN_HMI_NAME "hmi"
+#define PLUGIN_HMI_PATH "build/hmi/libhmi_plugin.so"
+
+/* Registers the HMI plugin under the name "hmi" when build/hmi/libhmi_plugin.so exists (no
+ * config file names it). Its seal is checked before dlopen; a plugin that fails to load is
+ * marked degraded. Returns 0, or -1 for a NULL driver. */
+int plugin_driver_append_hmi(plugin_driver_t *driver);
+
+/* Sets the program MD5 that plugin_runtime_args_t.program_md5 carries from the next
+ * plugin_driver_init on; NULL or "" when no program is loaded. Copies at most 32 chars. */
+void plugin_driver_set_program_md5(const char *md5);
 int plugin_driver_init(plugin_driver_t *driver);
 /* Roll back a partial init: walks plugins[] in reverse and calls
  * cleanup on every plugin whose `initialized` flag is set. Returns
@@ -133,22 +188,40 @@ int plugin_driver_init(plugin_driver_t *driver);
 int plugin_driver_cleanup_init(plugin_driver_t *driver);
 
 /**
- * Is any plugin still initialised?
+ * Ask every initialised, stopped plugin that exports detach_image to detach
+ * from the I/O image.
  *
- * Asked before releasing the image, which is the half of the ordering
- * requirement that had no check. The allocate-before-init half is guarded by a
- * real runtime refusal in generate_structured_args_with_driver; this is its
- * counterpart, so a refactor that frees the image while a plugin still holds
- * the base pointers it copied by value at init() gets a diagnostic instead of
- * a use-after-free.
+ * A slot whose detach_image returns 0 (native) or True (Python) is marked
+ * `detached` and logged as "Plugin <name> detached from the I/O image". Any
+ * other result or an exception logs "Plugin <name> did not detach; cleaning it
+ * up" and leaves the slot attached. A slot without the symbol stays attached.
  *
- * Not the same as "still running": cleanup_init skips a plugin whose
- * `initialized` is 0, and a native plugin with no `cleanup` symbol keeps its
- * by-value args copy either way.
+ * @return the number of slots detached by this call
  */
-int plugin_driver_any_initialized(plugin_driver_t *driver);
+int plugin_driver_detach_images(plugin_driver_t *driver);
+
+/**
+ * Does any plugin still hold the I/O image?
+ *
+ * True if and only if some slot is initialised and not detached. Asked before
+ * releasing the image.
+ *
+ * Not the same as "still running": a native plugin with no `cleanup` symbol
+ * keeps its by-value args copy until it is cleaned up either way.
+ */
+int plugin_driver_any_holds_image(plugin_driver_t *driver);
+
+/* Clean up every initialised slot that is not detached, in reverse order, and
+ * leave detached slots initialised. Returns the count cleaned up. */
+int plugin_driver_cleanup_attached(plugin_driver_t *driver);
+/* Call start_loop on every enabled plugin, skipping detached slots. */
 int plugin_driver_start(plugin_driver_t *driver);
+/* Call stop_loop on every running plugin. Returns 0 when all stopped and
+ * non-zero when a Python stop_loop returned False or raised; each such slot is
+ * marked `stop_failed` and keeps its state. Any other result is a stop. */
 int plugin_driver_stop(plugin_driver_t *driver);
+/* Stop, clean up and unload every plugin, detached ones included, then finalise
+ * Python. Leaves everything loaded when a plugin failed to stop. */
 void plugin_driver_destroy(plugin_driver_t *driver);
 
 /* Release the Python GIL and remember the thread state so

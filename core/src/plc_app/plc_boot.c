@@ -42,6 +42,10 @@ int plc_boot_init_plugins(plugin_driver_t *driver, bool load_program_plugins)
             log_error("[PLUGIN]: VPP plugin configuration could not be loaded at boot");
             rc = -1;
         }
+        if (load_program_plugins)
+        {
+            plugin_driver_append_hmi(driver);
+        }
         if (plugin_driver_init(driver) != 0)
         {
             log_error("[PLUGIN]: Plugin init failed at boot");
@@ -64,6 +68,11 @@ static plc_boot_start_t decide_autostart(bool safe_mode)
         return PLC_BOOT_START_SKIPPED_SAFE_MODE;
     }
 
+    if (!plc_switch_await_report(PLC_SWITCH_REPORT_WAIT_MS))
+    {
+        return PLC_BOOT_START_HELD_SWITCH_UNKNOWN;
+    }
+
     if (!plc_switch_allows_run())
     {
         return PLC_BOOT_START_HELD_BY_SWITCH;
@@ -82,7 +91,7 @@ plc_boot_start_t plc_boot_autostart(bool safe_mode)
     plc_boot_start_t result = decide_autostart(safe_mode);
     plugin_driver_hold_plc_requests(false);
 
-    if (result != PLC_BOOT_START_HELD_BY_SWITCH)
+    if (result != PLC_BOOT_START_HELD_BY_SWITCH && result != PLC_BOOT_START_HELD_SWITCH_UNKNOWN)
     {
         return result;
     }
@@ -98,6 +107,13 @@ plc_boot_start_t plc_boot_autostart(bool safe_mode)
             return PLC_BOOT_START_FAILED;
         }
         return PLC_BOOT_START_BEGUN;
+    }
+
+    if (plc_switch_gate() == PLC_SWITCH_GATE_UNKNOWN)
+    {
+        log_warn("Hardware mode switch position unknown: no switch owner has reported a position "
+                 "- PLC left stopped");
+        return PLC_BOOT_START_HELD_SWITCH_UNKNOWN;
     }
 
     log_info("Hardware mode switch is in STOP - PLC left stopped");

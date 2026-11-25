@@ -5,6 +5,7 @@
 # Host tests: plain C++17 executables, no framework, no device. For
 # runtime code Ceedling cannot reach (uses std::thread/mutex) and that
 # needs no plc_main. Add a test by appending it to TESTS below.
+# The HMI plugin's socket and build tests need the editor's hmi_access.h: tests/host/hmi/run.sh.
 
 set -euo pipefail
 
@@ -27,6 +28,9 @@ TESTS=(
   "tests/host/test_image_outputs.cpp:core/src/plc_app/image_tables.cpp:core/src/plc_app/located_globals.c"
   "tests/host/test_plc_boot.cpp:core/src/plc_app/plc_boot.c:core/src/plc_app/plc_switch.c:core/src/drivers/plugin_plc_requests.c"
   "tests/host/test_debug_write_journal.cpp:core/src/plc_app/debug_write_journal.cpp"
+  "tests/host/test_hmi_host_units.cpp:core/src/drivers/plugins/native/hmi/hmi_wire.c:core/src/drivers/plugins/native/hmi/hmi_values.c:core/src/drivers/plugins/native/hmi/hmi_codec.c"
+  "tests/host/test_plugin_seal.cpp:core/src/drivers/vpp_plugin_seal.c"
+  "tests/host/test_plc_switch_gate.cpp:core/src/plc_app/plc_switch.c"
 )
 
 failures=0
