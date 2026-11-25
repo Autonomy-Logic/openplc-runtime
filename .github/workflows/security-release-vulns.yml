@@ -1,0 +1,110 @@
+name: Security — release vulnerability report
+
+# Vulnerability flow, release part. Runs once per release (a commit landing on
+# main), independently of the SBOM flow (security-sbom.yml). It scans the
+# pip-resolved Python closure and the Go modules with osv-scanner (honoring the
+# VEX baseline in osv-scanner.toml) and builds the vulnerability report (md,
+# html, pdf) for that exact state. No SBOM is generated here.
+#
+# Output goes to the orphan branch `security-archive` under pr-<n>-<date>/ (see
+# scripts/security-archive.sh), next to that release's SBOM.
+#
+# workflow_dispatch exists for testing: from any ref other than main it writes
+# archive_branch (default security-archive-test); security-archive.sh refuses
+# security-archive outside main.
+
+on:
+  push:
+    branches: [main]
+    # A commit touching only these (e.g. the merged monthly report PR) is not a release.
+    paths-ignore:
+      - "security/**"
+      - "osv-scanner.toml"
+  workflow_dispatch:
+    inputs:
+      archive_branch:
+        description: "Archive branch for runs outside main (must start with security-archive-)"
+        required: true
+        default: security-archive-test
+
+permissions:
+  contents: write
+
+concurrency:
+  group: security-release-vulns-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  vulns:
+    runs-on: ubuntu-latest
+    env:
+      # main always writes security-archive (the input is ignored there); other refs
+      # write the input or security-archive-test.
+      ARCHIVE_BRANCH: ${{ github.ref == 'refs/heads/main' && 'security-archive' || inputs.archive_branch || 'security-archive-test' }}
+    steps:
+      - name: Checkout (release state)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          submodules: recursive
+          # The archive step gets GH_TOKEN explicitly; no token is left in .git/config
+          # for the downloaded tools that run before it.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }   # the Python of the debian:bookworm runtime image
+
+      - name: Install osv-scanner
+        run: |
+          OSV_VER=v2.4.0   # pinned; verified against the release SHA256SUMS
+          curl -sSfL "https://github.com/google/osv-scanner/releases/download/${OSV_VER}/osv-scanner_linux_amd64" -o /tmp/osv-scanner_linux_amd64
+          curl -sSfL "https://github.com/google/osv-scanner/releases/download/${OSV_VER}/osv-scanner_SHA256SUMS" -o /tmp/osv_SHA256SUMS
+          ( cd /tmp && grep " osv-scanner_linux_amd64$" osv_SHA256SUMS | sha256sum -c - )
+          install -m 0755 /tmp/osv-scanner_linux_amd64 /usr/local/bin/osv-scanner
+
+      - name: Scan (with and without the VEX baseline)
+        run: |
+          mkdir -p /tmp/out
+          bash scripts/resolve-python-deps.sh . /tmp/py
+          CFG=""; [ -f osv-scanner.toml ] && CFG="osv-scanner.toml"
+          bash scripts/osv-scan.sh . /tmp/py /tmp/osv.json "$CFG"
+          # The raw scan needs an explicit empty config: without --config, osv-scanner
+          # loads osv-scanner.toml from the scanned directory and applies it.
+          [ -f security/osv-raw.toml ] || { echo "::error::security/osv-raw.toml is missing"; exit 1; }
+          bash scripts/osv-scan.sh . /tmp/py /tmp/osv-raw.json security/osv-raw.toml
+          node scripts/scan-vulns.mjs /tmp/osv.json /tmp/out/vulnerabilities.csv
+
+      - name: Build report (md + html)
+        id: report
+        run: |
+          node scripts/build-report.mjs \
+            --config security/report-config.json \
+            --osv-raw /tmp/osv-raw.json \
+            --osv-delta /tmp/osv.json \
+            --out /tmp/out \
+            --date "$(TZ=UTC git log -1 --date=format-local:%Y-%m-%d --format=%cd)"
+
+      - name: Set up Chrome
+        uses: browser-actions/setup-chrome@v1
+        id: chrome
+      - name: Render PDF
+        run: |
+          REPORT="${{ steps.report.outputs.html }}"
+          [ -f "$REPORT" ] || { echo "::error::report HTML not found at '$REPORT'"; exit 1; }
+          # --no-sandbox / --disable-dev-shm-usage: required for headless Chrome on
+          # GitHub runners. --disable-javascript: the report is a static document.
+          "${{ steps.chrome.outputs.chrome-path }}" --headless=new --no-sandbox --disable-dev-shm-usage \
+            --disable-javascript --disable-gpu --no-pdf-header-footer \
+            --run-all-compositor-stages-before-draw --virtual-time-budget=5000 \
+            --print-to-pdf="${REPORT%.html}.pdf" "file://$REPORT"
+
+      - name: Archive the report with this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE_PROVENANCE: PROVENANCE-vulns.txt
+        run: |
+          DIR=$(bash scripts/security-archive.sh dir)
+          bash scripts/security-archive.sh publish "$DIR" /tmp/out/*
+          echo "Archived to $ARCHIVE_BRANCH/$DIR" >> "$GITHUB_STEP_SUMMARY"

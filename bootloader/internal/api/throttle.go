@@ -4,75 +4,82 @@
 package api
 
 import (
+	"math"
 	"net"
 	"net/http"
 	"sync"
 	"time"
 )
 
-// Login throttling. Every attempt runs 600k PBKDF2 iterations (timing-safe
-// against enumeration), so the endpoint needs both a global concurrency cap
-// and per-source backoff to resist brute force and DoS.
+// Sign-in throttling parameters, matching webserver/sessions.py.
 const (
-	// maxConcurrentVerifications is small on purpose. Two verifications in
-	// flight is more than a legitimate operator ever needs, and it leaves the
-	// remaining cores to the runtime.
+	// maxConcurrentVerifications caps the PBKDF2 verifications in flight.
 	maxConcurrentVerifications = 2
-	// failuresBeforeBackoff allows the ordinary mistyped password without
-	// friction.
-	failuresBeforeBackoff = 5
-	// backoffWindow is how long failures are remembered.
-	backoffWindow = 15 * time.Minute
-	// backoffDuration is how long a source is refused once it crosses the
-	// threshold.
-	backoffDuration = 1 * time.Minute
-	// maxTrackedSources bounds the map so the tracking cannot itself become
-	// the memory exhaustion it exists to prevent.
-	maxTrackedSources = 1024
+	// throttleFirstDelay is the wait after the first failure on a key; each further failure doubles it.
+	throttleFirstDelay = 5 * time.Second
+	// throttleMaxDelay caps the wait on a key.
+	throttleMaxDelay = 300 * time.Second
+	// throttleForget is how long after its last failure a counter starts again and is dropped.
+	throttleForget = 3600 * time.Second
+	// unknownAddressKey is the counter shared by every sign-in whose client address is unknown.
+	unknownAddressKey = "addr:unknown"
 )
 
-type sourceRecord struct {
-	failures int
-	first    time.Time
-	blocked  time.Time
+// failureCounter holds the consecutive failed sign-ins of one key.
+type failureCounter struct {
+	failures    int
+	lastFailure time.Time
+	nextAllowed time.Time
 }
 
-// loginThrottle bounds concurrent password verifications and backs off a
-// source that keeps failing.
+// loginThrottle caps concurrent verifications and delays sign-ins per client address only, whatever the
+// username, so failures from one address never delay another.
 type loginThrottle struct {
 	slots chan struct{}
 
-	mu      sync.Mutex
-	sources map[string]*sourceRecord
-	now     func() time.Time
+	mu       sync.Mutex
+	counters map[string]*failureCounter
+	now      func() time.Time
 }
 
 func newLoginThrottle() *loginThrottle {
 	return &loginThrottle{
-		slots:   make(chan struct{}, maxConcurrentVerifications),
-		sources: make(map[string]*sourceRecord),
-		now:     time.Now,
+		slots:    make(chan struct{}, maxConcurrentVerifications),
+		counters: make(map[string]*failureCounter),
+		now:      time.Now,
 	}
 }
 
-// blockedFor reports how long the source must wait, zero when it may proceed.
-func (t *loginThrottle) blockedFor(source string) time.Duration {
+// throttleDelay is the wait after failures consecutive failures: min(5 s * 2^(failures-1), 300 s).
+func throttleDelay(failures int) time.Duration {
+	if failures <= 0 {
+		return 0
+	}
+	delay := throttleFirstDelay << min(failures-1, 16)
+	return min(delay, throttleMaxDelay)
+}
+
+// throttleKey is the counter key of a sign-in from address; one shared key when the address is unknown.
+func throttleKey(address string) string {
+	if address == "" {
+		return unknownAddressKey
+	}
+	return "addr:" + address
+}
+
+// wait reports the whole seconds, rounded up, before an attempt on key is accepted; 0 when it may go ahead.
+func (t *loginThrottle) wait(key string) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	record, ok := t.sources[source]
+	counter, ok := t.counters[key]
 	if !ok {
 		return 0
 	}
-	now := t.now()
-	if record.blocked.After(now) {
-		return record.blocked.Sub(now)
+	remaining := counter.nextAllowed.Sub(t.now())
+	if remaining <= 0 {
+		return 0
 	}
-	// The window has passed with no further failures: forget the source so a
-	// mistyped password months ago costs nothing.
-	if now.Sub(record.first) > backoffWindow {
-		delete(t.sources, source)
-	}
-	return 0
+	return int(math.Ceil(remaining.Seconds()))
 }
 
 // acquire takes a verification slot, reporting false when none is free.
@@ -92,42 +99,29 @@ func (t *loginThrottle) release() {
 	}
 }
 
-// recordFailure counts a rejected attempt and starts a backoff at the
-// threshold.
-func (t *loginThrottle) recordFailure(source string) {
+// recordFailure counts a failed sign-in on key, sets its next allowed attempt and drops idle counters.
+func (t *loginThrottle) recordFailure(key string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
-
-	record, ok := t.sources[source]
+	t.forgetIdle(now)
+	counter, ok := t.counters[key]
 	if !ok {
-		// Evict wholesale rather than tracking an unbounded set. A flood from
-		// many addresses is handled by the concurrency cap; this map only has
-		// to make repeated guessing from one place expensive.
-		if len(t.sources) >= maxTrackedSources {
-			t.sources = make(map[string]*sourceRecord)
-		}
-		t.sources[source] = &sourceRecord{failures: 1, first: now}
-		return
+		counter = &failureCounter{}
+		t.counters[key] = counter
 	}
-	if now.Sub(record.first) > backoffWindow {
-		record.failures = 0
-		record.first = now
-	}
-	record.failures++
-	if record.failures >= failuresBeforeBackoff {
-		record.blocked = now.Add(backoffDuration)
-		record.failures = 0
-		record.first = now
-	}
+	counter.failures++
+	counter.lastFailure = now
+	counter.nextAllowed = now.Add(throttleDelay(counter.failures))
 }
 
-// recordSuccess clears the history for a source that proved it knows a
-// password.
-func (t *loginThrottle) recordSuccess(source string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	delete(t.sources, source)
+// forgetIdle drops counters whose last failure is older than throttleForget. Called with t.mu held.
+func (t *loginThrottle) forgetIdle(now time.Time) {
+	for key, counter := range t.counters {
+		if now.Sub(counter.lastFailure) > throttleForget {
+			delete(t.counters, key)
+		}
+	}
 }
 
 // requestSource identifies the caller by remote address only. No proxy

@@ -1,0 +1,30 @@
+# Ignore generated/runtime-mutable files (same as .gitignore)
+/build*/
+/core/generated/
+/venvs/
+.venv/
+__pycache__/
+
+# Generated certificates (must be created fresh inside container)
+**/*.pem
+webserver/*.pem
+
+# Database and runtime state
+*.db
+*.socket
+*.installed
+*.log
+
+# IDE
+.vscode/
+
+# Plugin runtime configs
+plugins.conf
+core/src/drivers/plugins/python/modbus_slave/modbus_slave_config.json
+core/src/drivers/plugins/python/modbus_master/modbus_master.json
+core/src/drivers/plugins/python/opcua/opcua.json
+core/src/drivers/plugins/native/s7comm/s7comm_config.json
+
+# EtherDOG build trees (the source itself is copied in for the image build)
+/etherdog/build*/
+/third_party/etherdog/build/

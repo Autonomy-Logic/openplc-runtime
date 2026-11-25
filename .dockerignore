@@ -28,3 +28,14 @@ core/src/drivers/plugins/native/s7comm/s7comm_config.json
 # EtherDOG build trees (the source itself is copied in for the image build)
 /etherdog/build*/
 /third_party/etherdog/build/
+
+# Not part of the runtime image
+.git/
+.github/
+.claude/
+tests/
+docs/
+windows/
+bootloader/
+/*.md
+Dockerfile*

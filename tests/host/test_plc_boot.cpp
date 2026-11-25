@@ -11,9 +11,13 @@
 #include "plc_state_manager.h"
 #include "plc_switch.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 static int g_failures = 0;
@@ -34,8 +38,15 @@ enum class SwitchPlugin
 {
     None,
     ReportsStop,
-    ReportsRun
+    ReportsRun,
+    DeclaredSilent,
+    DeclaredReportsRunLater,
+    DeclaredReportsStopLater
 };
+
+static const char *const VPP_ID = "fakevpp|./build/plugins/libfakevpp_plugin.so";
+
+static const int LATE_REPORT_MS = 100;
 
 static SwitchPlugin g_switch_plugin; // the switch-aware plugin, shipped in vpp_plugins.conf
 static bool g_vpp_loaded;
@@ -43,28 +54,48 @@ static std::vector<std::string> g_calls;
 static std::vector<PLCState> g_transitions; // every transition the runtime began
 static PLCState g_state;                    // fake transitions land at once
 static std::vector<std::string> g_errors;
+static std::vector<std::string> g_warns;
 static std::vector<std::string> g_infos;
+static std::mutex g_mu;
+static std::thread g_reporter;
 
 static bool logged(const std::vector<std::string> &log, const char *needle)
 {
+    std::lock_guard<std::mutex> lock(g_mu);
     for (const std::string &line : log)
         if (line.find(needle) != std::string::npos)
             return true;
     return false;
 }
 
+/* Whether any level of the journal holds @p needle. */
+static bool logged_any(const char *needle)
+{
+    return logged(g_infos, needle) || logged(g_warns, needle) || logged(g_errors, needle);
+}
+
+static void join_reporter()
+{
+    if (g_reporter.joinable())
+        g_reporter.join();
+}
+
+/* Back to the power-on default: no owner, RUN stored, no movement on record. */
 static void reset(SwitchPlugin plugin)
 {
+    join_reporter();
     g_switch_plugin = plugin;
     g_vpp_loaded    = false;
     g_calls.clear();
     g_transitions.clear();
     g_errors.clear();
+    g_warns.clear();
     g_infos.clear();
     g_state = PLC_STATE_STOPPED;
     plugin_driver_hold_plc_requests(false);
-    /* Back to the power-on default with no movement on record. */
-    plc_set_switch_position(PLC_SWITCH_RUN);
+    plc_switch_owners_forget_absent(nullptr, 0);
+    plc_switch_owner_report("reset|reset", PLC_SWITCH_RUN);
+    plc_switch_owners_forget_absent(nullptr, 0);
     (void)plc_switch_take_movement();
 }
 
@@ -81,6 +112,7 @@ static int count(PLCState target)
 
 extern "C" bool plc_begin_transition(PLCState target)
 {
+    std::lock_guard<std::mutex> lock(g_mu);
     if (g_state == target)
         return false; // claim refused, as plc_claim_transition does
     g_transitions.push_back(target);
@@ -92,6 +124,7 @@ static void capture(std::vector<std::string> *sink, const char *fmt, va_list ap)
 {
     char buf[512];
     std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    std::lock_guard<std::mutex> lock(g_mu);
     if (sink)
         sink->push_back(buf);
 }
@@ -104,7 +137,13 @@ extern "C" void log_info(const char *fmt, ...)
     va_end(ap);
 }
 extern "C" void log_debug(const char *, ...) {}
-extern "C" void log_warn(const char *, ...) {}
+extern "C" void log_warn(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    capture(&g_warns, fmt, ap);
+    va_end(ap);
+}
 extern "C" void log_error(const char *fmt, ...)
 {
     va_list ap;
@@ -113,11 +152,11 @@ extern "C" void log_error(const char *fmt, ...)
     va_end(ap);
 }
 
-/* A switch-aware plugin reporting a position, through the real runtime entry
- * points it is handed in plugin_runtime_args_t: store, then request. */
-static void plugin_reports(int position, const char *reason)
+/* A switch-aware plugin reporting a position as its own slot does: an attributed
+ * report, then the request through the real runtime entry point. */
+static void plugin_reports(plc_switch_t position, const char *reason)
 {
-    plugin_set_switch_position(position);
+    plc_switch_owner_report(VPP_ID, position);
     if (position == PLC_SWITCH_RUN)
         plugin_request_plc_start(reason);
     else
@@ -139,15 +178,48 @@ extern "C" int plugin_driver_append_config(plugin_driver_t *, const char *config
     return 0;
 }
 
+extern "C" int plugin_driver_append_hmi(plugin_driver_t *)
+{
+    g_calls.push_back("hmi");
+    return 0;
+}
+
+/* The plugin's watcher thread: reports @p position LATE_REPORT_MS after init(). */
+static void report_later(plc_switch_t position)
+{
+    g_reporter = std::thread([position] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(LATE_REPORT_MS));
+        plugin_reports(position, "watcher saw the switch");
+    });
+}
+
 extern "C" int plugin_driver_init(plugin_driver_t *)
 {
     g_calls.push_back("init");
     if (!g_vpp_loaded)
         return 0;
-    if (g_switch_plugin == SwitchPlugin::ReportsStop)
+    switch (g_switch_plugin)
+    {
+    case SwitchPlugin::ReportsStop:
         plugin_reports(PLC_SWITCH_STOP, "switch is STOP at init");
-    else if (g_switch_plugin == SwitchPlugin::ReportsRun)
+        break;
+    case SwitchPlugin::ReportsRun:
         plugin_reports(PLC_SWITCH_RUN, "switch is RUN at init");
+        break;
+    case SwitchPlugin::DeclaredSilent:
+        plc_switch_owner_declare(VPP_ID, true);
+        break;
+    case SwitchPlugin::DeclaredReportsRunLater:
+        plc_switch_owner_declare(VPP_ID, true);
+        report_later(PLC_SWITCH_RUN);
+        break;
+    case SwitchPlugin::DeclaredReportsStopLater:
+        plc_switch_owner_declare(VPP_ID, true);
+        report_later(PLC_SWITCH_STOP);
+        break;
+    case SwitchPlugin::None:
+        break;
+    }
     return 0;
 }
 
@@ -256,8 +328,8 @@ static void test_bring_up_order()
     plc_boot_init_plugins(&g_driver, true);
 
     const std::vector<std::string> want = {"load:" PLC_BOOT_PLUGINS_CONF,
-                                           "append:" PLC_BOOT_VPP_PLUGINS_CONF, "init"};
-    CHECK(g_calls == want, "plugins.conf, then vpp_plugins.conf, then init");
+                                           "append:" PLC_BOOT_VPP_PLUGINS_CONF, "hmi", "init"};
+    CHECK(g_calls == want, "plugins.conf, then vpp_plugins.conf, then the HMI, then init");
 
     g_infos.clear();
     plugin_request_plc_start("probe");
@@ -274,7 +346,62 @@ static void test_safe_mode()
 
     CHECK(r == PLC_BOOT_START_SKIPPED_SAFE_MODE, "auto-start skipped");
     CHECK(!g_vpp_loaded, "program plugins (vpp_plugins.conf) not loaded");
+    CHECK(std::find(g_calls.begin(), g_calls.end(), "hmi") == g_calls.end(),
+          "the HMI plugin is not loaded in safe mode");
     CHECK(g_transitions.empty(), "no transition begun");
+}
+
+static const char NO_REPORT_LINE[] = "no switch owner has reported a position";
+
+static void test_owner_unreported_at_boot()
+{
+    std::printf("switch owner that never reports at power-on\n");
+    reset(SwitchPlugin::DeclaredSilent);
+    const auto t0      = std::chrono::steady_clock::now();
+    plc_boot_start_t r = boot(false);
+    const auto took    = std::chrono::steady_clock::now() - t0;
+    const long took_ms = (long)std::chrono::duration_cast<std::chrono::milliseconds>(took).count();
+
+    CHECK(r != PLC_BOOT_START_BEGUN, "auto-start not begun");
+    CHECK(g_transitions.empty(), "no transition begun: the PLC stays STOPPED");
+    CHECK(logged_any(NO_REPORT_LINE), "journal says no switch owner has reported a position");
+    CHECK(took_ms < PLC_SWITCH_REPORT_WAIT_MS + 1500, "the boot wait is bounded");
+}
+
+static void test_owner_reports_run_within_the_wait()
+{
+    std::printf("switch owner reports RUN within the boot wait\n");
+    reset(SwitchPlugin::DeclaredReportsRunLater);
+    plc_boot_start_t r = boot(false);
+    join_reporter();
+
+    CHECK(r == PLC_BOOT_START_BEGUN, "auto-start begun on the late RUN report");
+    CHECK(count(PLC_STATE_RUNNING) == 1 && g_transitions.size() == 1, "exactly one start");
+    CHECK(!logged_any(NO_REPORT_LINE), "no unknown-switch line");
+}
+
+static void test_owner_reports_stop_within_the_wait()
+{
+    std::printf("switch owner reports STOP within the boot wait\n");
+    reset(SwitchPlugin::DeclaredReportsStopLater);
+    plc_boot_start_t r = boot(false);
+    join_reporter();
+
+    CHECK(r == PLC_BOOT_START_HELD_BY_SWITCH, "auto-start held by the switch");
+    CHECK(g_transitions.empty(), "no transition begun");
+}
+
+static void test_plugin_start_refused_while_unknown()
+{
+    std::printf("plugin start request while the switch is unknown\n");
+    reset(SwitchPlugin::None);
+    plc_switch_owner_declare(VPP_ID, true);
+    plugin_request_plc_start("probe");
+    CHECK(g_transitions.empty(), "start request refused while the owner has not reported");
+
+    plc_switch_owner_report(VPP_ID, PLC_SWITCH_RUN);
+    plugin_request_plc_start("probe");
+    CHECK(count(PLC_STATE_RUNNING) == 1, "the same request starts once the owner reports RUN");
 }
 
 static void test_null_driver()
@@ -295,6 +422,11 @@ int main()
     test_bring_up_order();
     test_safe_mode();
     test_null_driver();
+    test_owner_unreported_at_boot();
+    test_owner_reports_run_within_the_wait();
+    test_owner_reports_stop_within_the_wait();
+    test_plugin_start_refused_while_unknown();
+    join_reporter();
 
     if (g_failures == 0)
         std::printf("all cases passed\n");

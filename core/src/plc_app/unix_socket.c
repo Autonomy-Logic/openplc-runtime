@@ -39,8 +39,9 @@ void unix_socket_set_plugin_driver(void *driver)
 }
 
 // Body of a claimed transition: perform it, wait for it to land, then
-// reconcile with the mode switch. Normally on the detached worker;
-// called directly when that worker cannot be spawned.
+// reconcile with the mode switch gate, never while it reads UNKNOWN.
+// Normally on the detached worker; called directly when that worker
+// cannot be spawned.
 static bool run_transition(PLCState target)
 {
     bool result = plc_set_state(target);
@@ -64,10 +65,11 @@ static bool run_transition(PLCState target)
     // Reconcile with the mode switch: compare its final resting
     // position against the state landed on. Gated on movement so a
     // request dropped during a transition is not lost. Cannot ping-pong.
-    if (plc_switch_take_movement())
+    const plc_switch_gate_t gate = plc_switch_gate();
+    if (plc_switch_take_movement() && gate != PLC_SWITCH_GATE_UNKNOWN)
     {
         const PLCState landed = plc_get_state();
-        const PLCState wanted = plc_switch_allows_run() ? PLC_STATE_RUNNING : PLC_STATE_STOPPED;
+        const PLCState wanted = gate == PLC_SWITCH_GATE_RUN ? PLC_STATE_RUNNING : PLC_STATE_STOPPED;
 
         // Only reconcile from a clean landing. ERROR and EMPTY are not states to
         // "correct" — restarting a faulted or programless PLC because a switch
@@ -217,14 +219,60 @@ static void format_status_response(char *response, size_t response_size)
         strncpy(response, "STATUS:UNKNOWN\n", response_size);
 }
 
+// SWITCH reply from the switch gate: UNKNOWN while a switch owner has not
+// reported since its last init. Devices with no switch owner answer RUN.
 static void format_switch_response(char *response, size_t response_size)
 {
-    // Report the mode-switch position a VPP plugin last stored. Devices with no
-    // switch-aware plugin always answer RUN.
-    if (plc_get_switch_position() == PLC_SWITCH_RUN)
+    switch (plc_switch_gate())
+    {
+    case PLC_SWITCH_GATE_RUN:
         strncpy(response, "SWITCH:RUN\n", response_size);
-    else
+        break;
+    case PLC_SWITCH_GATE_STOP:
         strncpy(response, "SWITCH:STOP\n", response_size);
+        break;
+    case PLC_SWITCH_GATE_UNKNOWN:
+        strncpy(response, "SWITCH:UNKNOWN\n", response_size);
+        break;
+    }
+}
+
+// START while a switch owner is registered: begin the start, then reply once its
+// switch gate decided, after the plugin re-init. RUN does not mean the cycle
+// thread is running yet.
+static void start_awaiting_switch_gate(char *response, size_t response_size)
+{
+    const uint64_t ticket = plc_start_outcome_arm();
+    if (!plc_begin_transition(PLC_STATE_RUNNING))
+    {
+        strncpy(response, "START:ERROR\n", response_size);
+        return;
+    }
+
+    plc_start_outcome_t outcome = PLC_START_OUTCOME_ERROR;
+    if (!plc_start_outcome_await(ticket, PLC_START_OUTCOME_WAIT_MS, &outcome) &&
+        plc_start_outcome_cancel(ticket, &outcome))
+    {
+        log_error("START: the start did not land within %d ms; cancelled",
+                  PLC_START_OUTCOME_WAIT_MS);
+        outcome = PLC_START_OUTCOME_ERROR;
+    }
+
+    switch (outcome)
+    {
+    case PLC_START_OUTCOME_RUN:
+        strncpy(response, "START:OK\n", response_size);
+        break;
+    case PLC_START_OUTCOME_SWITCH_STOP:
+        strncpy(response, "START:ERROR_SWITCH_STOP\n", response_size);
+        break;
+    case PLC_START_OUTCOME_SWITCH_UNKNOWN:
+        strncpy(response, "START:ERROR_SWITCH_UNKNOWN\n", response_size);
+        break;
+    case PLC_START_OUTCOME_ERROR:
+        strncpy(response, "START:ERROR\n", response_size);
+        break;
+    }
 }
 
 void handle_unix_socket_commands(const char *command, char *response, size_t response_size)
@@ -284,26 +332,31 @@ void handle_unix_socket_commands(const char *command, char *response, size_t res
     }
     else if (strcmp(command, "START") == 0)
     {
-        PLCState current_state = plc_get_state();
+        PLCState current_state       = plc_get_state();
+        const plc_switch_gate_t gate = plc_switch_gate();
         // Hardware is authoritative: refuse rather than queue, so the editor
         // can tell the user to flip the switch instead of leaving a start
         // pending. Checked before the transition is ever begun.
-        if (!plc_switch_allows_run())
+        if (gate == PLC_SWITCH_GATE_STOP)
         {
             strncpy(response, "START:ERROR_SWITCH_STOP\n", response_size);
             log_warn("Received START command but the mode switch is in STOP");
         }
-        else if (current_state != PLC_STATE_RUNNING)
+        else if (current_state == PLC_STATE_RUNNING)
+        {
+            strncpy(response, "START:ERROR_ALREADY_RUNNING\n", response_size);
+            log_error("Received START command but PLC is already RUNNING");
+        }
+        else if (gate == PLC_SWITCH_GATE_UNKNOWN || plc_switch_has_owner())
+        {
+            start_awaiting_switch_gate(response, response_size);
+        }
+        else
         {
             if (plc_begin_transition(PLC_STATE_RUNNING))
                 strncpy(response, "START:OK\n", response_size);
             else
                 strncpy(response, "START:ERROR\n", response_size);
-        }
-        else
-        {
-            strncpy(response, "START:ERROR_ALREADY_RUNNING\n", response_size);
-            log_error("Received START command but PLC is already RUNNING");
         }
     }
     else if (strcmp(command, "STATS") == 0)

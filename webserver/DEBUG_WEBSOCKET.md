@@ -35,6 +35,13 @@ Response:
 }
 ```
 
+Only `admin` and `engineer` accounts may use the debugger: an `operator` or `viewer` token is
+refused at connect and by `reauth`, and a socket stops answering commands once its account loses
+the role. Every command re-checks the token: after signing out or after the account's sessions end
+(password or role change, deletion), the socket's token is refused. Renewing the token with
+`POST /api/renew` moves every open socket that held it to the new token, so the socket keeps
+working; `reauth` remains available to install a token obtained otherwise.
+
 ## Protocol
 
 ### Connection Events

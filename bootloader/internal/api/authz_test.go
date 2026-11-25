@@ -4,119 +4,263 @@
 package api
 
 import (
-	"net"
+	"bytes"
+	"errors"
+	"log/slog"
 	"net/http"
-	"strconv"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Autonomy-Logic/openplc-runtime/bootloader/internal/runtimeauth"
 )
 
-// Routes that change what the device runs are admin-only. Self-update
-// starts a container with the Docker socket bound (host root), so a
-// signature-only check is not enough.
-func TestARestrictedAccountCannotChangeWhatTheDeviceRuns(t *testing.T) {
-	cases := []struct {
-		name, method, path, body string
-	}{
-		{"restart", http.MethodPost, "/api/bootloader/restart", "{}"},
-		{"update", http.MethodPost, "/api/bootloader/update", `{"version":"v4.2.1"}`},
-		{"self-update", http.MethodPost, "/api/bootloader/self-update", `{"version":"bootloader-v1.0.1"}`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			users := &fakeUsers{count: 1, role: "user"}
-			srv := newTestServer(t, users, healthySupervisor(), &fakeLogs{})
+// syncBuffer is a log sink safe to read while the server goroutines write to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
 
-			resp, body := postJSON(t, srv, tc.path, validToken(t), tc.body)
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// testRig is a server with every collaborator faked, its log captured and, optionally, its throttle preset.
+type testRig struct {
+	srv  *httptest.Server
+	log  *syncBuffer
+	sup  *fakeSupervisor
+	up   *fakeUpdater
+	self *fakeSelfUpdater
+}
+
+func newRig(t *testing.T, users *fakeUsers, throttle *loginThrottle) *testRig {
+	t.Helper()
+	rig := &testRig{
+		log:  &syncBuffer{},
+		sup:  healthySupervisor(),
+		up:   &fakeUpdater{},
+		self: &fakeSelfUpdater{},
+	}
+	server := &Server{cfg: Config{
+		Version:        "bootloader-v1.0.0-test",
+		RuntimeVersion: func() string { return "v4.2.1" },
+		Users:          users,
+		Supervisor:     rig.sup,
+		Logs:           &fakeLogs{out: "log"},
+		Updater:        rig.up,
+		SelfUpdater:    rig.self,
+		Log:            slog.New(slog.NewTextHandler(rig.log, nil)),
+	}}
+	if throttle != nil {
+		server.throttleOnce.Do(func() { server.throttleImpl = throttle })
+	}
+	mux := http.NewServeMux()
+	server.routes(mux)
+	rig.srv = httptest.NewServer(mux)
+	t.Cleanup(rig.srv.Close)
+	return rig
+}
+
+type route struct {
+	name, method, path, body string
+}
+
+var readRoutes = []route{
+	{"status", http.MethodGet, "/api/bootloader/status", ""},
+	{"device-info", http.MethodGet, "/api/bootloader/device-info", ""},
+	{"logs", http.MethodGet, "/api/bootloader/logs", ""},
+	{"update progress", http.MethodGet, "/api/bootloader/update", ""},
+}
+
+var adminRoutes = []route{
+	{"restart", http.MethodPost, "/api/bootloader/restart", "{}"},
+	{"update", http.MethodPost, "/api/bootloader/update", `{"version":"v4.2.1"}`},
+	{"self-update", http.MethodPost, "/api/bootloader/self-update", `{"version":"bootloader-v1.0.1"}`},
+}
+
+func (rig *testRig) call(t *testing.T, rt route, token string) (*http.Response, map[string]any) {
+	t.Helper()
+	if rt.method == http.MethodGet {
+		return get(t, rig.srv, rt.path, token)
+	}
+	return postJSON(t, rig.srv, rt.path, token, rt.body)
+}
+
+func (rig *testRig) assertNothingRan(t *testing.T) {
+	t.Helper()
+	if rig.sup.stopHits != 0 || rig.sup.reconcileHits != 0 || len(rig.up.started) != 0 || len(rig.self.requested) != 0 {
+		t.Error("a refused request still reached its handler")
+	}
+}
+
+// --- roles ---------------------------------------------------------------
+
+func TestHMIRolesAreRefusedOnEveryAuthenticatedRoute(t *testing.T) {
+	for _, role := range []string{runtimeauth.RoleOperator, runtimeauth.RoleViewer} {
+		for _, rt := range append(append([]route{}, readRoutes...), adminRoutes...) {
+			t.Run(role+" "+rt.name, func(t *testing.T) {
+				rig := newRig(t, &fakeUsers{count: 1, role: role}, nil)
+
+				resp, body := rig.call(t, rt, validToken(t))
+				if resp.StatusCode != http.StatusForbidden {
+					t.Fatalf("%s got HTTP %d on %s %s, want 403", role, resp.StatusCode, rt.method, rt.path)
+				}
+				if body["error"] == "" {
+					t.Error("no explanation was returned")
+				}
+				if !strings.Contains(rig.log.String(), "refused a request from a role without bootloader access") ||
+					!strings.Contains(rig.log.String(), "role="+role) {
+					t.Errorf("the refusal was not logged with the role: %s", rig.log.String())
+				}
+				rig.assertNothingRan(t)
+			})
+		}
+	}
+}
+
+func TestAnUnknownRoleIsRefused(t *testing.T) {
+	rig := newRig(t, &fakeUsers{count: 1, role: "superuser"}, nil)
+	resp, _ := get(t, rig.srv, "/api/bootloader/status", validToken(t))
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("an unknown role got HTTP %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestAnEngineerReadsButCannotChangeWhatTheDeviceRuns(t *testing.T) {
+	for _, rt := range readRoutes {
+		t.Run(rt.name, func(t *testing.T) {
+			rig := newRig(t, &fakeUsers{count: 1, role: runtimeauth.RoleEngineer}, nil)
+			resp, _ := rig.call(t, rt, validToken(t))
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("an engineer got HTTP %d on %s, want 200", resp.StatusCode, rt.path)
+			}
+		})
+	}
+	for _, rt := range adminRoutes {
+		t.Run(rt.name, func(t *testing.T) {
+			rig := newRig(t, &fakeUsers{count: 1, role: runtimeauth.RoleEngineer}, nil)
+			resp, body := rig.call(t, rt, validToken(t))
 			if resp.StatusCode != http.StatusForbidden {
-				t.Fatalf("a `user` account got HTTP %d on %s, want 403", resp.StatusCode, tc.path)
+				t.Fatalf("an engineer got HTTP %d on %s, want 403", resp.StatusCode, rt.path)
 			}
 			if body["error"] == "" {
 				t.Error("no explanation was returned")
+			}
+			rig.assertNothingRan(t)
+		})
+	}
+}
+
+func TestAnAdminReachesEveryRoute(t *testing.T) {
+	for _, rt := range append(append([]route{}, readRoutes...), adminRoutes...) {
+		t.Run(rt.name, func(t *testing.T) {
+			rig := newRig(t, &fakeUsers{count: 1, role: runtimeauth.RoleAdmin}, nil)
+			resp, _ := rig.call(t, rt, validToken(t))
+			if resp.StatusCode >= 400 {
+				t.Fatalf("an admin got HTTP %d on %s", resp.StatusCode, rt.path)
 			}
 		})
 	}
 }
 
-func TestAnAdminCanStillChangeWhatTheDeviceRuns(t *testing.T) {
-	users := &fakeUsers{count: 1, role: RoleAdmin}
-	srv := newTestServer(t, users, healthySupervisor(), &fakeLogs{})
+// Sign-in stays open to every role; the token it issues is then refused by the routes.
+func TestAnOperatorCanSignInButNotUseTheToken(t *testing.T) {
+	users := &fakeUsers{
+		count: 1,
+		user:  &runtimeauth.User{ID: "3", Username: "hmi", Role: runtimeauth.RoleOperator},
+		role:  runtimeauth.RoleOperator,
+	}
+	rig := newRig(t, users, nil)
 
-	resp, _ := postJSON(t, srv, "/api/bootloader/restart", validToken(t), "{}")
-	if resp.StatusCode == http.StatusForbidden {
-		t.Fatal("an admin was refused")
+	resp, body := postJSON(t, rig.srv, "/api/bootloader/login", "", `{"username":"hmi","password":"pw"}`)
+	if resp.StatusCode != http.StatusOK || body["role"] != runtimeauth.RoleOperator {
+		t.Fatalf("sign-in got HTTP %d (%v), want 200 with role operator", resp.StatusCode, body)
+	}
+	token, _ := body["access_token"].(string)
+	statusResp, _ := get(t, rig.srv, "/api/bootloader/status", token)
+	if statusResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("the operator's token got HTTP %d on status, want 403", statusResp.StatusCode)
 	}
 }
 
-// A token outliving its account must not keep its privileges.
+// --- account state -------------------------------------------------------
+
 func TestATokenWhoseAccountIsGoneIsRefused(t *testing.T) {
-	users := &fakeUsers{count: 1, roleErr: runtimeauth.ErrNoSuchUser}
-	srv := newTestServer(t, users, healthySupervisor(), &fakeLogs{})
-
-	resp, _ := postJSON(t, srv, "/api/bootloader/update", validToken(t), `{"version":"v4.2.1"}`)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("got HTTP %d, want 403 when the role cannot be confirmed", resp.StatusCode)
+	for _, rt := range []route{readRoutes[0], adminRoutes[1]} {
+		t.Run(rt.name, func(t *testing.T) {
+			rig := newRig(t, &fakeUsers{count: 1, accountErr: runtimeauth.ErrNoSuchUser}, nil)
+			resp, _ := rig.call(t, rt, validToken(t))
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("got HTTP %d, want 401 for a deleted account", resp.StatusCode)
+			}
+			rig.assertNothingRan(t)
+		})
 	}
 }
 
-// Reads stay open to any account: seeing why a device is unhealthy is not a
-// privileged act, and locking it down would make a broken device harder to
-// diagnose for no security gain.
-func TestARestrictedAccountCanStillReadStatus(t *testing.T) {
-	users := &fakeUsers{count: 1, role: "user"}
-	srv := newTestServer(t, users, healthySupervisor(), &fakeLogs{})
+func TestAnUnreadableAccountIsReportedAsUnavailable(t *testing.T) {
+	rig := newRig(t, &fakeUsers{count: 1, accountErr: errors.New("disk I/O error")}, nil)
+	resp, _ := get(t, rig.srv, "/api/bootloader/status", validToken(t))
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("got HTTP %d, want 503", resp.StatusCode)
+	}
+}
 
-	resp, _ := get(t, srv, "/api/bootloader/status", validToken(t))
+func TestATokenIssuedBeforeTheAccountCutOffIsRefused(t *testing.T) {
+	token := validToken(t)
+	cutoff := time.Now().Add(time.Minute).UnixMilli()
+	for _, rt := range []route{readRoutes[0], adminRoutes[0]} {
+		t.Run(rt.name, func(t *testing.T) {
+			rig := newRig(t, &fakeUsers{count: 1, validAfterMs: cutoff}, nil)
+			resp, body := rig.call(t, rt, token)
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("a token from before the cut-off got HTTP %d, want 401", resp.StatusCode)
+			}
+			if body["error"] == "" {
+				t.Error("no explanation was returned")
+			}
+			if !strings.Contains(rig.log.String(), "refused a token issued before the account's sessions were ended") {
+				t.Errorf("the refusal was not logged: %s", rig.log.String())
+			}
+			rig.assertNothingRan(t)
+		})
+	}
+}
+
+func TestATokenIssuedAfterTheAccountCutOffIsAccepted(t *testing.T) {
+	cutoff := time.Now().Add(-time.Minute).UnixMilli()
+	rig := newRig(t, &fakeUsers{count: 1, validAfterMs: cutoff}, nil)
+	resp, _ := get(t, rig.srv, "/api/bootloader/status", validToken(t))
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("a `user` account got HTTP %d reading status, want 200", resp.StatusCode)
+		t.Fatalf("a token from after the cut-off got HTTP %d, want 200", resp.StatusCode)
 	}
 }
 
-// --- login throttling ----------------------------------------------------
-
-func TestRepeatedFailuresFromOneSourceAreBackedOff(t *testing.T) {
-	// The endpoint runs a 600k-iteration PBKDF2 per attempt, by design, on a
-	// host-network service beside a PLC with real-time deadlines. Unbounded,
-	// that is both a brute-force path and a cheap denial of service.
-	users := &fakeUsers{count: 1, authErr: runtimeauth.ErrNoSuchUser}
-	srv := newTestServer(t, users, healthySupervisor(), &fakeLogs{})
-
-	var last int
-	for attempt := 0; attempt < failuresBeforeBackoff+1; attempt++ {
-		resp, _ := postJSON(t, srv, "/api/bootloader/login", "",
-			`{"username":"op","password":"wrong"}`)
-		last = resp.StatusCode
+func TestATokenFromSignInAfterACutOffIsAccepted(t *testing.T) {
+	cutoff := time.Now().UnixMilli() - 1
+	users := &fakeUsers{
+		count: 1, validAfterMs: cutoff,
+		user: &runtimeauth.User{ID: "1", Username: "admin", Role: runtimeauth.RoleAdmin},
 	}
-	if last != http.StatusTooManyRequests {
-		t.Fatalf("after %d failures the source still got HTTP %d, want 429",
-			failuresBeforeBackoff+1, last)
+	rig := newRig(t, users, nil)
+	resp, body := postJSON(t, rig.srv, "/api/bootloader/login", "", `{"username":"admin","password":"pw"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("sign-in got HTTP %d", resp.StatusCode)
 	}
-}
-
-func TestASuccessfulLoginClearsTheBackoff(t *testing.T) {
-	throttle := newLoginThrottle()
-	for attempt := 0; attempt < failuresBeforeBackoff-1; attempt++ {
-		throttle.recordFailure("10.0.0.1")
-	}
-	throttle.recordSuccess("10.0.0.1")
-	throttle.recordFailure("10.0.0.1")
-
-	if wait := throttle.blockedFor("10.0.0.1"); wait > 0 {
-		t.Errorf("a source that proved it knows a password is still backed off for %s", wait)
-	}
-}
-
-func TestTheSourceMapCannotGrowWithoutBound(t *testing.T) {
-	// The tracking must not become the memory exhaustion it prevents.
-	throttle := newLoginThrottle()
-	for i := 0; i < maxTrackedSources*2; i++ {
-		throttle.recordFailure(net.JoinHostPort("10.0.0.1", strconv.Itoa(i)))
-	}
-	throttle.mu.Lock()
-	size := len(throttle.sources)
-	throttle.mu.Unlock()
-	if size > maxTrackedSources {
-		t.Errorf("tracking %d sources, cap is %d", size, maxTrackedSources)
+	token, _ := body["access_token"].(string)
+	statusResp, _ := get(t, rig.srv, "/api/bootloader/status", token)
+	if statusResp.StatusCode != http.StatusOK {
+		t.Fatalf("a fresh token got HTTP %d after the cut-off, want 200", statusResp.StatusCode)
 	}
 }

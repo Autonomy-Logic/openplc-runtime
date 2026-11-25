@@ -20,6 +20,7 @@
 #include "../plc_app/image_tables.h"
 #include "../plc_app/journal_buffer.h"
 #include "../plc_app/plc_state_manager.h"
+#include "../plc_app/plc_switch.h"
 #include "../plc_app/utils/log.h"
 #include "../plc_app/utils/utils.h"
 #include "plugin_config.h"
@@ -43,6 +44,76 @@ static int has_python_plugin = 0;
 
 // Prototypes
 static void python_plugin_cleanup(plugin_instance_t *plugin);
+
+_Static_assert(PLC_SWITCH_OWNER_ID_SIZE >= MAX_PLUGIN_NAME_LEN + MAX_PLUGIN_PATH_LEN,
+               "a switch-owner identity holds a config name, '|' and a path");
+
+/** Writes the switch-owner identity of @p plugin, "<config name>|<path>", into @p out. */
+static void plugin_switch_owner_id(const plugin_instance_t *plugin, char *out, size_t out_size)
+{
+    snprintf(out, out_size, "%s|%s", plugin->config.name, plugin->config.path);
+}
+
+/** Tells the switch gate that @p plugin was de-initialised: its last report no longer counts. */
+static void plugin_switch_deinit(const plugin_instance_t *plugin)
+{
+    char id[PLC_SWITCH_OWNER_ID_SIZE];
+    plugin_switch_owner_id(plugin, id, sizeof(id));
+    plc_switch_owner_invalidate(id);
+}
+
+/**
+ * Calls the plugin's optional owns_mode_switch and records the declaration with the
+ * switch gate. A missing symbol or a Python exception declares nothing. Caller holds
+ * the GIL when the plugin is a Python one.
+ */
+static void declare_switch_ownership(plugin_instance_t *plugin)
+{
+    bool owns = false;
+    if (plugin->config.type == PLUGIN_TYPE_NATIVE && plugin->native_plugin &&
+        plugin->native_plugin->owns_mode_switch)
+    {
+        owns = plugin->native_plugin->owns_mode_switch() != 0;
+    }
+    else if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin &&
+             plugin->python_plugin->pFuncOwnsModeSwitch)
+    {
+        PyObject *res = PyObject_CallNoArgs(plugin->python_plugin->pFuncOwnsModeSwitch);
+        if (!res)
+        {
+            PyErr_Print();
+            log_warn("Plugin %s raised in owns_mode_switch; no switch ownership declared",
+                     plugin->config.name);
+        }
+        else
+        {
+            owns = (res == Py_True);
+            Py_DECREF(res);
+        }
+    }
+
+    if (owns)
+        log_info("Plugin %s declares itself a switch owner", plugin->config.name);
+
+    char id[PLC_SWITCH_OWNER_ID_SIZE];
+    plugin_switch_owner_id(plugin, id, sizeof(id));
+    plc_switch_owner_declare(id, owns);
+}
+
+/** Forgets the switch owners that are not among the plugins configured in @p driver. */
+static void forget_unconfigured_switch_owners(const plugin_driver_t *driver)
+{
+    char ids[MAX_PLUGINS][PLC_SWITCH_OWNER_ID_SIZE];
+    const char *present[MAX_PLUGINS];
+    size_t count = 0;
+    for (int i = 0; i < driver->plugin_count && i < MAX_PLUGINS; i++)
+    {
+        plugin_switch_owner_id(&driver->plugins[i], ids[count], sizeof(ids[count]));
+        present[count] = ids[count];
+        count++;
+    }
+    plc_switch_owners_forget_absent(present, count);
+}
 
 // Driver management functions
 plugin_driver_t *plugin_driver_create(void)
@@ -135,6 +206,35 @@ static uint8_t plugin_debug_write(uint8_t arr, uint16_t elem, const uint8_t *byt
     return (rc == 0) ? 0x7E : 0x82;
 }
 
+/* MD5 of the loaded program, handed to plugins in plugin_runtime_args_t.program_md5. Set by the
+ * load path before plugin_driver_init and cleared on unload. The program .so exports a fixed
+ * 32-char hex string; at most PLUGIN_PROGRAM_MD5_SIZE - 1 chars of it are read. */
+static pthread_mutex_t g_program_md5_lock = PTHREAD_MUTEX_INITIALIZER;
+static char g_program_md5[PLUGIN_PROGRAM_MD5_SIZE];
+
+void plugin_driver_set_program_md5(const char *md5)
+{
+    pthread_mutex_lock(&g_program_md5_lock);
+    size_t n = 0;
+    if (md5)
+    {
+        while (n < PLUGIN_PROGRAM_MD5_SIZE - 1 && md5[n] != '\0')
+        {
+            g_program_md5[n] = md5[n];
+            n++;
+        }
+    }
+    g_program_md5[n] = '\0';
+    pthread_mutex_unlock(&g_program_md5_lock);
+}
+
+static void copy_program_md5(char *out)
+{
+    pthread_mutex_lock(&g_program_md5_lock);
+    memcpy(out, g_program_md5, PLUGIN_PROGRAM_MD5_SIZE);
+    pthread_mutex_unlock(&g_program_md5_lock);
+}
+
 // Map PLCState to FC 0x49 LED values (0 STOPPED, 1 RUNNING, 2 ERROR).
 // INIT/EMPTY report as STOPPED (not executing).
 static int plugin_get_plc_state(void)
@@ -219,7 +319,13 @@ static void teardown_plugin_instance(plugin_instance_t *plugin)
         plugin->native_plugin = NULL;
     }
 
+    if (plugin->initialized)
+    {
+        plugin_switch_deinit(plugin);
+    }
+
     plugin->initialized = 0;
+    plugin->detached    = 0;
     memset(&plugin->config, 0, sizeof(plugin->config));
 }
 
@@ -453,6 +559,39 @@ int plugin_driver_append_config(plugin_driver_t *driver, const char *config_file
     return 0;
 }
 
+int plugin_driver_append_hmi(plugin_driver_t *driver)
+{
+    if (!driver)
+    {
+        return -1;
+    }
+    if (access(PLUGIN_HMI_PATH, F_OK) != 0)
+    {
+        return 0;
+    }
+    if (driver->plugin_count >= MAX_PLUGINS)
+    {
+        log_warn("[PLUGIN] MAX_PLUGINS reached, the HMI plugin is not loaded");
+        return 0;
+    }
+
+    plugin_instance_t *plugin = &driver->plugins[driver->plugin_count];
+    memset(plugin, 0, sizeof(*plugin));
+    snprintf(plugin->config.name, sizeof(plugin->config.name), "%s", PLUGIN_HMI_NAME);
+    snprintf(plugin->config.path, sizeof(plugin->config.path), "%s", PLUGIN_HMI_PATH);
+    plugin->config.enabled = 1;
+    plugin->config.type    = PLUGIN_TYPE_NATIVE;
+    driver->plugin_count++;
+
+    /* native_plugin_get_symbols checks build/hmi/hmi.seal before dlopen. */
+    if (native_plugin_get_symbols(plugin) != 0)
+    {
+        log_error("[PLUGIN] HMI plugin failed to load - continuing without it");
+        plugin->degraded = 1;
+    }
+    return 0;
+}
+
 int plugin_driver_load_config(plugin_driver_t *driver, const char *config_file)
 {
     if (!driver || !config_file)
@@ -616,6 +755,8 @@ int plugin_driver_init(plugin_driver_t *driver)
         local_gstate = PyGILState_Ensure();
     }
 
+    forget_unconfigured_switch_owners(driver);
+
     // Initialize ALL plugins regardless of enabled flag (needed for
     // features like EtherCAT slave scanning from the editor).
     // init() must only set up internal state; starting is in start_loop.
@@ -639,6 +780,8 @@ int plugin_driver_init(plugin_driver_t *driver)
                 }
                 return -1;
             }
+            declare_switch_ownership(plugin);
+
             /* BEFORE init(), because init() is where a plugin copies the
              * base pointers by value and decides how big everything is.
              * Delivering afterwards leaves a window, once per load, in which
@@ -690,6 +833,8 @@ int plugin_driver_init(plugin_driver_t *driver)
                 return -1;
             }
 
+            declare_switch_ownership(plugin);
+
             /* BEFORE init(), for the same reason as the Python path above. */
             if (deliver_image_sizes(plugin) != 0)
             {
@@ -727,19 +872,83 @@ int plugin_driver_init(plugin_driver_t *driver)
     return 0;
 }
 
-int plugin_driver_any_initialized(plugin_driver_t *driver)
+int plugin_driver_any_holds_image(plugin_driver_t *driver)
 {
     if (!driver)
         return 0;
     for (int i = 0; i < driver->plugin_count; i++)
     {
-        if (driver->plugins[i].initialized)
+        if (driver->plugins[i].initialized && !driver->plugins[i].detached)
             return 1;
     }
     return 0;
 }
 
-int plugin_driver_cleanup_init(plugin_driver_t *driver)
+/* Calls one slot's detach_image. Returns 1 when it accepted, 0 when it refused or
+ * raised, and -1 when it does not export the symbol. Caller holds the GIL. */
+static int call_detach_image(plugin_instance_t *plugin)
+{
+    if (plugin->config.type == PLUGIN_TYPE_NATIVE && plugin->native_plugin &&
+        plugin->native_plugin->detach_image)
+    {
+        return plugin->native_plugin->detach_image() == 0 ? 1 : 0;
+    }
+
+    if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin &&
+        plugin->python_plugin->pFuncDetachImage)
+    {
+        PyObject *res = PyObject_CallNoArgs(plugin->python_plugin->pFuncDetachImage);
+        if (!res)
+        {
+            PyErr_Print();
+            return 0;
+        }
+        int accepted = (res == Py_True);
+        Py_DECREF(res);
+        return accepted;
+    }
+
+    return -1;
+}
+
+int plugin_driver_detach_images(plugin_driver_t *driver)
+{
+    if (!driver)
+        return 0;
+
+    PyGILState_STATE local_gstate = PyGILState_LOCKED;
+    int have_gil                  = has_python_plugin && Py_IsInitialized();
+    if (have_gil)
+        local_gstate = PyGILState_Ensure();
+
+    int detached = 0;
+    for (int i = 0; i < driver->plugin_count; i++)
+    {
+        plugin_instance_t *plugin = &driver->plugins[i];
+        if (!plugin->initialized || plugin->detached || plugin->running)
+            continue;
+
+        int accepted = call_detach_image(plugin);
+        if (accepted == 1)
+        {
+            plugin->detached = 1;
+            ++detached;
+            log_info("Plugin %s detached from the I/O image", plugin->config.name);
+        }
+        else if (accepted == 0)
+        {
+            log_warn("Plugin %s did not detach; cleaning it up", plugin->config.name);
+        }
+    }
+
+    if (have_gil)
+        PyGILState_Release(local_gstate);
+    return detached;
+}
+
+/* Cleans up every initialised slot in reverse order, skipping detached slots
+ * when keep_detached is set. Returns the count cleaned up. */
+static int cleanup_initialised_slots(plugin_driver_t *driver, int keep_detached)
 {
     if (!driver)
         return 0;
@@ -757,6 +966,8 @@ int plugin_driver_cleanup_init(plugin_driver_t *driver)
         plugin_instance_t *plugin = &driver->plugins[i];
         if (!plugin->initialized)
             continue;
+        if (keep_detached && plugin->detached)
+            continue;
 
         if (plugin->config.type == PLUGIN_TYPE_PYTHON && plugin->python_plugin)
         {
@@ -767,13 +978,25 @@ int plugin_driver_cleanup_init(plugin_driver_t *driver)
         {
             plugin->native_plugin->cleanup();
         }
+        plugin_switch_deinit(plugin);
         plugin->initialized = 0;
+        plugin->detached    = 0;
         ++cleaned;
     }
 
     if (have_gil)
         PyGILState_Release(local_gstate);
     return cleaned;
+}
+
+int plugin_driver_cleanup_init(plugin_driver_t *driver)
+{
+    return cleanup_initialised_slots(driver, 0);
+}
+
+int plugin_driver_cleanup_attached(plugin_driver_t *driver)
+{
+    return cleanup_initialised_slots(driver, 1);
 }
 
 void plugin_driver_release_gil(void)
@@ -822,6 +1045,12 @@ int plugin_driver_start(plugin_driver_t *driver)
         if (!plugin->config.enabled)
         {
             log_info("Skipping disabled plugin during start: %s", plugin->config.name);
+            continue;
+        }
+
+        if (plugin->detached)
+        {
+            log_info("Skipping detached plugin during start: %s", plugin->config.name);
             continue;
         }
 
@@ -935,23 +1164,28 @@ int plugin_driver_stop(plugin_driver_t *driver)
             {
                 PyErr_Print();
                 log_error("Python stop call failed for plugin: %s", plugin->config.name);
-                stop_failed = 1;
+                plugin->stop_failed = 1;
             }
             else
             {
-                int success = PyObject_IsTrue(res);
+                int reported_failure = (res == Py_False);
                 Py_DECREF(res);
-                if (success == 1)
+                if (reported_failure)
                 {
-                    log_info("Plugin %s stopped successfully", plugin->config.name);
+                    log_error("Plugin %s failed to stop cleanly", plugin->config.name);
+                    plugin->stop_failed = 1;
                 }
                 else
                 {
-                    log_error("Plugin %s failed to stop cleanly", plugin->config.name);
-                    stop_failed = 1;
+                    log_info("Plugin %s stopped successfully", plugin->config.name);
+                    plugin->stop_failed = 0;
+                    plugin->running     = 0;
                 }
             }
-            plugin->running = 0;
+            if (plugin->stop_failed)
+            {
+                stop_failed = 1;
+            }
         }
         else if (plugin->native_plugin && plugin->native_plugin->stop)
         {
@@ -983,6 +1217,16 @@ void plugin_driver_destroy(plugin_driver_t *driver)
         return;
     }
 
+    for (int i = 0; i < driver->plugin_count; i++)
+    {
+        if (driver->plugins[i].stop_failed)
+        {
+            log_warn("Leaving every plugin loaded: plugin %s did not stop",
+                     driver->plugins[i].config.name);
+            return;
+        }
+    }
+
     // Check if Python is initialized before any Python operations
     int python_initialized = has_python_plugin && Py_IsInitialized();
     // Initialize to PyGILState_LOCKED (0) to satisfy compiler warning
@@ -998,6 +1242,10 @@ void plugin_driver_destroy(plugin_driver_t *driver)
     for (int i = 0; i < driver->plugin_count; i++)
     {
         plugin_instance_t *plugin = &driver->plugins[i];
+        if (plugin->initialized)
+        {
+            plugin_switch_deinit(plugin);
+        }
         if (plugin->python_plugin && python_initialized && plugin->initialized)
         {
             python_plugin_cleanup(plugin);
@@ -1022,6 +1270,7 @@ void plugin_driver_destroy(plugin_driver_t *driver)
             free(plugin->native_plugin);
             plugin->native_plugin = NULL;
         }
+        plugin->detached = 0;
     }
 
     if (python_initialized)
@@ -1174,9 +1423,15 @@ void *generate_structured_args_with_driver(plugin_type_t type, plugin_driver_t *
     // Run/stop control: the same transition path the socket START / STOP
     // commands drive, plus the mode-switch store the runtime gates starts on
     // and the state read a plugin uses to drive a status LED.
+    char switch_owner_id[PLC_SWITCH_OWNER_ID_SIZE];
+    plugin_switch_owner_id(&driver->plugins[plugin_index], switch_owner_id,
+                           sizeof(switch_owner_id));
     args->request_plc_start   = plugin_request_plc_start;
-    args->set_switch_position = plugin_set_switch_position;
+    args->set_switch_position = plugin_switch_reporter_bind(plugin_index, switch_owner_id);
     args->get_plc_state       = plugin_get_plc_state;
+
+    // MD5 of the loaded program, empty while none is loaded.
+    copy_program_md5(args->program_md5);
 
     // PLC base tick time. Runtime owns base_tick_ns; on first plugin init
     // (before symbols_init) it carries the 20 ms default, so plugins must
@@ -1386,6 +1641,22 @@ int python_plugin_get_symbols(plugin_instance_t *plugin)
         PyErr_Clear();
     }
 
+    py_binds->pFuncDetachImage = PyObject_GetAttrString(py_binds->pModule, "detach_image");
+    if (!py_binds->pFuncDetachImage || !PyCallable_Check(py_binds->pFuncDetachImage))
+    {
+        Py_XDECREF(py_binds->pFuncDetachImage);
+        py_binds->pFuncDetachImage = NULL;
+        PyErr_Clear();
+    }
+
+    py_binds->pFuncOwnsModeSwitch = PyObject_GetAttrString(py_binds->pModule, "owns_mode_switch");
+    if (!py_binds->pFuncOwnsModeSwitch || !PyCallable_Check(py_binds->pFuncOwnsModeSwitch))
+    {
+        Py_XDECREF(py_binds->pFuncOwnsModeSwitch);
+        py_binds->pFuncOwnsModeSwitch = NULL;
+        PyErr_Clear();
+    }
+
     py_binds->pFuncCleanup = PyObject_GetAttrString(py_binds->pModule, "cleanup");
     if (!py_binds->pFuncCleanup || !PyCallable_Check(py_binds->pFuncCleanup))
     {
@@ -1424,11 +1695,10 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
         return -1;
     }
 
-    /* A VPP .so must match the hash compile.sh sealed when it built
-     * that .so on this device, so a post-compile swap is refused.
-     * Scoped to build/vpp/; built-in plugins are not sealed. */
-    if (vpp_plugin_seal_required(plugin->config.path) &&
-        vpp_plugin_seal_verify(plugin->config.path) != 0)
+    /* A VPP or HMI .so must match the hash compile.sh sealed when it
+     * built that .so on this device, so a post-compile swap is refused.
+     * Scoped to build/vpp/ and build/hmi/; built-in plugins are not sealed. */
+    if (plugin_seal_check(plugin->config.path) != 0)
     {
         free(native_bundle);
         return -1;
@@ -1529,6 +1799,10 @@ int native_plugin_get_symbols(plugin_instance_t *plugin)
      * understand per-table image sizes, and the run stays square for it. */
     native_bundle->set_image_sizes =
         (plugin_set_image_sizes_func_t)dlsym(handle, "set_image_sizes");
+
+    native_bundle->detach_image = (plugin_detach_image_func_t)dlsym(handle, "detach_image");
+    native_bundle->owns_mode_switch =
+        (plugin_owns_mode_switch_func_t)dlsym(handle, "owns_mode_switch");
 
     // Store the native bundle and handle in the plugin instance
     plugin->native_plugin = native_bundle;
@@ -1865,6 +2139,8 @@ static void python_plugin_cleanup(plugin_instance_t *plugin)
         Py_XDECREF(plugin->python_plugin->pFuncStop);
         Py_XDECREF(plugin->python_plugin->pFuncCleanup);
         Py_XDECREF(plugin->python_plugin->pFuncSetImageSizes);
+        Py_XDECREF(plugin->python_plugin->pFuncDetachImage);
+        Py_XDECREF(plugin->python_plugin->pFuncOwnsModeSwitch);
         Py_XDECREF(plugin->python_plugin->pModule);
         Py_XDECREF(plugin->python_plugin->args_capsule);
 

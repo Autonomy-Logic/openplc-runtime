@@ -35,6 +35,7 @@ extern "C" {
 #include "journal_buffer.h"
 #include "plc_retain.h"
 #include "plc_state_manager.h"
+#include "plc_switch.h"
 #include "plcapp_manager.h"
 #include "scan_cycle_manager.h"
 #include "task_policy.h"
@@ -55,20 +56,238 @@ PluginManager   *plc_program = NULL;
 
 extern plugin_driver_t   *plugin_driver;
 
-/* Release the image only once no plugin still holds a base pointer into it.
- * Both native plugins copy those pointers by value at init(), so the ordering
- * is checked here rather than left to a comment. Caller holds the mutex. */
+/* Release the image only once no plugin still holds a base pointer into it: every
+ * plugin is either cleaned up or detached. Plugins copy those pointers by value at
+ * init(), so the ordering is checked here. Caller holds the mutex. */
 static void image_tables_free_when_unheld(void)
 {
-    if (plugin_driver_any_initialized(plugin_driver))
+    if (plugin_driver_any_holds_image(plugin_driver))
     {
         log_error("[PLUGIN]: refusing to free the image while a plugin is still "
-                  "initialised — it still holds the base pointers it copied at init()");
+                  "initialised and not detached — it still holds the base pointers it "
+                  "copied at init()");
         return;
     }
     image_tables_free();
 }
 
+static std::atomic<bool> g_stop_failed_latched{false};
+
+extern "C" bool plc_stop_failed_latched(void)
+{
+    return g_stop_failed_latched.load(std::memory_order_acquire);
+}
+
+/* Log each plugin whose stop failed and set the latch under the state lock, so
+ * plc_claim_transition refuses from the same moment. The caller publishes ERROR. */
+static void plc_latch_failed_stop(void)
+{
+    for (int i = 0; i < plugin_driver->plugin_count; i++)
+    {
+        if (plugin_driver->plugins[i].stop_failed)
+        {
+            log_error("Stop failed: plugin %s did not stop; keeping the I/O image and entering "
+                      "ERROR until the runtime restarts",
+                      plugin_driver->plugins[i].config.name);
+        }
+    }
+    pthread_mutex_lock(&state_mutex);
+    g_stop_failed_latched.store(true, std::memory_order_release);
+    pthread_mutex_unlock(&state_mutex);
+}
+
+/**
+ * Retire the I/O image and the program once no plugin thread can touch them.
+ *
+ * Steps, in order: detach_images, so each initialised plugin that exports
+ * detach_image drops its image pointers while the image is still allocated;
+ * journal_cleanup and debug_write_journal_reset; cleanup_attached on every
+ * initialised plugin that did not detach, started or not, since each holds the
+ * base pointers it copied by value at init(); pointer clear and image free under
+ * the image-tables mutex, the free refused while an attached plugin is still
+ * initialised; python_blocks_cleanup; then the program manager, dropping
+ * plc_program. A detached plugin stays initialised until the next start reloads
+ * the plugin configuration.
+ *
+ * Precondition: every running plugin has stopped, because journal_cleanup frees
+ * the forced-slot rows that image_lock reads on plugin threads. The caller does
+ * not hold the image-tables mutex.
+ *
+ * @param pm                  program manager to destroy
+ * @param journal_initialised true when this load ran journal_init
+ */
+static void retire_image(PluginManager *pm, bool journal_initialised)
+{
+    plugin_driver_detach_images(plugin_driver);
+
+    if (journal_initialised)
+    {
+        journal_cleanup();
+        debug_write_journal_reset();
+        log_info("Journal buffer cleaned up");
+    }
+
+    plugin_driver_cleanup_attached(plugin_driver);
+
+    pthread_mutex_t *itm = image_tables_mutex();
+    pthread_mutex_lock(itm);
+    image_tables_clear_null_pointers();
+    image_tables_free_when_unheld();
+    pthread_mutex_unlock(itm);
+
+    void (*python_cleanup)(void);
+    *(void **)&python_cleanup = plugin_manager_get_symbol(pm, "python_blocks_cleanup");
+    if (python_cleanup) python_cleanup();
+
+    if (pm == plc_program) plc_program = NULL;
+    plugin_manager_destroy(pm);
+    if (plugin_driver) plugin_driver_set_program_md5(NULL);
+}
+
+static pthread_mutex_t     start_outcome_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t      start_outcome_cond;
+static pthread_once_t      start_outcome_once  = PTHREAD_ONCE_INIT;
+static uint64_t            g_starts_begun      = 0;
+static uint64_t            g_start_published   = 0;
+static uint64_t            g_armed_ticket      = 0;
+static uint64_t            g_cancelled_ticket  = 0;
+static plc_start_outcome_t g_armed_outcome     = PLC_START_OUTCOME_ERROR;
+
+/** Creates start_outcome_cond on CLOCK_MONOTONIC. */
+static void start_outcome_init(void)
+{
+    monotonic_cond_init(&start_outcome_cond);
+}
+
+/** Locks the rendezvous, creating its condition variable on first use. */
+static void start_outcome_lock(void)
+{
+    pthread_once(&start_outcome_once, start_outcome_init);
+    pthread_mutex_lock(&start_outcome_mutex);
+}
+
+/** Opens the outcome of a new start; called once at the beginning of each start. */
+static void start_outcome_begin(void)
+{
+    start_outcome_lock();
+    ++g_starts_begun;
+    pthread_mutex_unlock(&start_outcome_mutex);
+}
+
+/** start_outcome_publish() for a caller that holds start_outcome_mutex. */
+static void start_outcome_publish_locked(plc_start_outcome_t outcome)
+{
+    if (g_start_published == g_starts_begun)
+        return;
+    g_start_published = g_starts_begun;
+    if (g_armed_ticket == g_starts_begun)
+    {
+        g_armed_outcome = outcome;
+        pthread_cond_broadcast(&start_outcome_cond);
+    }
+}
+
+/** Publishes the in-flight start's outcome; the first publish of a start wins. */
+static void start_outcome_publish(plc_start_outcome_t outcome)
+{
+    start_outcome_lock();
+    start_outcome_publish_locked(outcome);
+    pthread_mutex_unlock(&start_outcome_mutex);
+}
+
+/**
+ * Commits the switch gate's decision for the in-flight start. A cancelled start is
+ * refused with ERROR; a RUN is published at once. Returns the decision to act on.
+ */
+static plc_start_outcome_t start_outcome_commit_gate(plc_start_outcome_t gate)
+{
+    start_outcome_lock();
+    const bool cancelled = g_cancelled_ticket == g_starts_begun;
+    if (cancelled)
+        gate = PLC_START_OUTCOME_ERROR;
+    else if (gate == PLC_START_OUTCOME_RUN)
+        start_outcome_publish_locked(PLC_START_OUTCOME_RUN);
+    pthread_mutex_unlock(&start_outcome_mutex);
+
+    if (cancelled)
+        log_warn("Start cancelled before the mode switch gate decided - PLC left stopped");
+    return gate;
+}
+
+extern "C" uint64_t plc_start_outcome_arm(void)
+{
+    start_outcome_lock();
+    g_armed_ticket        = g_starts_begun + 1;
+    const uint64_t ticket = g_armed_ticket;
+    pthread_mutex_unlock(&start_outcome_mutex);
+    return ticket;
+}
+
+extern "C" bool plc_start_outcome_await(uint64_t ticket, unsigned timeout_ms,
+                                        plc_start_outcome_t *outcome)
+{
+    const struct timespec deadline = monotonic_deadline_ms(timeout_ms);
+
+    start_outcome_lock();
+    int rc = 0;
+    while (g_armed_ticket == ticket && g_start_published < ticket && rc == 0)
+        rc = pthread_cond_timedwait(&start_outcome_cond, &start_outcome_mutex, &deadline);
+    const bool landed = g_armed_ticket == ticket && g_start_published >= ticket;
+    if (landed && outcome)
+        *outcome = g_armed_outcome;
+    pthread_mutex_unlock(&start_outcome_mutex);
+    return landed;
+}
+
+extern "C" bool plc_start_outcome_cancel(uint64_t ticket, plc_start_outcome_t *outcome)
+{
+    start_outcome_lock();
+    const bool published = g_armed_ticket == ticket && g_start_published >= ticket;
+    if (published)
+    {
+        if (outcome)
+            *outcome = g_armed_outcome;
+    }
+    else
+    {
+        g_cancelled_ticket = ticket;
+    }
+    pthread_mutex_unlock(&start_outcome_mutex);
+    return !published;
+}
+
+/**
+ * The start's switch gate, after plugin init and before the PLC cycle thread.
+ * Waits up to PLC_SWITCH_REPORT_WAIT_MS for owners that have not reported since
+ * their init, then commits the decision.
+ */
+static plc_start_outcome_t switch_gate_before_first_scan(void)
+{
+    if (plc_switch_gate() == PLC_SWITCH_GATE_UNKNOWN)
+        plc_switch_await_report(PLC_SWITCH_REPORT_WAIT_MS);
+
+    plc_start_outcome_t gate = PLC_START_OUTCOME_RUN;
+    switch (plc_switch_gate())
+    {
+    case PLC_SWITCH_GATE_RUN:
+        break;
+    case PLC_SWITCH_GATE_STOP:
+        gate = PLC_START_OUTCOME_SWITCH_STOP;
+        break;
+    case PLC_SWITCH_GATE_UNKNOWN:
+        gate = PLC_START_OUTCOME_SWITCH_UNKNOWN;
+        break;
+    }
+
+    gate = start_outcome_commit_gate(gate);
+    if (gate == PLC_START_OUTCOME_SWITCH_STOP)
+        log_warn("Start refused: the mode switch is in STOP - PLC left stopped");
+    else if (gate == PLC_START_OUTCOME_SWITCH_UNKNOWN)
+        log_warn("Start refused: no switch owner has reported a position within %d ms - PLC "
+                 "left stopped",
+                 PLC_SWITCH_REPORT_WAIT_MS);
+    return gate;
+}
 
 PlcTaskCtx *plc_tasks      = nullptr;
 size_t      plc_task_count = 0;
@@ -101,11 +320,7 @@ __attribute__((constructor)) static void state_manager_locks_init_pi(void)
  * matches the dispatcher deadline and does not jump under NTP. */
 static void init_done_cond(void)
 {
-    pthread_condattr_t cattr;
-    pthread_condattr_init(&cattr);
-    pthread_condattr_setclock(&cattr, CLOCK_MONOTONIC);
-    pthread_cond_init(&done_cond, &cattr);
-    pthread_condattr_destroy(&cattr);
+    monotonic_cond_init(&done_cond);
 }
 
 /* Called by a worker when it leaves a scan by any path. Decrements the
@@ -283,7 +498,8 @@ static void plc_task_body(PlcTaskCtx *ctx)
         if (ext_strucpp_set_current_time)
             ext_strucpp_set_current_time(ctx->time_at_dispatch);
 
-        scan_cycle_tracker_start(&ctx->tracker);
+        scan_cycle_tracker_start(&ctx->tracker, ctx->scheduled_ns.load(std::memory_order_acquire),
+                                 ctx->release_ns.load(std::memory_order_acquire));
 
         /* Short locked window drains located inputs into the image, then
          * the body runs against .so storage directly. Shared globals have
@@ -349,6 +565,7 @@ static void plc_task_body(PlcTaskCtx *ctx)
          * completed vs released to decide whether this worker is idle (safe to
          * re-release) or still in its scan (overrun — skip). */
         ctx->completed.fetch_add(1, std::memory_order_release);
+        ctx->first_scan_done.store(true, std::memory_order_release);
         /* Release this scan's in-flight slot; if we're the last task still
          * running this frame, wake the dispatcher so it retires cycle_end off
          * the hot path. */
@@ -378,9 +595,15 @@ static int64_t task_stuck_limit_ns(const PlcTaskCtx *c)
     return PLC_TASK_STUCK_PERIODS * c->interval_ns;
 }
 
+/* Called at each use in plc_cycle_thread: an int64_t local there trips -Wclobbered (sigsetjmp) on 32-bit ARM */
+static inline int64_t timespec_to_ns(const timespec *ts)
+{
+    return (int64_t)ts->tv_sec * 1000000000LL + (int64_t)ts->tv_nsec;
+}
+
 static bool task_first_scan_done(const PlcTaskCtx *c)
 {
-    return c->completed.load(std::memory_order_acquire) > 0;
+    return c->first_scan_done.load(std::memory_order_acquire);
 }
 
 /* How long the current scan may run after its release before the teardown aborts it. */
@@ -790,6 +1013,8 @@ void *plc_cycle_thread(void *arg)
                 ctx->stuck_ticks.store(0,   std::memory_order_relaxed);
                 ctx->exited.store(0,        std::memory_order_relaxed);
                 ctx->release_ns.store(0,    std::memory_order_relaxed);
+                ctx->scheduled_ns.store(0,  std::memory_order_relaxed);
+                ctx->first_scan_done.store(false, std::memory_order_relaxed);
                 ctx->in_body = 0;
 
                 if (scan_cycle_tracker_init(&ctx->tracker, ctx->interval_ns) != 0)
@@ -914,6 +1139,7 @@ void *plc_cycle_thread(void *arg)
     log_info("GCD master-tick dispatcher running (base tick %llu ns)",
              (unsigned long long)base_ns);
     watchdog_dispatcher_started((int64_t)base_ns);
+    dispatcher_stats_reset(&plc_dispatcher_stats, (int64_t)base_ns);
 
     uint64_t master_tick      = 0;
     bool     cycle_end_pending = false;   /* a frame's cycle_end not yet fired */
@@ -926,6 +1152,7 @@ void *plc_cycle_thread(void *arg)
     {
         /* ---- Phase B: the tick (runs at the absolute deadline) ---- */
         const int64_t master_time = (int64_t)master_tick * (int64_t)base_ns;
+        dispatcher_stats_record_tick(&plc_dispatcher_stats, timespec_to_ns(&next_tick), monotonic_ns());
 
         watchdog_feed();
 
@@ -969,7 +1196,13 @@ void *plc_cycle_thread(void *arg)
                 if (plugin_driver) plugin_driver_cycle_end(plugin_driver);
                 cycle_end_pending = false;
             }
-            if (plugin_driver) plugin_driver_cycle_start(plugin_driver);
+            if (plugin_driver)
+            {
+                const int64_t cycle_start_begin_ns = monotonic_ns();
+                plugin_driver_cycle_start(plugin_driver);
+                dispatcher_stats_record_cycle_start(&plc_dispatcher_stats, cycle_start_begin_ns,
+                                                    monotonic_ns());
+            }
 
             /* Prime config-scope shared globals from the input image.
              * Guarded by quiescence (no overrunning task is in run())
@@ -988,8 +1221,9 @@ void *plc_cycle_thread(void *arg)
                 if (!c->alive.load(std::memory_order_acquire)) continue;
                 if ((master_tick % c->divisor) != 0) continue;
 
-                long r  = c->released.load(std::memory_order_relaxed);
-                long cc = c->completed.load(std::memory_order_acquire);
+                const bool first_done = task_first_scan_done(c);
+                long r                = c->released.load(std::memory_order_relaxed);
+                long cc               = c->completed.load(std::memory_order_acquire);
                 if (r == cc)
                 {
                     /* Worker idle (caught up) → stamp time, count it in flight,
@@ -997,6 +1231,7 @@ void *plc_cycle_thread(void *arg)
                      * the worker's matching worker_scan_done() can never drive
                      * g_tasks_running negative. */
                     c->stuck_ticks.store(0, std::memory_order_relaxed);
+                    c->scheduled_ns.store(timespec_to_ns(&next_tick), std::memory_order_release);
                     c->release_ns.store(monotonic_ns(), std::memory_order_release);
                     c->time_at_dispatch = master_time;
                     c->released.store(r + 1, std::memory_order_relaxed);
@@ -1011,19 +1246,19 @@ void *plc_cycle_thread(void *arg)
                      * task simply runs at a lower effective rate; the others are
                      * unaffected. Rate-limit the log. */
                     /* Ticks, not wall time: replayed ticks after a late dispatcher are missed deadlines too. */
-                    if (task_first_scan_done(c))
+                    if (plc_task_skip_is_counted(first_done))
                     {
                         long st = c->stuck_ticks.fetch_add(1, std::memory_order_relaxed) + 1;
                         if (st >= PLC_TASK_STUCK_PERIODS && stuck_idx == SIZE_MAX)
                             stuck_idx = i;
+                        long oc = c->overrun_count.fetch_add(1, std::memory_order_relaxed) + 1;
+                        if (oc == 1 || (oc % 50) == 0)
+                            log_warn("[task %s] scan overrun #%ld: body exceeds its "
+                                     "%lld ms period — running at reduced rate, "
+                                     "other tasks unaffected",
+                                     c->name, oc,
+                                     (long long)(c->interval_ns / 1000000));
                     }
-                    long oc = c->overrun_count.fetch_add(1, std::memory_order_relaxed) + 1;
-                    if (oc == 1 || (oc % 50) == 0)
-                        log_warn("[task %s] scan overrun #%ld: body exceeds its "
-                                 "%lld ms period — running at reduced rate, "
-                                 "other tasks unaffected",
-                                 c->name, oc,
-                                 (long long)(c->interval_ns / 1000000));
                 }
             }
 
@@ -1131,6 +1366,7 @@ void *plc_cycle_thread(void *arg)
     }
 
     watchdog_dispatcher_stopped();
+    dispatcher_stats_reset(&plc_dispatcher_stats, (int64_t)base_ns);
     g_first_scan_since_ns.store(0, std::memory_order_release);
     reap_task_threads();
     plc_outputs_off();
@@ -1145,6 +1381,15 @@ void *plc_cycle_thread(void *arg)
     return NULL;
 }
 
+/**
+ * Loads the program, reloads and initialises the plugins, applies the switch gate
+ * and creates the PLC cycle thread. Plugins initialised for this load receive the
+ * program's MD5; the HMI plugin is appended after plugins.conf and vpp_plugins.conf
+ * when build/hmi/ has one.
+ *
+ * @return 0 when the cycle thread was created, 1 when the switch gate refused and
+ *         the start landed STOPPED, -1 on failure (ERROR or EMPTY published)
+ */
 extern "C" int load_plc_program(PluginManager *pm)
 {
     if (pm == NULL)
@@ -1177,6 +1422,8 @@ extern "C" int load_plc_program(PluginManager *pm)
          * lines above its own boot allocation. */
         if (plugin_driver)
         {
+            plugin_driver_set_program_md5(
+                (const char *)plugin_manager_try_get_symbol(pm, "strucpp_program_md5"));
             if (plugin_driver_update_config(plugin_driver, "./plugins.conf") != 0)
             {
                 log_error("[PLUGIN]: Failed to load plugin configuration");
@@ -1202,6 +1449,7 @@ extern "C" int load_plc_program(PluginManager *pm)
                 plugin_manager_destroy(pm);
                 return -1;
             }
+            plugin_driver_append_hmi(plugin_driver);
         }
 
         /* PLUGIN CONFIG IS LOADED BEFORE THE IMAGE IS SIZED, and the order is
@@ -1301,26 +1549,23 @@ extern "C" int load_plc_program(PluginManager *pm)
                  * half-allocated state and (e.g.) double-spawn EtherCAT
                  * masters or OPC-UA sockets. */
                 log_error("[PLUGIN]: Plugin init failed — rolling back");
-                plugin_driver_cleanup_init(plugin_driver);
-                /* The image this load allocated goes back too. cleanup_init has
-                 * just undone every plugin's init(), so nothing holds the base
-                 * pointers any more, and leaving it would keep a whole image
-                 * reserved for a program that never started. */
-                {
-                    pthread_mutex_t *rollback_itm = image_tables_mutex();
-                    pthread_mutex_lock(rollback_itm);
-                    image_tables_free_when_unheld();
-                    pthread_mutex_unlock(rollback_itm);
-                }
+                retire_image(pm, false);
                 pthread_mutex_lock(&state_mutex);
                 plc_state = PLC_STATE_ERROR;
                 pthread_mutex_unlock(&state_mutex);
                 log_info("PLC State: ERROR");
-                if (pm == plc_program) plc_program = NULL;
-                plugin_manager_destroy(pm);
                 return -1;
             }
             log_info("[PLUGIN]: Plugins re-initialized with updated config");
+        }
+
+        const plc_start_outcome_t gate = switch_gate_before_first_scan();
+        if (gate != PLC_START_OUTCOME_RUN)
+        {
+            start_outcome_publish(gate);
+            retire_image(pm, false);
+            plc_publish_final_state(PLC_STATE_STOPPED);
+            return 1;
         }
 
         if (pthread_create(&plc_thread, NULL, plc_cycle_thread, pm) != 0)
@@ -1330,25 +1575,11 @@ extern "C" int load_plc_program(PluginManager *pm)
              * state (allocated buffers, opened devices). Roll those back
              * before bailing — otherwise the next start retries init()
              * on a half-initialised driver. */
-            if (plugin_driver) plugin_driver_cleanup_init(plugin_driver);
-            /* Same reasoning as the init-failure rollback above: the plugins
-             * have been de-initialised, so the image they were pointing at is
-             * free to go and must, or this load leaks it. */
-            {
-                pthread_mutex_t *rollback_itm = image_tables_mutex();
-                pthread_mutex_lock(rollback_itm);
-                image_tables_free_when_unheld();
-                pthread_mutex_unlock(rollback_itm);
-            }
+            retire_image(pm, false);
             pthread_mutex_lock(&state_mutex);
             plc_state = PLC_STATE_ERROR;
             pthread_mutex_unlock(&state_mutex);
             log_info("PLC State: ERROR");
-            // Drop the manager so the next RUNNING transition re-runs
-            // find_libplc_file. See the comment on the dlopen-failure
-            // branch below for the full reasoning.
-            if (pm == plc_program) plc_program = NULL;
-            plugin_manager_destroy(pm);
             return -1;
         }
 
@@ -1409,58 +1640,14 @@ static int unload_plc_program_locked(PluginManager *pm)
          * still be alive to answer). */
         plc_retain_flush();
 
-        plugin_driver_stop(plugin_driver);
+        if (plugin_driver && plugin_driver_stop(plugin_driver) != 0)
+        {
+            plc_latch_failed_stop();
+            plc_publish_final_state(PLC_STATE_ERROR);
+            return -1;
+        }
 
-        /* AFTER plugin_driver_stop, not before, and the reason is a lifetime
-         * rather than tidiness.
-         *
-         * journal_cleanup() frees the forced-slot rows, which used to be
-         * static storage and now are not. image_lock is handed to every plugin
-         * as args->image_lock and calls journal_apply_and_clear(), so
-         * is_slot_forced() runs on plugin-owned threads -- EtherCAT's bus
-         * thread and the s7comm server callback among them. Freeing those rows
-         * while those threads are live is a use-after-free reachable from an
-         * ordinary operation: forcing a variable from the debugger or over
-         * OPC UA is all it takes for there to be anything to read.
-         *
-         * Stopping the plugins first is the only thing that guarantees no
-         * plugin thread is inside image_lock(). force_map_free() clears its
-         * guards before freeing as a second line of defence, but ordering is
-         * what actually closes this.
-         *
-         * plc_retain_flush() above still has to run BEFORE the stop, because a
-         * plugin-backed store has to be alive to answer -- so the two sit on
-         * opposite sides of it deliberately. */
-        journal_cleanup();
-        debug_write_journal_reset();
-        log_info("Journal buffer cleaned up");
-
-        /* STOP IS NOT ENOUGH TO MAKE THE IMAGE FREEABLE, which is easy to miss.
-         *
-         * plugin_driver_stop skips any plugin whose `running` is 0, and a
-         * plugin can be initialised and never started -- ethercat is
-         * deliberately init'd even when disabled. Such a plugin still holds
-         * the by-value copy of the base pointers it took in init(), so
-         * stopping the running ones and freeing would leave it pointing at
-         * released memory. cleanup_init undoes init() for every plugin,
-         * started or not, which is what actually ends the last reference. */
-        plugin_driver_cleanup_init(plugin_driver);
-
-        pthread_mutex_t *itm = image_tables_mutex();
-        pthread_mutex_lock(itm);
-        image_tables_clear_null_pointers();
-        /* Released only after every plugin has been stopped AND de-initialised
-         * above. Both native plugins cache these pointers by value at init(),
-         * so freeing any earlier hands them memory that belongs to nobody. */
-        image_tables_free_when_unheld();
-        pthread_mutex_unlock(itm);
-
-        void (*python_cleanup)(void);
-        *(void **)&python_cleanup = plugin_manager_get_symbol(pm, "python_blocks_cleanup");
-        if (python_cleanup) python_cleanup();
-
-        plugin_manager_destroy(pm);
-        plc_program = NULL;
+        retire_image(pm, true);
 
         log_info("PLC program unloaded successfully");
 
@@ -1519,7 +1706,11 @@ extern "C" bool plc_outputs_off_without_program(void)
 
     plugin_driver_start(plugin_driver);
     plc_outputs_off();
-    plugin_driver_stop(plugin_driver);
+    if (plugin_driver_stop(plugin_driver) != 0)
+    {
+        plc_latch_failed_stop();
+        return true;
+    }
 
     pthread_mutex_lock(itm);
     image_tables_clear_null_pointers();
@@ -1553,6 +1744,14 @@ extern "C" bool plc_claim_transition(PLCState target)
     }
 
     pthread_mutex_lock(&state_mutex);
+
+    if (g_stop_failed_latched.load(std::memory_order_acquire))
+    {
+        pthread_mutex_unlock(&state_mutex);
+        log_error("Refusing to transition to %s: a plugin did not stop; restart the runtime",
+                  target == PLC_STATE_RUNNING ? "RUNNING" : "STOPPED");
+        return false;
+    }
 
     /* Drop, don't queue. Requests are dropped while a transition is in flight,
      * and the switch's intent is recovered afterwards by reconciliation (see
@@ -1631,6 +1830,7 @@ extern "C" bool plc_set_state(PLCState new_state)
 
     if (new_state == PLC_STATE_RUNNING)
     {
+        start_outcome_begin();
         if (plc_program == NULL)
         {
             char *libplc_path = find_libplc_file(libplc_build_dir);
@@ -1638,6 +1838,7 @@ extern "C" bool plc_set_state(PLCState new_state)
             {
                 log_error("Failed to find libplc file");
                 plc_publish_final_state(PLC_STATE_EMPTY);
+                start_outcome_publish(PLC_START_OUTCOME_ERROR);
                 return false;
             }
 
@@ -1648,6 +1849,7 @@ extern "C" bool plc_set_state(PLCState new_state)
             {
                 log_error("Failed to create PluginManager");
                 plc_publish_final_state(PLC_STATE_EMPTY);
+                start_outcome_publish(PLC_START_OUTCOME_ERROR);
                 return false;
             }
         }
@@ -1658,6 +1860,7 @@ extern "C" bool plc_set_state(PLCState new_state)
              * transition can never end without a final state. Re-publishing the
              * same value is harmless. */
             if (plc_state_is_transitioning()) plc_publish_final_state(PLC_STATE_ERROR);
+            start_outcome_publish(PLC_START_OUTCOME_ERROR);
             return false;
         }
     }
@@ -1707,6 +1910,13 @@ extern "C" void plc_state_manager_cleanup(void)
     {
         log_warn("Shutdown proceeding with a state change still in flight after %d ms",
                  waited);
+    }
+
+    if (plc_stop_failed_latched())
+    {
+        log_warn("Shutdown leaves the program, journal and I/O image in place: a plugin did "
+                 "not stop");
+        return;
     }
 
     if (plc_program) unload_plc_program(plc_program);

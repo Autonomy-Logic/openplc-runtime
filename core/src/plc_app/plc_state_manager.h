@@ -22,12 +22,14 @@
 typedef std::atomic<long>               plc_atomic_long_t;
 typedef std::atomic<uint_least64_t>     plc_atomic_u64_t;
 typedef std::atomic<int_least64_t>      plc_atomic_i64_t;
+typedef std::atomic<bool>               plc_atomic_bool_t;
 extern "C" {
 #else
 #include <stdatomic.h>
 typedef atomic_long                     plc_atomic_long_t;
 typedef atomic_uint_least64_t           plc_atomic_u64_t;
 typedef atomic_int_least64_t            plc_atomic_i64_t;
+typedef atomic_bool                     plc_atomic_bool_t;
 #endif
 
 /* Runtime states. TRANSITIONING values APPEND, never insert: the
@@ -66,6 +68,10 @@ typedef struct PlcTaskCtx
     plc_atomic_long_t     stuck_ticks;     /* consecutive due ticks found still in one scan */
     plc_atomic_long_t     exited;          /* 1 once the thread function has returned */
     plc_atomic_i64_t      release_ns;      /* CLOCK_MONOTONIC time of the last release */
+    /* CLOCK_MONOTONIC deadline of the tick of the last release */
+    plc_atomic_i64_t      scheduled_ns;
+    /* Set by the worker once its first scan has ended, after that scan's completed bump */
+    plc_atomic_bool_t     first_scan_done;
 
     sigjmp_buf            crash_jmp;
     volatile sig_atomic_t crash_sig;
@@ -110,6 +116,10 @@ PLCState plc_get_state(void);
  * Go through plc_begin_transition() instead. It is the only intended entry point
  * for a state change and it does the claiming for you.
  *
+ * A start applies the switch gate after the plugin re-init: refused, it runs no
+ * scan, lands STOPPED and still counts as completed. Each start publishes its
+ * outcome for plc_start_outcome_await().
+ *
  * @param new_state PLC_STATE_RUNNING or PLC_STATE_STOPPED
  * @return true if the transition body completed without error
  */
@@ -121,8 +131,9 @@ bool plc_set_state(PLCState new_state);
  * The single arbiter for "may this change start". Under the state lock: a request
  * arriving while a TRANSITIONING state is current is DROPPED -- you cannot change
  * state in the middle of changing state -- and so is a request for the state the
- * runtime is already in. Otherwise the direction is published and the caller owns
- * the transition until it publishes a final state.
+ * runtime is already in. Every request is refused while plc_stop_failed_latched()
+ * is true. Otherwise the direction is published and the caller owns the transition
+ * until it publishes a final state.
  *
  * @param target PLC_STATE_RUNNING or PLC_STATE_STOPPED
  * @return true when the transition is claimed and the caller must complete it
@@ -165,7 +176,8 @@ int64_t plc_stop_budget_ms(void);
  *
  * Used on the safe-mode boot after a watchdog exit: loads and starts the configured
  * plugins (including VPP board plugins), runs the same outputs-off sequence as a
- * stop, then stops the plugins again. The caller must hold a claimed stop.
+ * stop, then stops the plugins again. The caller must hold a claimed stop. A plugin
+ * that fails to stop sets plc_stop_failed_latched() and the image is left as it is.
  *
  * @return true when the plugins were brought up and the zeroed outputs were pushed
  */
@@ -188,6 +200,66 @@ void plc_request_first_scan_trip(void);
 
 /** @brief True while a transition is in flight (either direction). */
 bool plc_state_is_transitioning(void);
+
+/**
+ * @brief True once a plugin failed to stop, until the process exits.
+ *
+ * While true, plc_claim_transition refuses every target, the I/O image, journal
+ * and program library stay as the failed stop left them, and shutdown does not
+ * tear them down.
+ */
+bool plc_stop_failed_latched(void);
+
+/**
+ * @brief How a start ended, published once per start.
+ *
+ * RUN when the switch gate let the PLC cycle thread start; SWITCH_STOP or
+ * SWITCH_UNKNOWN when the gate refused after the plugin re-init (the start runs
+ * no scan and lands STOPPED; the outcome is published when the gate refuses,
+ * before the rollback); ERROR on any other failure, and when a caller cancelled
+ * the start before the gate decided.
+ */
+typedef enum
+{
+    PLC_START_OUTCOME_RUN,
+    PLC_START_OUTCOME_SWITCH_STOP,
+    PLC_START_OUTCOME_SWITCH_UNKNOWN,
+    PLC_START_OUTCOME_ERROR
+} plc_start_outcome_t;
+
+#define PLC_START_OUTCOME_WAIT_MS 12000
+
+/**
+ * @brief Reserve the outcome of the next start for plc_start_outcome_await().
+ *
+ * Call before plc_begin_transition(PLC_STATE_RUNNING); the start that transition
+ * begins publishes into the returned ticket.
+ *
+ * @return the ticket of the next start
+ */
+uint64_t plc_start_outcome_arm(void);
+
+/**
+ * @brief Wait up to @p timeout_ms for the outcome of the start @p ticket names.
+ *
+ * Returns at RUN once the switch gate let the start through, at SWITCH_STOP or
+ * SWITCH_UNKNOWN once the gate refused, and at any other outcome after its final
+ * state was published.
+ *
+ * @return true with @p outcome set, false when the wait ran out
+ */
+bool plc_start_outcome_await(uint64_t ticket, unsigned timeout_ms, plc_start_outcome_t *outcome);
+
+/**
+ * @brief Cancel the start @p ticket names unless its outcome is already published.
+ *
+ * A cancelled start is refused at its switch gate: it runs no scan and lands
+ * STOPPED.
+ *
+ * @return true when cancelled; false when the outcome was already published, with
+ *         @p outcome set
+ */
+bool plc_start_outcome_cancel(uint64_t ticket, plc_start_outcome_t *outcome);
 
 /* transition_worker stops waiting for a landing at PLC_TRANSITION_LANDING_TIMEOUT_MS.
  * The watchdog forces ERROR on a start stuck past PLC_TRANSITION_STUCK_TIMEOUT_MS; a

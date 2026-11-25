@@ -714,6 +714,12 @@ def test_a_bad_password_is_refused():
                         {"username": USERNAME, "password": "wrong"})
     if status != 401:
         raise Failure(f"want 401, got {status}: {body}")
+    # The failure throttles this address: the next attempt is held, not checked.
+    status, _ = http("/api/bootloader/login", "POST",
+                     {"username": "nobody", "password": PASSWORD})
+    if status != 429:
+        raise Failure(f"an attempt right after a failure must get 429, got {status}")
+    time.sleep(6)
     status, _ = http("/api/bootloader/login", "POST",
                      {"username": "nobody", "password": PASSWORD})
     if status != 401:
