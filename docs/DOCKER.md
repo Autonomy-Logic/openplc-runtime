@@ -776,9 +776,11 @@ makes that tag push stop, so `latest` moves only through a tag push of a version
 not yet published.
 
 Every runtime image is built with `SOURCE_DATE_EPOCH` set to the time of the
-built commit and `rewrite-timestamp=true` on the registry output, so the file
-timestamps of a layer come from the commit and not from the build time, and
-carries a buildx
+last commit that changed the venv inputs (the `Dockerfile`, the requirements
+files, `pyproject.toml`, `install.sh`, `scripts/manage_plugin_venvs.sh`) and
+`rewrite-timestamp=true` on the registry output. The file timestamps of a layer
+then stay the same from one commit to the next, so a commit that changes only
+application code publishes the same venvs layer. Every image also carries a buildx
 provenance attestation (`mode=max`) and an SBOM attestation. Two measurement
 builds of commits that change only application code can therefore be published
 and compared layer by layer without touching the release package.

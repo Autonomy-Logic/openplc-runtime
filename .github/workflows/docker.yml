@@ -40,6 +40,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Verify the pinned base image
         timeout-minutes: 10
@@ -68,9 +70,13 @@ jobs:
           TEST_TAG: ${{ inputs.test_tag }}
         run: ./scripts/publish-plan.sh >> "$GITHUB_OUTPUT"
 
-      - name: Read the commit time
+      # A time that moved with every commit would give every layer a new digest.
+      - name: Read the time of the last change to the venv inputs
         id: epoch
-        run: echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+        run: |
+          epoch="$(git log -1 --format=%ct -- Dockerfile requirements.txt pyproject.toml install.sh scripts/manage_plugin_venvs.sh 'core/src/drivers/plugins/python/*/requirements.txt')"
+          [ -n "$epoch" ] || { echo "::error::no commit found for the venv inputs"; exit 1; }
+          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
 
       - name: Build and Push Multi-Arch Image
         uses: docker/build-push-action@v6

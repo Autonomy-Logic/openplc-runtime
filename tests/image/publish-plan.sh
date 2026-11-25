@@ -330,11 +330,15 @@ check_workflow_docker_build_names_no_latest() {
     [ -z "$hits" ] || { echo "the build job names latest itself: $(clip "$(printf '%s' "$hits" | tr -s ' ' | tr '\n' ';')")"; return 1; }
 }
 
-check_workflow_docker_build_source_date_epoch_from_commit() {
-    local job rc=0
+check_workflow_docker_build_source_date_epoch_from_venv_inputs() {
+    local job log rc=0
     job="$(build_job_text)"
     printf '%s\n' "$job" | grep -q 'SOURCE_DATE_EPOCH' || { echo "the build job does not set SOURCE_DATE_EPOCH"; rc=1; }
-    printf '%s\n' "$job" | grep -Eq 'git (log|show) .*%ct' || { echo "the build job does not read the commit time (git log or show with %ct)"; rc=1; }
+    log="$(printf '%s\n' "$job" | grep -E 'git log .*%ct')"
+    [[ "$log" == *" -- "*requirements.txt* ]] ||
+        { echo "the build job does not read the time of the last commit that changed the venv inputs: $(clip "$log")"; rc=1; }
+    printf '%s\n' "$job" | grep -Eq 'fetch-depth:[[:space:]]*0([[:space:]]|$)' ||
+        { echo "the build job checkout does not fetch the history (fetch-depth: 0)"; rc=1; }
     return "$rc"
 }
 
@@ -428,7 +432,7 @@ run_publish_checks() {
     run_check "workflow/docker-build-plan-gets-dispatch-inputs" check_workflow_docker_build_plan_gets_dispatch_inputs
     run_check "workflow/docker-build-version-from-plan" check_workflow_docker_build_version_from_plan
     run_check "workflow/docker-build-names-no-latest" check_workflow_docker_build_names_no_latest
-    run_check "workflow/docker-build-source-date-epoch-from-commit" check_workflow_docker_build_source_date_epoch_from_commit
+    run_check "workflow/docker-build-source-date-epoch-from-venv-inputs" check_workflow_docker_build_source_date_epoch_from_venv_inputs
     run_check "workflow/docker-build-rewrites-timestamps" check_workflow_docker_build_rewrites_timestamps
     run_check "workflow/docker-build-provenance" check_workflow_docker_build_provenance
     run_check "workflow/docker-build-sbom" check_workflow_docker_build_sbom
