@@ -180,7 +180,13 @@ Host to web server:
   load (`Sec-Fetch-Mode: navigate`, or `Accept: text/html` without that header) is redirected to
   `/hmi/`; each refusal is logged. Served files keep `Cache-Control: no-store`, so no cache holds the
   module after sign-out. Every signed-in role receives the same module, with every screen; what each
-  role may read and write is enforced by the host (see Host).
+  role may read and write is enforced by the host (see Host). `hmi.wasm` is served with
+  `X-HMI-Build`, the sha256 of the bytes served (the module's seal line).
+- HMI build ID: the sha256 the seal records for `client/hmi.wasm`, read when the web server connects
+  to the host, so it names the build the running plugin was loaded with (`plc_main` loads the plugin
+  only after checking the same seal). An upload replaces `build/hmi` before the PLC stops; until the
+  host comes back with the new plugin, the build ID stays the old one, and `hmi.wasm` on disk (and its
+  `X-HMI-Build`) is already the new one.
 - Namespace `/api/hmi`: the access token is checked at connect (`auth.token`) with the same rules as
   every endpoint (signature, expiry, revocation, session, account, role in `webserver/access.py`).
   While connected it is re-checked every 5 seconds and on each client event for revocation, session,
@@ -194,14 +200,17 @@ Host to web server:
   the value's bytes (a Socket.IO binary, at most 1024 bytes). A show or write that does not check out
   is forwarded as one naming 0xFFFF, which the host refuses, so the write count stays the browser's.
   `n` is the client's sequence number (0 to 2^53); events are forwarded in `n` order per viewer, at
-  most 64 held; an invalid event still uses its number. Shows and writes before the viewer is open on
-  the host, or while the host is down, are dropped.
+  most 64 held; an invalid event still uses its number. Shows, writes and bit writes carry `h`, the
+  HMI build ID the client's module was loaded with (64 lower-case hex digits), and are forwarded
+  only when it is the build of the host connection the viewer was opened on; one without `h` or
+  with another build is dropped and logged (it still uses its number). Shows and writes before the
+  viewer is open on the host, or while the host is down, are dropped.
 - Server events: `hmi_values` (the VALUES payload after the viewer id) is sent with an
   acknowledgement: until the browser acknowledges it, newer values for that viewer are merged (newer
   values win; values for another screen replace them) and sent together once it does (after 1 second
   without an acknowledgement they are sent anyway). `hmi_refused` `{what: "show"|"write", id}`.
-  `hmi_status` carries `state`: `live` with `role` (sent on OPENED; the browser runs the screens with
-  that role), `stopped` (the HMI is installed but the PLC is stopped: viewers stay connected and are
+  `hmi_status` carries `state`: `live` with `role` and `build`, the HMI build ID (sent on OPENED; the
+  browser runs the screens of that build with that role), `stopped` (the HMI is installed but the PLC is stopped: viewers stay connected and are
   opened again on start), `out_of_date` (to every viewer, and to viewers that connect later), `busy`
   (the host refused this viewer, see Host; its next open retries) or `unavailable` (no HMI installed).
   A message the web server cannot handle drops the host connection, which is then opened again; it
@@ -217,7 +226,12 @@ draws the same pixels as the editor's preview and a panel. Licence texts ship be
 
 - Screens module: fetched once signed in, with `Authorization: Bearer` and the token, and compiled
   from the bytes; a refused fetch (401 or 403) returns to the form. Signing out drops the module, so
-  the next account fetches it again with its own token.
+  the next account fetches it again with its own token. The module is kept with its `X-HMI-Build`.
+  A `live` whose `build` differs from the running module's stops the screens (the old module's
+  queued writes are dropped) and loads that build: the module is fetched again, and while the one
+  served is not that build (the new HMI is installed but its plugin not yet loaded) the screens stay
+  stopped with "HMI updating, please wait" until the next `live`. Every show and write carries the
+  running module's build.
 - Sign in: the page's form posts to `/api/login`; a 401 shows "Wrong user name or password.", a 429
   the wait from `Retry-After`. The token is kept in the browser's `localStorage`, so a reload or a
   browser restart on the same device stays signed in while the token is valid.
@@ -236,7 +250,8 @@ draws the same pixels as the editor's preview and a panel. Licence texts ship be
   skipped for that tag. Every write is tagged with the screen shown when screen code made it, and the
   client sends a screen's show right before its first write: the old screen's writes (its OnHide)
   go before the new screen's show, the new screen's (its OnShow and first frame) after it.
-- Notices: `stopped` "PLC stopped", `out_of_date` "HMI out of date, rebuild the project", `busy` "Device
+- Notices: `stopped` "PLC stopped", `out_of_date` "HMI out of date, rebuild the project", "HMI
+  updating, please wait" (see Screens module), `busy` "Device
   busy, try later" (asked again after 5 seconds), `unavailable` "No HMI installed", "Device
   unreachable, reconnecting" while the socket is down, and a screen fault (an IEC fault in screen
   code stops the module) "The screen stopped on an error; restarting": the screens start again

@@ -100,7 +100,11 @@ def extracted_names(valid_files: list[zipfile.ZipInfo]) -> list[tuple[zipfile.Zi
 
 
 def analyze_zip(zip_path) -> tuple[bool, list]:
-    """Analyze the ZIP file for safety before extraction."""
+    """Analyze the ZIP file for safety before extraction.
+
+    Extensions are judged on the extracted path: ``.js``, ``.wasm`` and ``.html`` only as HMI
+    client files, the rest of ``DISALLOWED_EXT`` nowhere.
+    """
     build_state.status = BuildStatus.UNZIPPING
 
     if not zipfile.is_zipfile(zip_path):
@@ -136,8 +140,6 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
             total_size += uncompressed_size
             valid_files.append(info)
 
-        # Extensions are judged on the extracted path: .js, .wasm and .html only as HMI client
-        # files, the rest of DISALLOWED_EXT nowhere.
         for _info, name in extracted_names(valid_files):
             if not hmi_upload.extension_allowed(name, DISALLOWED_EXT):
                 logger.warning("Disallowed extension: %s", name)
@@ -716,6 +718,8 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
     before invoking compile.sh. This forces a full recompile from scratch
     even when source content hashes match the cached objects — useful when
     the user suspects a stale or corrupted cache.
+
+    A failed build keeps the running program and the installed HMI: no stop, no swap.
     """
     script_path: str = "./scripts/compile.sh"
 
@@ -807,7 +811,6 @@ def run_compile(runtime_manager: RuntimeManager, cwd: str = "core/generated", cl
         # Block until compile finishes.
         compile_ok = wait_step(compile_proc, "Build")
         if not compile_ok:
-            # The running program and the installed HMI stay: no stop, no swap.
             _discard_new_program()
             build_state.status = BuildStatus.FAILED
             build_state.exit_code = 1

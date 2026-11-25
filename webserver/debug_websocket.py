@@ -59,8 +59,8 @@ def _reverify_session_token() -> bool:
     Token EXPIRY, which is not a revocation. A debug session is a long-lived
     connection authenticated at the handshake -- the model every WebSocket
     client assumes, and the one this endpoint had before v4.2.0. The
-    access-token lifetime (15 minutes, the flask-jwt-extended default, since no
-    config sets JWT_ACCESS_TOKEN_EXPIRES) bounds how long a bearer token may be
+    access-token lifetime (15 minutes: restapi.py sets JWT_ACCESS_TOKEN_EXPIRES
+    from sessions.TOKEN_LIFETIME) bounds how long a bearer token may be
     presented to obtain NEW access, and the connect handler still enforces it in
     full: an expired token cannot open a socket, and cannot be installed by
     ``reauth`` either.

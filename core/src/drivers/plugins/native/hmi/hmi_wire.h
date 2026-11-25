@@ -114,7 +114,8 @@ extern "C"
     hmi_wire_result_t hmi_wire_decode(const uint8_t *buf, size_t len, hmi_wire_msg_t *out,
                                       size_t *consumed);
 
-    /** Whether s[0..len) is well-formed UTF-8 without control characters. */
+    /** Whether s[0..len) is well-formed UTF-8 without control characters: overlong forms,
+     *  surrogates, code points past U+10FFFF, C0, DEL and C1 controls are refused. */
     bool hmi_wire_name_valid(const uint8_t *s, size_t len);
 
     /** Writes OPENED or BUSY into out (HMI_WIRE_VIEWER_MSG bytes); returns its length. */

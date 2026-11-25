@@ -7,7 +7,6 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -22,6 +21,8 @@ const (
 	throttleMaxDelay = 300 * time.Second
 	// throttleForget is how long after its last failure a counter starts again and is dropped.
 	throttleForget = 3600 * time.Second
+	// unknownAddressKey is the counter shared by every sign-in whose client address is unknown.
+	unknownAddressKey = "addr:unknown"
 )
 
 // failureCounter holds the consecutive failed sign-ins of one key.
@@ -31,7 +32,8 @@ type failureCounter struct {
 	nextAllowed time.Time
 }
 
-// loginThrottle caps concurrent verifications and delays sign-ins per username and per client address.
+// loginThrottle caps concurrent verifications and delays sign-ins per client address only, whatever the
+// username, so failures from one address never delay another.
 type loginThrottle struct {
 	slots chan struct{}
 
@@ -57,35 +59,27 @@ func throttleDelay(failures int) time.Duration {
 	return min(delay, throttleMaxDelay)
 }
 
-// usernameKey is the counter key of a username, trimmed and lower-cased.
-func usernameKey(username string) string {
-	return "user:" + strings.ToLower(strings.TrimSpace(username))
-}
-
-// throttleKeys are the counters a sign-in by username from address is held to.
-func throttleKeys(username, address string) []string {
-	keys := []string{usernameKey(username)}
-	if address != "" {
-		keys = append(keys, "addr:"+address)
+// throttleKey is the counter key of a sign-in from address; one shared key when the address is unknown.
+func throttleKey(address string) string {
+	if address == "" {
+		return unknownAddressKey
 	}
-	return keys
+	return "addr:" + address
 }
 
-// wait reports the whole seconds, rounded up, before an attempt on keys is accepted; 0 when it may go ahead.
-func (t *loginThrottle) wait(keys []string) int {
+// wait reports the whole seconds, rounded up, before an attempt on key is accepted; 0 when it may go ahead.
+func (t *loginThrottle) wait(key string) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	now := t.now()
-	var longest time.Duration
-	for _, key := range keys {
-		if counter, ok := t.counters[key]; ok {
-			longest = max(longest, counter.nextAllowed.Sub(now))
-		}
-	}
-	if longest <= 0 {
+	counter, ok := t.counters[key]
+	if !ok {
 		return 0
 	}
-	return int(math.Ceil(longest.Seconds()))
+	remaining := counter.nextAllowed.Sub(t.now())
+	if remaining <= 0 {
+		return 0
+	}
+	return int(math.Ceil(remaining.Seconds()))
 }
 
 // acquire takes a verification slot, reporting false when none is free.
@@ -105,29 +99,20 @@ func (t *loginThrottle) release() {
 	}
 }
 
-// recordFailure counts a failed sign-in on keys, sets their next allowed attempt and drops idle counters.
-func (t *loginThrottle) recordFailure(keys []string) {
+// recordFailure counts a failed sign-in on key, sets its next allowed attempt and drops idle counters.
+func (t *loginThrottle) recordFailure(key string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
 	t.forgetIdle(now)
-	for _, key := range keys {
-		counter, ok := t.counters[key]
-		if !ok {
-			counter = &failureCounter{}
-			t.counters[key] = counter
-		}
-		counter.failures++
-		counter.lastFailure = now
-		counter.nextAllowed = now.Add(throttleDelay(counter.failures))
+	counter, ok := t.counters[key]
+	if !ok {
+		counter = &failureCounter{}
+		t.counters[key] = counter
 	}
-}
-
-// recordSuccess clears the username counter; the address counter is kept.
-func (t *loginThrottle) recordSuccess(username string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	delete(t.counters, usernameKey(username))
+	counter.failures++
+	counter.lastFailure = now
+	counter.nextAllowed = now.Add(throttleDelay(counter.failures))
 }
 
 // forgetIdle drops counters whose last failure is older than throttleForget. Called with t.mu held.

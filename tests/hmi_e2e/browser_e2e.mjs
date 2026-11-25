@@ -227,9 +227,9 @@ async function main() {
             s.on('hmi_status', (st) => {
               got.statuses.push(st)
               if (st.state === 'live') {
-                s.emit('in', { t: 's', p: overview, n: 1 })
-                s.emit('in', { t: 's', p: status, n: 2 })
-                s.emit('in', { t: 'w', g: run, v: new Uint8Array([1]), n: 3 })
+                s.emit('in', { t: 's', p: overview, n: 1, h: st.build })
+                s.emit('in', { t: 's', p: status, n: 2, h: st.build })
+                s.emit('in', { t: 'w', g: run, v: new Uint8Array([1]), n: 3, h: st.build })
               }
             })
             s.on('connect', () => s.emit('in', { t: 'o', n: 0 }))

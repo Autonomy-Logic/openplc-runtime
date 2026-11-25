@@ -207,7 +207,8 @@ static uint8_t plugin_debug_write(uint8_t arr, uint16_t elem, const uint8_t *byt
 }
 
 /* MD5 of the loaded program, handed to plugins in plugin_runtime_args_t.program_md5. Set by the
- * load path before plugin_driver_init and cleared on unload. */
+ * load path before plugin_driver_init and cleared on unload. The program .so exports a fixed
+ * 32-char hex string; at most PLUGIN_PROGRAM_MD5_SIZE - 1 chars of it are read. */
 static pthread_mutex_t g_program_md5_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_program_md5[PLUGIN_PROGRAM_MD5_SIZE];
 
@@ -217,7 +218,6 @@ void plugin_driver_set_program_md5(const char *md5)
     size_t n = 0;
     if (md5)
     {
-        /* The .so exports a fixed 32-char hex string; never read past it. */
         while (n < PLUGIN_PROGRAM_MD5_SIZE - 1 && md5[n] != '\0')
         {
             g_program_md5[n] = md5[n];
