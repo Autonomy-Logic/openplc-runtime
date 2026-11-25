@@ -361,6 +361,15 @@ check_venvs_stage_inputs() {
     return "$rc"
 }
 
+# Fails when the venvs stage builds compiled Python modules with debug info.
+check_venvs_no_debug_info() {
+    local file="$1" stage
+    stage="$(df_stage_index "$file" venvs)"
+    [ -n "$stage" ] || { echo "no venvs stage"; return 1; }
+    df_stage_instructions "$file" "$stage" | grep -E $'^RUN\t' | grep -Eq '(^|[[:space:]])CFLAGS=-g0[[:space:]]+\./install\.sh' ||
+        { echo "the venvs stage does not run install.sh with CFLAGS=-g0"; return 1; }
+}
+
 check_final_workdir() {
     final_instructions "$1" WORKDIR | cut -f 2 | grep -Eqx '/workdir/?' ||
         { echo "final stage has no WORKDIR /workdir"; return 1; }
@@ -648,6 +657,7 @@ run_static_checks() {
     local candidate
     static_checks_on "$REPO_ROOT/Dockerfile" static
     run_check "static/pin-rules-are-static-checks" check_pin_rules_are_static_checks
+    run_check "static/venvs-no-debug-info" check_venvs_no_debug_info "$REPO_ROOT/Dockerfile"
     fixture_checks
     run_check "install/native-without-step-runs-every-step" check_install_native_default
     for candidate in $APT_CMAKE_FROM_APT; do

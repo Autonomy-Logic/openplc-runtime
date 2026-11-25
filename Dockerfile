@@ -11,8 +11,9 @@ COPY core/src/drivers/plugins/python/modbus_slave/requirements.txt core/src/driv
 COPY core/src/drivers/plugins/python/opcua/requirements.txt core/src/drivers/plugins/python/opcua/
 
 # The editable install records only the package path; the package arrives with the application layer.
+# -g0: debug info would record pip's random build directory in compiled modules.
 RUN mkdir webserver && touch webserver/__init__.py && \
-    ./install.sh --native deps venvs
+    CFLAGS=-g0 ./install.sh --native deps venvs
 
 FROM ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1@sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b AS builder
 
