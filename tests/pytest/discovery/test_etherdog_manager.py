@@ -8,6 +8,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -162,8 +163,13 @@ def test_upload_stops_the_bus_and_only_stages_the_config(run_dir: Path) -> None:
 
 def test_leftover_etherdog_is_killed(run_dir: Path) -> None:
     binary = run_dir / "etherdog-bin"
-    shutil.copy(shutil.which("sleep"), binary)
-    leftover = subprocess.Popen([str(binary), "30"])
+    # The interpreter, not "sleep": a coreutils built as a multi-call binary
+    # dispatches on argv[0] and exits at once when copied under another name.
+    shutil.copy(sys.executable, binary)
+    leftover = subprocess.Popen(
+        [str(binary), "-c", "import time; time.sleep(30)"],
+        env={**os.environ, "PYTHONHOME": sys.prefix},
+    )
     try:
         manager = EtherDogManager(binary=str(binary), run_dir=run_dir)
         found = etherdog_manager._processes_running(str(binary))
