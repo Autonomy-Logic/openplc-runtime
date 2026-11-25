@@ -63,82 +63,60 @@ func TestTheDelayDoublesFromFiveSecondsUpToFiveMinutes(t *testing.T) {
 func TestEachFailureSetsTheNextAllowedAttempt(t *testing.T) {
 	clock := newClock()
 	throttle := throttleAt(clock)
-	keys := throttleKeys("admin", "10.0.0.1")
+	key := throttleKey("10.0.0.1")
 
-	if wait := throttle.wait(keys); wait != 0 {
+	if wait := throttle.wait(key); wait != 0 {
 		t.Fatalf("a fresh key waits %d s", wait)
 	}
-	throttle.recordFailure(keys)
-	if wait := throttle.wait(keys); wait != 5 {
+	throttle.recordFailure(key)
+	if wait := throttle.wait(key); wait != 5 {
 		t.Fatalf("after one failure: wait %d s, want 5", wait)
 	}
 	clock.Advance(4200 * time.Millisecond)
-	if wait := throttle.wait(keys); wait != 1 {
+	if wait := throttle.wait(key); wait != 1 {
 		t.Fatalf("0.8 s before the end: wait %d s, want 1 (rounded up)", wait)
 	}
 	clock.Advance(800 * time.Millisecond)
-	if wait := throttle.wait(keys); wait != 0 {
+	if wait := throttle.wait(key); wait != 0 {
 		t.Fatalf("at the end of the delay: wait %d s, want 0", wait)
 	}
 	for failures, want := range []int{10, 20, 40, 80, 160, 300, 300} {
-		throttle.recordFailure(keys)
-		if wait := throttle.wait(keys); wait != want {
+		throttle.recordFailure(key)
+		if wait := throttle.wait(key); wait != want {
 			t.Fatalf("after %d failures: wait %d s, want %d", failures+2, wait, want)
 		}
 		clock.Advance(time.Duration(want) * time.Second)
 	}
 }
 
-func TestTheUsernameKeyIgnoresCaseAndSurroundingSpace(t *testing.T) {
-	throttle := throttleAt(newClock())
-	throttle.recordFailure([]string{usernameKey(" Admin ", "10.0.0.1")})
-	if wait := throttle.wait(throttleKeys("admin", "10.0.0.1")); wait != 5 {
-		t.Fatalf("the same username from the same address waits %d s, want 5", wait)
+func TestTheKeyIsTheClientAddressOnly(t *testing.T) {
+	if key := throttleKey("10.0.0.1"); key != "addr:10.0.0.1" {
+		t.Fatalf("key of 10.0.0.1: %q", key)
+	}
+	if key := throttleKey(""); key != "addr:unknown" {
+		t.Fatalf("key of an unknown address: %q, want addr:unknown", key)
 	}
 }
 
 func TestFailuresFromOneAddressNeverDelayAnother(t *testing.T) {
 	throttle := throttleAt(newClock())
-	throttle.recordFailure(throttleKeys("admin", "10.0.0.1"))
-	if wait := throttle.wait(throttleKeys("admin", "10.0.0.2")); wait != 0 {
-		t.Fatalf("the same username from another address waits %d s, want 0", wait)
+	throttle.recordFailure(throttleKey("10.0.0.1"))
+	if wait := throttle.wait(throttleKey("10.0.0.2")); wait != 0 {
+		t.Fatalf("another address waits %d s, want 0", wait)
+	}
+	if wait := throttle.wait(throttleKey("")); wait != 0 {
+		t.Fatalf("an unknown address waits %d s, want 0", wait)
 	}
 }
 
-func TestWithoutAnAddressOneUsernameCounterServesEveryCaller(t *testing.T) {
+func TestUnknownAddressesShareOneCounter(t *testing.T) {
 	throttle := throttleAt(newClock())
-	if keys := throttleKeys("Admin", ""); len(keys) != 1 || keys[0] != "user:admin" {
-		t.Fatalf("keys without an address: %v", keys)
-	}
-	throttle.recordFailure(throttleKeys("admin", ""))
-	if wait := throttle.wait(throttleKeys(" ADMIN ", "")); wait != 5 {
+	throttle.recordFailure(throttleKey(""))
+	if wait := throttle.wait(throttleKey("")); wait != 5 {
 		t.Fatalf("an unknown address waits %d s, want 5", wait)
 	}
-}
-
-func TestTheAddressKeyHoldsAnyUsername(t *testing.T) {
-	throttle := throttleAt(newClock())
-	throttle.recordFailure(throttleKeys("admin", "10.0.0.1"))
-	if wait := throttle.wait(throttleKeys("someone-else", "10.0.0.1")); wait != 5 {
-		t.Fatalf("another username from the same address waits %d s, want 5", wait)
-	}
-	if wait := throttle.wait(throttleKeys("someone-else", "10.0.0.2")); wait != 0 {
-		t.Fatalf("an unrelated username and address waits %d s", wait)
-	}
-}
-
-func TestASuccessClearsTheUsernameCounterButNotTheAddress(t *testing.T) {
-	clock := newClock()
-	throttle := throttleAt(clock)
-	throttle.recordFailure(throttleKeys("admin", "10.0.0.1"))
-	throttle.recordFailure(throttleKeys("admin", "10.0.0.1"))
-	throttle.recordSuccess(" ADMIN ", "10.0.0.1")
-
-	if wait := throttle.wait([]string{usernameKey("admin", "10.0.0.1")}); wait != 0 {
-		t.Fatalf("the username is still held for %d s after a success", wait)
-	}
-	if wait := throttle.wait(throttleKeys("other", "10.0.0.1")); wait != 10 {
-		t.Fatalf("the address waits %d s, want 10: a success must not clear it", wait)
+	if wait := throttle.wait(throttleKey("10.0.0.1")); wait != 0 {
+		t.Fatalf("a known address waits %d s, want 0", wait)
 	}
 }
 
@@ -146,33 +124,33 @@ func TestACounterIdleForAnHourStartsAgainAndIsDropped(t *testing.T) {
 	clock := newClock()
 	throttle := throttleAt(clock)
 	for i := 0; i < 4; i++ {
-		throttle.recordFailure(throttleKeys("admin", "10.0.0.1"))
+		throttle.recordFailure(throttleKey("10.0.0.1"))
 	}
 	for i := 0; i < 100; i++ {
-		throttle.recordFailure(throttleKeys("user"+strconv.Itoa(i), "10.0.1."+strconv.Itoa(i)))
+		throttle.recordFailure(throttleKey("10.0.1." + strconv.Itoa(i)))
 	}
 
 	clock.Advance(throttleForget + time.Second)
-	throttle.recordFailure(throttleKeys("admin", "10.0.0.1"))
-	if wait := throttle.wait(throttleKeys("admin", "10.0.0.1")); wait != 5 {
+	throttle.recordFailure(throttleKey("10.0.0.1"))
+	if wait := throttle.wait(throttleKey("10.0.0.1")); wait != 5 {
 		t.Fatalf("after an hour idle the delay is %d s, want 5", wait)
 	}
 	throttle.mu.Lock()
 	size := len(throttle.counters)
 	throttle.mu.Unlock()
-	if size != 2 {
-		t.Fatalf("%d counters remain, want only the 2 just recorded", size)
+	if size != 1 {
+		t.Fatalf("%d counters remain, want only the one just recorded", size)
 	}
 }
 
 func TestACounterWithinTheHourKeepsCounting(t *testing.T) {
 	clock := newClock()
 	throttle := throttleAt(clock)
-	keys := throttleKeys("admin", "10.0.0.1")
-	throttle.recordFailure(keys)
+	key := throttleKey("10.0.0.1")
+	throttle.recordFailure(key)
 	clock.Advance(throttleForget)
-	throttle.recordFailure(keys)
-	if wait := throttle.wait(keys); wait != 10 {
+	throttle.recordFailure(key)
+	if wait := throttle.wait(key); wait != 10 {
 		t.Fatalf("a second failure exactly an hour later waits %d s, want 10", wait)
 	}
 }
@@ -232,7 +210,7 @@ func TestAFailedSignInHoldsTheNextAttemptWith429AndRetryAfter(t *testing.T) {
 	}
 }
 
-func TestASuccessfulSignInAfterTheDelayClearsTheUsername(t *testing.T) {
+func TestASuccessfulSignInKeepsTheAddressCounter(t *testing.T) {
 	clock := newClock()
 	throttle := throttleAt(clock)
 	failing := newRig(t, &fakeUsers{count: 1, authErr: runtimeauth.ErrNoSuchUser}, throttle)
@@ -246,8 +224,10 @@ func TestASuccessfulSignInAfterTheDelayClearsTheUsername(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("sign-in after the delay got HTTP %d, want 200", resp.StatusCode)
 	}
-	if wait := throttle.wait([]string{usernameKey("admin", "127.0.0.1")}); wait != 0 {
-		t.Fatalf("the username is still held for %d s", wait)
+
+	signIn(t, failing, "admin", "wrong")
+	if wait := throttle.wait(throttleKey("127.0.0.1")); wait != 10 {
+		t.Fatalf("the failure after a success waits %d s, want 10: a success must not clear the address", wait)
 	}
 }
 
@@ -276,6 +256,65 @@ func (p *passwordUsers) Authenticate(_ context.Context, username, password, _ st
 		return &runtimeauth.User{ID: "1", Username: "admin", Role: runtimeauth.RoleAdmin}, nil
 	}
 	return nil, runtimeauth.ErrNoSuchUser
+}
+
+func TestFailuresForManyUsernamesFromOneAddressAreThrottledTogether(t *testing.T) {
+	clock := newClock()
+	rig := newRig(t, &fakeUsers{count: 1, authErr: runtimeauth.ErrNoSuchUser}, throttleAt(clock))
+
+	for i, want := range []int{5, 10, 20, 40} {
+		username := "user" + strconv.Itoa(i)
+		if resp, _ := signIn(t, rig, username, "wrong"); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("failure %d (%s) got HTTP %d, want 401", i+1, username, resp.StatusCode)
+		}
+		resp, _ := signIn(t, rig, "next-"+username, "wrong")
+		if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") != strconv.Itoa(want) {
+			t.Fatalf("after %d failures, each for another username, got HTTP %d, Retry-After %q; want 429, %d",
+				i+1, resp.StatusCode, resp.Header.Get("Retry-After"), want)
+		}
+		clock.Advance(time.Duration(want) * time.Second)
+	}
+}
+
+func TestTheSameUsernameFromTwoAddressesIsThrottledIndependently(t *testing.T) {
+	throttle := throttleAt(newClock())
+	server := &Server{cfg: Config{
+		Version:        "bootloader-v1.0.0-test",
+		RuntimeVersion: func() string { return "v4.2.1" },
+		Users:          &passwordUsers{fakeUsers{count: 1}},
+		Supervisor:     healthySupervisor(),
+		Logs:           &fakeLogs{out: "log"},
+		Updater:        &fakeUpdater{},
+		SelfUpdater:    &fakeSelfUpdater{},
+		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}}
+	server.throttleOnce.Do(func() { server.throttleImpl = throttle })
+	mux := http.NewServeMux()
+	server.routes(mux)
+	signInFrom := func(address, password string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/bootloader/login",
+			strings.NewReader(`{"username":"admin","password":"`+password+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = address + ":40000"
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if code := signInFrom("10.0.0.1", "wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("a failure from 10.0.0.1 got HTTP %d, want 401", code)
+	}
+	if code := signInFrom("10.0.0.2", "right"); code != http.StatusOK {
+		t.Fatalf("admin from 10.0.0.2 got HTTP %d after a failure from 10.0.0.1, want 200", code)
+	}
+	if code := signInFrom("10.0.0.2", "wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("a failure for admin from 10.0.0.2 got HTTP %d, want 401", code)
+	}
+	for _, address := range []string{"10.0.0.1", "10.0.0.2"} {
+		if wait := throttle.wait(throttleKey(address)); wait != 5 {
+			t.Fatalf("%s waits %d s, want 5: only its own failure counts", address, wait)
+		}
+	}
 }
 
 func TestAnAttackerFailingOncePerExpiryNeverDelaysAnotherAddress(t *testing.T) {

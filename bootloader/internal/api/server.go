@@ -374,8 +374,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	source := requestSource(r)
-	keys := throttleKeys(body.Username, source)
-	if wait := s.loginLimiter().wait(keys); wait > 0 {
+	key := throttleKey(source)
+	if wait := s.loginLimiter().wait(key); wait > 0 {
 		s.cfg.Log.Warn("throttled a sign-in",
 			"username", body.Username, "source", source, "retry_after_s", wait)
 		w.Header().Set("Retry-After", strconv.Itoa(wait))
@@ -428,12 +428,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		// Unknown user and wrong password answer identically; distinguishing
 		// them enumerates valid accounts.
-		s.loginLimiter().recordFailure(keys)
+		s.loginLimiter().recordFailure(key)
 		s.cfg.Log.Warn("failed sign-in", "username", body.Username, "source", source)
 		writeError(w, http.StatusUnauthorized, "wrong username or password")
 		return
 	}
-	s.loginLimiter().recordSuccess(body.Username, source)
 
 	token, err := runtimeauth.IssueToken(s.cfg.Users.Secrets().JWTSecret, user.ID, runtimeauth.DefaultTokenTTL)
 	if err != nil {

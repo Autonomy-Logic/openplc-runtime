@@ -45,12 +45,15 @@ naming `user` is refused with `400`. The table lives in `webserver/access.py` (`
 
 ### Sign-in throttling
 
-After a failed sign-in, the next attempt for the same username from the same client address, and
-any attempt from that address, is accepted only after 5 seconds; each further failure doubles the
-wait, up to 5 minutes. Failures from one address never delay a sign-in from another. An attempt
-made too early is answered `429 Too Many Requests` with a `Retry-After` header (seconds). A
-successful sign-in clears the counter of that username from that address; the address counter
-stays. The `current_password` check of `PUT /api/update-user` counts against the same counters.
+Sign-in failures are counted per client address only, whatever the username: failures for many
+usernames from one address share one counter, and the same username from two addresses has two.
+After a failure, the next attempt from that address is accepted only after 5 seconds; each further
+failure doubles the wait, up to 5 minutes. Failures from one address never delay a sign-in from
+another. Callers whose address is unknown share one counter. An attempt made too early is answered
+`429 Too Many Requests` with a `Retry-After` header (seconds). A successful sign-in does not clear
+the counter; it starts again from 5 seconds once the address has had no failure for an hour. The
+`current_password` check of `PUT /api/update-user` counts against the same counter. The
+bootloader's `/api/bootloader/login` follows the same rule with its own counters.
 
 **Note**: The OpenPLC Editor handles authentication automatically. Advanced integrators must implement the authentication flow manually.
 
