@@ -45,37 +45,45 @@ class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
     def __init__(
         self,
         transport: TransportType = "tcp",
+        # TCP parameters
         host: str = "127.0.0.1",
         port: int = 502,
+        # RTU parameters
         serial_port: str = "",
         baud_rate: int = 9600,
         parity: ParityType = "N",
         stop_bits: int = 1,
         data_bits: int = 8,
+        # Common parameters
         timeout_ms: int = 1000,
         slave_id: int = 1,
         reconnect: bool = True,
     ):
         self.transport = transport
-        self.timeout = timeout_ms / 1000.0
-        self.slave_id = slave_id
+        self.timeout = timeout_ms / 1000.0  # Convert to seconds
+        self.slave_id = slave_id  # Unit/Slave ID for Modbus operations
 
+        # TCP configuration
         self.host = host
         self.port = port
 
+        # RTU configuration
         self.serial_port = serial_port
         self.baud_rate = baud_rate
         self.parity = parity
         self.stop_bits = stop_bits
         self.data_bits = data_bits
 
-        self.retry_delay_base = 2.0
-        self.retry_delay_max = 30.0
+        # Retry configuration
+        self.retry_delay_base = 2.0  # initial delay between attempts (seconds)
+        self.retry_delay_max = 30.0  # maximum delay between attempts (seconds)
         self.retry_delay_current = self.retry_delay_base
 
         self.reconnect = reconnect
         self.give_up_reason: Optional[GiveUpReason] = None
 
+        # Connection state - is_connected is the authoritative flag for connection health
+        # It is set to False when any error occurs, forcing reconnection on next cycle
         self.client: Optional[Union[ModbusTcpClient, ModbusSerialClient]] = None
         self.is_connected = False
 
@@ -87,7 +95,7 @@ class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
                 port=self.port,
                 timeout=self.timeout
             )
-        else:
+        else:  # RTU
             return ModbusSerialClient(
                 port=self.serial_port,
                 baudrate=self.baud_rate,
@@ -191,6 +199,7 @@ class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
 
         while stop_event is None or not stop_event.is_set():
             try:
+                # Create new client if necessary
                 if self.client is None or not self.client.connected:
                     if self.client:
                         try:
@@ -199,32 +208,38 @@ class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
                             pass
                     self.client = self._create_client()
 
+                # Attempt to connect
                 if self.client.connect():
                     print(
                         f"(PASS) Connected to {conn_info} (attempt {retry_count + 1})"
                     )
                     self.is_connected = True
-                    self.retry_delay_current = self.retry_delay_base
+                    self.retry_delay_current = self.retry_delay_base  # Reset delay
                     return True
 
             except Exception as e:
                 print(f"(FAIL) Connection attempt {retry_count + 1} to {conn_info} failed: {e}")
 
+            # Increment counter and calculate delay
             retry_count += 1
 
+            # Attempt logging
             if retry_count == 1:
                 print(f"Failed to connect to {conn_info}, starting retry attempts...")
-            elif retry_count % 10 == 0:
+            elif retry_count % 10 == 0:  # Log every 10 attempts
                 print(f"Connection attempt {retry_count} to {conn_info} failed, continuing retries...")
 
+            # Wait with increasing delay (limited exponential backoff)
             delay = min(self.retry_delay_current, self.retry_delay_max)
 
-            sleep_increments = int(delay * 10)
+            # Sleep in small increments to allow quick stop
+            sleep_increments = int(delay * 10)  # 0.1s increments
             for _ in range(sleep_increments):
                 if stop_event and stop_event.is_set():
                     return False
                 time.sleep(0.1)
 
+            # Increase delay for next attempt (maximum of retry_delay_max)
             self.retry_delay_current = min(self.retry_delay_current * 1.5, self.retry_delay_max)
 
         return False
@@ -233,7 +248,9 @@ class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
         """
         Ensures there is a valid connection, reconnecting if necessary.
 
-        Checks both the pymodbus client state and the is_connected flag.
+        This method checks BOTH the pymodbus client state AND our is_connected flag.
+        The is_connected flag is set to False when any communication error occurs,
+        which forces a full reconnection even if pymodbus thinks the socket is still open.
 
         Args:
             stop_event: Optional threading.Event to allow early termination
@@ -241,6 +258,9 @@ class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
         Returns:
             True if connection is available, False if interrupted
         """
+        # Check if already connected - must check BOTH conditions:
+        # 1. is_connected flag (set to False on any error)
+        # 2. client.connected (pymodbus internal socket state)
         if self.is_connected and self.client and self.client.connected:
             return True
 
@@ -248,15 +268,18 @@ class ModbusConnectionManager:  # pylint: disable=too-many-instance-attributes
             self.give_up(GIVE_UP_CONNECTION_LOST)
             return False
 
+        # Connection is broken or marked as unhealthy - force full reconnection
+        # First, close any existing client to clean up dead sockets
         if self.client:
             try:
                 self.client.close()
             except Exception:
-                pass
+                pass  # Ignore errors during cleanup
             self.client = None
 
         self.is_connected = False
 
+        # Try to reconnect with infinite retry
         return self.connect_with_retry(stop_event)
 
     def mark_disconnected(self):

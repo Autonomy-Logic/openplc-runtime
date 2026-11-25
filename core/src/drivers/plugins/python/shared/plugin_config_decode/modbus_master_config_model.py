@@ -9,6 +9,7 @@ from typing import Optional, Literal, List, Dict, Any
 try:
     from .plugin_config_contact import PluginConfigContract
 except ImportError:
+    # For direct execution
     from plugin_config_contact import PluginConfigContract
 
 Area = Literal["I", "Q", "M"]
@@ -20,13 +21,13 @@ ADDR_RE = re.compile(r"^%([IQM])([XBWDL])(\d+)(?:\.(\d+))?$", re.IGNORECASE)
 
 @dataclass
 class IECAddress:
-    area: Area
-    size: Size
-    byte: int
-    bit: Optional[int]
-    index_bits: Optional[int]
-    index_bytes: int
-    width_bits: int
+    area: Area              # 'I' | 'Q' | 'M'
+    size: Size              # 'X' | 'B' | 'W' | 'D' | 'L'
+    byte: int               # base byte (for X it's the bit's byte; for B/W/D/L it's the start)
+    bit: Optional[int]      # only for X
+    index_bits: Optional[int]   # linear index in bits (only for X)
+    index_bytes: int            # linear index in bytes (buffer offset)
+    width_bits: int             # 1, 8, 16, 32, 64
 
 def parse_iec_address(s: str) -> IECAddress:
     m = ADDR_RE.match(s.strip())
@@ -75,20 +76,24 @@ class ModbusDeviceConfig:
         self.protocol: str = "MODBUS"
         self.type: str = "SLAVE"
 
+        # Transport type - "tcp" or "rtu" (defaults to "tcp" for backward compatibility)
         self.transport: TransportType = "tcp"
 
+        # TCP-specific fields
         self.host: str = "127.0.0.1"
         self.port: int = 502
         self.reconnect: bool = True
 
+        # RTU-specific fields
         self.serial_port: str = ""
         self.baud_rate: int = 9600
         self.parity: ParityType = "N"
         self.stop_bits: int = 1
         self.data_bits: int = 8
 
+        # Common fields
         self.timeout_ms: int = 1000
-        self.slave_id: int = 1
+        self.slave_id: int = 1  # Unit/Slave ID (0-255 for TCP gateways, 1-247 for RTU)
         self.io_points: List['ModbusIoPointConfig'] = []
 
     @classmethod
@@ -103,21 +108,26 @@ class ModbusDeviceConfig:
         config = data.get("config", {})
         device.type = config.get("type", "SLAVE")
 
+        # Transport type - defaults to "tcp" for backward compatibility
         device.transport = config.get("transport", "tcp")
 
+        # TCP fields
         device.host = config.get("host", "127.0.0.1")
         device.port = config.get("port", 502)
         device.reconnect = config.get("reconnect", True)
 
+        # RTU fields
         device.serial_port = config.get("serial_port", "")
         device.baud_rate = config.get("baud_rate", 9600)
         device.parity = config.get("parity", "N")
         device.stop_bits = config.get("stop_bits", 1)
         device.data_bits = config.get("data_bits", 8)
 
+        # Common fields
         device.timeout_ms = config.get("timeout_ms", 1000)
         device.slave_id = config.get("slave_id", 1)
 
+        # Parse I/O points
         io_points_data = config.get("io_points", [])
         device.io_points = []
 
@@ -136,6 +146,7 @@ class ModbusDeviceConfig:
         if not isinstance(self.timeout_ms, int) or self.timeout_ms <= 0:
             raise ValueError(f"Invalid timeout_ms: {self.timeout_ms}. Must be a positive integer for device {self.name}.")
 
+        # Transport-specific validation
         if self.transport == "rtu":
             if not self.serial_port:
                 raise ValueError(f"Serial port is required for RTU device '{self.name}'")
@@ -162,6 +173,7 @@ class ModbusDeviceConfig:
         else:
             raise ValueError(f"Invalid transport type '{self.transport}' for device '{self.name}'. Must be 'tcp' or 'rtu'.")
 
+        # Validate IO points
         for i, point in enumerate(self.io_points):
             if not isinstance(point, ModbusIoPointConfig):
                 raise ValueError(f"Invalid I/O point {i}: {point}. Must be an instance of ModbusIoPointConfig for device {self.name}.")
@@ -187,8 +199,9 @@ class ModbusMasterConfig(PluginConfigContract):
     Modbus Master configuration model.
     """
     def __init__(self):
-        super().__init__()
-        self.devices: List[ModbusDeviceConfig] = []
+        super().__init__() # Call the base class constructor
+        # self.config = {} # attributes specific to ModbusMasterConfig can be added here
+        self.devices: List[ModbusDeviceConfig] = []  # List to hold multiple Modbus devices
 
     def import_config_from_file(self, file_path: str):
         """Read config from a JSON file."""
@@ -196,8 +209,10 @@ class ModbusMasterConfig(PluginConfigContract):
             raw_config = json.load(f)
             print("Raw config loaded:", raw_config)
             
+            # Clear any existing devices
             self.devices = []
             
+            # Parse each device configuration
             for i, device_config in enumerate(raw_config):
                 print(f"Parsing device config #{i+1}")
                 try:
@@ -215,19 +230,26 @@ class ModbusMasterConfig(PluginConfigContract):
         if not self.devices:
             raise ValueError("No devices configured. At least one Modbus device must be defined.")
 
+        # Validate each device
         for i, device in enumerate(self.devices):
             try:
                 device.validate()
             except Exception as e:
                 raise ValueError(f"Device #{i+1} validation failed: {e}")
 
+        # Check for duplicate device names
         device_names = [device.name for device in self.devices]
         if len(device_names) != len(set(device_names)):
             raise ValueError("Duplicate device names found. Each device must have a unique name.")
 
+        # Separate TCP and RTU devices for different validation rules
         tcp_devices = [d for d in self.devices if d.transport == "tcp"]
         rtu_devices = [d for d in self.devices if d.transport == "rtu"]
 
+        # Multiple TCP devices may share host:port (Modbus gateway), so
+        # the key is (host, port, slave_id). Reject only TRUE duplicates
+        # — same endpoint AND slave ID. Runtime routes slave_id into the
+        # MBAP unit-ID byte and shares one TCP connection per endpoint.
         tcp_endpoints = [(device.host, device.port, device.slave_id) for device in tcp_devices]
         if len(tcp_endpoints) != len(set(tcp_endpoints)):
             raise ValueError(
@@ -250,6 +272,8 @@ class ModbusMasterConfig(PluginConfigContract):
                     "reconnect setting."
                 )
 
+        # Check for duplicate slave IDs on the same serial bus for RTU devices
+        # Group RTU devices by serial bus (serial_port + baud_rate + parity + stop_bits + data_bits)
         rtu_buses: Dict[str, List[int]] = {}
         for device in rtu_devices:
             bus_key = f"{device.serial_port}:{device.baud_rate}:{device.parity}:{device.stop_bits}:{device.data_bits}"
@@ -257,6 +281,7 @@ class ModbusMasterConfig(PluginConfigContract):
                 rtu_buses[bus_key] = []
             rtu_buses[bus_key].append(device.slave_id)
 
+        # Check for duplicate slave IDs within each bus
         for bus_key, slave_ids in rtu_buses.items():
             if len(slave_ids) != len(set(slave_ids)):
                 raise ValueError(f"Duplicate slave IDs found on RTU bus '{bus_key}'. Each device on the same serial bus must have a unique slave ID.")
@@ -284,11 +309,14 @@ class ModbusIoPointConfig:
         cycle_time_ms: int = 1000,
         error_handling: str = ERROR_HANDLING_KEEP_LAST,
     ):
-        self.fc = fc
-        self.offset = offset
-        self.iec_location: IECAddress = parse_iec_address(iec_location)
-        self.length = length
-        self.cycle_time_ms = cycle_time_ms
+        self.fc = fc  # Function code
+        self.offset = offset  # Modbus register offset
+        self.iec_location: IECAddress = parse_iec_address(iec_location)  # IEC location (as IECAddress)
+        self.length = length  # Length of the data
+        self.cycle_time_ms = cycle_time_ms  # Polling cycle time in milliseconds
+        # Behaviour on communication failure. Defaults to keeping the last
+        # value, which is what every config written before this field existed
+        # implies — and what the runtime did unconditionally.
         self.error_handling = error_handling
 
     @classmethod
@@ -305,6 +333,9 @@ class ModbusIoPointConfig:
         except KeyError as e:
             raise ValueError(f"Missing required field in Modbus I/O point config: {e}")
 
+        # An unrecognised mode falls back to the historical behaviour instead
+        # of failing the load: a config from a newer editor must not take the
+        # whole device offline over one unknown string.
         error_handling = data.get("error_handling", ERROR_HANDLING_KEEP_LAST)
         if error_handling not in ERROR_HANDLING_MODES:
             print(
@@ -326,6 +357,7 @@ class ModbusIoPointConfig:
         """
         Converts the ModbusIoPointConfig instance to a dictionary.
         """
+        # Convert IECAddress back to string format for serialization
         iec_str = f"%{self.iec_location.area}{self.iec_location.size}{self.iec_location.byte}"
         if self.iec_location.bit is not None:
             iec_str += f".{self.iec_location.bit}"
