@@ -163,7 +163,7 @@ def test_upload_stops_the_bus_and_only_stages_the_config(run_dir: Path) -> None:
 def test_leftover_etherdog_is_killed(run_dir: Path) -> None:
     binary = run_dir / "etherdog-bin"
     shutil.copy(shutil.which("sleep"), binary)
-    leftover = subprocess.Popen([str(binary), "30"])
+    leftover = subprocess.Popen(["sleep", "30"], executable=str(binary))
     try:
         manager = EtherDogManager(binary=str(binary), run_dir=run_dir)
         assert etherdog_manager._processes_running(str(binary)) == [leftover.pid]
