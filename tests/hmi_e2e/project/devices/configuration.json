@@ -1,0 +1,20 @@
+{
+  "deviceBoard": "OpenPLC Runtime v4",
+  "communicationPort": "",
+  "runtimeIpAddress": "",
+  "vendorScreenData": {},
+  "vendorScreenDataByBoard": {},
+  "persistentStorage": {
+    "enabled": false,
+    "path": "",
+    "flushSeconds": 5
+  },
+  "persistentStorageByBoard": {},
+  "selectedPlatformOptions": {},
+  "vppPackagePinsByBoard": {},
+  "targetDevice": {
+    "orchestratorId": "",
+    "deviceId": "",
+    "deviceName": ""
+  }
+}

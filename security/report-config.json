@@ -1,0 +1,37 @@
+{
+  "product": "openplc-runtime",
+  "title": "OpenPLC Runtime",
+  "subtitle": "IEC 61131-3 PLC runtime — C/C++ real-time core, Python REST API server, Go bootloader",
+  "version": "4.3.2",
+  "sbomBasename": "openplc-runtime",
+  "ecosystem": "pip, go, vendored C/C++",
+  "securityContact": "Thiago Alves — thiago.alves@autonomylogic.com",
+  "advisorySource": "OSV (PyPI Advisory Database, GitHub Advisory Database, Go vulnerability database) via osv-scanner",
+  "_note_ids": "Every triage entry lists the advisory ids it accounts for. build-report.mjs cross-checks the live post-suppression scan against these: an advisory no entry claims is reported as untriaged.",
+  "_note_counts": "advisories/counts describe the last full assessment and are only rendered when the report is built without a live scan. No assessment has been recorded yet, so they are zero.",
+  "advisories": { "total": 0, "critical": 0, "high": 0, "moderate": 0, "low": 0 },
+  "counts": {
+    "affected": { "n": 0, "sev": "none recorded" },
+    "mitigated": { "n": 0, "sev": "none recorded" },
+    "notAffected": { "n": 0, "pct": "—" }
+  },
+  "headline": "No triage has been recorded for this product yet. The numbers in the Key metrics table come from the live scan of this release; any advisory it reports is listed as untriaged until a reviewer records a VEX determination for it.",
+  "scope": "The OpenPLC Runtime is deployed as a container image (or a native install via <code>install.sh --native</code>) holding a C/C++ real-time PLC core (<code>plc_main</code>, native plugins such as S7comm and EtherCAT), a Python Flask REST API server with its own virtual environment, one virtual environment per Python plugin (Modbus master/slave, OPC-UA), the EtherDOG EtherCAT master service, and a separate Go bootloader container that installs and supervises the runtime.",
+  "scopeNote": "Covered: the Python packages pip resolves from <code>requirements.txt</code> and from every <code>core/src/drivers/plugins/python/*/requirements.txt</code> (each resolved on its own, as each plugin has its own venv); the Go modules of <code>bootloader/</code>; and the components listed by hand in <code>security/components.json</code> (vendored cJSON and Snap7, EtherDOG and its SOEM submodule, the CMake release install.sh installs). Not covered: Debian packages of the base image and the system CPython interpreter, and the STruC++ runtime headers that arrive with each uploaded PLC program. Vulnerability scanning covers the Python and Go parts only; the hand-maintained C/C++ components have no package-manager identity osv-scanner can match and must be reviewed manually.",
+  "methodologyNote": "The requirements files are not lockfiles, so the shipped Python versions are those pip resolves at install time. The pipeline reproduces that resolution with <code>pip install --dry-run --report</code> and scans the pinned result, together with <code>bootloader/go.mod</code>, with <code>osv-scanner</code> against OSV, honouring the VEX baseline in <code>osv-scanner.toml</code>.",
+  "licenseNote": "The OpenPLC Runtime is dual-licensed: GPLv3 or a commercial licence from Autonomy Logic. Third-party licences are those recorded in the SBOM. Notable: Snap7 (S7comm plugin) is LGPL-3.0-or-later, EtherDOG is GPL-3.0-or-later, and SOEM (linked into EtherDOG) is GPLv3 or a commercial licence from rt-labs.",
+  "affected": [],
+  "mitigated": [],
+  "notAffected": [],
+  "criticalNote": "",
+  "remediation": [
+    "Triage every advisory listed as untriaged and record its VEX determination."
+  ],
+  "practices": [
+    { "practice": "SBOM generated per release in CycloneDX and SPDX", "status": "In place" },
+    { "practice": "CI security gate on every pull request into development and main, blocking newly introduced critical advisories", "status": "In place" },
+    { "practice": "That gate configured as a required status check", "status": "Not yet enforced" },
+    { "practice": "Python dependencies pinned to exact versions in the requirements files", "status": "Recommended" },
+    { "practice": "Automated vulnerability scanning of the vendored C/C++ components", "status": "Not in place" }
+  ]
+}

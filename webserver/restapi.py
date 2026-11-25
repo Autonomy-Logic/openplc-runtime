@@ -5,7 +5,7 @@ import base64
 import json
 import os
 import threading
-from typing import Callable, Optional
+from typing import Callable, ClassVar, Optional
 
 from flask import Blueprint, Flask, current_app, jsonify, request
 from flask_jwt_extended import (
@@ -16,14 +16,25 @@ from flask_jwt_extended import (
     jwt_required,
     verify_jwt_in_request,
 )
-from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import text as sa_text
 from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import webserver.config
-from webserver import project_snapshot
+from webserver import hardware_id, project_snapshot, runtime_license, sessions
+from webserver.access import (
+    ADMIN_ROLE,
+    ENGINEER_ROLE,
+    LEGACY_USER_ROLE,
+    ROLES,
+    allow,
+    command_key,
+    invalid_role_message,
+    may,
+    refuse,
+)
+from webserver.database import db
 from webserver.logger import get_logger
 from webserver.version import MIN_EDITOR_VERSION, RUNTIME_VERSION
 
@@ -92,15 +103,13 @@ def restapi_capabilities():
     Unauthenticated, like ``/version`` — the editor calls this before
     login to decide whether it may talk to this device at all.
 
-    ``minEditorVersion`` is the oldest editor this runtime accepts
-    programs from.  The runtime only ADVERTISES it: the editor compares
-    the value against its own version and refuses to upload.  Nothing on
-    the upload path enforces it, so shipping a new runtime can never lock
-    out an editor already installed in the field.
+    ``minEditorVersion`` is the oldest editor version this runtime
+    advertises.  The runtime never checks it: nothing on the upload path
+    reads it.  An editor that reads this endpoint compares the value
+    against its own version and refuses to upload when it is older.
 
     Editors that predate this endpoint get a 404 and fall back to
-    ``/version``; they simply see no editor floor, which is exactly the
-    behaviour they had before.
+    ``/version``; they see no minimum and refuse nothing.
     ---
     tags:
       - Runtime
@@ -115,7 +124,13 @@ def restapi_capabilities():
               description: Runtime version string (GitHub release tag)
             minEditorVersion:
               type: string
-              description: Oldest OpenPLC Editor version this runtime accepts programs from
+              description: Oldest OpenPLC Editor version the editor uploads from (advertised only)
+            projectSnapshot:
+              type: boolean
+              description: Uploads may carry a source-project snapshot
+            hmi:
+              type: boolean
+              description: Uploads may carry an hmi/ folder (docs/HMI.md)
     """
     return (
         jsonify(
@@ -126,40 +141,44 @@ def restapi_capabilities():
                 # upload and retrieve it later. Unauthenticated like the rest of
                 # this endpoint, so a client can decide before logging in.
                 "projectSnapshot": True,
+                # Uploads may carry an hmi/ folder (docs/HMI.md); older runtimes refuse its files.
+                "hmi": True,
             }
         ),
         200,
     )
 
 
+app_restapi.config["JWT_ACCESS_TOKEN_EXPIRES"] = sessions.TOKEN_LIFETIME
 jwt = JWTManager(app_restapi)
-db = SQLAlchemy(app_restapi)
-
-jwt_blacklist = set()
-
-# RBAC: two roles. ``admin`` manages accounts and retrieves projects.
-# ``user`` operates the PLC (upload, start/stop, debug, status/logs) and
-# edits its own account. Enforcement is server-side; the editor UI mirrors
-# it but is never the boundary.
-ADMIN_ROLE = "admin"
-USER_ROLE = "user"
-ROLES = (ADMIN_ROLE, USER_ROLE)
+db.init_app(app_restapi)
 
 
 @jwt.token_in_blocklist_loader
 def check_if_token_revoked(jwt_header, jwt_payload):
+    """True when the token is not in force: rotated, signed out, or its session or account ended."""
+    user = db.session.get(User, _subject_id(jwt_payload))
+    if user is None:
+        return True
+    refusal = sessions.check_token(jwt_payload, user.sessions_valid_after_ms or 0)
+    if refusal is None:
+        return False
+    if refusal.log:
+        logger.warning("Refused a token of account %s: %s", user.username, refusal.reason)
+    return True
+
+
+def _subject_id(jwt_payload: dict) -> int:
     try:
-        jti = jwt_payload["jti"]
-        return jti in jwt_blacklist
-    except KeyError as e:
-        logger.error("Error revoking JWT: %s", e)
-    except Exception as e:
-        logger.error("Error revoking JWT: %s", e)
-    return False
+        return int(jwt_payload.get("sub", 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 class User(db.Model):  # type: ignore[name-defined]
     __tablename__ = "users"
+    # Ids are never reused: a token or cut-off of a deleted account can never name a new one.
+    __table_args__: ClassVar[dict[str, bool]] = {"sqlite_autoincrement": True}
 
     id: int = db.Column(db.Integer, primary_key=True)
     username: str = db.Column(db.Text, nullable=False, unique=True)
@@ -168,6 +187,10 @@ class User(db.Model):  # type: ignore[name-defined]
     # (migrated in place) and any insert that omits the role resolve to the
     # privileged role — the pre-RBAC runtime treated every user as an admin.
     role: str = db.Column(db.Text, nullable=False, default=ADMIN_ROLE, server_default=ADMIN_ROLE)
+    # Tokens issued before this time (ms since the epoch) are refused: every session ended here.
+    sessions_valid_after_ms: int = db.Column(
+        db.Integer, nullable=False, default=0, server_default="0"
+    )
 
     # Use PBKDF2 with SHA256 and 600,000 iterations for password hashing
     derivation_method: str = "pbkdf2:sha256:600000"
@@ -225,12 +248,51 @@ def apply_user_schema_migrations():
     if "users" not in inspector.get_table_names():
         return
     columns = {col["name"] for col in inspector.get_columns("users")}
-    if "role" in columns:
+    with db.engine.begin() as conn:
+        if "role" not in columns:
+            conn.execute(
+                sa_text(f"ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT '{ADMIN_ROLE}'")
+            )
+        if "sessions_valid_after_ms" not in columns:
+            conn.execute(
+                sa_text(
+                    "ALTER TABLE users ADD COLUMN sessions_valid_after_ms "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            )
+        migrated = conn.execute(
+            sa_text(
+                "UPDATE users SET role = :engineer "
+                "WHERE role IS NULL OR role = '' OR role = :legacy"
+            ),
+            {"engineer": ENGINEER_ROLE, "legacy": LEGACY_USER_ROLE},
+        ).rowcount
+    if migrated:
+        logger.warning("Migrated %d account(s) from the role 'user' to 'engineer'", migrated)
+    _never_reuse_user_ids()
+
+
+def _never_reuse_user_ids() -> None:
+    """Rebuilds a ``users`` table created without AUTOINCREMENT, keeping every row and id."""
+    if db.engine.dialect.name != "sqlite":
         return
     with db.engine.begin() as conn:
+        sql = conn.execute(
+            sa_text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'")
+        ).scalar()
+        if not sql or "AUTOINCREMENT" in str(sql).upper():
+            return
+        conn.execute(sa_text("ALTER TABLE users RENAME TO users_before_autoincrement"))
+        User.__table__.create(conn)
         conn.execute(
-            sa_text(f"ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT '{ADMIN_ROLE}'")
+            sa_text(
+                "INSERT INTO users (id, username, password_hash, role, sessions_valid_after_ms) "
+                "SELECT id, username, password_hash, role, sessions_valid_after_ms "
+                "FROM users_before_autoincrement"
+            )
         )
+        conn.execute(sa_text("DROP TABLE users_before_autoincrement"))
+    logger.warning("Rebuilt the accounts table so account ids are never reused")
 
 
 def repair_missing_admin() -> bool:
@@ -377,11 +439,12 @@ def create_user():
 
     if verify_jwt_in_request(optional=True) is None:
         return jsonify({"msg": "Authentication required"}), 401
-    if not (current_user and current_user.is_admin()):
-        return jsonify({"msg": "Admin privileges required"}), 403
-    role = (request.get_json() or {}).get("role", USER_ROLE)
+    caller_role = current_user.role if current_user else None
+    if not may(caller_role, "create-user"):
+        return refuse(caller_role, "create-user")
+    role = (request.get_json() or {}).get("role", ENGINEER_ROLE)
     if role not in ROLES:
-        return jsonify({"msg": f"Invalid role. Must be one of: {', '.join(ROLES)}"}), 400
+        return jsonify({"msg": invalid_role_message(role)}), 400
 
     data = request.get_json()
     username = data.get("username")
@@ -398,6 +461,9 @@ def create_user():
     user.set_password(password)
     db.session.add(user)
     db.session.commit()
+    logger.warning(
+        "Account %s created with role %s by %s", user.username, user.role, current_user.username
+    )
 
     return jsonify({"msg": "User created", "id": user.id, "role": user.role}), 201
 
@@ -435,7 +501,7 @@ def _bootstrap_first_admin():
 
 # verify existing users individually
 @restapi_bp.route("/get-user-info/<int:user_id>", methods=["GET"])
-@jwt_required()
+@allow("get-user-info")
 def get_user_info(user_id):
     """
     Get information about a specific user.
@@ -522,6 +588,9 @@ def get_users_info():
             return jsonify({"msg": "No users found"}), 404
         return jsonify({"msg": "Users found"}), 200
 
+    caller_role = current_user.role if current_user else None
+    if not may(caller_role, "get-users-info"):
+        return refuse(caller_role, "get-users-info")
     try:
         users = User.query.all()
     except Exception as e:
@@ -532,7 +601,7 @@ def get_users_info():
 
 
 @restapi_bp.route("/whoami", methods=["GET"])
-@jwt_required()
+@allow("whoami")
 def whoami():
     """
     Return the currently authenticated user (id, username, role).
@@ -560,7 +629,7 @@ def whoami():
 
 
 @restapi_bp.route("/update-user/<int:user_id>", methods=["PUT"])
-@jwt_required()
+@allow("update-user")
 def update_user(user_id):
     """
     Update a user's username, password and/or role.
@@ -589,7 +658,7 @@ def update_user(user_id):
               description: Required when changing your own password
             role:
               type: string
-              enum: [admin, user]
+              enum: [admin, engineer, operator, viewer]
     responses:
       200:
         description: User updated
@@ -617,16 +686,19 @@ def update_user(user_id):
     new_username = data.get("username")
     new_password = data.get("password")
     new_role = data.get("role")
+    if new_username is not None and not may(caller.role, "rename-account"):
+        return refuse(caller.role, "rename-account")
 
     if new_username is None and new_password is None and new_role is None:
         return jsonify({"msg": "No fields to update"}), 400
 
     # Role change — admin only, with last-admin protection.
+    previous_role = target.role
     if new_role is not None:
         if not caller_is_admin:
             return jsonify({"msg": "Only an admin can change roles"}), 403
         if new_role not in ROLES:
-            return jsonify({"msg": f"Invalid role. Must be one of: {', '.join(ROLES)}"}), 400
+            return jsonify({"msg": invalid_role_message(new_role)}), 400
         if target.is_admin() and new_role != ADMIN_ROLE and admin_count() <= 1:
             return jsonify({"msg": "Cannot demote the last remaining admin"}), 409
         target.role = new_role
@@ -642,7 +714,7 @@ def update_user(user_id):
         target.username = new_username
 
     # Password change — self-change requires the current password.
-    self_password_changed = False
+    password_changed = False
     if new_password is not None:
         if not new_password:
             return jsonify({"msg": "Password cannot be empty"}), 400
@@ -650,25 +722,41 @@ def update_user(user_id):
             current_password = data.get("current_password")
             if not current_password:
                 return jsonify({"msg": "Current password is required"}), 400
-            if not target.check_password(current_password):
-                return jsonify({"msg": "Current password is incorrect"}), 403
-            self_password_changed = True
+            keys = sessions.throttle_keys(target.username, request.remote_addr)
+            with sessions.throttle_lock(keys):
+                held = _throttled(keys, "password check", target.username)
+                if held is not None:
+                    return held
+                if not target.check_password(current_password):
+                    sessions.record_failure(keys)
+                    logger.warning("Wrong current password for %s", target.username)
+                    return jsonify({"msg": "Current password is incorrect"}), 403
+                sessions.record_success(target.username)
         target.set_password(new_password)
+        password_changed = True
 
     db.session.commit()
 
-    # Changing your own password invalidates your current session: revoke the
-    # token used for this request so a stolen/old token can't outlive the
-    # change. The client must re-authenticate with the new password.
-    if self_password_changed:
-        revoke_jwt()
+    role_changed = target.role != previous_role
+    if role_changed:
+        logger.warning(
+            "Role of account %s changed from %s to %s by %s",
+            target.username,
+            previous_role,
+            target.role,
+            caller.username,
+        )
+    if password_changed or role_changed:
+        reason = "role changed" if role_changed else "password changed"
+        target.sessions_valid_after_ms = sessions.end_account_sessions(target.id, reason)
+        db.session.commit()
 
     return jsonify({"msg": "User updated successfully", "user": target.to_dict()}), 200
 
 
 # delete a user by ID
 @restapi_bp.route("/delete-user/<int:user_id>", methods=["DELETE"])
-@jwt_required()
+@allow("delete-user")
 def delete_user(user_id):
     """
     Delete a user by ID.
@@ -718,14 +806,16 @@ def delete_user(user_id):
     if current_user.id == user.id:
         return jsonify({"msg": "You cannot delete your own account"}), 403
 
+    sessions.end_account_sessions(user.id, "account deleted")
     db.session.delete(user)
     db.session.commit()
+    logger.warning("Account %s deleted by %s", user.username, current_user.username)
     return jsonify({"msg": f"User {user.username} deleted successfully"}), 200
 
 
 # login endpoint
 @restapi_bp.route("/project-snapshot", methods=["GET"])
-@jwt_required()
+@allow("project-snapshot")
 def get_project_snapshot():
     """Retrieve the stored source project as a base64 ZIP.
 
@@ -794,6 +884,158 @@ def get_project_snapshot():
     return current_app.response_class(stream(), mimetype="application/json")
 
 
+@restapi_bp.route("/hardware-id", methods=["GET"])
+@allow("hardware-id")
+def get_hardware_id():
+    """Return the hardware ID v2 this runtime is bound to, with its element hashes.
+
+    Every role. ``hardwareId`` is null when no ID can be derived on
+    this device. In a vPLC the elements include the host's and an ``instance``
+    element placed by orchestrator-agent.
+    ---
+    tags:
+      - Runtime
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Hardware ID retrieved
+        schema:
+          type: object
+          properties:
+            hardwareId:
+              type: string
+              description: hw2 followed by 64 lowercase hex characters, or null
+            elements:
+              type: array
+              items:
+                type: object
+                properties:
+                  kind:
+                    type: string
+                  hash:
+                    type: string
+      401:
+        description: Authentication required
+    """
+    record = hardware_id.current()
+    if record is None:
+        return jsonify({"hardwareId": None, "elements": []}), 200
+    return (
+        jsonify(
+            {
+                "hardwareId": record.value,
+                "elements": [{"kind": e.kind, "hash": e.hash} for e in record.elements],
+            }
+        ),
+        200,
+    )
+
+
+@restapi_bp.route("/runtime-license", methods=["GET"])
+def get_runtime_licenses():
+    """Return this runtime's hardware ID and the commercial licence it holds, as stored.
+
+    Public: no login. The runtime does not verify the licence; the editor checks
+    its signature and hardware ID. ``licenses`` holds the one stored licence, or
+    nothing.
+    ---
+    tags:
+      - Runtime
+    responses:
+      200:
+        description: Licence retrieved
+        schema:
+          type: object
+          properties:
+            hardwareId:
+              type: string
+              description: hw2 followed by 64 lowercase hex characters, or null
+            licenses:
+              type: array
+              items:
+                type: object
+                description: the licence file exactly as Edge issued it
+    """
+    return jsonify(runtime_license.report()), 200
+
+
+@restapi_bp.route("/runtime-license", methods=["POST"])
+@allow("runtime-license")
+def upload_runtime_license():
+    """Store a commercial runtime licence issued by Autonomy Edge.
+
+    Admin and engineer accounts. The body is the licence file exactly as Edge serves
+    it. Only its shape is checked; the editor verifies it before uploading and
+    again when it reads it back. It replaces the stored licence.
+    ---
+    tags:
+      - Runtime
+    security:
+      - BearerAuth: []
+    consumes:
+      - application/json
+    responses:
+      200:
+        description: Licence stored
+        schema:
+          type: object
+          properties:
+            orderId:
+              type: string
+      400:
+        description: Not a runtime licence
+      401:
+        description: Authentication required
+      413:
+        description: Body larger than 4 KiB
+      500:
+        description: The licence could not be written
+    """
+    limit = runtime_license.MAX_LICENSE_BYTES
+    if request.content_length is not None and request.content_length > limit:
+        return jsonify({"error": f"Licence is larger than {limit} bytes"}), 413
+    raw = request.stream.read(limit + 1)
+    if len(raw) > limit:
+        return jsonify({"error": f"Licence is larger than {limit} bytes"}), 413
+    result = runtime_license.store(raw)
+    if not result.ok:
+        return jsonify({"error": result.error}), 500 if result.internal else 400
+    return jsonify({"orderId": result.order_id}), 200
+
+
+@restapi_bp.route("/runtime-license", methods=["DELETE"])
+@allow("runtime-license")
+def delete_runtime_license():
+    """Remove the stored commercial runtime licence.
+
+    Admin and engineer accounts.
+    ---
+    tags:
+      - Runtime
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: Done; removed is false when no valid licence was stored
+        schema:
+          type: object
+          properties:
+            removed:
+              type: boolean
+      401:
+        description: Authentication required
+      500:
+        description: The licence could not be removed
+    """
+    try:
+        removed = runtime_license.remove()
+    except OSError as exc:
+        logger.error("Could not remove the runtime licence: %s", exc)
+        return jsonify({"error": "Licence could not be removed"}), 500
+    return jsonify({"removed": removed}), 200
+
+
 @restapi_bp.route("/login", methods=["POST"])
 def login():
     """
@@ -831,26 +1073,84 @@ def login():
       500:
         description: User retrieval error
     """
-    username = request.json.get("username", None)
-    password = request.json.get("password", None)
-
-    try:
-        user = User.query.filter_by(username=username).one_or_none()
-        logger.debug("User found: %s", user)
-    except Exception as e:
-        logger.error("Error retrieving user: %s", e)
-        return jsonify({"msg": f"User retrieval error: {e}"}), 500
-
-    if not user or not user.check_password(password):
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"msg": "The request body must be a JSON object"}), 400
+    username = body.get("username")
+    password = body.get("password")
+    if not isinstance(username, str) or not isinstance(password, str):
         return jsonify("Wrong username or password"), 401
 
-    access_token = create_access_token(identity=user)
+    keys = sessions.throttle_keys(username, request.remote_addr)
+    with sessions.throttle_lock(keys):
+        held = _throttled(keys, "sign-in", username)
+        if held is not None:
+            return held
+        issued_ms = sessions.now_ms()
+        try:
+            user = User.query.filter_by(username=username).one_or_none()
+            logger.debug("User found: %s", user)
+        except Exception as e:
+            logger.error("Error retrieving user: %s", e)
+            return jsonify({"msg": f"User retrieval error: {e}"}), 500
+
+        if not user or not user.check_password(password):
+            sessions.record_failure(keys)
+            logger.warning("Failed sign-in for %s from %s", username, request.remote_addr)
+            return jsonify("Wrong username or password"), 401
+        sessions.record_success(username)
+
+    sessions.purge()
+    claims = sessions.start_session(user.id, issued_ms)
+    access_token = create_access_token(identity=user, additional_claims=claims)
     return jsonify(access_token=access_token)
+
+
+def _throttled(keys: list[str], what: str, username: str):
+    """A 429 when an attempt on ``keys`` comes before its allowed time, else None."""
+    wait = sessions.throttle_wait(keys)
+    if wait <= 0:
+        return None
+    logger.warning("Throttled a %s for %s from %s", what, username, request.remote_addr)
+    response = jsonify({"msg": f"Too many failed attempts. Try again in {wait} s."})
+    response.headers["Retry-After"] = str(wait)
+    return response, 429
+
+
+@restapi_bp.route("/renew", methods=["POST"])
+@allow("renew")
+def renew():
+    """
+    Rotate the access token: a new token for the same session, the presented one revoked.
+    ---
+    tags:
+      - Authentication
+    security:
+      - BearerAuth: []
+    responses:
+      200:
+        description: The new token
+        schema:
+          type: object
+          properties:
+            access_token:
+              type: string
+      401:
+        description: The token is expired, revoked or its session ended
+    """
+    presented = get_jwt()
+    claims = sessions.rotate(presented)
+    if claims is None:
+        return jsonify({"msg": "This token was already renewed"}), 401
+    sessions.purge()
+    token = create_access_token(identity=current_user, additional_claims=claims)
+    sessions.notify_rotated(str(presented["jti"]), token)
+    return jsonify(access_token=token)
 
 
 # logout endpoint
 @restapi_bp.route("/logout", methods=["POST"])
-@jwt_required()
+@allow("logout")
 def logout():
     """
     Logout user and revoke JWT token.
@@ -869,21 +1169,8 @@ def logout():
               type: string
               example: User logged out successfully
     """
-    revoke_jwt()
+    sessions.sign_out(get_jwt())
     return jsonify({"msg": "User logged out successfully"}), 200
-
-
-def revoke_jwt():
-    # Add the JWT ID to the blacklist
-    try:
-        jti = get_jwt()["jti"]
-        jwt_blacklist.add(jti)
-    except KeyError as e:
-        logger.error("Error revoking JWT: %s", e)
-    except AttributeError as e:
-        logger.error("Error revoking JWT: %s", e)
-    except Exception as e:
-        logger.error("Error revoking JWT: %s", e)
 
 
 @restapi_bp.route("/<command>", methods=["GET"])
@@ -948,6 +1235,9 @@ def restapi_plc_get(command):
       500:
         description: No handler registered or execution error
     """
+    key = command_key("GET", command)
+    if not may(current_user.role, key):
+        return refuse(current_user.role, f"GET {command}")
     if _handler_callback_get is None:
         return jsonify({"error": "No handler registered"}), 500
 
@@ -1008,6 +1298,9 @@ def restapi_plc_post(command):
       500:
         description: No handler registered or execution error
     """
+    key = command_key("POST", command)
+    if not may(current_user.role, key):
+        return refuse(current_user.role, f"POST {command}")
     if _handler_callback_post is None:
         return jsonify({"error": "No handler registered"}), 500
 

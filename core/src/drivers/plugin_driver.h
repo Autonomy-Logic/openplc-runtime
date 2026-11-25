@@ -169,6 +169,18 @@ int plugin_driver_update_config(plugin_driver_t *driver, const char *config_file
  *  loaded plugins. Returns 0 on success, -1 if any enabled plugin
  *  fails to load its .so. */
 int plugin_driver_append_config(plugin_driver_t *driver, const char *config_file);
+
+#define PLUGIN_HMI_NAME "hmi"
+#define PLUGIN_HMI_PATH "build/hmi/libhmi_plugin.so"
+
+/* Registers the HMI plugin under the name "hmi" when build/hmi/libhmi_plugin.so exists (no
+ * config file names it). Its seal is checked before dlopen; a plugin that fails to load is
+ * marked degraded. Returns 0, or -1 for a NULL driver. */
+int plugin_driver_append_hmi(plugin_driver_t *driver);
+
+/* Sets the program MD5 that plugin_runtime_args_t.program_md5 carries from the next
+ * plugin_driver_init on; NULL or "" when no program is loaded. Copies at most 32 chars. */
+void plugin_driver_set_program_md5(const char *md5);
 int plugin_driver_init(plugin_driver_t *driver);
 /* Roll back a partial init: walks plugins[] in reverse and calls
  * cleanup on every plugin whose `initialized` flag is set. Returns

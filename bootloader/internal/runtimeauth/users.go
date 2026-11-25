@@ -96,13 +96,14 @@ func (s *UserStore) FindUser(ctx context.Context, username string) (*User, error
 	if s == nil || s.db == nil {
 		return nil, ErrNoDatabase
 	}
-	query := "SELECT id, username, password_hash, role FROM " + usersTable + " WHERE username = ?"
+	columns, err := s.accountColumns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	query := "SELECT id, username, password_hash, " + columns.role + " FROM " + usersTable + " WHERE username = ?"
 	row := s.db.QueryRowContext(ctx, query, username)
 
 	var user User
-	// role is nullable in databases that predate the RBAC column, which the
-	// runtime migrates in place; scanning into a NullString keeps a
-	// half-migrated device usable instead of failing every login.
 	var role sql.NullString
 	if err := row.Scan(&user.ID, &user.Username, &user.PasswordHash, &role); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -113,13 +114,7 @@ func (s *UserStore) FindUser(ctx context.Context, username string) (*User, error
 		}
 		return nil, fmt.Errorf("looking up user: %w", err)
 	}
-	// The runtime defaults this column to admin precisely because the
-	// pre-RBAC runtime treated every account as an admin; matching that
-	// avoids silently demoting an existing operator.
-	user.Role = role.String
-	if user.Role == "" {
-		user.Role = "admin"
-	}
+	user.Role = NormalizeRole(role.String)
 	return &user, nil
 }
 
@@ -153,25 +148,66 @@ func (s *UserStore) Authenticate(ctx context.Context, username, password, pepper
 	return user, nil
 }
 
-// RoleByID reads the account role at request time (not from the token)
-// so a demotion takes effect immediately, not at token expiry.
-func (s *UserStore) RoleByID(ctx context.Context, userID string) (string, error) {
+// Account is what the bootloader reads about a token's account on every request.
+type Account struct {
+	Role string
+	// SessionsValidAfterMs is the account cut-off in ms since the epoch; tokens issued before it are refused.
+	SessionsValidAfterMs int64
+}
+
+// AccountByID reads the role and cut-off of an account per request, so a change applies at once.
+func (s *UserStore) AccountByID(ctx context.Context, userID string) (*Account, error) {
 	if s == nil || s.db == nil {
-		return "", ErrNoDatabase
+		return nil, ErrNoDatabase
 	}
-	var role string
-	query := "SELECT role FROM " + usersTable + " WHERE id = ?"
-	if err := s.db.QueryRowContext(ctx, query, userID).Scan(&role); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			// The account behind a still-valid token has been deleted.
-			return "", ErrNoSuchUser
-		}
-		if isMissingTable(err) {
-			return "", ErrNoSuchUser
-		}
-		return "", fmt.Errorf("reading the role for user %q: %w", userID, err)
+	columns, err := s.accountColumns(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return role, nil
+	query := "SELECT " + columns.role + ", " + columns.validAfter + " FROM " + usersTable + " WHERE id = ?"
+	var role sql.NullString
+	var validAfter sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, query, userID).Scan(&role, &validAfter); err != nil {
+		if errors.Is(err, sql.ErrNoRows) || isMissingTable(err) {
+			return nil, ErrNoSuchUser
+		}
+		return nil, fmt.Errorf("reading the account %q: %w", userID, err)
+	}
+	return &Account{Role: NormalizeRole(role.String), SessionsValidAfterMs: validAfter.Int64}, nil
+}
+
+// columnExprs are the select expressions for columns an older users table may lack.
+type columnExprs struct {
+	role       string
+	validAfter string
+}
+
+// accountColumns picks the expression for each optional column: the column, or the value the runtime's migration gives it.
+func (s *UserStore) accountColumns(ctx context.Context) (columnExprs, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT name FROM pragma_table_info('"+usersTable+"')")
+	if err != nil {
+		return columnExprs{}, fmt.Errorf("reading the users table's columns: %w", err)
+	}
+	defer rows.Close()
+	present := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return columnExprs{}, fmt.Errorf("reading the users table's columns: %w", err)
+		}
+		present[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return columnExprs{}, fmt.Errorf("reading the users table's columns: %w", err)
+	}
+	exprs := columnExprs{role: "'" + RoleAdmin + "'", validAfter: "0"}
+	if present["role"] {
+		exprs.role = "role"
+	}
+	if present["sessions_valid_after_ms"] {
+		exprs.validAfter = "sessions_valid_after_ms"
+	}
+	return exprs, nil
 }
 
 // dummyHash is a real 600k-iteration PBKDF2 hash of a value nobody knows,

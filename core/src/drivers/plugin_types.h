@@ -40,6 +40,9 @@
  * through the central OpenPLC logging system. Messages logged through these
  * functions will appear in the OpenPLC Editor's log viewer.
  */
+/** Bytes of plugin_runtime_args_t.program_md5: 32 hex characters and the NUL. */
+#define PLUGIN_PROGRAM_MD5_SIZE 33
+
 typedef void (*plugin_log_info_func_t)(const char *fmt, ...);
 typedef void (*plugin_log_debug_func_t)(const char *fmt, ...);
 typedef void (*plugin_log_warn_func_t)(const char *fmt, ...);
@@ -346,6 +349,10 @@ typedef struct
     /* Current PLC state, for driving a status LED — see
      * plugin_get_plc_state_func_t. */
     plugin_get_plc_state_func_t get_plc_state;
+
+    /* MD5 of the running program (the value the debugger verifies), NUL terminated; empty when
+     * no program is loaded. */
+    char program_md5[PLUGIN_PROGRAM_MD5_SIZE];
 } plugin_runtime_args_t;
 
 #endif /* PLUGIN_TYPES_H */

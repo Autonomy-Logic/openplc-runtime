@@ -48,3 +48,6 @@ core/src/program.st
 # EtherDOG (EtherCAT master service) source, fetched or copied in by install.sh
 /etherdog/
 /third_party/
+
+# Transient SBOM build output (archived on the security-archive branch)
+/sbom/
