@@ -162,15 +162,25 @@ def test_upload_stops_the_bus_and_only_stages_the_config(run_dir: Path) -> None:
 
 
 def test_leftover_etherdog_is_killed(run_dir: Path) -> None:
+    """Kills a copy of the interpreter, not of "sleep": a coreutils built as a
+    multi-call binary dispatches on argv[0] and exits at once under another name.
+    PYTHONHOME is the base prefix because a venv carries no standard library."""
     binary = run_dir / "etherdog-bin"
-    # The interpreter, not "sleep": a coreutils built as a multi-call binary
-    # dispatches on argv[0] and exits at once when copied under another name.
     shutil.copy(sys.executable, binary)
     leftover = subprocess.Popen(
         [str(binary), "-c", "import time; time.sleep(30)"],
-        env={**os.environ, "PYTHONHOME": sys.prefix},
+        env={**os.environ, "PYTHONHOME": sys.base_prefix},
     )
     try:
+        deadline = time.monotonic() + 10
+        while leftover.poll() is None and time.monotonic() < deadline:
+            if etherdog_manager._processes_running(str(binary)):
+                break
+            time.sleep(0.05)
+        assert leftover.poll() is None, (
+            f"the leftover died before the probe, returncode={leftover.returncode}"
+        )
+
         manager = EtherDogManager(binary=str(binary), run_dir=run_dir)
         found = etherdog_manager._processes_running(str(binary))
         try:
