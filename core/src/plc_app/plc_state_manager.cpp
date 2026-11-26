@@ -1383,7 +1383,9 @@ void *plc_cycle_thread(void *arg)
 
 /**
  * Loads the program, reloads and initialises the plugins, applies the switch gate
- * and creates the PLC cycle thread.
+ * and creates the PLC cycle thread. Plugins initialised for this load receive the
+ * program's MD5; the HMI plugin is appended after plugins.conf and vpp_plugins.conf
+ * when build/hmi/ has one.
  *
  * @return 0 when the cycle thread was created, 1 when the switch gate refused and
  *         the start landed STOPPED, -1 on failure (ERROR or EMPTY published)
@@ -1420,7 +1422,6 @@ extern "C" int load_plc_program(PluginManager *pm)
          * lines above its own boot allocation. */
         if (plugin_driver)
         {
-            /* Plugins initialised for this load receive the program's MD5. */
             plugin_driver_set_program_md5(
                 (const char *)plugin_manager_try_get_symbol(pm, "strucpp_program_md5"));
             if (plugin_driver_update_config(plugin_driver, "./plugins.conf") != 0)
@@ -1448,7 +1449,6 @@ extern "C" int load_plc_program(PluginManager *pm)
                 plugin_manager_destroy(pm);
                 return -1;
             }
-            /* The HMI plugin is registered by the runtime itself when build/hmi/ has one. */
             plugin_driver_append_hmi(plugin_driver);
         }
 

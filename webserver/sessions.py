@@ -12,9 +12,11 @@ or deletion) is a cut-off time on the account that both this process and the
 Go bootloader read. Everything lives in the runtime database, so it survives
 restarts.
 
-Failed sign-ins are throttled per username and per client address: after a
-failure the next attempt waits ``THROTTLE_FIRST_DELAY_S``, doubling with each
-further failure up to ``THROTTLE_MAX_DELAY_S``.
+Failed sign-ins are throttled per client address only, whatever the username:
+after a failure the next attempt from that address waits
+``THROTTLE_FIRST_DELAY_S``, doubling with each further failure up to
+``THROTTLE_MAX_DELAY_S``. Failures from one address never delay a sign-in from
+another, and a success does not clear the counter.
 """
 
 import math
@@ -40,9 +42,11 @@ THROTTLE_FIRST_DELAY_S = 5.0
 THROTTLE_MAX_DELAY_S = 300.0
 # A counter whose last failure is older than this starts again from the first delay.
 THROTTLE_FORGET_S = 3600.0
+# Counter shared by every sign-in whose client address is unknown.
+UNKNOWN_ADDRESS_KEY = "addr:unknown"
 # A session not renewed for this long is dropped even if it was never ended.
 IDLE_SESSION_PURGE_S = 86400.0
-# Password checks of a username or address run one at a time, under one of these locks.
+# Password checks from one client address run one at a time, under one of these locks.
 _THROTTLE_LOCKS = tuple(threading.Lock() for _ in range(64))
 # Called with the jti of a rotated token and its successor, e.g. to re-key open debug sockets.
 _rotation_listeners: list[Callable[[str, str], None]] = []
@@ -75,7 +79,7 @@ class RevokedToken(db.Model):  # type: ignore[name-defined]
 
 
 class LoginThrottle(db.Model):  # type: ignore[name-defined]
-    """Failed sign-ins of one username or client address."""
+    """Failed sign-ins from one client address."""
 
     __tablename__ = "login_throttle"
     key: str = db.Column(db.Text, primary_key=True)
@@ -229,50 +233,39 @@ def _expiry(payload: dict[str, object], now: float) -> float:
 
 
 @contextmanager
-def throttle_lock(keys: list[str]) -> Iterator[None]:
-    """Serializes password checks sharing any of ``keys``, so none skips a wait."""
-    stripes = sorted({zlib.crc32(key.encode()) % len(_THROTTLE_LOCKS) for key in keys})
-    for stripe in stripes:
-        _THROTTLE_LOCKS[stripe].acquire()
-    try:
+def throttle_lock(key: str) -> Iterator[None]:
+    """Serializes password checks on ``key``, so none skips a wait."""
+    lock = _THROTTLE_LOCKS[zlib.crc32(key.encode()) % len(_THROTTLE_LOCKS)]
+    with lock:
         yield
-    finally:
-        for stripe in reversed(stripes):
-            _THROTTLE_LOCKS[stripe].release()
 
 
-def throttle_keys(username: str, address: str | None) -> list[str]:
-    """The counters a sign-in attempt by ``username`` from ``address`` is held to."""
-    keys = [f"user:{username.strip().lower()}"]
-    if address:
-        keys.append(f"addr:{address}")
-    return keys
+def throttle_key(address: str | None) -> str:
+    """The counter of a sign-in from client ``address``; one shared counter when it is unknown."""
+    return f"addr:{address}" if address else UNKNOWN_ADDRESS_KEY
 
 
-def throttle_wait(keys: list[str], now: float | None = None) -> int:
-    """Whole seconds before the next attempt on ``keys`` is accepted; 0 when it may go ahead."""
+def throttle_wait(key: str, now: float | None = None) -> int:
+    """Whole seconds before the next attempt on ``key`` is accepted; 0 when it may go ahead."""
     at = time.time() if now is None else now
-    waits = [
-        row.next_allowed_at - at
-        for row in LoginThrottle.query.filter(LoginThrottle.key.in_(keys)).all()
-        if row.next_allowed_at > at
-    ]
-    return math.ceil(max(waits)) if waits else 0
+    row = db.session.get(LoginThrottle, key)
+    if row is None or row.next_allowed_at <= at:
+        return 0
+    return math.ceil(row.next_allowed_at - at)
 
 
-def record_failure(keys: list[str], now: float | None = None) -> None:
-    """Counts a failed sign-in on ``keys`` and sets their next allowed attempt."""
+def record_failure(key: str, now: float | None = None) -> None:
+    """Counts a failed sign-in on ``key`` and sets its next allowed attempt."""
     at = time.time() if now is None else now
-    for key in keys:
-        row = db.session.get(LoginThrottle, key)
-        if row is None:
-            row = LoginThrottle(key=key, failures=0, last_failure_at=at, next_allowed_at=at)
-            db.session.add(row)
-        elif at - row.last_failure_at > THROTTLE_FORGET_S:
-            row.failures = 0
-        row.failures += 1
-        row.last_failure_at = at
-        row.next_allowed_at = at + throttle_delay(row.failures)
+    row = db.session.get(LoginThrottle, key)
+    if row is None:
+        row = LoginThrottle(key=key, failures=0, last_failure_at=at, next_allowed_at=at)
+        db.session.add(row)
+    elif at - row.last_failure_at > THROTTLE_FORGET_S:
+        row.failures = 0
+    row.failures += 1
+    row.last_failure_at = at
+    row.next_allowed_at = at + throttle_delay(row.failures)
     db.session.commit()
 
 
@@ -281,9 +274,3 @@ def throttle_delay(failures: int) -> float:
     if failures <= 0:
         return 0.0
     return min(THROTTLE_FIRST_DELAY_S * 2 ** min(failures - 1, 16), THROTTLE_MAX_DELAY_S)
-
-
-def record_success(username: str) -> None:
-    """Clears the username counter after a successful sign-in."""
-    db.session.query(LoginThrottle).filter_by(key=throttle_keys(username, None)[0]).delete()
-    db.session.commit()

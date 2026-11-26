@@ -130,7 +130,9 @@ def restapi_capabilities():
               description: Uploads may carry a source-project snapshot
             hmi:
               type: boolean
-              description: Uploads may carry an hmi/ folder (docs/HMI.md)
+              description: >-
+                Uploads may carry an hmi/ folder (docs/HMI.md); runtimes without this
+                capability refuse its files
     """
     return (
         jsonify(
@@ -141,7 +143,6 @@ def restapi_capabilities():
                 # upload and retrieve it later. Unauthenticated like the rest of
                 # this endpoint, so a client can decide before logging in.
                 "projectSnapshot": True,
-                # Uploads may carry an hmi/ folder (docs/HMI.md); older runtimes refuse its files.
                 "hmi": True,
             }
         ),
@@ -722,16 +723,15 @@ def update_user(user_id):
             current_password = data.get("current_password")
             if not current_password:
                 return jsonify({"msg": "Current password is required"}), 400
-            keys = sessions.throttle_keys(target.username, request.remote_addr)
-            with sessions.throttle_lock(keys):
-                held = _throttled(keys, "password check", target.username)
+            key = sessions.throttle_key(request.remote_addr)
+            with sessions.throttle_lock(key):
+                held = _throttled(key, "password check", target.username)
                 if held is not None:
                     return held
                 if not target.check_password(current_password):
-                    sessions.record_failure(keys)
+                    sessions.record_failure(key)
                     logger.warning("Wrong current password for %s", target.username)
                     return jsonify({"msg": "Current password is incorrect"}), 403
-                sessions.record_success(target.username)
         target.set_password(new_password)
         password_changed = True
 
@@ -1081,9 +1081,9 @@ def login():
     if not isinstance(username, str) or not isinstance(password, str):
         return jsonify("Wrong username or password"), 401
 
-    keys = sessions.throttle_keys(username, request.remote_addr)
-    with sessions.throttle_lock(keys):
-        held = _throttled(keys, "sign-in", username)
+    key = sessions.throttle_key(request.remote_addr)
+    with sessions.throttle_lock(key):
+        held = _throttled(key, "sign-in", username)
         if held is not None:
             return held
         issued_ms = sessions.now_ms()
@@ -1095,10 +1095,9 @@ def login():
             return jsonify({"msg": f"User retrieval error: {e}"}), 500
 
         if not user or not user.check_password(password):
-            sessions.record_failure(keys)
+            sessions.record_failure(key)
             logger.warning("Failed sign-in for %s from %s", username, request.remote_addr)
             return jsonify("Wrong username or password"), 401
-        sessions.record_success(username)
 
     sessions.purge()
     claims = sessions.start_session(user.id, issued_ms)
@@ -1106,9 +1105,9 @@ def login():
     return jsonify(access_token=access_token)
 
 
-def _throttled(keys: list[str], what: str, username: str):
-    """A 429 when an attempt on ``keys`` comes before its allowed time, else None."""
-    wait = sessions.throttle_wait(keys)
+def _throttled(key: str, what: str, username: str):
+    """A 429 when an attempt on ``key`` comes before its allowed time, else None."""
+    wait = sessions.throttle_wait(key)
     if wait <= 0:
         return None
     logger.warning("Throttled a %s for %s from %s", what, username, request.remote_addr)

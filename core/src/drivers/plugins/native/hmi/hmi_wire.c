@@ -72,7 +72,6 @@ bool hmi_wire_name_valid(const uint8_t *s, size_t len)
                 return false;
             cp = (cp << 6) | (cc & 0x3Fu);
         }
-        /* Overlong forms, surrogates, code points past U+10FFFF and C1 controls. */
         if ((n == 2 && cp < 0x800u) || (n == 3 && cp < 0x10000u) || cp > 0x10FFFFu ||
             (cp >= 0xD800u && cp <= 0xDFFFu) || (cp >= 0x80u && cp <= 0x9Fu))
             return false;

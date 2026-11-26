@@ -376,6 +376,11 @@ def handle_upload_file(data: dict) -> dict:
 
 
 def _handle_upload_file(data: dict) -> dict:
+    """Checks, extracts and starts compiling an uploaded program.
+
+    The upload's ``hmi/`` folder (docs/HMI.md) is checked before anything on the device changes;
+    an upload without ``hmi/`` keeps the installed HMI across the wipe of ``core/generated``.
+    """
     if build_state.status == BuildStatus.COMPILING:
         return {
             "UploadFileFail": "Runtime is compiling another program, please wait",
@@ -412,7 +417,6 @@ def _handle_upload_file(data: dict) -> dict:
 
         extract_dir = "core/generated"
 
-        # The hmi/ folder (docs/HMI.md): refused before anything on the device changes.
         from webserver import hmi_upload
         from webserver.plcapp_management import extracted_names
 
@@ -458,7 +462,6 @@ def _handle_upload_file(data: dict) -> dict:
         # erases the stored one.
         project_snapshot.clear()
 
-        # An upload without hmi/ keeps the installed HMI across the wipe of core/generated.
         with hmi_upload.keep_previous(extract_dir, hmi_plan):
             if os.path.exists(extract_dir):
                 shutil.rmtree(extract_dir)
