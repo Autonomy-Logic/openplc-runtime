@@ -36,8 +36,8 @@ COPY --from=builder /workdir/.installed /workdir/.installed
 COPY webserver webserver
 COPY . .
 
-LABEL org.opencontainers.image.base.name="ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1" \
-      org.opencontainers.image.base.digest="sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b"
+LABEL org.opencontainers.image.base.name="ghcr.io/autonomy-logic/openplc-runtime-base:__BASE_TAG__" \
+      org.opencontainers.image.base.digest="__BASE_DIGEST__"
 
 ARG RUNTIME_VERSION=dev
 ENV RUNTIME_VERSION=${RUNTIME_VERSION}

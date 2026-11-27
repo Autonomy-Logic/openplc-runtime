@@ -62,7 +62,6 @@ jobs:
           username: ${{ secrets.GHCR_USERNAME }}
           password: ${{ secrets.GHCR_TOKEN }}
 
-      # After the login, so the existence check sees the packages.
       - name: Decide the image, tags and version
         id: plan
         env:
@@ -70,7 +69,6 @@ jobs:
           TEST_TAG: ${{ inputs.test_tag }}
         run: ./scripts/publish-plan.sh >> "$GITHUB_OUTPUT"
 
-      # A time that moved with every commit would give every layer a new digest.
       - name: Read the time of the last change to the venv inputs
         id: epoch
         run: |
@@ -90,7 +88,6 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ steps.plan.outputs.version }}
-          # type=registry pushes, so the push input stays unset.
           outputs: type=registry,rewrite-timestamp=true
           provenance: mode=max
           sbom: true

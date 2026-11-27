@@ -68,9 +68,9 @@ base_setup() {
     : >"$FAKE_GH_LOG"
     : >"$FAKE_DOCKER_LOG"
     FAKE_DOCKER_DIGEST="$BASE_DIGEST"
-    FAKE_DOCKER_TARGETS="$TESTS_DIR/fixtures/targets/valid.json"
+    FAKE_DOCKER_TARGETS="$FIXTURES_DIR/targets/valid.json"
     FAKE_DOCKER_STDIN="$CASE_DIR/targets-input"
-    FAKE_DOCKER_CHECK="$TESTS_DIR/fixtures/check/valid"
+    FAKE_DOCKER_CHECK="$FIXTURES_DIR/check/valid"
     FAKE_DOCKER_CHECK_STDIN="$CASE_DIR/check-input"
     export FAKE_GH_LOG FAKE_DOCKER_LOG FAKE_DOCKER_DIGEST FAKE_DOCKER_TARGETS FAKE_DOCKER_STDIN FAKE_DOCKER_CHECK FAKE_DOCKER_CHECK_STDIN
     unset FAKE_GH_EXIT FAKE_GH_SUBJECTS FAKE_DOCKER_EXIT FAKE_DOCKER_TARGETS_EXIT FAKE_DOCKER_REAL
@@ -141,7 +141,7 @@ check_base_default_file_repository_passes() {
 
 check_base_default_file_is_read_from_working_directory() {
     base_setup default-cwd
-    cp "$TESTS_DIR/fixtures/unpinned-from.Dockerfile" "$CASE_DIR/Dockerfile"
+    cp "$FIXTURES_DIR/unpinned-from.Dockerfile" "$CASE_DIR/Dockerfile"
     base_run "$CASE_DIR" --no-attestation
     expect_rejected
 }
@@ -149,7 +149,7 @@ check_base_default_file_is_read_from_working_directory() {
 # Runs the offline check on one fixture and expects a rejection: check_base_offline_fixture <fixture>.
 check_base_offline_fixture() {
     base_setup "fixture-$1"
-    base_run "$REPO_ROOT" --no-attestation "$TESTS_DIR/fixtures/$1"
+    base_run "$REPO_ROOT" --no-attestation "$FIXTURES_DIR/$1"
     expect_rejected
 }
 
@@ -161,7 +161,7 @@ expect_rule_error() {
 check_base_offline_rule() {
     local rc=0
     base_setup "rule-$1"
-    base_run "$REPO_ROOT" --no-attestation "$TESTS_DIR/fixtures/$1"
+    base_run "$REPO_ROOT" --no-attestation "$FIXTURES_DIR/$1"
     expect_rejected || rc=1
     expect_rule_error "$2" || rc=1
     return "$rc"
@@ -197,13 +197,13 @@ check_base_offline_missing_base_labels_rejected() {
 }
 
 check_base_changed_base_name_label_rejected() {
-    base_labels_rejected attested "s|base.name=\"$BASE_REF\"|base.name=\"$BASE_NAME:trixie-2\"|" name
+    base_labels_rejected attested "s|base.name=\"$BASE_REF\"|base.name=\"$BASE_NAME:other-tag\"|" name
 }
 
 check_base_invalid_tag_in_pin_rejected() {
     local rc=0
     base_setup invalid-tag
-    edited_dockerfile "s|$BASE_REF@|$BASE_NAME:.trixie-1@|" || return 1
+    edited_dockerfile "s|$BASE_REF@|$BASE_NAME:.${BASE_REF##*:}@|" || return 1
     base_run "$REPO_ROOT" --no-attestation "$CASE_DIR/Dockerfile"
     expect_rejected || rc=1
     expect_rule_error package || rc=1
@@ -245,7 +245,7 @@ check_base_error_line_per_broken_rule() {
     base_setup two-rules
     {
         printf '# syntax=docker/dockerfile:1\n'
-        /bin/cat "$TESTS_DIR/fixtures/copy-from-image.Dockerfile"
+        /bin/cat "$FIXTURES_DIR/copy-from-image.Dockerfile"
     } >"$CASE_DIR/Dockerfile"
     base_run "$REPO_ROOT" --no-attestation "$CASE_DIR/Dockerfile"
     count="$(base_error_lines)"
@@ -365,10 +365,10 @@ review_input() {
             printf '\f# escape=`\nFROM %s AS builder\n\nRUN true \\\nFROM debian:trixie AS sneaky\n\nFROM %s\n\nRUN true \\\nCOPY --from=sneaky /etc/os-release /etc/os-release\n%s\n' \
                 "$p" "$p" "$l"
             ;;
-        blank-line-in-continuation) cat "$TESTS_DIR/fixtures/blank-line-in-continuation.Dockerfile" ;;
-        split-heredoc-marker) cat "$TESTS_DIR/fixtures/heredoc-split-marker.Dockerfile" ;;
-        mount-from-upper-key) cat "$TESTS_DIR/fixtures/mount-from-image-upper-key.Dockerfile" ;;
-        mount-from-quoted-pair) cat "$TESTS_DIR/fixtures/mount-from-image-quoted-pair.Dockerfile" ;;
+        blank-line-in-continuation) cat "$FIXTURES_DIR/blank-line-in-continuation.Dockerfile" ;;
+        split-heredoc-marker) cat "$FIXTURES_DIR/heredoc-split-marker.Dockerfile" ;;
+        mount-from-upper-key) cat "$FIXTURES_DIR/mount-from-image-upper-key.Dockerfile" ;;
+        mount-from-quoted-pair) cat "$FIXTURES_DIR/mount-from-image-quoted-pair.Dockerfile" ;;
         *) echo "no review input $1" >&2; return 1 ;;
     esac >"$2"
 }
@@ -456,31 +456,31 @@ check_base_buildkit_asked_about_checked_file() {
 }
 
 check_base_buildkit_extra_stage_rejected() {
-    buildkit_rejected extra-stage "$TESTS_DIR/fixtures/targets/extra-stage.json"
+    buildkit_rejected extra-stage "$FIXTURES_DIR/targets/extra-stage.json"
 }
 
 check_base_buildkit_missing_stage_rejected() {
-    buildkit_rejected missing-stage "$TESTS_DIR/fixtures/targets/missing-stage.json"
+    buildkit_rejected missing-stage "$FIXTURES_DIR/targets/missing-stage.json"
 }
 
 check_base_buildkit_renamed_stage_rejected() {
-    buildkit_rejected renamed-stage "$TESTS_DIR/fixtures/targets/renamed-stage.json"
+    buildkit_rejected renamed-stage "$FIXTURES_DIR/targets/renamed-stage.json"
 }
 
 check_base_buildkit_named_final_stage_rejected() {
-    buildkit_rejected named-final "$TESTS_DIR/fixtures/targets/named-final.json"
+    buildkit_rejected named-final "$FIXTURES_DIR/targets/named-final.json"
 }
 
 check_base_buildkit_reordered_stages_rejected() {
-    buildkit_rejected reordered "$TESTS_DIR/fixtures/targets/reordered.json"
+    buildkit_rejected reordered "$FIXTURES_DIR/targets/reordered.json"
 }
 
 check_base_buildkit_other_base_rejected() {
-    buildkit_rejected other-base "$TESTS_DIR/fixtures/targets/other-base.json"
+    buildkit_rejected other-base "$FIXTURES_DIR/targets/other-base.json"
 }
 
 check_base_buildkit_failure_rejected() {
-    buildkit_rejected docker-fails "$TESTS_DIR/fixtures/targets/valid.json" 1
+    buildkit_rejected docker-fails "$FIXTURES_DIR/targets/valid.json" 1
 }
 
 check_base_buildkit_text_answer_rejected() {
@@ -497,7 +497,7 @@ check_base_buildkit_empty_answer_rejected() {
 
 check_base_buildkit_targets_without_base_compared_by_name() {
     local rc=0
-    buildkit_run no-base "$TESTS_DIR/fixtures/targets/no-base.json"
+    buildkit_run no-base "$FIXTURES_DIR/targets/no-base.json"
     expect_pass || rc=1
     expect_targets_asked || rc=1
     return "$rc"
@@ -507,7 +507,7 @@ check_base_buildkit_stage_on_earlier_stage_passes() {
     local rc=0
     base_setup buildkit-stage-on-stage
     edited_dockerfile 's|^FROM [^ ]* AS builder$|FROM venvs AS builder|' || return 1
-    export FAKE_DOCKER_TARGETS="$TESTS_DIR/fixtures/targets/stage-on-stage.json"
+    export FAKE_DOCKER_TARGETS="$FIXTURES_DIR/targets/stage-on-stage.json"
     base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
     expect_pass || rc=1
     expect_targets_asked || rc=1
@@ -516,7 +516,7 @@ check_base_buildkit_stage_on_earlier_stage_passes() {
 
 check_base_buildkit_two_documents_rejected() {
     local answer="$BASE_WORK/targets-two-documents.json"
-    cat "$TESTS_DIR/fixtures/targets/valid.json" "$TESTS_DIR/fixtures/targets/valid.json" >"$answer"
+    cat "$FIXTURES_DIR/targets/valid.json" "$FIXTURES_DIR/targets/valid.json" >"$answer"
     buildkit_rejected two-documents "$answer"
 }
 
@@ -541,7 +541,7 @@ scripts_with_rules_off() {
 hidden_image_input() {
     case "$1" in
         repository-escaped-from) repository_with_line "$ESCAPED_FROM_LINE" ;;
-        *) cp "$TESTS_DIR/fixtures/$1.Dockerfile" "$CASE_DIR/Dockerfile" ;;
+        *) cp "$FIXTURES_DIR/$1.Dockerfile" "$CASE_DIR/Dockerfile" ;;
     esac
 }
 
@@ -554,10 +554,10 @@ check_base_hidden_image_rejected() {
         base_run "$REPO_ROOT" --no-attestation "$CASE_DIR/Dockerfile"
     else
         case "$2" in
-            onbuild-*) export FAKE_DOCKER_TARGETS="$TESTS_DIR/fixtures/targets/stage-on-stage.json" ;;
-            from-platform-*) export FAKE_DOCKER_TARGETS="$TESTS_DIR/fixtures/targets/platform-hides-base.json" ;;
+            onbuild-*) export FAKE_DOCKER_TARGETS="$FIXTURES_DIR/targets/stage-on-stage.json" ;;
+            from-platform-*) export FAKE_DOCKER_TARGETS="$FIXTURES_DIR/targets/platform-hides-base.json" ;;
         esac
-        export FAKE_DOCKER_CHECK="$TESTS_DIR/fixtures/check/second-image"
+        export FAKE_DOCKER_CHECK="$FIXTURES_DIR/check/second-image"
         base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
     fi
     expect_rejected || rc=1
@@ -576,7 +576,7 @@ images_run() {
     cp "$REPO_ROOT/Dockerfile" "$CASE_DIR/Dockerfile"
     case "$2" in
         /*) export FAKE_DOCKER_CHECK="$2" ;;
-        *) export FAKE_DOCKER_CHECK="$TESTS_DIR/fixtures/check/$2" ;;
+        *) export FAKE_DOCKER_CHECK="$FIXTURES_DIR/check/$2" ;;
     esac
     base_run "$REPO_ROOT" "$CASE_DIR/Dockerfile"
 }
@@ -629,7 +629,7 @@ check_base_images_second_image_rejected_without_offline_rules() {
     base_setup images-rules-off
     scripts_with_rules_off plain-flags no-onbuild
     repository_with_line "$ESCAPED_FROM_LINE" || return 1
-    export FAKE_DOCKER_CHECK="$TESTS_DIR/fixtures/check/second-image"
+    export FAKE_DOCKER_CHECK="$FIXTURES_DIR/check/second-image"
     base_run "$CASE_DIR" "$CASE_DIR/Dockerfile"
     expect_rejected || rc=1
     expect_rule_error buildkit-images || rc=1
@@ -673,12 +673,12 @@ check_answer_with_line() {
         *) echo "no check answer $1"; return 1 ;;
     esac
     mkdir -p "$2"
-    cp "$TESTS_DIR/fixtures/check/valid/stdout" "$TESTS_DIR/fixtures/check/valid/stderr" "$TESTS_DIR/fixtures/check/valid/exit" "$2/"
+    cp "$FIXTURES_DIR/check/valid/stdout" "$FIXTURES_DIR/check/valid/stderr" "$FIXTURES_DIR/check/valid/exit" "$2/"
     LINE="$line" PIN_LINE="#2 [internal] load metadata for $BASE_PIN" awk '
         FILENAME ~ /stderr$/ && $0 == ENVIRON["PIN_LINE"] { print; print ENVIRON["LINE"]; next }
         { print }
-        END { if (FILENAME ~ /stdout$/) print ENVIRON["LINE"] }' "$TESTS_DIR/fixtures/check/valid/$stream" >"$2/$stream"
-    ! cmp -s "$TESTS_DIR/fixtures/check/valid/$stream" "$2/$stream" || { echo "no line was added to the $stream answer"; return 1; }
+        END { if (FILENAME ~ /stdout$/) print ENVIRON["LINE"] }' "$FIXTURES_DIR/check/valid/$stream" >"$2/$stream"
+    ! cmp -s "$FIXTURES_DIR/check/valid/$stream" "$2/$stream" || { echo "no line was added to the $stream answer"; return 1; }
 }
 
 # Expects buildkit-images to reject the pin line plus a second image line BuildKit printed in another form.
@@ -705,7 +705,7 @@ check_base_images_lint_failure_names_warnings() {
         count=$((count + 1))
         [[ "$line" == *"$rule"* ]] || missing="$missing [$rule]"
         [[ "$line" == *"$message"* ]] || missing="$missing [$message]"
-    done < <(awk '/^WARNING: / { rule = $2; if ((getline msg) > 0) print rule "\t" msg }' "$TESTS_DIR/fixtures/check/lint-warnings/stdout")
+    done < <(awk '/^WARNING: / { rule = $2; if ((getline msg) > 0) print rule "\t" msg }' "$FIXTURES_DIR/check/lint-warnings/stdout")
     [ "$count" -gt 0 ] || { echo "the recorded lint-warnings answer holds no WARNING line"; return 1; }
     [ -z "$missing" ] || { echo "the error: buildkit-images: line lacks$missing; got: ${line:-no such line}"; rc=1; }
     return "$rc"

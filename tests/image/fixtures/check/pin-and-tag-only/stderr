@@ -4,13 +4,13 @@
 #1 transferring dockerfile: 2.13kB done
 #1 DONE 0.0s
 
-#2 [internal] load metadata for ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1@sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b
+#2 [internal] load metadata for ghcr.io/autonomy-logic/openplc-runtime-base:__BASE_TAG__@__BASE_DIGEST__
 #2 DONE 0.0s
 
 #3 [auth] autonomy-logic/openplc-runtime-base:pull token for ghcr.io
 #3 DONE 0.0s
 
-#4 [internal] load metadata for ghcr.io/autonomy-logic/openplc-runtime-base:trixie-1
+#4 [internal] load metadata for ghcr.io/autonomy-logic/openplc-runtime-base:__BASE_TAG__
 #4 DONE 0.9s
 
 #5 [internal] load .dockerignore

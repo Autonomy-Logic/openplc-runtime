@@ -10,8 +10,6 @@ COPY core/src/drivers/plugins/python/modbus_master/requirements.txt core/src/dri
 COPY core/src/drivers/plugins/python/modbus_slave/requirements.txt core/src/drivers/plugins/python/modbus_slave/
 COPY core/src/drivers/plugins/python/opcua/requirements.txt core/src/drivers/plugins/python/opcua/
 
-# The editable install records only the package path; the package arrives with the application layer.
-# -g0: debug info would record pip's random build directory in compiled modules.
 RUN mkdir webserver && touch webserver/__init__.py && \
     CFLAGS=-g0 ./install.sh --native deps venvs
 
@@ -41,7 +39,6 @@ ENV RUNTIME_VERSION=${RUNTIME_VERSION}
 
 EXPOSE 8443
 
-# /api/version answers without a token; /api/ping would always fail with 401.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
     CMD curl -kfsS https://127.0.0.1:8443/api/version >/dev/null || exit 1
 

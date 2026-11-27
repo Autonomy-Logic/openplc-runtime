@@ -56,7 +56,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }   # the Python of the debian:bookworm runtime image
+        with: { python-version: "3.13" }   # the Python of the runtime image
       # With a Go toolchain cdxgen reads the module graph (go list) instead of
       # parsing go.mod by hand, which misses indirect modules.
       - uses: actions/setup-go@v5

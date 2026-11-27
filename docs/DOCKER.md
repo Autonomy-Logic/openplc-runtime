@@ -200,6 +200,10 @@ The runtime stores important data in `/var/run/runtime/`:
 -v openplc-runtime-data:/var/run/runtime
 ```
 
+The uploaded PLC program and its compiled library are not in this volume. A
+container created from a new image starts with no program: upload the program
+again from the OpenPLC Editor after an image update.
+
 ### Named Volume (Recommended)
 
 Using a named volume provides persistence and easy management:
@@ -439,6 +443,18 @@ The build has three stages, all on the pinned base:
 
 A change to application code rebuilds only the layers above the venvs; a
 change to a requirements file rebuilds the venvs layer and the layers above it.
+
+Notes on the build:
+
+- The `venvs` stage creates an empty `webserver` package before the install:
+  the editable install records only the package path, and the package itself
+  arrives with the application layer.
+- The `venvs` stage installs with `CFLAGS=-g0`. Where pip compiles a module
+  (`cffi` and `psutil` have no arm/v7 wheel), debug info would record pip's
+  random build directory and change the layer on every build.
+- The health check calls `/api/version`, which answers without a token;
+  `/api/ping` needs one and would always fail with 401.
+
 For a reproducible venvs layer, build with `SOURCE_DATE_EPOCH` and rewritten
 timestamps on a `docker-container` buildx builder:
 
@@ -780,7 +796,12 @@ last commit that changed the venv inputs (the `Dockerfile`, the requirements
 files, `pyproject.toml`, `install.sh`, `scripts/manage_plugin_venvs.sh`) and
 `rewrite-timestamp=true` on the registry output. The file timestamps of a layer
 then stay the same from one commit to the next, so a commit that changes only
-application code publishes the same venvs layer. Every image also carries a buildx
+application code publishes the same venvs layer as long as pip installs the
+same package versions. The requirements are not locked by hash and the build
+uses no cache, so each build resolves them again: two builds far apart in time
+can get different versions and then publish a new venvs layer. Locked
+requirements are needed to keep the layer between releases. The build output
+is `type=registry`, which pushes by itself. Every image also carries a buildx
 provenance attestation (`mode=max`) and an SBOM attestation. Two measurement
 builds of commits that change only application code can therefore be published
 and compared layer by layer without touching the release package.

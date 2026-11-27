@@ -78,6 +78,18 @@ run_check() {
     report "$name" "$rc" "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ *$//')"
 }
 
+# Prints the path of a copy of the fixtures with the tag and digest of BASE_PIN written in.
+materialize_fixtures() {
+    local dir ref="${BASE_PIN%@*}" file
+    dir="$(mktemp -d)" || return 1
+    cp -R "$TESTS_DIR/fixtures/." "$dir/" || return 1
+    while IFS= read -r file; do
+        sed "s|__BASE_TAG__|${ref##*:}|g; s|__BASE_DIGEST__|${BASE_PIN#*@}|g" "$file" >"$file.tmp" &&
+            cat "$file.tmp" >"$file" && rm -f "$file.tmp" || return 1
+    done < <(grep -rlE '__BASE_(TAG|DIGEST)__' "$dir")
+    printf '%s\n' "$dir"
+}
+
 # Prints the summary line and returns non-zero when any check failed.
 finish() {
     if [ "$CHECKS_FAILED" -gt 0 ]; then

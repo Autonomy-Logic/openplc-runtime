@@ -370,6 +370,13 @@ check_venvs_no_debug_info() {
         { echo "the venvs stage does not run install.sh with CFLAGS=-g0"; return 1; }
 }
 
+# Fails when a fixture holds the tag or digest of the pin instead of its placeholder.
+check_fixtures_take_pin_from_base_pin() {
+    local ref="${BASE_PIN%@*}" found
+    found="$(grep -rlF -e "${BASE_PIN#*@}" -e "${ref##*/}" "$TESTS_DIR/fixtures" | head -n 3)"
+    [ -z "$found" ] || { echo "fixtures hold the pin: $(printf '%s' "$found" | tr '\n' ' ')"; return 1; }
+}
+
 check_final_workdir() {
     final_instructions "$1" WORKDIR | cut -f 2 | grep -Eqx '/workdir/?' ||
         { echo "final stage has no WORKDIR /workdir"; return 1; }
@@ -436,7 +443,7 @@ crlf() {
 
 # Writes a fixture generated at run time, from valid.Dockerfile unless stated: generated_fixture <name> <path>.
 generated_fixture() {
-    local valid="$TESTS_DIR/fixtures/valid.Dockerfile"
+    local valid="$FIXTURES_DIR/valid.Dockerfile"
     case "$1" in
         form-feed-before-from.Dockerfile) { cat "$valid"; printf '\fFROM debian:trixie\nCMD ["bash", "./start_openplc.sh"]\n'; } ;;
         vertical-tab-before-from.Dockerfile) { cat "$valid"; printf '\vFROM debian:trixie\n'; } ;;
@@ -444,7 +451,7 @@ generated_fixture() {
         carriage-return-before-from.Dockerfile) { cat "$valid"; printf '\rFROM debian:trixie\n'; } ;;
         form-feed-between-from-and-image.Dockerfile) { cat "$valid"; printf 'FROM\fdebian:trixie AS sneaky\n'; } ;;
         form-feed-comment-continuation.Dockerfile) { cat "$valid"; printf '\f# x \\\nFROM debian:trixie AS sneaky\n'; } ;;
-        form-feed-before-escape-directive.Dockerfile) { printf '\f# escape=`\n'; cat "$TESTS_DIR/fixtures/escape-directive.Dockerfile"; } ;;
+        form-feed-before-escape-directive.Dockerfile) { printf '\f# escape=`\n'; cat "$FIXTURES_DIR/escape-directive.Dockerfile"; } ;;
         byte-order-mark.Dockerfile) { printf '\357\273\277'; cat "$valid"; } ;;
         non-ascii-comment.Dockerfile) { cat "$valid"; printf '# caf\303\251\n'; } ;;
         delete-byte.Dockerfile) { cat "$valid"; printf '# \177\n'; } ;;
@@ -491,7 +498,7 @@ fixture_list_checks() {
 
 # Records that the valid fixture passes every static check and each rule fixture is rejected by its check.
 fixture_checks() {
-    local dir="$TESTS_DIR/fixtures" generated fixture id failed
+    local dir="$FIXTURES_DIR" generated fixture id failed
     failed="$(static_failures_on "$dir/valid.Dockerfile")"
     if [ -z "$failed" ]; then
         report "fixture/valid.Dockerfile passes every static check" 0
@@ -567,8 +574,8 @@ install_setup() {
     t="$(mktemp -d)"
     t="$(cd "$t" && pwd -P)"
     mkdir -p "$t/root" "$t/bin"
-    cp "$TESTS_DIR"/fixtures/install/bin/* "$t/bin/"
-    cp "$TESTS_DIR/fixtures/install/venv-tool" "$t/venv-tool"
+    cp "$FIXTURES_DIR"/install/bin/* "$t/bin/"
+    cp "$FIXTURES_DIR/install/venv-tool" "$t/venv-tool"
     chmod +x "$t"/bin/* "$t/venv-tool"
     install_sandbox "$t/root"
     printf '%s\n' "$t"
@@ -611,7 +618,7 @@ install_apt_run() {
         return
     fi
     (cd "$APT_T" && env -i HOME="$APT_T" PATH="$APT_T/bin:$APT_T/sys" \
-        BASH_ENV="$TESTS_DIR/fixtures/install/linux-host.sh" FAKE_LOG="$APT_LOG" FAKE_APT_CANDIDATE="$1" \
+        BASH_ENV="$FIXTURES_DIR/install/linux-host.sh" FAKE_LOG="$APT_LOG" FAKE_APT_CANDIDATE="$1" \
         "$APT_T/sys/bash" "$APT_T/root/install.sh" --native deps) >"$APT_T/out" 2>&1 </dev/null || APT_RC=$?
     : >>"$APT_LOG"
     [ "$APT_RC" = 0 ] || echo "install.sh --native deps exited $APT_RC: $(tail -3 "$APT_T/out" | tr '\n' ' ')"
@@ -658,6 +665,7 @@ run_static_checks() {
     static_checks_on "$REPO_ROOT/Dockerfile" static
     run_check "static/pin-rules-are-static-checks" check_pin_rules_are_static_checks
     run_check "static/venvs-no-debug-info" check_venvs_no_debug_info "$REPO_ROOT/Dockerfile"
+    run_check "static/fixtures-take-pin-from-base-pin" check_fixtures_take_pin_from_base_pin
     fixture_checks
     run_check "install/native-without-step-runs-every-step" check_install_native_default
     for candidate in $APT_CMAKE_FROM_APT; do

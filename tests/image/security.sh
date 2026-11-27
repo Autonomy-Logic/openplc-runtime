@@ -56,6 +56,17 @@ check_security_ci_webserver_python() {
         { echo "the Webserver (pytest) job does not set up Python 3.13: $(clip "$setup")"; return 1; }
 }
 
+# Fails when a security workflow resolves the Python dependencies on another version than the image.
+check_security_workflows_python() {
+    local file rc=0
+    for file in "$REPO_ROOT"/.github/workflows/security-*.yml; do
+        grep -E 'python-version:' "$file" | grep -Evq 'python-version:[[:space:]]*"3\.13"' || continue
+        echo "$(basename "$file") sets up a Python other than 3.13"
+        rc=1
+    done
+    return "$rc"
+}
+
 check_security_webserver_python() {
     # shellcheck disable=SC2016
     docker exec "$SECURITY_CID" bash -c '
@@ -149,4 +160,5 @@ run_security_checks() {
 # Runs the security checks that need no Docker.
 run_security_static_checks() {
     run_check security/ci-webserver-python-3.13 check_security_ci_webserver_python
+    run_check security/ci-security-workflows-python-3.13 check_security_workflows_python
 }

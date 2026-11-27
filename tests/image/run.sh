@@ -11,6 +11,9 @@ export TESTS_DIR REPO_ROOT
 
 # shellcheck source=tests/image/helpers.sh
 . "$TESTS_DIR/helpers.sh"
+FIXTURES_DIR="$(materialize_fixtures)" || { echo "cannot prepare the fixtures" >&2; exit 1; }
+export FIXTURES_DIR
+trap 'rm -rf "$FIXTURES_DIR"' EXIT
 # shellcheck source=tests/image/static.sh
 . "$TESTS_DIR/static.sh"
 # shellcheck source=tests/image/built.sh
