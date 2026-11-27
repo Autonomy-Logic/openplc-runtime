@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Autonomy®
+
+printf 'python3 %s\n' "$*" >>"$FAKE_LOG"
+case "${1:-}" in
+    --version) echo "Python 3.13.5" ;;
+    -m)
+        if [ "${2:-}" = venv ]; then
+            dir="${*: -1}"
+            mkdir -p "$dir/bin"
+            for tool in python python3 pip; do
+                cp "$FAKE_VENV_TOOL" "$dir/bin/$tool"
+            done
+        fi
+        ;;
+esac

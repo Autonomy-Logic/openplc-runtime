@@ -1,0 +1,53 @@
+{
+  "targets": [
+    {
+      "name": "venvs",
+      "base": "ghcr.io/autonomy-logic/openplc-runtime-base:__BASE_TAG__@__BASE_DIGEST__",
+      "location": {
+        "ranges": [
+          {
+            "start": {
+              "line": 1
+            },
+            "end": {
+              "line": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "builder",
+      "base": "ghcr.io/autonomy-logic/openplc-runtime-base:__BASE_TAG__@__BASE_DIGEST__",
+      "location": {
+        "ranges": [
+          {
+            "start": {
+              "line": 17
+            },
+            "end": {
+              "line": 17
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "final",
+      "default": true,
+      "base": "ghcr.io/autonomy-logic/openplc-runtime-base:__BASE_TAG__@__BASE_DIGEST__",
+      "location": {
+        "ranges": [
+          {
+            "start": {
+              "line": 29
+            },
+            "end": {
+              "line": 29
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

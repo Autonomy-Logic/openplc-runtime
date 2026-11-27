@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Autonomy®
+
+printf 'apt-cache %s\n' "$*" >>"$FAKE_LOG"
+if [ "${1:-}" = policy ] && [ "${2:-}" = cmake ]; then
+    printf 'cmake:\n  Installed: (none)\n  Candidate: %s\n  Version table:\n' "${FAKE_APT_CANDIDATE:-(none)}"
+fi

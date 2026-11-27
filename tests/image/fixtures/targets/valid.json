@@ -1,0 +1,55 @@
+{
+  "targets": [
+    {
+      "name": "venvs",
+      "base": "ghcr.io/autonomy-logic/openplc-runtime-base:__BASE_TAG__@__BASE_DIGEST__",
+      "location": {
+        "ranges": [
+          {
+            "start": {
+              "line": 1
+            },
+            "end": {
+              "line": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "builder",
+      "base": "ghcr.io/autonomy-logic/openplc-runtime-base:__BASE_TAG__@__BASE_DIGEST__",
+      "location": {
+        "ranges": [
+          {
+            "start": {
+              "line": 17
+            },
+            "end": {
+              "line": 17
+            }
+          }
+        ]
+      }
+    },
+    {
+      "default": true,
+      "base": "ghcr.io/autonomy-logic/openplc-runtime-base:__BASE_TAG__@__BASE_DIGEST__",
+      "location": {
+        "ranges": [
+          {
+            "start": {
+              "line": 29
+            },
+            "end": {
+              "line": 29
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "sources": [
+    "RlJPTSBnaGNyLmlvL2F1dG9ub215LWxvZ2ljL29wZW5wbGMtcnVudGltZS1iYXNlOnRyaXhpZS0xQHNoYTI1NjoxNDAwOWEzNjNhZWQzMzhlMGRjZjMyYjRmM2U0M2JkMmRmZjVhMjVhZTc1ZTY1YTQxNDU3MjZjZGUwNGNkNjJiIEFTIHZlbnZzCgpXT1JLRElSIC93b3JrZGlyCgpSVU4gYXB0LWdldCB1cGRhdGUgJiYgXAogICAgYXB0LWdldCBpbnN0YWxsIC15IC0tbm8taW5zdGFsbC1yZWNvbW1lbmRzIHB5dGhvbjMtdmVudiBweXRob24zLWRldiAmJiBcCiAgICBybSAtcmYgL3Zhci9saWIvYXB0L2xpc3RzLyoKCkNPUFkgcmVxdWlyZW1lbnRzLnR4dCBweXByb2plY3QudG9tbCBpbnN0YWxsLnNoIC4vCkNPUFkgc2NyaXB0cy9tYW5hZ2VfcGx1Z2luX3ZlbnZzLnNoIHNjcmlwdHMvCkNPUFkgY29yZS9zcmMvZHJpdmVycy9wbHVnaW5zL3B5dGhvbi9tb2RidXNfbWFzdGVyL3JlcXVpcmVtZW50cy50eHQgY29yZS9zcmMvZHJpdmVycy9wbHVnaW5zL3B5dGhvbi9tb2RidXNfbWFzdGVyLwpDT1BZIGNvcmUvc3JjL2RyaXZlcnMvcGx1Z2lucy9weXRob24vbW9kYnVzX3NsYXZlL3JlcXVpcmVtZW50cy50eHQgY29yZS9zcmMvZHJpdmVycy9wbHVnaW5zL3B5dGhvbi9tb2RidXNfc2xhdmUvCkNPUFkgY29yZS9zcmMvZHJpdmVycy9wbHVnaW5zL3B5dGhvbi9vcGN1YS9yZXF1aXJlbWVudHMudHh0IGNvcmUvc3JjL2RyaXZlcnMvcGx1Z2lucy9weXRob24vb3BjdWEvCgpSVU4gLi9pbnN0YWxsLnNoIC0tbmF0aXZlCgpGUk9NIGdoY3IuaW8vYXV0b25vbXktbG9naWMvb3BlbnBsYy1ydW50aW1lLWJhc2U6dHJpeGllLTFAc2hhMjU2OjE0MDA5YTM2M2FlZDMzOGUwZGNmMzJiNGYzZTQzYmQyZGZmNWEyNWFlNzVlNjVhNDE0NTcyNmNkZTA0Y2Q2MmIgQVMgYnVpbGRlcgoKV09SS0RJUiAvd29ya2RpcgoKUlVOIGFwdC1nZXQgdXBkYXRlICYmIFwKICAgIGFwdC1nZXQgaW5zdGFsbCAteSAtLW5vLWluc3RhbGwtcmVjb21tZW5kcyBjbWFrZSBweXRob24zLWRldiBwa2ctY29uZmlnIGdpdCAmJiBcCiAgICBybSAtcmYgL3Zhci9saWIvYXB0L2xpc3RzLyoKCkNPUFkgLiAuCgpSVU4gLi9pbnN0YWxsLnNoIC0tbmF0aXZlCgpGUk9NIGdoY3IuaW8vYXV0b25vbXktbG9naWMvb3BlbnBsYy1ydW50aW1lLWJhc2U6dHJpeGllLTFAc2hhMjU2OjE0MDA5YTM2M2FlZDMzOGUwZGNmMzJiNGYzZTQzYmQyZGZmNWEyNWFlNzVlNjVhNDE0NTcyNmNkZTA0Y2Q2MmIKCldPUktESVIgL3dvcmtkaXIKCkNPUFkgLS1mcm9tPXZlbnZzIC93b3JrZGlyL3ZlbnZzIC93b3JrZGlyL3ZlbnZzCkNPUFkgLS1mcm9tPWJ1aWxkZXIgL3dvcmtkaXIvYnVpbGQgL3dvcmtkaXIvYnVpbGQKQ09QWSAtLWZyb209YnVpbGRlciAvd29ya2Rpci8uaW5zdGFsbGVkIC93b3JrZGlyLy5pbnN0YWxsZWQKQ09QWSB3ZWJzZXJ2ZXIgd2Vic2VydmVyCkNPUFkgLiAuCgpMQUJFTCBvcmcub3BlbmNvbnRhaW5lcnMuaW1hZ2UuYmFzZS5uYW1lPSJnaGNyLmlvL2F1dG9ub215LWxvZ2ljL29wZW5wbGMtcnVudGltZS1iYXNlOnRyaXhpZS0xIiBcCiAgICAgIG9yZy5vcGVuY29udGFpbmVycy5pbWFnZS5iYXNlLmRpZ2VzdD0ic2hhMjU2OjE0MDA5YTM2M2FlZDMzOGUwZGNmMzJiNGYzZTQzYmQyZGZmNWEyNWFlNzVlNjVhNDE0NTcyNmNkZTA0Y2Q2MmIiCgpBUkcgUlVOVElNRV9WRVJTSU9OPWRldgpFTlYgUlVOVElNRV9WRVJTSU9OPSR7UlVOVElNRV9WRVJTSU9OfQoKRVhQT1NFIDg0NDMKCkhFQUxUSENIRUNLIC0taW50ZXJ2YWw9MzBzIC0tdGltZW91dD0xMHMgLS1zdGFydC1wZXJpb2Q9OTBzIC0tcmV0cmllcz0zIFwKICAgIENNRCBjdXJsIC1rZnNTIGh0dHBzOi8vMTI3LjAuMC4xOjg0NDMvYXBpL3ZlcnNpb24gPi9kZXYvbnVsbCB8fCBleGl0IDEKCkNNRCBbImJhc2giLCAiLi9zdGFydF9vcGVucGxjLnNoIl0K"
+  ]
+}

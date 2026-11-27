@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Autonomy®
+
+printf 'make %s %s\n' "$PWD" "$*" >>"$FAKE_LOG"
+case "$PWD" in
+    */plugins/native/*/build) : >"lib$(basename "$(dirname "$PWD")")_plugin.so" ;;
+    */build) : >plc_main ;;
+esac

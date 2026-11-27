@@ -53,6 +53,13 @@ sudo ./install.sh
 # Source install (deps, venvs, compiles the runtime); start_openplc.sh needs the .installed it writes
 sudo ./install.sh --native
 
+# Only some install steps, run in this order: deps (packages, CMake), venvs, compile (core, native
+# plugins, EtherDOG, .installed); the image build uses these. No step runs all three plus systemd.
+sudo ./install.sh --native deps venvs
+
+# Runtime image: stages venvs, builder and final, all FROM the pinned base (docs/DOCKER.md, "Base image")
+docker build -t openplc-runtime .
+
 # Manual build (C/C++ runtime core)
 mkdir -p build && cd build && cmake .. && make -j$(nproc)
 
@@ -69,8 +76,8 @@ sudo ./build/plc_main --print-logs
 ## Testing
 
 ```bash
-# Python: creates venvs/test-env, runs all of tests/pytest and core/src/drivers/plugins/python/
-# (including the suites CI skips; pytest.ini sets --maxfail=3)
+# Python 3.13 (the image's and CI's version; the script uses python3): creates venvs/test-env, runs all of
+# tests/pytest and core/src/drivers/plugins/python/ (including the suites CI skips; pytest.ini sets --maxfail=3)
 bash scripts/run-pytest.sh
 
 # C unit tests (Ceedling, project.yml, tests/test_*.c; needs Python 3.12 headers); coverage with gcov:all
@@ -81,15 +88,40 @@ ceedling gcov:all
 # needs python3 and the Python 3 dev headers (Python.h, via plugin_driver.h)
 ./tests/host/run.sh
 
+# Image: static checks of the Dockerfile and the install.sh default (no Docker); --build also builds the
+# image for the host, checks its layers, then TLS, upload refusals, plugin start and OPC-UA profiles on a
+# running container (needs a docker-container buildx builder, IMAGE_TEST_BUILDER)
+bash tests/image/run.sh
+IMAGE_TEST_BUILDER=<builder> bash tests/image/run.sh --build
+
 # Bootloader (Go), same checks as CI (gofmt -l always exits 0, so test -z fails on any listed file)
 cd bootloader && test -z "$(gofmt -l .)" && go vet ./... && go test -race -count=1 ./...
 ```
 
 - CI (`.github/workflows/tests.yml`, on PRs, pushes to `development`/`main` and manual dispatch): gofmt,
-  go vet and `go test -race` for `bootloader/`; pytest over `tests/pytest` excluding the `plugins`,
+  go vet and `go test -race` for `bootloader/`; pytest on Python 3.13 over `tests/pytest` excluding the `plugins`,
   `modbus_master` and `modbus_slave` suites (red on the base branch), plus the named plugin suites known
   green; shellcheck on `install.sh`, `scripts/install-docker.sh`, `windows/provision-msys2.sh` and
-  `tests/integration/harness.sh`; a check that Windows and Docker callers run `install.sh --native`.
+  `tests/integration/harness.sh`, `scripts/verify-base-image.sh`, `scripts/publish-plan.sh`, `scripts/lib/` and
+  `tests/image/`;
+  `tests/image/run.sh` (static image checks, the base check and publish plan scripts against fake `gh` and
+  `docker`, and the Python version of the Webserver job); a check that Windows and Docker callers run
+  `install.sh --native`.
+- Image publishing (`.github/workflows/docker.yml`, `build` job): `scripts/publish-plan.sh` decides package, tags
+  and version for a `v*` tag push (release, `latest` only for a tag without `-`), a manual run with `release_tag`
+  (release package, never `latest`) or with `test_tag` (`ghcr.io/autonomy-logic/openplc-runtime-test`), and
+  refuses a tag that already exists; docs/DOCKER.md, "GitHub Actions".
+- Base image check (`.github/workflows/base-image-check.yml`, job "Verify Base Image Attestation", on every
+  PR and pushes to `development`/`main`; also the first step of the `docker.yml` build job):
+  `scripts/verify-base-image.sh` checks the `Dockerfile` pin, its attestation, that BuildKit
+  (`docker buildx build --call=targets`, read with `jq`) sees the same stages and that every image BuildKit
+  resolves (`docker buildx build --check --progress=plain`, which also fails on a lint warning or on an image
+  line it cannot read) is the pin
+  (docs/DOCKER.md, "Base image check"); `--no-attestation` runs only the offline rules, skipping the tag,
+  attestation and both BuildKit checks. The
+  plain-text rule runs first and stops the script alone when it fails. The Dockerfile parser and pin rules live in
+  `scripts/lib/dockerfile.sh` (shared with `tests/image/static.sh`), `one_line` and the image tag pattern in
+  `scripts/lib/common.sh`.
   On a PR to `development` whose head commit carries the commit status `misterflow/local-ci` = `success` (set by
   MisterFlow on the exact SHA it pushes after running the checks locally), the run skips the Bootloader (Go) and
   Webserver (pytest) jobs (reported as passed); a push without that status runs them, and the installer scripts job

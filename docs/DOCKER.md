@@ -15,6 +15,108 @@ OpenPLC Runtime v4 provides official Docker images for easy deployment across mu
 - `linux/arm64` - ARM 64-bit (Raspberry Pi 4, etc.)
 - `linux/arm/v7` - ARM 32-bit (Raspberry Pi 3, etc.)
 
+## Base image
+
+The runtime image is built on the OpenPLC runtime base image, published from
+[autonomy-docker](https://github.com/Autonomy-Logic/autonomy-docker#readme):
+
+| | |
+|---|---|
+| Name | `ghcr.io/autonomy-logic/openplc-runtime-base` |
+| Tag | `trixie-1` (Debian trixie, GCC 14, Python 3.13) |
+| Digest (multi-arch index: amd64, arm64, arm/v7) | `sha256:14009a363aed338e0dcf32b4f3e43bd2dff5a25ae75e65a4145726cde04cd62b` |
+
+The `Dockerfile` writes this reference in full, tag and digest, in the `FROM` of
+each of its three stages (`venvs`, `builder` and the final stage), with no
+build argument, and sets the labels `org.opencontainers.image.base.name` and
+`org.opencontainers.image.base.digest` of the image to the same reference.
+Changing the base means changing all of them together; `tests/image/run.sh`
+and `scripts/verify-base-image.sh` fail when they disagree.
+
+The base provides Python, the compiler toolchain uploaded programs are built
+with, `curl`, `ethtool`, `openssl`, the `/var/run/runtime` directory and the
+dpkg path-excludes, so the final stage installs nothing. When autonomy-docker
+publishes a security bump of the base, the pin here follows it within 7 days
+for a Critical vulnerability and within 30 days for a High one.
+
+### Base image check
+
+`scripts/verify-base-image.sh [--no-attestation] [Dockerfile]` (default:
+`Dockerfile` in the working directory) prints one `error:` line per broken rule
+and exits non-zero when any rule is broken. Without the network
+(`--no-attestation`) it checks the `Dockerfile` pin rules of
+`scripts/lib/dockerfile.sh`, which `tests/image/static.sh` also runs: plain
+text only (printable ASCII, tab, line feed, and a carriage return only before a
+line feed; when this rule fails it is the only error reported and nothing else
+runs), no empty or whitespace-only line after a line ending in `\`, every
+`FROM` pinned by digest with no variable, one pin for all stages, no parser
+directive (`# <name>=<value>` before the first instruction), no heredoc (`<<`
+outside a comment line, also once continuation lines are joined), plain flags
+(no instruction keyword and no leading `--` flag of any instruction, `FROM`
+included, holding a double quote, a single quote or a backslash), no `ONBUILD` instruction in any letter case,
+`COPY --from` and `RUN --mount` (`from` key in any letter case, quoted or not)
+only from stages of the file, and the final stage's
+`org.opencontainers.image.base.name` and `org.opencontainers.image.base.digest`
+labels equal to its pin. It also checks
+that the pinned package is exactly
+`ghcr.io/autonomy-logic/openplc-runtime-base`, written as `<name>:<tag>@<digest>`.
+With the network it also checks, with the `docker` and `gh` on `PATH`, that:
+
+- the tag resolves to the pinned digest in the registry
+  (`docker buildx imagetools inspect`);
+- `gh attestation verify oci://<name>@<digest> --repo Autonomy-Logic/autonomy-docker
+  --signer-workflow Autonomy-Logic/autonomy-docker/.github/workflows/build.yml
+  --source-ref refs/heads/main --deny-self-hosted-runners` succeeds, and one
+  verified attestation names `ghcr.io/autonomy-logic/openplc-runtime-base`
+  with the pinned digest as its subject;
+- BuildKit reads the same stages as the script:
+  `docker buildx build --call=targets,format=json -`, with the `Dockerfile` on
+  standard input, lists the same number of stages in the same order, with the
+  same names and, where BuildKit reports one, the same base reference. A
+  failing `docker`, or an answer `jq` cannot read, fails the rule. This step
+  only reads the `Dockerfile`: it builds, pulls and pushes nothing.
+- every image BuildKit resolves is the pin (rule `buildkit-images`):
+  `docker buildx build --check --progress=plain -`, with the `Dockerfile` on
+  standard input, prints one `#<n> [internal] load metadata for <image>` line on
+  standard error per image a stage builds on, copies from or mounts, however
+  the `Dockerfile` writes it. The rule fails unless at least one such line is
+  printed, every line of standard output or standard error holding
+  `load metadata for` has exactly that form, with nothing before or after it
+  (the error quotes each line that does not), and every image it names is exactly
+  `<name>:<tag>@sha256:<digest>` of the pin. A non-zero `docker` exit fails the
+  rule, so a BuildKit lint warning in the `Dockerfile` fails the base check,
+  the error naming each warning's rule and message; so does output with no
+  such line. This step reads only image metadata from the registry: it builds
+  and pushes nothing.
+
+`--no-attestation` skips the tag, attestation and both BuildKit checks and uses
+no network and no `docker`.
+
+It runs in CI in two places, with `GH_TOKEN` set to the workflow token and no
+registry login:
+
+- `.github/workflows/base-image-check.yml`, job "Verify Base Image
+  Attestation", on every pull request and on pushes to `development` and
+  `main`, with read-only permissions;
+- the `build` job of `.github/workflows/docker.yml`, as the first step after
+  checkout, so a release build stops before QEMU, the registry login and the
+  build.
+
+Locally, `bash scripts/verify-base-image.sh` needs `docker` with buildx, `jq`
+and an authenticated `gh`.
+
+### Bumping the pin
+
+1. Take a tag of `ghcr.io/autonomy-logic/openplc-runtime-base` published by
+   the autonomy-docker build workflow on `main`, and read its digest:
+   `docker buildx imagetools inspect ghcr.io/autonomy-logic/openplc-runtime-base:<tag> --format '{{.Manifest.Digest}}'`.
+2. Write `<name>:<tag>@<digest>` in the three `FROM` lines of the
+   `Dockerfile`, the two base labels, `BASE_PIN` in `tests/image/helpers.sh`
+   and the table above.
+3. Run `bash scripts/verify-base-image.sh` and `bash tests/image/run.sh`; both
+   must pass.
+4. Open the pull request; its "Verify Base Image Attestation" check must pass.
+
 ## The managed install (recommended)
 
 Everything below describes running the runtime container by hand, which is
@@ -97,6 +199,10 @@ The runtime stores important data in `/var/run/runtime/`:
 ```bash
 -v openplc-runtime-data:/var/run/runtime
 ```
+
+The uploaded PLC program and its compiled library are not in this volume. A
+container created from a new image starts with no program: upload the program
+again from the OpenPLC Editor after an image update.
 
 ### Named Volume (Recommended)
 
@@ -323,6 +429,45 @@ git checkout development
 
 docker build -t my-openplc-runtime .
 ```
+
+The build has three stages, all on the pinned base:
+
+- `venvs` copies in only `requirements.txt`, `pyproject.toml`, the plugin
+  `requirements.txt` files, `install.sh` and `scripts/manage_plugin_venvs.sh`,
+  and runs `./install.sh --native deps venvs`. A new Python plugin with a
+  `requirements.txt` needs its own `COPY` line in this stage.
+- `builder` copies the source and runs `./install.sh --native deps compile`
+  (CMake comes from apt).
+- The final stage stacks, in this order: the venvs (`/workdir/venvs`), the
+  compiled output (`/workdir/build`), the application files, then the metadata.
+
+A change to application code rebuilds only the layers above the venvs; a
+change to a requirements file rebuilds the venvs layer and the layers above it.
+
+Notes on the build:
+
+- The `venvs` stage creates an empty `webserver` package before the install:
+  the editable install records only the package path, and the package itself
+  arrives with the application layer.
+- The `venvs` stage installs with `CFLAGS=-g0`. Where pip compiles a module
+  (`cffi` and `psutil` have no arm/v7 wheel), debug info would record pip's
+  random build directory and change the layer on every build.
+- The health check calls `/api/version`, which answers without a token;
+  `/api/ping` needs one and would always fail with 401.
+
+For a reproducible venvs layer, build with `SOURCE_DATE_EPOCH` and rewritten
+timestamps on a `docker-container` buildx builder:
+
+```bash
+SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) docker buildx build \
+  --output type=oci,dest=openplc-runtime.oci.tar,rewrite-timestamp=true .
+```
+
+`install.sh --native` takes optional step names, run in this order whatever
+order they are given in: `deps` (system packages and CMake), `venvs` (the
+runtime venv and one venv per Python plugin) and `compile` (the runtime core,
+the native plugins and EtherDOG, then the `.installed` marker). With no step
+named it runs all three and then installs the systemd service, as before.
 
 ### Using Build Script
 
@@ -619,11 +764,51 @@ docker run -d \
 **Images** -- `.github/workflows/docker.yml`
 
 Triggers: a `v*` release tag, a push to `development` or `main`, or a manual
-dispatch. There is no pull-request trigger here: a branch push produces no
-semver tag for the metadata step.
+dispatch. There is no pull-request trigger here. A branch push publishes only
+the bootloader.
 
-- The runtime image builds for release tags and manual runs only, multi-arch,
-  tagged `vX.Y.Z` and (for a stable release) `latest`.
+The runtime image (`build` job) builds for a `v*` tag push and for a manual run
+only, for the platforms of the `platforms` input (default `linux/amd64`,
+`linux/arm64`, `linux/arm/v7`). `scripts/publish-plan.sh` decides the package,
+the tags and the version baked into the image (`RUNTIME_VERSION`, reported by
+`/api/version`), so there are three kinds of run:
+
+| Run | Package | Tags | Version |
+|---|---|---|---|
+| Release: push of a `vX.Y.Z` tag | `ghcr.io/autonomy-logic/openplc-runtime` | the tag, plus `latest` when the tag has no `-` suffix (`v4.4.0-rc.1` gets no `latest`) | the tag |
+| Manual release: "Run workflow" with `release_tag` | `ghcr.io/autonomy-logic/openplc-runtime` | `release_tag` only, never `latest` | `release_tag` |
+| Measurement build: "Run workflow" with `test_tag` | `ghcr.io/autonomy-logic/openplc-runtime-test` | `test_tag` only | `test_tag` |
+
+A manual run sets exactly one of `release_tag` and `test_tag`, and the tag must
+be a valid image tag other than `latest`. Every run checks, after the registry
+login, that its tag does not exist yet in its package
+(`docker buildx imagetools inspect`) and stops before the build when it does: a
+published tag is never overwritten, a manual run never moves `latest`, and
+rebuilding an older version means publishing it under a new tag. The run also
+stops when the registry answer is not a clear "not found" (an authentication,
+permission, rate-limit or network error), since it cannot tell then whether
+the tag exists. A manual release of a version that is pushed as a git tag later
+makes that tag push stop, so `latest` moves only through a tag push of a version
+not yet published.
+
+Every runtime image is built with `SOURCE_DATE_EPOCH` set to the time of the
+last commit that changed the venv inputs (the `Dockerfile`, the requirements
+files, `pyproject.toml`, `install.sh`, `scripts/manage_plugin_venvs.sh`) and
+`rewrite-timestamp=true` on the registry output. The file timestamps of a layer
+then stay the same from one commit to the next, so a commit that changes only
+application code publishes the same venvs layer as long as pip installs the
+same package versions. The requirements are not locked by hash and the build
+uses no cache, so each build resolves them again: two builds far apart in time
+can get different versions and then publish a new venvs layer. Locked
+requirements are needed to keep the layer between releases. The build output
+is `type=registry`, which pushes by itself. Every image also carries a buildx
+provenance attestation (`mode=max`) and an SBOM attestation. Two measurement
+builds of commits that change only application code can therefore be published
+and compared layer by layer without touching the release package.
+
+The `build` job runs `scripts/verify-base-image.sh` first (see "Base image
+check"), which needs `attestations: read` and `GH_TOKEN`.
+
 - The bootloader is versioned separately, from `bootloader/VERSION`. A version
   already in the registry is not rebuilt, so a run of runtime releases does not
   republish an unchanged bootloader; `latest` moves only for a stable version
@@ -632,8 +817,17 @@ semver tag for the metadata step.
 **Tests** -- `.github/workflows/tests.yml`
 
 Runs on every pull request: `gofmt`, `go vet` and `go test -race` for the
-bootloader, `pytest tests/pytest`, `shellcheck` on the installer scripts, and a
-check that every caller of `install.sh` asks for the build it needs.
+bootloader, `pytest tests/pytest` on Python 3.13, `shellcheck` on the installer scripts,
+`tests/image/run.sh` (the static checks of the `Dockerfile`), and a check that
+every caller of `install.sh` asks for the build it needs.
+
+`bash tests/image/run.sh --build` also builds the image for the host
+architecture and checks the built layers, then checks a running container of
+it: TLS 1.0 and 1.1 refused and 1.2 and 1.3 accepted on port 8443, uploads
+refused without a valid token and for unsafe archives, the webserver and the
+Python plugins on Python 3.13, and OPC-UA offering only the configured security
+profile. It runs by hand, on a buildx builder with the `docker-container` driver
+named by `IMAGE_TEST_BUILDER`.
 
 Not in CI: `tests/integration/harness.sh` (it needs a privileged
 Docker-in-Docker host) and anything hardware-dependent. Both are run by hand.

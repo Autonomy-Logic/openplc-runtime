@@ -360,7 +360,7 @@ docker run -v openplc-runtime-data:/var/run/runtime ...
 **Official Image:** `ghcr.io/autonomy-logic/openplc-runtime:latest`
 
 **Security Features:**
-- Based on Debian bookworm-slim (minimal attack surface)
+- Based on the OpenPLC runtime base image (Debian trixie), pinned by digest (see [Docker](DOCKER.md#base-image))
 - Regular updates via CI/CD
 - Multi-architecture support
 - Signed images (GitHub Container Registry)

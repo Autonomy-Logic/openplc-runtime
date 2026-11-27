@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Autonomy®
+
+venv="$(basename "$(dirname "$(dirname "$0")")")"
+printf 'venv %s %s %s\n' "$venv" "$(basename "$0")" "$*" >>"$FAKE_LOG"
+case "${1:-}" in
+    --version) echo "Python 3.13.5" ;;
+esac

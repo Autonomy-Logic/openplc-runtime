@@ -20,24 +20,34 @@ on:
         required: false
         type: string
       release_tag:
-        description: 'Release version tag (e.g., 1.2.3). If provided, also tags as latest.'
+        description: 'Tag to publish to openplc-runtime (e.g., v4.3.3); must not exist yet and never moves latest. Set this or test_tag.'
+        required: false
+        type: string
+      test_tag:
+        description: 'Tag to publish to openplc-runtime-test for a measurement build; must not exist yet. Set this or release_tag.'
         required: false
         type: string
 
 jobs:
   build:
-    # Release tags and manual runs only -- unchanged from before the bootloader
-    # job was added. A branch push produces no semver tag for the metadata
-    # step, so letting it through would fail with an empty tag list.
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      attestations: read
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify the pinned base image
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/verify-base-image.sh
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -52,33 +62,37 @@ jobs:
           username: ${{ secrets.GHCR_USERNAME }}
           password: ${{ secrets.GHCR_TOKEN }}
 
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/autonomy-logic/openplc-runtime
-          tags: |
-            # latest tag only for stable releases (no pre-release suffix like -rc, -beta, etc.)
-            type=raw,value=latest,enable=${{ (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')) || inputs.release_tag != '' }}
-            # Version tag from git tag (e.g., v1.2.3 -> v1.2.3, v1.2.3-rc.1 -> v1.2.3-rc.1)
-            type=semver,pattern={{raw}}
-            # Version tag for manual runs with release_tag
-            type=raw,value=${{ inputs.release_tag }},enable=${{ inputs.release_tag != '' }}
+      - name: Decide the image, tags and version
+        id: plan
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          TEST_TAG: ${{ inputs.test_tag }}
+        run: ./scripts/publish-plan.sh >> "$GITHUB_OUTPUT"
+
+      - name: Read the time of the last change to the venv inputs
+        id: epoch
+        run: |
+          epoch="$(git log -1 --format=%ct -- Dockerfile requirements.txt pyproject.toml install.sh scripts/manage_plugin_venvs.sh 'core/src/drivers/plugins/python/*/requirements.txt')"
+          [ -n "$epoch" ] || { echo "::error::no commit found for the venv inputs"; exit 1; }
+          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
 
       - name: Build and Push Multi-Arch Image
         uses: docker/build-push-action@v6
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.epoch }}
         with:
           context: .
-          push: true
           platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64,linux/arm/v7' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Bake the GitHub release tag (or the workflow_dispatch
-          # release_tag override) into the image so /api/version can
-          # report it back to clients.  Falls back to the Dockerfile
-          # default ("dev") for ad-hoc builds without a release tag.
+          tags: ${{ steps.plan.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.plan.outputs.version }}
+          outputs: type=registry,rewrite-timestamp=true
+          provenance: mode=max
+          sbom: true
           build-args: |
-            RUNTIME_VERSION=${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+            RUNTIME_VERSION=${{ steps.plan.outputs.version }}
 
   # The bootloader is versioned independently of the runtime (bootloader/VERSION).
   # Tying it to every runtime tag would publish a long run of byte-identical
