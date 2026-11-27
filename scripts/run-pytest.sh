@@ -33,6 +33,11 @@ if [ -f "$PROJECT_ROOT/requirements.txt" ]; then
     pip install -r "$PROJECT_ROOT/requirements.txt"
 fi
 
+if [ -f "$PROJECT_ROOT/requirements-dev.txt" ]; then
+    echo "Installing test dependencies from requirements-dev.txt..."
+    pip install -r "$PROJECT_ROOT/requirements-dev.txt"
+fi
+
 # 4. Install pytest and project in editable mode
 echo "Installing pytest and local package..."
 pip install pytest

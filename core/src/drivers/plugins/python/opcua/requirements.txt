@@ -18,7 +18,8 @@ bcrypt>=4.0.0; sys_platform != 'cygwin'
 # pytz>=2021.1               # Timezone support
 
 # Development and testing dependencies (optional)
-# Uncomment if running tests
-pytest>=7.0.0
-pytest-asyncio>=0.21.0
-pytest-mock>=3.10.0
+# Uncomment if running tests. Left commented so a scan of this manifest does not
+# report a test-tooling version the plugin never installs.
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0
+# pytest-mock>=3.10.0
