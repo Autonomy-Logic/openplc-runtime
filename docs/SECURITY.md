@@ -131,8 +131,8 @@ C:\Windows\System32
 #### Size Limits
 
 **Limits:**
-- Maximum file size: 10 MB per file
-- Maximum total size: 50 MB uncompressed
+- Maximum file size: 128 MB per file
+- Maximum total size: 512 MB uncompressed
 - Enforced before extraction
 
 **Purpose:** Prevent resource exhaustion and disk space attacks

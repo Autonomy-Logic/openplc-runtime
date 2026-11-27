@@ -328,7 +328,7 @@ file: <ZIP file>
 
 **Error Conditions:**
 - No file in request
-- File too large (>10 MB per file, >50 MB total)
+- File too large (>128 MB per file, >512 MB total)
 - ZIP validation failed (path traversal, compression ratio, disallowed extensions)
 - Another compilation in progress
 - File system error
@@ -754,7 +754,7 @@ Currently, there are no rate limits enforced. However, be mindful of:
 2. **JWT Authentication**: All endpoints except first user creation and login require JWT authentication
 3. **Self-Signed Certificates**: Default installation uses self-signed certificates (OpenPLC Editor handles this automatically)
 4. **File Upload Validation**: ZIP files undergo comprehensive security checks before extraction
-5. **Size Limits**: Files are limited to prevent resource exhaustion (10 MB per file, 50 MB total)
+5. **Size Limits**: Files are limited to prevent resource exhaustion (128 MB per file, 512 MB total)
 6. **Path Validation**: All file paths are validated to prevent traversal attacks
 7. **Password Security**: Passwords are hashed with PBKDF2-SHA256 (600,000 iterations), salt, and pepper
 

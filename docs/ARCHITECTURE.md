@@ -219,7 +219,7 @@ The runtime supports dynamically loaded plugins for hardware I/O:
 ### File Upload Security
 - ZIP file validation (path traversal, size limits, compression ratio)
 - Disallowed extensions: .exe, .dll, .sh, .bat, .js, .vbs, .scr
-- Maximum file size: 10 MB per file, 50 MB total
+- Maximum file size: 128 MB per file, 512 MB total
 - macOS metadata stripped during extraction
 
 **Implementation:** `webserver/plcapp_management.py`, `webserver/credentials.py`

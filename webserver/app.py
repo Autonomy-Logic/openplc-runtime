@@ -401,7 +401,7 @@ def _handle_upload_file(data: dict) -> dict:
     if zip_file.content_length > MAX_FILE_SIZE:
         build_state.status = BuildStatus.FAILED
         return {
-            "UploadFileFail": "File is too large",
+            "UploadFileFail": f"File is too large (limit {MAX_FILE_SIZE // (1024 * 1024)} MB)",
             "CompilationStatus": build_state.status.name,
         }
 
@@ -411,7 +411,9 @@ def _handle_upload_file(data: dict) -> dict:
         if not safe:
             build_state.status = BuildStatus.FAILED
             return {
-                "UploadFileFail": "Uploaded ZIP file failed safety checks",
+                "UploadFileFail": "; ".join(
+                    ["Uploaded ZIP file failed safety checks", *build_state.refusals]
+                ),
                 "CompilationStatus": build_state.status.name,
             }
 

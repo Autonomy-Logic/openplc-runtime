@@ -269,7 +269,7 @@ All endpoints except `/api/version`, `/api/capabilities`, `/api/create-user` (fi
 The Editor handles various error conditions:
 
 **Upload Errors:**
-- File too large (>10 MB per file, >50 MB total)
+- File too large (>128 MB per file, >512 MB total)
 - Invalid ZIP file
 - Compilation already in progress
 - Path traversal attempts

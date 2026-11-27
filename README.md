@@ -370,7 +370,7 @@ The OpenPLC Editor handles self-signed certificates automatically. For advanced 
 
 Uploaded ZIP files undergo comprehensive security validation:
 - Path traversal prevention
-- Size limits (10 MB per file, 50 MB total)
+- Size limits (128 MB per file, 512 MB total)
 - ZIP bomb detection (compression ratio check)
 - Extension whitelist (blocks .exe, .dll, .sh, .bat, .js, .vbs, .scr)
 - macOS metadata removal

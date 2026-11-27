@@ -221,12 +221,14 @@ The OpenPLC Editor handles self-signed certificates automatically. If you're usi
 
 **Error:**
 ```
-UploadFileFail: Uploaded ZIP file failed safety checks
+UploadFileFail: Uploaded ZIP file failed safety checks; <reason>
 ```
+
+Each reason names the file and the check it failed, such as a file over the size limit.
 
 **Solution:**
 1. Verify ZIP file is valid: `unzip -t program.zip`
-2. Check file size (must be <10 MB per file, <50 MB total)
+2. Check file size (must be <128 MB per file, <512 MB total)
 3. Ensure no disallowed extensions (.exe, .dll, .sh, .bat, .js, .vbs, .scr)
 4. Check for path traversal attempts (no `..` in paths)
 5. Regenerate ZIP from OpenPLC Editor

@@ -38,7 +38,7 @@ Before extraction, the ZIP file undergoes security checks:
 **Checks Performed:**
 - Valid ZIP file format
 - No path traversal attempts (`..`, absolute paths, `:`)
-- File size limits (10 MB per file, 50 MB total)
+- File size limits (128 MB per file, 512 MB total)
 - Compression ratio check (ZIP bomb detection, max ratio 1000:1)
 - Extension whitelist (blocks .exe, .dll, .sh, .bat, .js, .vbs, .scr)
 

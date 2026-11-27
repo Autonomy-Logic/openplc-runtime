@@ -38,8 +38,9 @@ from webserver.vpp_license_debug import derive_license_path, is_inside_root
 logger, _ = get_logger("runtime", use_buffer=True)
 
 
-MAX_FILE_SIZE: Final[int] = 10 * 1024 * 1024  # 10 MB per file
-MAX_TOTAL_SIZE: Final[int] = 50 * 1024 * 1024  # 50 MB total
+MAX_FILE_SIZE: Final[int] = 128 * 1024 * 1024  # 128 MB per file, and per uploaded ZIP
+MAX_TOTAL_SIZE: Final[int] = 512 * 1024 * 1024  # 512 MB uncompressed total
+MAX_COMPRESSION_RATIO: Final[int] = 1000
 # .js, .wasm and .html are allowed only as HMI client files (webserver/hmi_upload.py).
 DISALLOWED_EXT = (".exe", ".dll", ".sh", ".bat", ".js", ".vbs", ".scr", ".wasm", ".html")
 
@@ -57,6 +58,7 @@ class BuildProcess:
     status: BuildStatus = BuildStatus.IDLE
     logs: list[str] = field(default_factory=list)
     exit_code: int | None = None
+    refusals: list[str] = field(default_factory=list)
 
     def log(self, msg: str):
         # logger.info(msg)
@@ -66,6 +68,7 @@ class BuildProcess:
         self.status = BuildStatus.IDLE
         self.logs.clear()
         self.exit_code = None
+        self.refusals.clear()
 
 
 build_state = BuildProcess()  # global-ish singleton for status
@@ -99,11 +102,22 @@ def extracted_names(valid_files: list[zipfile.ZipInfo]) -> list[tuple[zipfile.Zi
     return out
 
 
+def _megabytes(size: int) -> str:
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def _refuse(reason: str) -> None:
+    logger.warning("%s", reason)
+    build_state.log(f"[ERROR] {reason}\n")
+    build_state.refusals.append(reason)
+
+
 def analyze_zip(zip_path) -> tuple[bool, list]:
     """Analyze the ZIP file for safety before extraction.
 
     Extensions are judged on the extracted path: ``.js``, ``.wasm`` and ``.html`` only as HMI
-    client files, the rest of ``DISALLOWED_EXT`` nowhere.
+    client files, the rest of ``DISALLOWED_EXT`` nowhere. Each reason for refusing the file is
+    appended to ``build_state.refusals``.
     """
     build_state.status = BuildStatus.UNZIPPING
 
@@ -123,18 +137,20 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
 
             # Check for path traversal or absolute paths
             if filename.startswith("/") or ".." in filename or ":" in filename:
-                # logger.warning("Dangerous path: %s", filename)
+                _refuse(f"{filename}: path outside the program folder")
                 safe = False
 
             # Check uncompressed size
             if uncompressed_size > MAX_FILE_SIZE:
-                logger.warning("File too large: %s (%d bytes)", filename, uncompressed_size)
+                _refuse(
+                    f"{filename} is {_megabytes(uncompressed_size)}, "
+                    f"over the {_megabytes(MAX_FILE_SIZE)} limit per file"
+                )
                 safe = False
 
             # Check compression ratio (ZIP bomb detection)
-            if compressed_size > 0 and uncompressed_size / compressed_size > 1000:
-                # logger.warning("Suspicious compression ratio in %s",
-                #    filename)
+            if compressed_size > 0 and uncompressed_size / compressed_size > MAX_COMPRESSION_RATIO:
+                _refuse(f"{filename}: compression ratio over {MAX_COMPRESSION_RATIO}:1")
                 safe = False
 
             total_size += uncompressed_size
@@ -142,13 +158,15 @@ def analyze_zip(zip_path) -> tuple[bool, list]:
 
         for _info, name in extracted_names(valid_files):
             if not hmi_upload.extension_allowed(name, DISALLOWED_EXT):
-                logger.warning("Disallowed extension: %s", name)
+                _refuse(f"{name}: file type not allowed in a program")
                 safe = False
 
         # Check total size
         if total_size > MAX_TOTAL_SIZE:
-            # logger.warning("Total uncompressed size too large: %d bytes",
-            #                total_size)
+            _refuse(
+                f"the program unpacks to {_megabytes(total_size)}, "
+                f"over the {_megabytes(MAX_TOTAL_SIZE)} limit"
+            )
             safe = False
 
         if safe:
