@@ -90,7 +90,9 @@ def test_group_tcp_collapses_same_endpoint():
     assert list(groups.keys()) == ["192.168.1.50:502"]
     info = groups["192.168.1.50:502"]
     assert len(info["devices"]) == 2
-    assert info["config"] == {"host": "192.168.1.50", "port": 502, "timeout_ms": 1000}
+    assert info["config"]["host"] == "192.168.1.50"
+    assert info["config"]["port"] == 502
+    assert info["config"]["timeout_ms"] == 1000
     assert sorted(d.slave_id for d in info["devices"]) == [1, 2]
 
 

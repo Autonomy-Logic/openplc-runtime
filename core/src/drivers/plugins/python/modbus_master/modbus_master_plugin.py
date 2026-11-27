@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 import traceback
-from typing import Any, List
+from typing import Any, List, Tuple, Union
 
 from pymodbus.exceptions import ConnectionException, ModbusIOException
 from pymodbus.pdu import ExceptionResponse
@@ -36,6 +36,9 @@ from shared import (
 from shared.image_sizes import set_image_sizes  # noqa: F401
 from shared.plugin_config_decode.modbus_master_config_model import (
     ERROR_HANDLING_SET_TO_ZERO,
+    IECAddress,
+    ModbusDeviceConfig,
+    ModbusIoPointConfig,
     ModbusMasterConfig,
 )
 
@@ -82,6 +85,9 @@ logger: PluginLogger = None
 slave_threads: List[threading.Thread] = []
 # pylint: enable=invalid-name
 
+ReadResult = Tuple[IECAddress, List[Union[bool, int]], int]
+READ_FUNCTION_CODES = (1, 2, 3, 4)
+
 def queue_zero_fill_on_failure(point: Any, read_results_to_update: List[Any]) -> bool:
     """
     Queue a zeroed payload for a read point whose group asks for it.
@@ -104,6 +110,87 @@ def queue_zero_fill_on_failure(point: Any, read_results_to_update: List[Any]) ->
     )
     return True
 
+def zero_fills_for_set_to_zero_read_points(points: List[ModbusIoPointConfig]) -> List[ReadResult]:
+    """Return a zeroed read result for every read point whose error handling is set-to-zero."""
+    zero_fills: List[ReadResult] = []
+    for point in points:
+        if point.fc in READ_FUNCTION_CODES:
+            queue_zero_fill_on_failure(point, zero_fills)
+    return zero_fills
+
+def write_read_results(
+    sba: SafeBufferAccess,
+    plugin_logger: PluginLogger,
+    thread_name: str,
+    read_results: List[ReadResult],
+) -> None:
+    """
+    Write read results to the IEC buffers.
+
+    The Modbus data is converted to IEC values outside the mutex, then every value is
+    written under a single mutex acquisition to keep the hold time minimal.
+    """
+    if not read_results:
+        return
+    preconverted_updates = []
+    for iec_addr, modbus_data, length in read_results:
+        converted_values, details = convert_modbus_data_to_iec_values(iec_addr, modbus_data, length)
+        if converted_values is not None and details is not None:
+            preconverted_updates.append((converted_values, details))
+        else:
+            plugin_logger.error(
+                f"[{thread_name}] Data conversion failed "
+                f"for IEC address {iec_addr}, length={length}"
+            )
+
+    if not preconverted_updates:
+        return
+    lock_acquired, lock_msg = sba.acquire_mutex()
+    if lock_acquired:
+        try:
+            for converted_values, details in preconverted_updates:
+                write_preconverted_iec_values(sba, converted_values, details)
+        finally:
+            sba.release_mutex()
+    else:
+        plugin_logger.error(f"[{thread_name}] Failed to acquire mutex for read updates: {lock_msg}")
+
+def give_up_on_endpoint(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    sba: SafeBufferAccess,
+    plugin_logger: PluginLogger,
+    thread_name: str,
+    connection_manager: ModbusConnectionManager,
+    devices: List[ModbusDeviceConfig],
+    pending_reads: List[ReadResult],
+) -> None:
+    """
+    Finish serving a TCP endpoint whose connection was given up.
+
+    Writes the pending read results followed by a zero-fill of every set-to-zero read
+    point of the endpoint's devices, then logs the give-up once as a warning.
+
+    Args:
+        sba: Buffer access used for the final IEC writes.
+        plugin_logger: Logger that receives the give-up warning.
+        thread_name: Name of the thread serving the endpoint, for error messages.
+        connection_manager: Connection manager holding the endpoint and the give-up reason.
+        devices: ModbusDeviceConfig objects served through the endpoint.
+        pending_reads: Read results of the current cycle not yet written.
+    """
+    points = [point for device in devices for point in device.io_points]
+    write_read_results(
+        sba,
+        plugin_logger,
+        thread_name,
+        pending_reads + zero_fills_for_set_to_zero_read_points(points),
+    )
+    device_names = ", ".join(device.name for device in devices)
+    plugin_logger.warn(
+        f"Gave up on {connection_manager.host}:{connection_manager.port} "
+        f"(devices: {device_names}): {connection_manager.give_up_reason}; "
+        "Reconnect is off. Stop then Start the PLC to retry."
+    )
+
 class ModbusSlaveDevice(threading.Thread):
     """
     Handles a single Modbus TCP device with its own connection.
@@ -124,6 +211,7 @@ class ModbusSlaveDevice(threading.Thread):
             port=device_config.port,
             timeout_ms=device_config.timeout_ms,
             slave_id=device_config.slave_id,
+            reconnect=device_config.reconnect,
         )
         self.name = (
             f"ModbusSlave-{device_config.name}-TCP-{device_config.host}:{device_config.port}"
@@ -142,6 +230,25 @@ class ModbusSlaveDevice(threading.Thread):
         """
         return self.connection_manager.ensure_connection(self._stop_event)
 
+    def _give_up(self, pending_reads: List[ReadResult]) -> None:
+        """Zero-fill the set-to-zero read points and log that the endpoint was given up."""
+        give_up_on_endpoint(
+            self.sba,
+            self.logger,
+            self.name,
+            self.connection_manager,
+            [self.device_config],
+            pending_reads,
+        )
+
+    def _on_read_failure(
+        self, point: ModbusIoPointConfig, failure: object, read_results: List[ReadResult]
+    ) -> None:
+        """Apply the reconnect policy to a failed read and queue its zero-fill unless given up."""
+        self.connection_manager.handle_request_failure(failure)
+        if not self.connection_manager.given_up:
+            queue_zero_fill_on_failure(point, read_results)
+
     def run(self):  # pylint: disable=too-many-locals
         self.logger.info(f"[{self.name}] Thread started.")
 
@@ -152,11 +259,13 @@ class ModbusSlaveDevice(threading.Thread):
             self.logger.warn(f"[{self.name}] No I/O points defined. Stopping thread.")
             return
 
-        # Connect with infinite retry
-        if not self.connection_manager.connect_with_retry(self._stop_event):
-            self.logger.info(
-                f"[{self.name}] Thread stopped before connection could be established."
-            )
+        if not self.connection_manager.connect(self._stop_event):
+            if self.connection_manager.given_up:
+                self._give_up([])
+            else:
+                self.logger.info(
+                    f"[{self.name}] Thread stopped before connection could be established."
+                )
             return
 
         # Initialize cycle counter
@@ -168,14 +277,16 @@ class ModbusSlaveDevice(threading.Thread):
 
                 # Ensure connection exists before cycle
                 if not self._ensure_connection():
-                    break  # Thread was interrupted
+                    if self.connection_manager.given_up:
+                        self._give_up([])
+                    break
 
                 # 1. READ OPERATIONS - Process only I/O points that are due for polling this cycle
                 read_results_to_update = []  # Store tuples: (iec_addr, modbus_data, length)
 
                 # Check each read point individually
                 for point in io_points:
-                    if self._stop_event.is_set():
+                    if self._stop_event.is_set() or self.connection_manager.given_up:
                         break
 
                     # Skip if this point doesn't need to be polled this cycle
@@ -225,18 +336,14 @@ class ModbusSlaveDevice(threading.Thread):
                                 f"[{self.name}] Modbus read error "
                                 f"(FC {point.fc}, addr {address}): {response}"
                             )
-                            queue_zero_fill_on_failure(point, read_results_to_update)
-                            # Mark as disconnected to force reconnection on next cycle
-                            self.connection_manager.mark_disconnected()
+                            self._on_read_failure(point, response, read_results_to_update)
                             continue
                         if response.isError():
                             self.logger.error(
                                 f"[{self.name}] Modbus read failed "
                                 f"(FC {point.fc}, addr {address}): {response}"
                             )
-                            queue_zero_fill_on_failure(point, read_results_to_update)
-                            # Mark as disconnected to force reconnection on next cycle
-                            self.connection_manager.mark_disconnected()
+                            self._on_read_failure(point, response, read_results_to_update)
                             continue
 
                         # Extract data from response
@@ -260,52 +367,19 @@ class ModbusSlaveDevice(threading.Thread):
                             f"[{self.name}] Connection error reading "
                             f"FC {point.fc}, offset {point.offset}: {ce}"
                         )
-                        queue_zero_fill_on_failure(point, read_results_to_update)
-                        # Mark as disconnected to force reconnection
-                        self.connection_manager.mark_disconnected()
+                        self._on_read_failure(point, ce, read_results_to_update)
                     except Exception as e:
                         self.logger.error(
                             f"[{self.name}] Error reading "
                             f"FC {point.fc}, offset {point.offset}: {e}"
                         )
-                        queue_zero_fill_on_failure(point, read_results_to_update)
-                        # For other errors also mark disconnected as precaution
-                        self.connection_manager.mark_disconnected()
+                        self._on_read_failure(point, e, read_results_to_update)
 
-                # Batch update IEC buffers with single mutex acquisition
-                # OPTIMIZATION: Pre-convert all Modbus data to IEC values BEFORE
-                # acquiring the mutex to minimize mutex hold time
-                if read_results_to_update:
-                    # Phase 1: Pre-convert all data outside the mutex
-                    preconverted_updates = []
-                    for iec_addr, modbus_data, length in read_results_to_update:
-                        converted_values, details = convert_modbus_data_to_iec_values(
-                            iec_addr, modbus_data, length
-                        )
-                        if converted_values is not None and details is not None:
-                            preconverted_updates.append((converted_values, details))
-                        else:
-                            self.logger.error(
-                                f"[{self.name}] Data conversion failed "
-                                f"for IEC address {iec_addr}, length={length}"
-                            )
+                if self.connection_manager.given_up:
+                    self._give_up(read_results_to_update)
+                    break
 
-                    # Phase 2: Write pre-converted values under the mutex
-                    if preconverted_updates:
-                        lock_acquired, lock_msg = self.sba.acquire_mutex()
-                        if lock_acquired:
-                            try:
-                                for converted_values, details in preconverted_updates:
-                                    write_preconverted_iec_values(
-                                        self.sba, converted_values, details
-                                    )
-                            finally:
-                                self.sba.release_mutex()
-                        else:
-                            self.logger.error(
-                                f"[{self.name}] Failed to acquire mutex "
-                                f"for read updates: {lock_msg}"
-                            )
+                write_read_results(self.sba, self.logger, self.name, read_results_to_update)
 
                 # WRITES - process only points due this cycle. Batch all
                 # raw IEC reads under one image_lock; convert and send
@@ -363,7 +437,7 @@ class ModbusSlaveDevice(threading.Thread):
                 # Phase 3: Convert raw IEC values to Modbus format (outside mutex)
                 # and perform Modbus writes
                 for point, address, raw_values, details, iec_size in raw_iec_data:
-                    if self._stop_event.is_set():
+                    if self._stop_event.is_set() or self.connection_manager.given_up:
                         break
 
                     try:
@@ -423,26 +497,30 @@ class ModbusSlaveDevice(threading.Thread):
                                 f"[{self.name}] Modbus write error "
                                 f"(FC {point.fc}, addr {address}): {response}"
                             )
-                            self.connection_manager.mark_disconnected()
+                            self.connection_manager.handle_request_failure(response)
                         elif response.isError():
                             self.logger.error(
                                 f"[{self.name}] Modbus write failed "
                                 f"(FC {point.fc}, addr {address}): {response}"
                             )
-                            self.connection_manager.mark_disconnected()
+                            self.connection_manager.handle_request_failure(response)
 
                     except ConnectionException as ce:
                         self.logger.error(
                             f"[{self.name}] Connection error writing "
                             f"FC {point.fc}, offset {point.offset}: {ce}"
                         )
-                        self.connection_manager.mark_disconnected()
+                        self.connection_manager.handle_request_failure(ce)
                     except Exception as e:
                         self.logger.error(
                             f"[{self.name}] Error writing "
                             f"FC {point.fc}, offset {point.offset}: {e}"
                         )
-                        self.connection_manager.mark_disconnected()
+                        self.connection_manager.handle_request_failure(e)
+
+                if self.connection_manager.given_up:
+                    self._give_up([])
+                    break
 
                 # 3. CYCLE TIMING - Sleep for GCD cycle time
                 cycle_elapsed = time.monotonic() - cycle_start_time
@@ -519,6 +597,7 @@ class ModbusBusHandler(threading.Thread):
                 port=connection_config["port"],
                 timeout_ms=connection_config["timeout_ms"],
                 slave_id=1,
+                reconnect=connection_config.get("reconnect", True),
             )
             self.name = f"ModbusTcpGateway-{connection_config['host']}:{connection_config['port']}"
         else:
@@ -567,6 +646,25 @@ class ModbusBusHandler(threading.Thread):
         """Ensures there is a valid connection, reconnecting if necessary."""
         return self.connection_manager.ensure_connection(self._stop_event)
 
+    def _give_up(self, pending_reads: List[ReadResult]) -> None:
+        """Zero-fill the set-to-zero read points and log that the endpoint was given up."""
+        give_up_on_endpoint(
+            self.sba,
+            self.logger,
+            self.name,
+            self.connection_manager,
+            self.devices,
+            pending_reads,
+        )
+
+    def _on_read_failure(
+        self, point: ModbusIoPointConfig, failure: object, read_results: List[ReadResult]
+    ) -> None:
+        """Apply the reconnect policy to a failed read and queue its zero-fill unless given up."""
+        self.connection_manager.handle_request_failure(failure)
+        if not self.connection_manager.given_up:
+            queue_zero_fill_on_failure(point, read_results)
+
     def run(self):  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
         self.logger.info(f"[{self.name}] Thread started for {len(self.devices)} device(s).")
 
@@ -576,11 +674,13 @@ class ModbusBusHandler(threading.Thread):
             self.logger.warn(f"[{self.name}] No I/O points defined. Stopping thread.")
             return
 
-        # Connect with infinite retry
-        if not self.connection_manager.connect_with_retry(self._stop_event):
-            self.logger.info(
-                f"[{self.name}] Thread stopped before connection could be established."
-            )
+        if not self.connection_manager.connect(self._stop_event):
+            if self.connection_manager.given_up:
+                self._give_up([])
+            else:
+                self.logger.info(
+                    f"[{self.name}] Thread stopped before connection could be established."
+                )
             return
 
         # Initialize cycle counter
@@ -592,13 +692,15 @@ class ModbusBusHandler(threading.Thread):
 
                 # Ensure connection exists before cycle
                 if not self._ensure_connection():
-                    break  # Thread was interrupted
+                    if self.connection_manager.given_up:
+                        self._give_up([])
+                    break
 
                 # 1. READ OPERATIONS - Process only I/O points that are due for polling this cycle
                 read_results_to_update = []  # Store tuples: (iec_addr, modbus_data, length)
 
                 for io_entry in self.all_io_points:
-                    if self._stop_event.is_set():
+                    if self._stop_event.is_set() or self.connection_manager.given_up:
                         break
 
                     point = io_entry["point"]
@@ -648,16 +750,14 @@ class ModbusBusHandler(threading.Thread):
                                 f"[{self.name}] Modbus read error "
                                 f"(slave {slave_id}, FC {point.fc}, addr {address}): {response}"
                             )
-                            queue_zero_fill_on_failure(point, read_results_to_update)
-                            self.connection_manager.mark_disconnected()
+                            self._on_read_failure(point, response, read_results_to_update)
                             continue
                         if response.isError():
                             self.logger.error(
                                 f"[{self.name}] Modbus read failed "
                                 f"(slave {slave_id}, FC {point.fc}, addr {address}): {response}"
                             )
-                            queue_zero_fill_on_failure(point, read_results_to_update)
-                            self.connection_manager.mark_disconnected()
+                            self._on_read_failure(point, response, read_results_to_update)
                             continue
 
                         # Extract data from response
@@ -681,46 +781,19 @@ class ModbusBusHandler(threading.Thread):
                             f"[{self.name}] Connection error reading "
                             f"slave {slave_id}, FC {point.fc}, offset {point.offset}: {ce}"
                         )
-                        queue_zero_fill_on_failure(point, read_results_to_update)
-                        self.connection_manager.mark_disconnected()
+                        self._on_read_failure(point, ce, read_results_to_update)
                     except Exception as e:
                         self.logger.error(
                             f"[{self.name}] Error reading "
                             f"slave {slave_id}, FC {point.fc}, offset {point.offset}: {e}"
                         )
-                        queue_zero_fill_on_failure(point, read_results_to_update)
-                        self.connection_manager.mark_disconnected()
+                        self._on_read_failure(point, e, read_results_to_update)
 
-                # Batch update IEC buffers with single mutex acquisition
-                if read_results_to_update:
-                    preconverted_updates = []
-                    for iec_addr, modbus_data, length in read_results_to_update:
-                        converted_values, details = convert_modbus_data_to_iec_values(
-                            iec_addr, modbus_data, length
-                        )
-                        if converted_values is not None and details is not None:
-                            preconverted_updates.append((converted_values, details))
-                        else:
-                            self.logger.error(
-                                f"[{self.name}] Data conversion failed "
-                                f"for IEC address {iec_addr}, length={length}"
-                            )
+                if self.connection_manager.given_up:
+                    self._give_up(read_results_to_update)
+                    break
 
-                    if preconverted_updates:
-                        lock_acquired, lock_msg = self.sba.acquire_mutex()
-                        if lock_acquired:
-                            try:
-                                for converted_values, details in preconverted_updates:
-                                    write_preconverted_iec_values(
-                                        self.sba, converted_values, details
-                                    )
-                            finally:
-                                self.sba.release_mutex()
-                        else:
-                            self.logger.error(
-                                f"[{self.name}] Failed to acquire mutex "
-                                f"for read updates: {lock_msg}"
-                            )
+                write_read_results(self.sba, self.logger, self.name, read_results_to_update)
 
                 # 2. WRITE OPERATIONS
                 write_points_due = []
@@ -776,7 +849,7 @@ class ModbusBusHandler(threading.Thread):
 
                 # Phase 3: Convert and perform Modbus writes
                 for point, address, slave_id, raw_values, details, iec_size in raw_iec_data:
-                    if self._stop_event.is_set():
+                    if self._stop_event.is_set() or self.connection_manager.given_up:
                         break
 
                     try:
@@ -831,26 +904,30 @@ class ModbusBusHandler(threading.Thread):
                                 f"[{self.name}] Modbus write error "
                                 f"(slave {slave_id}, FC {point.fc}, addr {address}): {response}"
                             )
-                            self.connection_manager.mark_disconnected()
+                            self.connection_manager.handle_request_failure(response)
                         elif response.isError():
                             self.logger.error(
                                 f"[{self.name}] Modbus write failed "
                                 f"(slave {slave_id}, FC {point.fc}, addr {address}): {response}"
                             )
-                            self.connection_manager.mark_disconnected()
+                            self.connection_manager.handle_request_failure(response)
 
                     except ConnectionException as ce:
                         self.logger.error(
                             f"[{self.name}] Connection error writing "
                             f"slave {slave_id}, FC {point.fc}, offset {point.offset}: {ce}"
                         )
-                        self.connection_manager.mark_disconnected()
+                        self.connection_manager.handle_request_failure(ce)
                     except Exception as e:
                         self.logger.error(
                             f"[{self.name}] Error writing "
                             f"slave {slave_id}, FC {point.fc}, offset {point.offset}: {e}"
                         )
-                        self.connection_manager.mark_disconnected()
+                        self.connection_manager.handle_request_failure(e)
+
+                if self.connection_manager.given_up:
+                    self._give_up([])
+                    break
 
                 # 3. CYCLE TIMING
                 cycle_elapsed = time.monotonic() - cycle_start_time
@@ -940,6 +1017,8 @@ def group_tcp_devices_by_endpoint(devices: List[Any]) -> dict:
     a distinct slave/unit ID. Devices on the same endpoint share a single TCP
     connection (one ModbusBusHandler thread) and are routed by slave_id; a lone
     device on an endpoint keeps the simpler one-thread ModbusSlaveDevice path.
+    The devices of one endpoint share one reconnect setting, which
+    ModbusMasterConfig.validate() enforces.
 
     Args:
         devices: List of ModbusDeviceConfig with transport="tcp"
@@ -948,7 +1027,7 @@ def group_tcp_devices_by_endpoint(devices: List[Any]) -> dict:
         Dictionary keyed by "host:port":
         {
             "host:port": {
-                "config": {host, port, timeout_ms},
+                "config": {host, port, timeout_ms, reconnect},
                 "devices": [list of devices on this endpoint],
             }
         }
@@ -964,6 +1043,7 @@ def group_tcp_devices_by_endpoint(devices: List[Any]) -> dict:
                     "host": device.host,
                     "port": device.port,
                     "timeout_ms": device.timeout_ms,
+                    "reconnect": device.reconnect,
                 },
                 "devices": [],
             }
@@ -1042,8 +1122,12 @@ def start_loop():
         logger.debug(f"Loading configuration from: {config_path}")
 
         modbus_master_config = ModbusMasterConfig()
-        modbus_master_config.import_config_from_file(config_path)
-        modbus_master_config.validate()
+        try:
+            modbus_master_config.import_config_from_file(config_path)
+            modbus_master_config.validate()
+        except ValueError as e:
+            logger.error(f"Configuration refused, no device thread started: {e}")
+            return False
 
         device_count = len(modbus_master_config.devices)
         logger.info(f"Configuration loaded successfully: {device_count} device(s)")
@@ -1053,6 +1137,8 @@ def start_loop():
         rtu_devices = [d for d in modbus_master_config.devices if d.transport == "rtu"]
 
         logger.info(f"Found {len(tcp_devices)} TCP device(s) and {len(rtu_devices)} RTU device(s)")
+
+        started_threads = 0
 
         # Group TCP devices by (host, port). One device → one thread;
         # multiple on one endpoint (a Modbus gateway) share a TCP
@@ -1071,6 +1157,7 @@ def start_loop():
                         )
                         device_thread.start()
                         slave_threads.append(device_thread)
+                        started_threads += 1
                         logger.info(
                             f"Started TCP thread for device: {device_config.name} "
                             f"({device_config.host}:{device_config.port}, slave_id={device_config.slave_id})"
@@ -1085,6 +1172,7 @@ def start_loop():
                         )
                         gateway_thread.start()
                         slave_threads.append(gateway_thread)
+                        started_threads += 1
                         device_names = ", ".join([d.name for d in endpoint_devices])
                         slave_ids = ", ".join([str(d.slave_id) for d in endpoint_devices])
                         logger.info(
@@ -1111,6 +1199,7 @@ def start_loop():
                     )
                     bus_thread.start()
                     slave_threads.append(bus_thread)
+                    started_threads += 1
 
                     device_names = ", ".join([d.name for d in bus_info["devices"]])
                     slave_ids = ", ".join([str(d.slave_id) for d in bus_info["devices"]])
@@ -1121,12 +1210,11 @@ def start_loop():
                 except Exception as e:
                     logger.error(f"Failed to start RTU bus thread for {bus_key}: {e}")
 
-        if slave_threads:
-            logger.info(f"Successfully started {len(slave_threads)} device/bus thread(s)")
+        if started_threads > 0:
+            logger.info(f"Successfully started {started_threads} device/bus thread(s)")
             return True
-        else:
-            logger.error("No device threads started")
-            return False
+        logger.error("No device threads started")
+        return False
 
     except Exception as e:
         logger.error(f"Error starting main loop: {e}")
@@ -1137,6 +1225,8 @@ def stop_loop():
     """
     Stop the main loop and all running device threads.
     This function is called when the plugin needs to be stopped.
+    Threads that stopped leave `slave_threads`; a thread still alive after the timeout
+    stays, and the next `stop_loop()` joins it again.
 
     Returns:
         True if all threads stopped, False if any thread survived the timeout.
@@ -1176,6 +1266,7 @@ def stop_loop():
             except Exception as e:
                 logger.error(f"Error joining thread {thread.name}: {e}")
 
+        slave_threads[:] = [thread for thread in slave_threads if thread.is_alive()]
         logger.info("Main loop stopped")
         return not any_alive
 

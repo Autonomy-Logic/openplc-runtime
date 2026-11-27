@@ -171,7 +171,8 @@ jobs:
             tests/pytest/plugins/opcua/test_stop_lifecycle.py \
             tests/pytest/plugins/test_safe_buffer_access_invalidate.py \
             tests/pytest/plugins/test_vpp_license_delivery.py \
-            tests/pytest/plugins/test_vpp_sibling_delivery.py
+            tests/pytest/plugins/test_vpp_sibling_delivery.py \
+            tests/pytest/modbus_master/test_reconnect.py
 
   shell:
     name: Installer scripts
