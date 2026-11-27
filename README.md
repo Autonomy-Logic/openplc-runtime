@@ -301,6 +301,9 @@ source venvs/runtime/bin/activate
 pip install -r requirements.txt
 pip install -e .
 
+# For the test suite, the pinned test tooling lives on its own
+pip install -r requirements-dev.txt
+
 # Compile runtime core
 mkdir -p build
 cd build
